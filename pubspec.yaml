@@ -18,6 +18,8 @@ dependencies:
   fl_chart: ^0.70.0
   camera: ^0.11.0+1
   google_mlkit_image_labeling: ^0.14.1
+  google_mlkit_commons: ^0.11.0
+
   google_maps_flutter: ^2.4.0 
 
 
