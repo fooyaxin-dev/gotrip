@@ -1,15 +1,16 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'vision_service.dart';
 
 class ResultPage extends StatefulWidget {
   final Uint8List imageBytes;
-  final String base64Image;
+  final String landmark;
+  final String rawJson;
 
   const ResultPage({
     super.key,
     required this.imageBytes,
-    required this.base64Image,
+    required this.landmark,
+    required this.rawJson,
   });
 
   @override
@@ -23,27 +24,11 @@ class _ResultPageState extends State<ResultPage>
       DraggableScrollableController();
 
   bool _autoExpanded = false;
-  bool _loading = true;
-
-  String _landmark = "";
-  String _rawJson = "";
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
-    _detectLandmark();
-  }
-
-  Future<void> _detectLandmark() async {
-    final response =
-        await VisionService.detectLandmarkWithJson(widget.base64Image);
-
-    setState(() {
-      _landmark = response['landmark'] ?? "No landmark detected";
-      _rawJson = response['rawJson'] ?? "";
-      _loading = false;
-    });
   }
 
   @override
@@ -160,74 +145,55 @@ class _ResultPageState extends State<ResultPage>
                                   const SizedBox(height: 12),
 
                                   // 标题
-                                  _loading
-                                      ? const Center(
-                                          child:
-                                              CircularProgressIndicator(),
-                                        )
-                                      : Text(
-                                          _landmark,
-                                          style: const TextStyle(
-                                            fontSize: 22,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
+                                  Text(
+                                    widget.landmark,
+                                    style: const TextStyle(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
 
                                   const SizedBox(height: 12),
 
                                   // JSON / description
                                   Text(
-                                    _loading
-                                        ? "Detecting landmark..."
-                                        : (_rawJson.isEmpty
-                                            ? "No extra information"
-                                            : _rawJson),
+                                    widget.rawJson.isEmpty
+                                        ? "No extra information"
+                                        : widget.rawJson,
                                     style: const TextStyle(fontSize: 12),
                                   ),
 
                                   const SizedBox(height: 24),
 
                                   // ===== Cards（只在 detect 完后出现）=====
-                                  AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 300),
-                                    child: _loading
-                                        ? const SizedBox.shrink()
-                                        : Row(
-                                            key: const ValueKey("cards"),
-                                            children: [
-                                              Expanded(
-                                                flex: 2,
-                                                child: Container(
-                                                  height: 120,
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.grey[200],
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            16),
-                                                  ),
-                                                  child: const Center(
-                                                      child:
-                                                          Text("Card 1")),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 12),
-                                              Expanded(
-                                                flex: 1,
-                                                child: Container(
-                                                  height: 120,
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.grey[200],
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            16),
-                                                  ),
-                                                  child: const Center(
-                                                      child:
-                                                          Text("Card 2")),
-                                                ),
-                                              ),
-                                            ],
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        flex: 2,
+                                        child: Container(
+                                          height: 120,
+                                          decoration: BoxDecoration(
+                                            color: Colors.grey[200],
+                                            borderRadius:
+                                                BorderRadius.circular(16),
                                           ),
+                                          child: const Center(child: Text("Card 1")),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        flex: 1,
+                                        child: Container(
+                                          height: 120,
+                                          decoration: BoxDecoration(
+                                            color: Colors.grey[200],
+                                            borderRadius:
+                                                BorderRadius.circular(16),
+                                          ),
+                                          child: const Center(child: Text("Card 2")),
+                                        ),
+                                      ),
+                                    ],
                                   ),
 
                                   const SizedBox(height: 30),

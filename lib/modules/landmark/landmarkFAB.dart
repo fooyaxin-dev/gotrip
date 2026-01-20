@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io' show File;
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:camera/camera.dart';
@@ -109,10 +108,12 @@ class _LandmarkFABState extends State<LandmarkFAB> {
       MaterialPageRoute(
         builder: (_) => ResultPage(
           imageBytes: bytes,
-          base64Image: base64Image,
+          landmark: response['landmark'] ?? "No landmark detected",
+          rawJson: response['rawJson'] ?? "",
         ),
       ),
     );
+
 
   }
 

@@ -19,7 +19,7 @@ class BasePage extends StatelessWidget {
       return SafeArea(
         bottom: false,
         child: Padding(
-          padding: EdgeInsets.only(bottom: bottomPadding),
+          padding: const EdgeInsets.only(bottom: bottomPadding),
           child: child,
         ),
       );

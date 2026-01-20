@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'modules/landmark/landmark_page.dart';
 import 'modules/guide/guide_page.dart';
 import 'modules/dashboard/dashboard_page.dart';
 import 'modules/profile/profile.dart';
 import 'modules/interaction/interaction_page.dart';
 import 'modules/landmark/landmarkFAB.dart';
-import 'base_page.dart';
+import 'bottomnav.dart';
 
 void main() {
   runApp(const GoTripApp());
@@ -42,7 +41,7 @@ class _MainNavigationState extends State<MainNavigation> {
 
   final List<Widget> _pages = [
     const MainPage(),        // 0 - Home
-    const GuidePage(),       // 1 - Guide
+    const RealTimeGuidePage(),       // 1 - Guide
     const SizedBox(),    // 2 - Camera / Scan
     const InteractionPage(), // 3 - Interaction
     const ProfilePage(),     // 4 - Profile
@@ -124,17 +123,17 @@ class _MainNavigationState extends State<MainNavigation> {
                 colors: [Color(0xFF4F46E5), Color(0xFF818CF8)],
               ),
             ),
-            child: Row(
+            child: const Row(
               children: [
-                const CircleAvatar(
+                CircleAvatar(
                   radius: 28,
                   backgroundColor: Colors.white,
                   child: Icon(Icons.person, size: 32, color: Color(0xFF6366F1)),
                 ),
-                const SizedBox(width: 15),
+                SizedBox(width: 15),
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: const [
+                  children: [
                     Text("User Name",
                         style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                     SizedBox(height: 4),
@@ -154,7 +153,7 @@ class _MainNavigationState extends State<MainNavigation> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const LandmarkPage(),
+                  builder: (_) => const LandmarkFAB(),
                 ),
               );
             },
@@ -203,11 +202,12 @@ class MainPage extends StatefulWidget {
 }
 
 class _MainPageState extends State<MainPage> {
+
   late PageController _pageController;
 
   // ===== 天气状态（假数据）=====
-  String _weatherCondition = "sunny"; // sunny / cloudy / rainy
-  int _temperature = 19;
+  final String _weatherCondition = "sunny"; // sunny / cloudy / rainy
+  final int _temperature = 19;
 
   @override
   void initState() {
@@ -234,6 +234,54 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
+  // ===== Category =====
+
+  final List<Map<String, dynamic>> _categories = [
+    {
+      "label": "All",
+      "icon": Icons.grid_view_rounded,        // 全部 / 浏览
+      "color": const Color(0xFFCCFBF1),              // Mint
+    },
+    {
+      "label": "Nature",
+      "icon": Icons.park_rounded,              // 🌿 自然 / 公园
+      "color": const Color(0xFFDCFCE7),              // Soft Green
+    },
+    {
+      "label": "Historical",
+      "icon": Icons.account_balance_rounded,   // 🏛️ 历史建筑
+      "color": const Color(0xFFFFEDD5),              // Warm Sand
+    },
+    {
+      "label": "Shopping",
+      "icon": Icons.shopping_bag_rounded,      // 🛍️ 购物
+      "color": const Color(0xFFE0E7FF),              // Indigo Soft
+    },
+    {
+      "label": "Food",
+      "icon": Icons.restaurant_rounded,        // 🍴 美食
+      "color": const Color(0xFFFFE4E6),              // Rose
+    },
+    {
+      "label": "Entertainment",
+      "icon": Icons.local_activity_rounded,    // 🎡 娱乐 / 景点
+      "color": const Color(0xFFF3E8FF),              // Purple Soft
+    },
+  ];
+
+  String _selectedCategory = "All";
+
+  final Map<String, List<String>> _placeByCategory = {
+    "All": ["Petronas Twin Towers", "Batu Caves", "KL Tower"],
+    "Nature": ["Batu Caves", "Taman Negara", "KL Forest Eco Park"],
+    "Historical": ["Sultan Abdul Samad Building", "Merdeka Square"],
+    "Shopping": ["Pavilion KL", "Suria KLCC"],
+    "Food": ["Jalan Alor", "Lot 10 Hutong"],
+    "Entertainment": ["Sunway Lagoon", "Aquaria KLCC"],
+  };
+
+
+
 @override
 Widget build(BuildContext context) {
   return BasePage(
@@ -243,13 +291,21 @@ Widget build(BuildContext context) {
         children: [
           _buildHeader(),
           const SizedBox(height: 25),
+
+          // ---- Category Chips ----
+          const SizedBox(height: 20),
+          _buildCategorySection(),
+          const SizedBox(height: 30),
+
+
           _buildSectionHeader("Recommended Places", true),
           const SizedBox(height: 10),
           SizedBox(
             height: 320,
             child: PageView.builder(
               controller: _pageController,
-              itemCount: 3,
+              itemCount: _placeByCategory[_selectedCategory]!.length,
+
               physics: const BouncingScrollPhysics(),
               itemBuilder: (context, index) {
                 return AnimatedBuilder(
@@ -280,12 +336,26 @@ Widget build(BuildContext context) {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 25),
             child: Column(
-              children: [
-                _buildTrendingCard("KLCC Park", "Kuala Lumpur", "5 min", Icons.park_rounded),
-                _buildTrendingCard("Central Market", "Kuala Lumpur", "12 min", Icons.shopping_bag_rounded),
-              ],
-      ),
-    ),
+              children: _selectedCategory == "Food"
+                  ? [
+                      _buildTrendingCard("Jalan Alor", "Kuala Lumpur", "6 min", Icons.restaurant),
+                      _buildTrendingCard("Lot 10 Hutong", "Kuala Lumpur", "9 min", Icons.restaurant_menu),
+                    ]
+                  : _selectedCategory == "Shopping"
+                      ? [
+                          _buildTrendingCard("Pavilion KL", "Kuala Lumpur", "8 min", Icons.shopping_bag),
+                          _buildTrendingCard("Suria KLCC", "Kuala Lumpur", "10 min", Icons.store),
+                        ]
+                      : _selectedCategory == "Nature"
+                          ? [
+                              _buildTrendingCard("KL Forest Eco Park", "Kuala Lumpur", "7 min", Icons.park),
+                            ]
+                          : [ // All
+                              _buildTrendingCard("KLCC Park", "Kuala Lumpur", "5 min", Icons.park_rounded),
+                            ],
+            ),
+          ),
+
         ],
       ),
     ),
@@ -408,6 +478,74 @@ Widget build(BuildContext context) {
     );
   }
 
+  Widget _buildCategorySection() {
+    return SizedBox(
+      height: 110,
+      child: ListView.separated(
+        padding: const EdgeInsets.symmetric(horizontal: 25),
+        scrollDirection: Axis.horizontal,
+        itemCount: _categories.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 18),
+        itemBuilder: (context, index) {
+          final category = _categories[index];
+          final label = category["label"];
+          final icon = category["icon"];
+          final color = category["color"];
+          final isSelected = label == _selectedCategory;
+
+          return GestureDetector(
+            onTap: () {
+              setState(() {
+                _selectedCategory = label;
+              });
+            },
+            child: Column(
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: 64,
+                  height: 64,
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: isSelected
+                            ? Colors.black.withOpacity(0.15)
+                            : Colors.black.withOpacity(0.05),
+                        blurRadius: isSelected ? 10 : 6,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    icon,
+                    size: 28,
+                    color: isSelected
+                        ? const Color.fromARGB(255, 194, 194, 199)
+                        : Colors.black87,
+                  ),
+
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                    color: Colors.grey.shade800,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+
+
   Widget _buildSectionHeader(String title, bool showAll) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 25),
@@ -422,7 +560,9 @@ Widget build(BuildContext context) {
   }
 
   Widget _buildPlaceCard(int index) {
-    final names = ["Petronas Twin Towers", "Batu Caves", "KL Tower"];
+
+    final places = _placeByCategory[_selectedCategory] ?? [];
+
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
       decoration: BoxDecoration(
@@ -449,7 +589,13 @@ Widget build(BuildContext context) {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(names[index], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(
+                  places[index],
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+
                 const SizedBox(height: 4),
                 Row(
                   children: [
