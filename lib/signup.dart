@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'login.dart';
+import 'homepage.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -21,6 +23,27 @@ class _SignupPageState extends State<SignupPage> {
     pwdController.dispose();
     repwdController.dispose();
     super.dispose();
+  }
+
+    Future <void> createUserWithEmailAndPassword () async {
+    // Implement Firebase Authentication logic here
+    try {
+      final userCredential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(
+            email: emailController.text.trim(),
+            password: pwdController.text.trim(),
+          )
+          .then((UserCredential userCredential) {
+            // User created successfully
+            print('User created: ${userCredential.user?.uid}');
+          })
+          .catchError((error) {
+            // Handle errors here
+            print('Error: $error');
+          });
+    } on FirebaseAuthException catch (e) {
+      print('Exception: $e');
+    }
   }
 
   @override
@@ -151,37 +174,55 @@ class _SignupPageState extends State<SignupPage> {
               // ===== Sign Up Button =====
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 25),
-                child: InkWell(
-                  onTap: () {
-                    print("Sign Up done!");
-                  },
-                  child: Container(
-                    alignment: Alignment.center,
-                    height: 55,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+                child: SizedBox(
+                  height: 55,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      await createUserWithEmailAndPassword(); // 这里执行注册
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (context) => HomePage()),
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      backgroundColor: Colors.transparent, // 让渐变生效
+                      shadowColor: Colors.purple.withOpacity(0.4),
+                      elevation: 10,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.purple.withOpacity(0.4),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
                     ),
-                    child: const Text(
-                      'Sign Up',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+                    child: Ink(
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+                        ),
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.purple.withOpacity(0.4),
+                            blurRadius: 10,
+                            offset: const Offset(0, 5),
+                          ),
+                        ],
+                      ),
+                      child: Container(
+                        alignment: Alignment.center,
+                        child: const Text(
+                          'Sign Up',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
+
 
               const SizedBox(height: 40),
 
@@ -216,7 +257,10 @@ class _SignupPageState extends State<SignupPage> {
                   const Text("Already have an account? "),
                   GestureDetector(
                     onTap: () {
-                      Navigator.pop(context);
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (context) => LoginPage()),
+                      );
                     },
                     child: const Text(
                       'Login',
@@ -224,6 +268,7 @@ class _SignupPageState extends State<SignupPage> {
                         color: Color(0xFF7C4DFF),
                         fontWeight: FontWeight.bold,
                       ),
+                      
                     ),
                   ),
                 ],

@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'signup.dart';
@@ -21,6 +22,26 @@ class _LoginPageState extends State<LoginPage> {
     pwdController.dispose();
     super.dispose();
   }
+
+  Future<void> loginUserWithEmailAndPassword() async {
+    try {
+      UserCredential userCredential = await FirebaseAuth.instance
+          .signInWithEmailAndPassword(
+        email: emailController.text.trim(),
+        password: pwdController.text.trim(),
+      );
+
+      // 登录成功
+      print('User logged in: ${userCredential.user?.uid}');
+    } on FirebaseAuthException catch (e) {
+      // 处理 Firebase 认证错误
+      print('Exception: ${e.message}');
+    } catch (e) {
+      // 处理其他错误
+      print('Error: $e');
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -50,7 +71,7 @@ class _LoginPageState extends State<LoginPage> {
                   );
                 },
                 child: const Text(
-                  'Sign Up',
+                  'Login',
                   style: TextStyle(
                     fontSize: 16,
                     color: Color(0xFF7C4DFF),
@@ -162,43 +183,51 @@ class _LoginPageState extends State<LoginPage> {
 
               const SizedBox(height: 20),
 
-              // ===== Sign In Button =====
+              // ===== Login Button =====
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 25),
-                child: InkWell(
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => HomePage()),
-                    );
-                  },
-                  child: Container(
-                    alignment: Alignment.center,
-                    height: 55,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+                child: SizedBox(
+                  height: 55,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      await loginUserWithEmailAndPassword();
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (context) => HomePage()),
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.purple.withOpacity(0.4),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
+                      elevation: 10,
+                      shadowColor: Colors.purple.withOpacity(0.4),
+                      backgroundColor: Colors.transparent,
                     ),
-                    child: const Text(
-                      'Sign In',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+                    child: Ink(
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+                        ),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Container(
+                        alignment: Alignment.center,
+                        child: const Text(
+                          'Sign In',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
+
 
               const SizedBox(height: 50),
 
