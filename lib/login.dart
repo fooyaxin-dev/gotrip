@@ -25,20 +25,29 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> loginUserWithEmailAndPassword() async {
     try {
-      UserCredential userCredential = await FirebaseAuth.instance
-          .signInWithEmailAndPassword(
+      UserCredential userCredential =
+          await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: emailController.text.trim(),
         password: pwdController.text.trim(),
       );
 
-      // 登录成功
-      print('User logged in: ${userCredential.user?.uid}');
+      // ✅ 只有成功才会走到这里
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const HomePage()),
+      );
     } on FirebaseAuthException catch (e) {
-      // 处理 Firebase 认证错误
-      print('Exception: ${e.message}');
-    } catch (e) {
-      // 处理其他错误
-      print('Error: $e');
+      String message = 'Login failed';
+
+      if (e.code == 'user-not-found') {
+        message = 'No user found for this email';
+      } else if (e.code == 'wrong-password') {
+        message = 'Wrong password';
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
     }
   }
 
@@ -47,42 +56,6 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-
-      // ✅ Bottom Bar
-      bottomNavigationBar: BottomAppBar(
-        elevation: 0,
-        child: Container(
-          height: 60,
-          alignment: Alignment.center,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text(
-                "Don't have an account? ",
-                style: TextStyle(
-                  fontSize: 16,
-                ),
-              ),
-              GestureDetector(
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => SignupPage()),
-                  );
-                },
-                child: const Text(
-                  'Login',
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Color(0xFF7C4DFF),
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
 
       body: SingleChildScrollView(
         child: SafeArea(
@@ -189,13 +162,7 @@ class _LoginPageState extends State<LoginPage> {
                 child: SizedBox(
                   height: 55,
                   child: ElevatedButton(
-                    onPressed: () async {
-                      await loginUserWithEmailAndPassword();
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(builder: (context) => HomePage()),
-                      );
-                    },
+                    onPressed: loginUserWithEmailAndPassword,
                     style: ElevatedButton.styleFrom(
                       padding: EdgeInsets.zero,
                       shape: RoundedRectangleBorder(
@@ -215,7 +182,7 @@ class _LoginPageState extends State<LoginPage> {
                       child: Container(
                         alignment: Alignment.center,
                         child: const Text(
-                          'Sign In',
+                          'Login',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -233,7 +200,7 @@ class _LoginPageState extends State<LoginPage> {
 
               // ===== Social Media =====
               const Text(
-                '-- or sign in with --',
+                '-- or login with --',
                 style: TextStyle(
                   color: Colors.black54,
                   fontSize: 14,
@@ -253,7 +220,32 @@ class _LoginPageState extends State<LoginPage> {
                 ],
               ),
 
-              const SizedBox(height: 40),
+              const SizedBox(height: 150),
+
+              // ===== Bottom (Go to Login) =====
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text("Don't have an account? "),
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (context) => SignupPage()),
+                      );
+                    },
+                    child: const Text(
+                      'Sign Up',
+                      style: TextStyle(
+                        color: Color(0xFF7C4DFF),
+                        fontWeight: FontWeight.bold,
+                      ),
+                      
+                    ),
+                  ),
+                ],
+              ),
+
             ],
           ),
         ),

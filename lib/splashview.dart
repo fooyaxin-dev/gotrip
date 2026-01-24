@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'login.dart';
+import 'authgate.dart';
 
 class Splashview extends StatefulWidget {
   const Splashview({super.key});
@@ -11,13 +11,14 @@ class Splashview extends StatefulWidget {
 }
 
 class _SplashviewState extends State<Splashview> {
-
   @override
   void initState() {
     super.initState();
 
-    Timer(const Duration(seconds: 2), () {
-      Get.off(LoginPage()); // off = 不回到 splash
+    Timer(const Duration(microseconds: 800), () {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Get.offAll(() => const AuthGate());
+      });
     });
   }
 

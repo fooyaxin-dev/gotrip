@@ -25,26 +25,32 @@ class _SignupPageState extends State<SignupPage> {
     super.dispose();
   }
 
-    Future <void> createUserWithEmailAndPassword () async {
-    // Implement Firebase Authentication logic here
-    try {
-      final userCredential = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(
-            email: emailController.text.trim(),
-            password: pwdController.text.trim(),
-          )
-          .then((UserCredential userCredential) {
-            // User created successfully
-            print('User created: ${userCredential.user?.uid}');
-          })
-          .catchError((error) {
-            // Handle errors here
-            print('Error: $error');
-          });
-    } on FirebaseAuthException catch (e) {
-      print('Exception: $e');
+    Future<void> createUserWithEmailAndPassword() async {
+      if (pwdController.text != repwdController.text) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Passwords do not match")),
+        );
+        return;
+      }
+
+      try {
+        UserCredential userCredential =
+            await FirebaseAuth.instance.createUserWithEmailAndPassword(
+          email: emailController.text.trim(),
+          password: pwdController.text.trim(),
+        );
+
+        // ✅ 只有成功才会走到这里
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => HomePage()),
+        );
+      } on FirebaseAuthException catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message ?? "Signup failed")),
+        );
+      }
     }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -177,13 +183,7 @@ class _SignupPageState extends State<SignupPage> {
                 child: SizedBox(
                   height: 55,
                   child: ElevatedButton(
-                    onPressed: () async {
-                      await createUserWithEmailAndPassword(); // 这里执行注册
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(builder: (context) => HomePage()),
-                      );
-                    },
+                    onPressed: createUserWithEmailAndPassword,
                     style: ElevatedButton.styleFrom(
                       padding: EdgeInsets.zero,
                       backgroundColor: Colors.transparent, // 让渐变生效
@@ -248,7 +248,7 @@ class _SignupPageState extends State<SignupPage> {
                 ],
               ),
 
-              const SizedBox(height: 40),
+              const SizedBox(height: 90),
 
               // ===== Bottom (Go to Login) =====
               Row(
@@ -274,7 +274,6 @@ class _SignupPageState extends State<SignupPage> {
                 ],
               ),
 
-              const SizedBox(height: 20),
             ],
           ),
         ),

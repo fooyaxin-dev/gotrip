@@ -27,6 +27,7 @@ class GoTripApp extends StatelessWidget {
       //   textTheme: GoogleFonts.poppinsTextTheme(),
       // ),
       home: Splashview(),
+      
     );
   }
 }
