@@ -1,41 +1,26 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
-import 'authgate.dart';
+import 'login.dart';
+import 'package:animated_splash_screen/animated_splash_screen.dart';
+import 'package:lottie/lottie.dart'; 
+import 'package:page_transition/page_transition.dart';
 
-class Splashview extends StatefulWidget {
+class Splashview extends StatelessWidget {
   const Splashview({super.key});
 
   @override
-  State<Splashview> createState() => _SplashviewState();
-}
-
-class _SplashviewState extends State<Splashview> {
-  @override
-  void initState() {
-    super.initState();
-
-    Timer(const Duration(microseconds: 800), () {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        Get.offAll(() => const AuthGate());
-      });
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Colors.deepPurpleAccent,
-      body: Center(
-        child: Text(
-          'Splash View',
-          style: TextStyle(
-            fontSize: 35,
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-          ),
+    return AnimatedSplashScreen(
+      splash: Center(
+        child: Lottie.asset(
+          'assets/Map Location Pointer.json',
         ),
       ),
+      backgroundColor: Colors.white,
+      splashIconSize: 800,
+      duration: 4000,
+      splashTransition: SplashTransition.fadeTransition,
+      pageTransitionType: PageTransitionType.fade,
+      nextScreen: const LoginPage(),
     );
   }
 }
