@@ -8,7 +8,7 @@ class InteractionPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Interaction"),
-        backgroundColor: const Color(0xFF6366F1),
+        backgroundColor: const Color(0xFFF7F3EC),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

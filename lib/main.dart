@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get_navigation/src/root/get_material_app.dart';
 import 'splashview.dart';
@@ -15,19 +16,21 @@ void main() async {
 
 class GoTripApp extends StatelessWidget {
   const GoTripApp({super.key});
+  
+  get GoogleFonts => null;
 
   @override
   Widget build(BuildContext context) {
-    return const GetMaterialApp(
+    return GetMaterialApp(
       debugShowCheckedModeBanner: false,
-      //title: 'GoTrip FYP',
-      //theme: ThemeData(
-      //   useMaterial3: true,
-      //   scaffoldBackgroundColor: const Color(0xFFF1F5F9),
-      //   textTheme: GoogleFonts.poppinsTextTheme(),
-      // ),
+      theme: ThemeData(
+        useMaterial3: true,
+        scaffoldBackgroundColor: Color(0xFFF1F1F1),
+        // 你可以顺便统一字体（可选）
+        //textTheme: GoogleFonts.poppinsTextTheme(),
+      ),
       home: Splashview(),
-      
     );
+
   }
 }

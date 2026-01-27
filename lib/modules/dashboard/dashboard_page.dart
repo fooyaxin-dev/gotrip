@@ -10,7 +10,7 @@ class DashboardPage extends StatelessWidget {
       backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
         title: const Text("Dashboard"),
-        backgroundColor: const Color(0xFF6366F1),
+        backgroundColor: const Color(0xFFF7F3EC),
         elevation: 0,
       ),
       body: SingleChildScrollView(

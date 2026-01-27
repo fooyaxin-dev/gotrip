@@ -125,6 +125,7 @@ class _ResultPageState extends State<ResultPage>
                             Tab(text: "Overview"),
                             Tab(text: "Reviews"),
                           ],
+                          
                         ),
                       ),
 

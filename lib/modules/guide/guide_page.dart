@@ -19,7 +19,7 @@ class _RealTimeGuidePageState extends State<RealTimeGuidePage> {
   StreamSubscription<Position>? _positionStream;
 
   // 目的地（你可以改成动态传入）
-  final LatLng destination = LatLng(3.1390, 101.6869);
+  static const LatLng destination = LatLng(3.1390, 101.6869);
 
   // polyline
   final Set<Polyline> _polylines = {};

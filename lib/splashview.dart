@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'login.dart';
 import 'package:animated_splash_screen/animated_splash_screen.dart';
-import 'package:lottie/lottie.dart'; 
+import 'package:lottie/lottie.dart';
 import 'package:page_transition/page_transition.dart';
+
+import 'authgate.dart';  // <- 记得 import
 
 class Splashview extends StatelessWidget {
   const Splashview({super.key});
@@ -17,10 +18,12 @@ class Splashview extends StatelessWidget {
       ),
       backgroundColor: Colors.white,
       splashIconSize: 800,
-      duration: 4000,
+      duration: 2900,
       splashTransition: SplashTransition.fadeTransition,
       pageTransitionType: PageTransitionType.fade,
-      nextScreen: const LoginPage(),
+
+      // ✅ 关键改动：
+      nextScreen: const AuthGate(),
     );
   }
 }
