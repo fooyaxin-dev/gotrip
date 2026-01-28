@@ -7,7 +7,11 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 
 class RealTimeGuidePage extends StatefulWidget {
-  const RealTimeGuidePage({super.key});
+  // 目的地可通过参数传入，也可通过全局状态（例如 ResultPage 传入）
+  final double? landmarkLat;
+  final double? landmarkLng;
+
+  const RealTimeGuidePage({super.key, this.landmarkLat, this.landmarkLng});
 
   @override
   State<RealTimeGuidePage> createState() => _RealTimeGuidePageState();

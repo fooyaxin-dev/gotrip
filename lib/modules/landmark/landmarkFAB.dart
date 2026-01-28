@@ -110,6 +110,7 @@ class _LandmarkFABState extends State<LandmarkFAB> {
           imageBytes: bytes,
           landmark: response['landmark'] ?? "No landmark detected",
           rawJson: response['rawJson'] ?? "",
+
         ),
       ),
     );
@@ -147,7 +148,7 @@ class _LandmarkFABState extends State<LandmarkFAB> {
               ),
               padding: const EdgeInsets.only(top: 50, left: 20),
               child: const Text(
-                "            Landmark Recognition",
+                "              Landmark Recognition",
                 style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w500),
               ),
             ),

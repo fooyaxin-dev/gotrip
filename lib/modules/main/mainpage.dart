@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../bottomnav.dart';
+import 'locationService.dart';
+
 
 // ================= MainPage  =================
 class MainPage extends StatefulWidget {
@@ -24,6 +26,24 @@ class _MainPageState extends State<MainPage> {
   void initState() {
     super.initState();
     _pageController = PageController(viewportFraction: 0.8);
+
+
+    // 初始化定位
+    _initLocation();
+  }
+
+  Future<void> _initLocation() async {
+    try {
+      await LocationService.instance.initLocation();
+      setState(() {
+      // 可以在界面显示用户位置
+      final pos = LocationService.instance.currentPosition;
+      print('User location: ${pos?.latitude}, ${pos?.longitude}');
+      });
+      } catch (e) {
+      print('Location error: $e');
+      // 可以弹窗提示用户打开定位
+    }
   }
 
   @override
