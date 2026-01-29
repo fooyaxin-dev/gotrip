@@ -18,7 +18,7 @@ class Splashview extends StatelessWidget {
       ),
       backgroundColor: Colors.white,
       splashIconSize: 800,
-      duration: 2900,
+      duration: 2950,
       splashTransition: SplashTransition.fadeTransition,
       pageTransitionType: PageTransitionType.fade,
 

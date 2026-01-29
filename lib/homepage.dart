@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'modules/guide/guide_page.dart';
+import 'modules/guide/guidePage.dart';
 import 'modules/dashboard/dashboard_page.dart';
 import 'modules/profile/profile.dart';
 import 'modules/interaction/interaction_page.dart';

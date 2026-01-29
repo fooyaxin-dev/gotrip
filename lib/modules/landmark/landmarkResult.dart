@@ -2,11 +2,11 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart'; // 新增
-import 'package:gotrip/modules/guide/guide_page.dart';
+import 'package:gotrip/modules/guide/guidePage.dart';
 import 'wikipedia.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/foundation.dart';
-import '../../modules/main/locationService.dart';   
+import '../main/location_service.dart';   
 
 class ResultPage extends StatefulWidget {
   final Uint8List imageBytes;
@@ -95,7 +95,7 @@ class _ResultPageState extends State<ResultPage>
             backgroundColor: Colors.white.withAlpha(200),
             child: IconButton(
               icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 18),
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(context, true), // 👈 关键
             ),
           ),
         ),
@@ -178,85 +178,105 @@ class _ResultPageState extends State<ResultPage>
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  wikiLoading
-                                      ? const Center(
-                                          child: Padding(
-                                            padding: EdgeInsets.only(top: 50),
-                                            child: CircularProgressIndicator(color: Colors.black),
-                                          ),
-                                        )
-                                      : _buildProSummaryContent(),
-                                  const SizedBox(height: 24),
-                                  // ================= Cards =================
-                                  Row(
-                                    children: [
-                                      _buildInfoCard(
-                                        label: "Weather",
-                                        value: "28°C Sunny",
-                                        icon: Icons.wb_sunny_rounded,
-                                        color: const Color(0xFFFFF3E0),
-                                        flex: 2,
+                                  if (widget.landmark == 'No landmark detected')
+                                    const Center(
+                                      child: Padding(
+                                        padding: EdgeInsets.only(top: 50),
+                                        child: Text(
+                                          'No landmark detected in this image.',
+                                          style: TextStyle(fontSize: 14, color: Colors.grey, fontStyle: FontStyle.italic),
+                                        ),
                                       ),
+                                    )
+                                  else ...[
+                                    wikiLoading
+                                        ? const Center(
+                                            child: Padding(
+                                              padding: EdgeInsets.only(top: 50),
+                                              child: CircularProgressIndicator(color: Colors.black),
+                                            ),
+                                          )
+                                        : _buildProSummaryContent(),
+                                    const SizedBox(height: 24),
 
-                                      // 原 Expanded 部分替换为：
-                                                                            Expanded(
-                                        flex: 1,
-                                        child: LocationService.instance.currentPosition == null
-                                            ? const Center(child: CircularProgressIndicator())
-                                            : GestureDetector(
-                                                onTap: () {
-                                                  final pos = LocationService.instance.currentPosition;
-                                                  if (pos != null) {
-                                                    Navigator.push(
-                                                      context,
-                                                      MaterialPageRoute(
-                                                        builder: (_) => RealTimeGuidePage(
-                                                          landmarkLat: pos.latitude,
-                                                          landmarkLng: pos.longitude,
+                                    // ================= Cards =================
+                                    Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        SizedBox(
+                                          width: 120,
+                                          child: _buildInfoCard(
+                                            label: "Weather",
+                                            value: "28°C Sunny",
+                                            icon: Icons.wb_sunny_rounded,
+                                            color: const Color(0xFFFFF3E0),
+                                            height: 120,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 16),
+                                        Expanded(
+                                          child: LocationService.instance.currentPosition == null
+                                              ? const Center(child: CircularProgressIndicator())
+                                              : GestureDetector(
+                                                  onTap: () {
+                                                    final pos = LocationService.instance.currentPosition;
+                                                    if (pos != null) {
+                                                      Navigator.push(
+                                                        context,
+                                                        MaterialPageRoute(
+                                                          builder: (_) => RealTimeGuidePage(
+                                                            landmarkLat: pos.latitude,
+                                                            landmarkLng: pos.longitude,
+                                                          ),
                                                         ),
-                                                      ),
-                                                    );
-                                                  }
-                                                },
-                                                child: Container(
-                                                  height: 120,
-                                                  decoration: BoxDecoration(
-                                                    borderRadius: BorderRadius.circular(20),
-                                                  ),
-                                                  child: ClipRRect(
-                                                    borderRadius: BorderRadius.circular(20),
-                                                    child: kIsWeb
-                                                        ? Image.network(
+                                                      );
+                                                    }
+                                                  },
+                                                  child: Container(
+                                                    height: 120,
+                                                    decoration: BoxDecoration(
+                                                      borderRadius: BorderRadius.circular(20),
+                                                    ),
+                                                    child: ClipRRect(
+                                                      borderRadius: BorderRadius.circular(20),
+                                                      child: Stack(
+                                                        children: [
+                                                          Image.network(
                                                             'https://maps.googleapis.com/maps/api/staticmap?center=${LocationService.instance.currentPosition!.latitude},${LocationService.instance.currentPosition!.longitude}&zoom=15&size=600x300&markers=color:red%7Clabel:U%7C${LocationService.instance.currentPosition!.latitude},${LocationService.instance.currentPosition!.longitude}&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc',
                                                             fit: BoxFit.cover,
-                                                          )
-                                                        : GoogleMap(
-                                                            initialCameraPosition: CameraPosition(
-                                                              target: LatLng(
-                                                                LocationService.instance.currentPosition!.latitude,
-                                                                LocationService.instance.currentPosition!.longitude,
-                                                              ),
-                                                              zoom: 15,
-                                                            ),
-                                                            markers: {
-                                                              Marker(
-                                                                markerId: const MarkerId("user"),
-                                                                position: LatLng(
-                                                                  LocationService.instance.currentPosition!.latitude,
-                                                                  LocationService.instance.currentPosition!.longitude,
-                                                                ),
-                                                                infoWindow: const InfoWindow(title: "You are here"),
-                                                              )
-                                                            },
-                                                            zoomControlsEnabled: false,
-                                                            myLocationButtonEnabled: false,
+                                                            width: double.infinity,
+                                                            height: double.infinity,
                                                           ),
+                                                          Positioned(
+                                                            top: 10,
+                                                            right: 10,
+                                                            child: Container(
+                                                              decoration: BoxDecoration(
+                                                                color: Colors.black.withOpacity(0.5),
+                                                                borderRadius: BorderRadius.circular(8),
+                                                              ),
+                                                              child: IconButton(
+                                                                icon: const Icon(Icons.open_in_new, color: Colors.white, size: 20),
+                                                                onPressed: () {
+                                                                  final pos = LocationService.instance.currentPosition;
+                                                                  if (pos != null) {
+                                                                    final mapUrl =
+                                                                        'https://www.google.com/maps/search/?api=1&query=${pos.latitude},${pos.longitude}';
+                                                                    launchUrl(Uri.parse(mapUrl), mode: LaunchMode.externalApplication);
+                                                                  }
+                                                                },
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
-                                      ),
-                                    ],
-                                  ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
@@ -340,42 +360,44 @@ class _ResultPageState extends State<ResultPage>
     );
   }
 
-  Widget _buildInfoCard({
+ Widget _buildInfoCard({
     required String label,
     required String value,
     required IconData icon,
     required Color color,
-    required int flex,
+    double? height,   // 新增可选高度
   }) {
-    return Expanded(
-      flex: flex,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: color.withOpacity(0.5),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 22, color: Colors.black87),
-            const SizedBox(height: 16),
-            Text(label, style: const TextStyle(fontSize: 12, color: Colors.black54)),
-            const SizedBox(height: 2),
-            Text(
-              value,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: -0.5),
-            ),
-          ],
-        ),
+    return Container(
+      height: height,  // ⚡ 使用传入高度
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.5),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween, // 让内容撑满高度
+        children: [
+          Icon(icon, size: 22, color: Colors.black87),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(fontSize: 12, color: Colors.black54)),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -383,7 +405,17 @@ class _ResultPageState extends State<ResultPage>
   Future<void> _launchWiki(String url) async {
     final uri = Uri.parse(url);
     if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      try {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (e) {
+        // fallback 到默认浏览器
+        await launchUrl(uri, mode: LaunchMode.platformDefault);
+      }
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Cannot open URL")),
+      );
     }
   }
+
 }

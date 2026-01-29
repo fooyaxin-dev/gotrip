@@ -16,7 +16,6 @@ class LandmarkFAB extends StatefulWidget {
   State<LandmarkFAB> createState() => _LandmarkFABState();
 }
 
-
 class _LandmarkFABState extends State<LandmarkFAB> {
   bool _loading = false;
   final ImagePicker _picker = ImagePicker();
@@ -29,6 +28,7 @@ class _LandmarkFABState extends State<LandmarkFAB> {
   @override
   void initState() {
     super.initState();
+    _previewBytes = null; // 页面打开就清空上次照片
     if (!kIsWeb) {
       _initCamera();
     }
@@ -38,12 +38,19 @@ class _LandmarkFABState extends State<LandmarkFAB> {
     final cameras = await availableCameras();
     final camera = cameras.first;
 
-    _cameraController = CameraController(camera, ResolutionPreset.medium);
+    _cameraController = CameraController(
+      camera,
+      ResolutionPreset.max,
+      enableAudio: false,
+    );
+
     await _cameraController!.initialize();
 
-    setState(() {
-      _isCameraReady = true;
-    });
+    if (mounted) {
+      setState(() {
+        _isCameraReady = true;
+      });
+    }
   }
 
   @override
@@ -54,85 +61,118 @@ class _LandmarkFABState extends State<LandmarkFAB> {
 
   // ---- 1) Camera Scan (Mobile only) ----
   Future<void> _scanWithCamera() async {
-    if (kIsWeb) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Web does not support camera scanning")),
-      );
-      return;
-    }
-
+    if (kIsWeb) return;
     if (!_isCameraReady || _cameraController == null) return;
 
-    final file = await _cameraController!.takePicture();
-    await _processAndGoToResult(file.path, isWeb: false);
-  }
-
-  // ---- 2) Gallery (Web & Mobile) ----
-  Future<void> _pickImage(ImageSource source) async {
-    final XFile? pickedFile = await _picker.pickImage(source: source);
-    if (pickedFile == null) return;
-
-    await _processAndGoToResult(pickedFile.path, isWeb: kIsWeb);
-  }
-
-  // ---- 3) Process + call API + go to Result ----
-  Future<void> _processAndGoToResult(String path, {required bool isWeb}) async {
+    // 1️⃣ 开始新一次扫描：先清空旧照片
     setState(() {
+      _previewBytes = null;
       _loading = true;
     });
 
-    Uint8List bytes;
+    final file = await _cameraController!.takePicture();
+    final bytes = await File(file.path).readAsBytes();
 
-    if (isWeb) {
-      bytes = await XFile(path).readAsBytes();
-    } else {
-      bytes = await File(path).readAsBytes();
-    }
-
-    // preview
     setState(() {
-      _previewBytes = bytes;
+      _previewBytes = bytes; // 显示当前拍的照片
     });
 
+    // 2️⃣ Vision API
     final base64Image = base64Encode(bytes);
-
     final response = await VisionService.detectLandmarkWithJson(base64Image);
 
     setState(() {
       _loading = false;
     });
 
+    if (!mounted) return;
 
-    Navigator.push(
+    // 3️⃣ 进入 ResultPage，并等待返回结果
+    final shouldClear = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (_) => ResultPage(
           imageBytes: bytes,
           landmark: response['landmark'] ?? "No landmark detected",
           rawJson: response['rawJson'] ?? "",
-
         ),
       ),
     );
 
-
+    // 4️⃣ 从 ResultPage 返回 → 清空照片（关键）
+    if (shouldClear == true && mounted) {
+      setState(() {
+        _previewBytes = null;
+      });
+    }
   }
 
- @override
+  // ---- 2) Gallery (Web & Mobile) ----
+  Future<void> _pickImage(ImageSource source) async {
+    final XFile? pickedFile = await _picker.pickImage(
+      source: source,
+      imageQuality: 100,
+    );
+    if (pickedFile == null) return;
+
+    // 1️⃣ 新一次识别，先清掉旧照片
+    setState(() {
+      _previewBytes = null;
+      _loading = true;
+    });
+
+    final bytes = kIsWeb
+        ? await pickedFile.readAsBytes()
+        : await File(pickedFile.path).readAsBytes();
+
+    setState(() {
+      _previewBytes = bytes;
+    });
+
+    // 2️⃣ Vision API
+    final base64Image = base64Encode(bytes);
+    final response = await VisionService.detectLandmarkWithJson(base64Image);
+
+    setState(() {
+      _loading = false;
+    });
+
+    if (!mounted) return;
+
+    // 3️⃣ 进入 ResultPage，等待返回
+    final shouldClear = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ResultPage(
+          imageBytes: bytes,
+          landmark: response['landmark'] ?? "No landmark detected",
+          rawJson: response['rawJson'] ?? "",
+        ),
+      ),
+    );
+
+    // 4️⃣ 返回 LandmarkFAB → 清空旧照片
+    if (shouldClear == true && mounted) {
+      setState(() {
+        _previewBytes = null;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black, // Google Lens 核心色调
-      // 使用 Stack 实现全屏预览和按钮悬浮
+      backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // ---- 1. 全屏预览层 ----
+          // ---- 1. 全屏预览 ----
           Positioned.fill(
             child: ClipRRect(
               child: _buildGoogleLensPreview(),
             ),
           ),
 
-          // ---- 2. 顶部状态栏阴影/遮罩 (增加视觉层次) ----
+          // ---- 2. 顶部状态栏 ----
           Positioned(
             top: 0,
             left: 0,
@@ -149,12 +189,15 @@ class _LandmarkFABState extends State<LandmarkFAB> {
               padding: const EdgeInsets.only(top: 50, left: 20),
               child: const Text(
                 "              Landmark Recognition",
-                style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w500),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w500),
               ),
             ),
           ),
 
-          // ---- 3. 扫描辅助框 (Google Lens 特色) ----
+          // ---- 3. 扫描框 ----
           Center(
             child: Container(
               width: 260,
@@ -164,12 +207,12 @@ class _LandmarkFABState extends State<LandmarkFAB> {
                 borderRadius: BorderRadius.circular(32),
               ),
               child: Stack(
-                children: _buildCornerIndicators(), // 四角的白线
+                children: _buildCornerIndicators(),
               ),
             ),
           ),
 
-          // ---- 4. 底部悬浮控制台 ----
+          // ---- 4. 底部控制台 ----
           Positioned(
             bottom: 40,
             left: 0,
@@ -182,8 +225,6 @@ class _LandmarkFABState extends State<LandmarkFAB> {
                     padding: EdgeInsets.only(bottom: 20),
                     child: CircularProgressIndicator(color: Colors.white),
                   ),
-                
-                // 按钮容器
                 Container(
                   margin: const EdgeInsets.symmetric(horizontal: 40),
                   padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 10),
@@ -199,7 +240,6 @@ class _LandmarkFABState extends State<LandmarkFAB> {
                         icon: Icons.photo_library_outlined,
                         onTap: () => _pickImage(ImageSource.gallery),
                       ),
-                      // 主拍照按钮 (快门风格)
                       GestureDetector(
                         onTap: _scanWithCamera,
                         child: Container(
@@ -222,8 +262,8 @@ class _LandmarkFABState extends State<LandmarkFAB> {
                         ),
                       ),
                       _lensActionButton(
-                        icon: Icons.flash_on_rounded, // 示意功能
-                        onTap: () {}, 
+                        icon: Icons.flash_on_rounded,
+                        onTap: () {},
                       ),
                     ],
                   ),
@@ -236,14 +276,21 @@ class _LandmarkFABState extends State<LandmarkFAB> {
               ],
             ),
           ),
-           SafeArea(
+
+          // ---- 5. 返回按钮 ----  
+          SafeArea(
             child: Padding(
               padding: const EdgeInsets.only(left: 12, top: 12),
               child: CircleAvatar(
                 backgroundColor: Colors.white.withOpacity(0.9),
                 child: IconButton(
                   icon: const Icon(Icons.arrow_back, color: Colors.black),
-                  onPressed: () => Navigator.pop(context),
+                  onPressed: () {
+                    setState(() {
+                      _previewBytes = null; // 返回前清掉照片
+                    });
+                    Navigator.pop(context);
+                  },
                 ),
               ),
             ),
@@ -253,7 +300,7 @@ class _LandmarkFABState extends State<LandmarkFAB> {
     );
   }
 
-  // 预览逻辑
+  // ---- 预览逻辑 ----
   Widget _buildGoogleLensPreview() {
     if (kIsWeb) {
       return _previewBytes == null
@@ -261,13 +308,14 @@ class _LandmarkFABState extends State<LandmarkFAB> {
           : Image.memory(_previewBytes!, fit: BoxFit.cover);
     } else {
       if (_isCameraReady && _cameraController != null) {
-        return CameraPreview(_cameraController!);
+        return _previewBytes != null
+            ? Image.memory(_previewBytes!, fit: BoxFit.cover)
+            : CameraPreview(_cameraController!);
       }
       return const Center(child: CircularProgressIndicator(color: Colors.white));
     }
   }
 
-  // 小功能按钮
   Widget _lensActionButton({required IconData icon, required VoidCallback onTap}) {
     return IconButton(
       icon: Icon(icon, color: Colors.white, size: 28),
@@ -275,11 +323,9 @@ class _LandmarkFABState extends State<LandmarkFAB> {
     );
   }
 
-  // 扫描框四角的装饰
   List<Widget> _buildCornerIndicators() {
     const double length = 20.0;
     const double thickness = 4.0;
-    const Color color = Colors.white;
 
     return [
       Positioned(top: 0, left: 0, child: _corner(top: thickness, left: thickness)),
