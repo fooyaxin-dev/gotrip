@@ -6,7 +6,7 @@ import 'package:gotrip/modules/guide/guidePage.dart';
 import 'wikipedia.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/foundation.dart';
-import '../main/location_service.dart';   
+import '../guide/location_service.dart';   
 
 class ResultPage extends StatefulWidget {
   final Uint8List imageBytes;
