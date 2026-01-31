@@ -16,7 +16,9 @@ class LandmarkFAB extends StatefulWidget {
   State<LandmarkFAB> createState() => _LandmarkFABState();
 }
 
-class _LandmarkFABState extends State<LandmarkFAB> {
+class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStateMixin {
+  
+  late AnimationController _scanController;
   bool _loading = false;
   final ImagePicker _picker = ImagePicker();
 
@@ -28,6 +30,11 @@ class _LandmarkFABState extends State<LandmarkFAB> {
   @override
   void initState() {
     super.initState();
+    // 扫描线动画：2秒一个来回
+    _scanController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
     _previewBytes = null; // 页面打开就清空上次照片
     if (!kIsWeb) {
       _initCamera();
@@ -56,6 +63,7 @@ class _LandmarkFABState extends State<LandmarkFAB> {
   @override
   void dispose() {
     _cameraController?.dispose();
+    _scanController.dispose();
     super.dispose();
   }
 
@@ -159,139 +167,151 @@ class _LandmarkFABState extends State<LandmarkFAB> {
     }
   }
 
-  @override
+@override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // ---- 1. 全屏预览 ----
-          Positioned.fill(
-            child: ClipRRect(
-              child: _buildGoogleLensPreview(),
-            ),
-          ),
+          // 1. 全屏预览
+          Positioned.fill(child: _buildGoogleLensPreview()),
 
-          // ---- 2. 顶部状态栏 ----
+          // 2. 顶部渐变标题栏
           Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            height: 120,
+            top: 0, left: 0, right: 0,
             child: Container(
+              height: 150,
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [Colors.black.withOpacity(0.7), Colors.transparent],
+                  colors: [Colors.black.withOpacity(0.8), Colors.transparent],
                 ),
               ),
-              padding: const EdgeInsets.only(top: 50, left: 20),
-              child: const Text(
-                "              Landmark Recognition",
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w500),
+              child: SafeArea(
+                child: Center(
+                  child: Text(
+                    "Landmark Recognition",
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: 18,
+                      letterSpacing: 1.2,
+                      fontWeight: FontWeight.w600),
+                  ),
+                ),
               ),
             ),
           ),
 
-          // ---- 3. 扫描框 ----
+          // 3. 扫描框 (带动态扫描线)
           Center(
-            child: Container(
-              width: 260,
-              height: 260,
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
-                borderRadius: BorderRadius.circular(32),
-              ),
-              child: Stack(
-                children: _buildCornerIndicators(),
-              ),
-            ),
-          ),
-
-          // ---- 4. 底部控制台 ----
-          Positioned(
-            bottom: 40,
-            left: 0,
-            right: 0,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (_loading)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 20),
-                    child: CircularProgressIndicator(color: Colors.white),
-                  ),
-                Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 40),
-                  padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 10),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(40),
-                    border: Border.all(color: Colors.white12),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _lensActionButton(
-                        icon: Icons.photo_library_outlined,
-                        onTap: () => _pickImage(ImageSource.gallery),
+                Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Container(
+                      width: 280,
+                      height: 280,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(30),
+                        border: Border.all(color: Colors.white24, width: 1),
                       ),
-                      GestureDetector(
-                        onTap: _scanWithCamera,
-                        child: Container(
-                          height: 70,
-                          width: 70,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white, width: 4),
-                          ),
-                          child: Center(
-                            child: Container(
-                              height: 55,
-                              width: 55,
-                              decoration: const BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(30),
+                        child: Stack(
+                          children: [
+                            ..._buildCornerIndicators(),
+                            // 动态扫描线
+                            if (_isCameraReady && !_loading)
+                              AnimatedBuilder(
+                                animation: _scanController,
+                                builder: (context, child) {
+                                  return Positioned(
+                                    top: _scanController.value * 280,
+                                    left: 0, right: 0,
+                                    child: Container(
+                                      height: 2,
+                                      decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                          colors: [Colors.transparent, Colors.blueAccent.withOpacity(0.5), Colors.transparent],
+                                        ),
+                                        boxShadow: [
+                                          BoxShadow(color: Colors.blueAccent.withOpacity(0.4), blurRadius: 10, spreadRadius: 2)
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                },
                               ),
-                            ),
-                          ),
+                          ],
                         ),
                       ),
-                      _lensActionButton(
-                        icon: Icons.flash_on_rounded,
-                        onTap: () {},
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 20),
-                const Text(
-                  "Tap shutter to identify landmark",
-                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                // 提示文字背景
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black38,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    _loading ? "Analyzing landmark..." : "Align landmark within frame",
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                  ),
                 ),
               ],
             ),
           ),
 
-          // ---- 5. 返回按钮 ----  
+          // 4. 底部控制台 (玻璃拟态设计)
+          Positioned(
+            bottom: 50, left: 30, right: 30,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(40),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.1),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _lensActionButton(icon: Icons.photo_library, onTap: () => _pickImage(ImageSource.gallery)),
+                    // 拍照大按钮
+                    GestureDetector(
+                      onTap: _scanWithCamera,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: const BoxDecoration(color: Colors.white30, shape: BoxShape.circle),
+                        child: Container(
+                          height: 60, width: 60,
+                          decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+                          child: _loading 
+                            ? const Padding(padding: EdgeInsets.all(15), child: CircularProgressIndicator(strokeWidth: 3))
+                            : const Icon(Icons.camera_alt, color: Colors.black, size: 30),
+                        ),
+                      ),
+                    ),
+                    _lensActionButton(icon: Icons.flash_on, onTap: () {}),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // 5. 返回按钮 (左上角)
           SafeArea(
             child: Padding(
-              padding: const EdgeInsets.only(left: 12, top: 12),
-              child: CircleAvatar(
-                backgroundColor: Colors.white.withOpacity(0.9),
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.black),
-                  onPressed: () {
-                    setState(() {
-                      _previewBytes = null; // 返回前清掉照片
-                    });
-                    Navigator.pop(context);
-                  },
-                ),
+              padding: const EdgeInsets.all(16),
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                onPressed: () => Navigator.pop(context),
               ),
             ),
           ),
@@ -299,7 +319,6 @@ class _LandmarkFABState extends State<LandmarkFAB> {
       ),
     );
   }
-
   // ---- 预览逻辑 ----
   Widget _buildGoogleLensPreview() {
     if (kIsWeb) {

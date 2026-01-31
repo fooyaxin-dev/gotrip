@@ -106,8 +106,24 @@ class _ResultPageState extends State<ResultPage>
             height: screenHeight * 0.45,
             width: double.infinity,
             child: Image.memory(
+              
               widget.imageBytes,
               fit: BoxFit.cover,
+            ),
+
+          ),
+          // 在 Image.memory 下面添加
+          Positioned(
+            top: 0, left: 0, right: 0,
+            child: Container(
+              height: 100,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.black.withOpacity(0.3), Colors.transparent],
+                ),
+              ),
             ),
           ),
 
@@ -300,60 +316,101 @@ class _ResultPageState extends State<ResultPage>
   }
 
   // ======================== UI Components ========================
-  Widget _buildProSummaryContent() {
+Widget _buildProSummaryContent() {
     if (widget.landmark == 'No landmark detected') {
-      return const Text(
-        'No landmark detected in this image.',
-        style: TextStyle(fontSize: 14, color: Colors.grey, fontStyle: FontStyle.italic),
+      return const Center(
+        child: Text('No landmark detected.', style: TextStyle(color: Colors.grey)),
       );
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          wikiTitle,
-          style: const TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.5,
-          ),
+        // 1. 标题与置顶标签
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: Text(
+                wikiTitle,
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -0.8,
+                ),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                "Landmark",
+                style: TextStyle(color: Colors.blue[700], fontSize: 10, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 16),
+
+        // 2. 维基百科封面图 (带精致投影)
         if (wikiImage.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 12, bottom: 16),
+          Container(
+            margin: const EdgeInsets.only(bottom: 20),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                )
+              ],
+            ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(20),
               child: Image.network(
                 wikiImage,
-                height: 200,
+                height: 220,
                 width: double.infinity,
                 fit: BoxFit.cover,
               ),
             ),
           ),
-        Text(
-          wikiExtract,
-          textAlign: TextAlign.justify,
-          style: TextStyle(
-            fontSize: 15,
-            color: Colors.grey[800],
-            height: 1.6,
-            backgroundColor: Colors.yellowAccent.withAlpha(30),
+
+        // 3. 摘要文字 (去掉黄色背景，改用左边框装饰)
+        Container(
+          padding: const EdgeInsets.only(left: 16),
+          decoration: BoxDecoration(
+            border: Border(left: BorderSide(color: Colors.grey[300]!, width: 3)),
+          ),
+          child: Text(
+            wikiExtract,
+            textAlign: TextAlign.justify,
+            style: TextStyle(
+              fontSize: 15,
+              color: Colors.grey[800],
+              height: 1.7,
+              fontStyle: FontStyle.italic,
+            ),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
+
+        // 4. 阅读全文按钮 (更精致的 TextButton 风格)
         if (wikiUrl.isNotEmpty)
-          InkWell(
-            onTap: () => _launchWiki(wikiUrl),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text("Read full story on Wikipedia",
-                    style: TextStyle(color: Colors.blue[700], fontWeight: FontWeight.bold, fontSize: 13)),
-                Icon(Icons.chevron_right, size: 16, color: Colors.blue[700]),
-              ],
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: () => _launchWiki(wikiUrl),
+              icon: const Icon(Icons.auto_stories, size: 18),
+              label: const Text("Read More on Wikipedia"),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.blue[800],
+                textStyle: const TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ),
       ],
@@ -365,37 +422,39 @@ class _ResultPageState extends State<ResultPage>
     required String value,
     required IconData icon,
     required Color color,
-    double? height,   // 新增可选高度
+    double? height,
   }) {
     return Container(
-      height: height,  // ⚡ 使用传入高度
-      padding: const EdgeInsets.all(16),
+      height: height,
+      padding: const EdgeInsets.all(20), // 增加内边距
       decoration: BoxDecoration(
         color: color,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: color.withOpacity(0.5),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(24), // 增加圆角
+        gradient: LinearGradient( // 增加微弱渐变
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [color, color.withOpacity(0.8)],
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween, // 让内容撑满高度
         children: [
-          Icon(icon, size: 22, color: Colors.black87),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: const TextStyle(fontSize: 12, color: Colors.black54)),
-              const SizedBox(height: 2),
-              Text(
-                value,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: -0.5),
-              ),
-            ],
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.5),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, size: 20, color: Colors.black87),
+          ),
+          const Spacer(),
+          Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: -0.5),
           ),
         ],
       ),
