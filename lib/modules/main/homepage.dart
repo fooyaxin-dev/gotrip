@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'modules/guide/guidePage.dart';
-import 'modules/dashboard/dashboard_page.dart';
-import 'modules/profile/profile.dart';
-import 'modules/interaction/interaction_page.dart';
-import 'modules/landmark/landmarkFAB.dart';
-import 'logout.dart';
-import 'modules/main/mainpage.dart';
+import '../realtime/detectPlacePage.dart';
+import '../dashboard/dashboard_page.dart';
+import '../profile/profile.dart';
+import '../interaction/interaction_page.dart';
+import '../landmark/landmarkFAB.dart';
+import '../login_logout/logout.dart';
+import 'mainpage.dart';
 
 
 class HomePage extends StatefulWidget {
@@ -66,7 +66,7 @@ class _HomePageState extends State<HomePage> {
 
       final pages = [
       MainPage(username: _username),
-      const RealTimeGuidePage(),
+      const RealTimeDetectPage(),
       const SizedBox(),
       const InteractionPage(),
       const ProfilePage(),

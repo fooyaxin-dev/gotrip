@@ -3,7 +3,7 @@ import 'package:animated_splash_screen/animated_splash_screen.dart';
 import 'package:lottie/lottie.dart';
 import 'package:page_transition/page_transition.dart';
 
-import 'authgate.dart';  // <- 记得 import
+import '../../services/authgate_service.dart';  // <- 记得 import
 
 class Splashview extends StatelessWidget {
   const Splashview({super.key});

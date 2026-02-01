@@ -1,6 +1,6 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../../services/placesAPI_service.dart';
+
 
 class PlaceDetailPage extends StatefulWidget {
   final String placeId;
@@ -16,9 +16,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   bool loading = true;
   String? error;
 
-  // TODO: 换成你自己的 API KEY
-  static const String apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
-
   @override
   void initState() {
     super.initState();
@@ -26,37 +23,21 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   }
 
   Future<void> _fetchPlaceDetails() async {
-    try {
-      final url = Uri.parse(
-        'https://places.googleapis.com/v1/places/${widget.placeId}',
-      );
+  try {
+    final data = await PlacesApiService.getPlaceDetails(widget.placeId);
 
-      final response = await http.get(
-        url,
-        headers: {
-          'X-Goog-Api-Key': apiKey,
-          'X-Goog-FieldMask':
-              'displayName,formattedAddress,rating,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews',
-        },
-      );
-
-      if (response.statusCode != 200) {
-        throw Exception('HTTP ${response.statusCode}: ${response.body}');
-      }
-
-      final data = json.decode(response.body);
-
-      setState(() {
-        placeDetail = data;
-        loading = false;
-      });
-    } catch (e) {
-      setState(() {
-        error = e.toString();
-        loading = false;
-      });
-    }
+    setState(() {
+      placeDetail = data;
+      loading = false;
+    });
+  } catch (e) {
+    setState(() {
+      error = e.toString();
+      loading = false;
+    });
   }
+}
+
 
   @override
   Widget build(BuildContext context) {
@@ -81,9 +62,10 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
 
     // 构造图片 URL (如果存在)
     String? photoUrl;
+
     if (photos != null && photos.isNotEmpty) {
       final photoName = photos[0]['name'];
-      photoUrl = 'https://places.googleapis.com/v1/$photoName/media?key=$apiKey&maxWidthPx=800';
+      photoUrl = PlacesApiService.buildPhotoUrl(photoName, maxWidth: 800);
     }
 
     return SingleChildScrollView(

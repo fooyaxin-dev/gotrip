@@ -2,11 +2,11 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart'; // 新增
-import 'package:gotrip/modules/guide/guidePage.dart';
-import 'wikipedia.dart';
+import 'package:gotrip/modules/realtime/detectPlacePage.dart';
+import '../../services/wikipedia_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/foundation.dart';
-import '../guide/location_service.dart';   
+import '../../services/location_service.dart';   
 
 class ResultPage extends StatefulWidget {
   final Uint8List imageBytes;
@@ -240,7 +240,7 @@ class _ResultPageState extends State<ResultPage>
                                                       Navigator.push(
                                                         context,
                                                         MaterialPageRoute(
-                                                          builder: (_) => RealTimeGuidePage(
+                                                          builder: (_) => RealTimeDetectPage(
                                                             landmarkLat: pos.latitude,
                                                             landmarkLng: pos.longitude,
                                                           ),

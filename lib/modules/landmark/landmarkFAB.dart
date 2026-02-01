@@ -1,12 +1,11 @@
 import 'dart:convert';
 import 'dart:io' show File;
-
 import 'package:flutter/foundation.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-import 'vision_service.dart';
+import '../../services/vision_service.dart';
 import 'landmarkResult.dart';
 
 class LandmarkFAB extends StatefulWidget {

@@ -1,109 +1,86 @@
-import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'login.dart';
-import 'homepage.dart';
+import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'signup.dart';
+import '../main/homepage.dart';
 
-class SignupPage extends StatefulWidget {
-  const SignupPage({super.key});
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
 
   @override
-  State<SignupPage> createState() => _SignupPageState();
+  State<LoginPage> createState() => _LoginPageState();
 }
 
-class _SignupPageState extends State<SignupPage> {
+class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
 
-  final TextEditingController usernameController = TextEditingController();
   final TextEditingController emailController = TextEditingController();
   final TextEditingController pwdController = TextEditingController();
-  final TextEditingController repwdController = TextEditingController();
 
   bool isLoading = false;
 
   @override
   void dispose() {
-    usernameController.dispose();
     emailController.dispose();
     pwdController.dispose();
-    repwdController.dispose();
     super.dispose();
   }
 
-  // ================= Username check =================
-  Future<bool> isUsernameTaken(String username) async {
-    final query = await FirebaseFirestore.instance
-        .collection('users')
-        .where('username', isEqualTo: username)
-        .get();
-
-    return query.docs.isNotEmpty;
-  }
-
-  // ================= Signup Logic (全部在这里) =================
-  Future<void> createUserWithEmailAndPassword() async {
+  // ================= Login Logic =================
+  Future<void> loginUserWithEmailAndPassword() async {
     if (!_formKey.currentState!.validate()) return;
-
-    final username = usernameController.text.trim();
-    final email = emailController.text.trim();
-    final password = pwdController.text.trim();
 
     setState(() => isLoading = true);
 
-    // check username
-    if (await isUsernameTaken(username)) {
-      _showError('Username already taken');
-      setState(() => isLoading = false);
-      return;
-    }
-
     try {
-      UserCredential userCredential =
-          await FirebaseAuth.instance.createUserWithEmailAndPassword(
-        email: email,
-        password: password,
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: emailController.text.trim(),
+        password: pwdController.text.trim(),
       );
 
-      final uid = userCredential.user!.uid;
-
-      // save user info in Firestore
-      await FirebaseFirestore.instance.collection('users').doc(uid).set({
-        'email': email,
-        'username': username,
-      });
-
-      /// ✅ 直接跳 HomePage
+      // ✅ 直接跳 HomePage
       if (mounted) {
         Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const HomePage()),
         );
       }
+
     } on FirebaseAuthException catch (e) {
+      print("email: ${emailController.text}");
+      print("password: ${pwdController.text}");
+      print("code: ${e.code}");
+      print("stack: ${e.stackTrace}");
+
+      
       String message;
 
       switch (e.code) {
-        case 'email-already-in-use':
-          message = 'This email is already registered';
+        case 'user-not-found':
+          message = 'No user found for this email';
+          break;
+        case 'wrong-password':
+          message = 'Wrong password';
           break;
         case 'invalid-email':
           message = 'Invalid email format';
           break;
-        case 'weak-password':
-          message = 'Password is too weak';
-          break;
         case 'network-request-failed':
           message = 'Network error. Please try again';
           break;
+
         default:
-          message = 'Signup failed. Please try again';
+          message = 'Login failed. Please try again';
       }
 
       _showError(message);
+
     } catch (_) {
       _showError('Something went wrong');
     } finally {
-      if (mounted) setState(() => isLoading = false);
+      if (mounted) {
+        setState(() => isLoading = false);
+      }
     }
   }
 
@@ -150,14 +127,14 @@ class _SignupPageState extends State<SignupPage> {
                           radius: 40,
                           backgroundColor: Colors.white,
                           child: Icon(
-                            Icons.person_add,
+                            Icons.travel_explore,
                             size: 40,
                             color: Color(0xFF7C4DFF),
                           ),
                         ),
                         SizedBox(height: 15),
                         Text(
-                          'Create Account',
+                          'Welcome',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 22,
@@ -166,7 +143,7 @@ class _SignupPageState extends State<SignupPage> {
                         ),
                         SizedBox(height: 5),
                         Text(
-                          'Join us and start exploring',
+                          'Login to continue your journey',
                           style: TextStyle(
                             color: Colors.white70,
                             fontSize: 14,
@@ -178,27 +155,6 @@ class _SignupPageState extends State<SignupPage> {
                 ),
 
                 const SizedBox(height: 25),
-
-                // ===== Username =====
-                _inputField(
-                  controller: usernameController,
-                  icon: Icons.person,
-                  hint: 'Enter your username',
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Username is required';
-                    }
-                    if (value.contains('@')) {
-                      return 'Username cannot contain @';
-                    }
-                    if (value.length < 3) {
-                      return 'Username must be at least 3 characters';
-                    }
-                    return null;
-                  },
-                ),
-
-                const SizedBox(height: 15),
 
                 // ===== Email =====
                 _inputField(
@@ -226,24 +182,8 @@ class _SignupPageState extends State<SignupPage> {
                   hint: 'Enter your password',
                   obscure: true,
                   validator: (value) {
-                    if (value == null || value.length < 6) {
-                      return 'Password must be at least 6 characters';
-                    }
-                    return null;
-                  },
-                ),
-
-                const SizedBox(height: 15),
-
-                // ===== Re-password =====
-                _inputField(
-                  controller: repwdController,
-                  icon: Icons.lock_outline,
-                  hint: 'Re-enter your password',
-                  obscure: true,
-                  validator: (value) {
-                    if (value != pwdController.text) {
-                      return 'Passwords do not match';
+                    if (value == null || value.isEmpty) {
+                      return 'Password is required';
                     }
                     return null;
                   },
@@ -251,15 +191,15 @@ class _SignupPageState extends State<SignupPage> {
 
                 const SizedBox(height: 20),
 
-                // ===== Sign Up Button =====
+                // ===== Login Button (Design Preserved) =====
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 25),
                   child: SizedBox(
                     height: 55,
                     child: ElevatedButton(
                       onPressed:
-                          isLoading ? null : createUserWithEmailAndPassword,
-                     style: ElevatedButton.styleFrom(
+                          isLoading ? null : loginUserWithEmailAndPassword,
+                      style: ElevatedButton.styleFrom(
                         padding: EdgeInsets.zero,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
@@ -287,7 +227,7 @@ class _SignupPageState extends State<SignupPage> {
                                   ),
                                 )
                               : const Text(
-                                  'Sign Up',
+                                  'Login',
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontSize: 18,
@@ -300,24 +240,50 @@ class _SignupPageState extends State<SignupPage> {
                   ),
                 ),
 
-                const SizedBox(height: 40),
+                const SizedBox(height: 50),
 
-                // ===== Go to Login =====
+                // ===== Social Media =====
+                const Text(
+                  '-- or login with --',
+                  style: TextStyle(
+                    color: Colors.black54,
+                    fontSize: 14,
+                  ),
+                ),
+
+                const SizedBox(height: 15),
+
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Text('Already have an account? '),
+                    _socialCircle(
+                        FontAwesomeIcons.google, const Color(0xFF4285F4)),
+                    const SizedBox(width: 15),
+                    _socialCircle(
+                        FontAwesomeIcons.facebook, const Color(0xFF1877F2)),
+                    const SizedBox(width: 15),
+                    _socialCircle(
+                        FontAwesomeIcons.twitter, const Color(0xFF1DA1F2)),
+                  ],
+                ),
+
+                const SizedBox(height: 150),
+
+                // ===== Go to Signup =====
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text("Don't have an account? "),
                     GestureDetector(
                       onTap: () {
                         Navigator.pushReplacement(
                           context,
                           MaterialPageRoute(
-                            builder: (_) => const LoginPage(),
-                          ),
+                              builder: (context) => const SignupPage()),
                         );
                       },
                       child: const Text(
-                        'Login',
+                        'Sign Up',
                         style: TextStyle(
                           color: Color(0xFF7C4DFF),
                           fontWeight: FontWeight.bold,
@@ -326,8 +292,6 @@ class _SignupPageState extends State<SignupPage> {
                     ),
                   ],
                 ),
-
-                const SizedBox(height: 30),
               ],
             ),
           ),
@@ -336,7 +300,7 @@ class _SignupPageState extends State<SignupPage> {
     );
   }
 
-  // ================= Reusable Widgets =================
+  // ================= Helpers =================
   Widget _inputField({
     required TextEditingController controller,
     required IconData icon,
@@ -376,6 +340,30 @@ class _SignupPageState extends State<SignupPage> {
           offset: const Offset(0, 4),
         ),
       ],
+    );
+  }
+
+  Widget _socialCircle(IconData icon, Color color) {
+    return Container(
+      height: 50,
+      width: 50,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.25),
+            blurRadius: 6,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Icon(
+        icon,
+        color: color,
+        size: 22,
+      ),
     );
   }
 }

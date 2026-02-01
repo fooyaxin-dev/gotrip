@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import '../../bottomnav.dart';
-import '../guide/location_service.dart';
+import 'bottomnav.dart';
+import '../../services/location_service.dart';
 
 
 // ================= MainPage  =================
