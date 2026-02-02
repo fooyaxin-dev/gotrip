@@ -32,28 +32,6 @@ class PlaceModel {
     );
   }
 
-  factory PlaceModel.fromFoursquare(Map<String, dynamic> f, {String? primary, String? secondary}) {
-    final geoc = f['geocodes']?['main'];
-    
-    // 解析 Foursquare 图片逻辑
-    String? fsPhoto;
-    if (f['photos'] != null && (f['photos'] as List).isNotEmpty) {
-      final p = f['photos'][0];
-      fsPhoto = "${p['prefix']}300x300${p['suffix']}"; // 取 300x300 尺寸
-    }
 
-    return PlaceModel(
-      id: f['fsq_id'] ?? '',
-      name: f['name'] ?? '未知地点',
-      address: f['location']?['formatted_address'],
-      lat: (geoc?['latitude'] as num?)?.toDouble(),
-      lng: (geoc?['longitude'] as num?)?.toDouble(),
-      // Foursquare 是 10 分制，转成 5 分制
-      rating: f['rating'] != null ? (f['rating'] as num).toDouble() / 2.0 : null,
-      photoUrl: fsPhoto,
-      source: 'foursquare',
-      primaryType: primary,
-      secondaryType: secondary,
-    );
-  }
+
 }
