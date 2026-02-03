@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'placeDetailPage.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -7,6 +8,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../services/placesAPI_service.dart';
 import '../../services/location_service.dart';
 import '../../services/placeModal.dart';
+import 'guidePage.dart';
 
     // 二级缓存
   class _CacheEntry {
@@ -30,8 +32,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   Position? _currentPosition;
 
   final Set<Marker> _markers = {};
+
+  StreamSubscription<Position>? _positionStream; // 添加位置监听的变量
   
-  List<PlaceModel> _nearbyPlaces = [];
+  final List<PlaceModel> _nearbyPlaces = [];
 
   int _searchToken = 0;
   bool _isLoading = false;
@@ -125,6 +129,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   @override
   void dispose() {
     _secondaryDebounce?.cancel();
+    _positionStream?.cancel();
     super.dispose();
   }
 
@@ -478,78 +483,198 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.4,
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+      builder: (context) {
+        return Container(
+          height: MediaQuery.of(context).size.height * 0.4,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+                ),
               ),
-            ),
-            const SizedBox(height: 20),
-            Text(place.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                const Icon(Icons.location_on, size: 20, color: Colors.grey),
-                const SizedBox(width: 8),
-                Expanded(child: Text(place.address ?? '地址未知')),
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (place.rating != null)
+              const SizedBox(height: 20),
+              Text(place.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
               Row(
                 children: [
-                  const Icon(Icons.star, color: Colors.orange, size: 18),
-                  const SizedBox(width: 4),
-                  Text(
-                    place.rating.toString(),
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.orange),
-                  ),
+                  const Icon(Icons.location_on, size: 20, color: Colors.grey),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(place.address ?? '地址未知')),
                 ],
               ),
-            const Spacer(),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      _mapController?.animateCamera(
-                        CameraUpdate.newLatLngZoom(LatLng(place.lat!, place.lng!), 16),
-                      );
-                    },
-                    icon: const Icon(Icons.directions),
-                    label: const Text('导航'),
-                  ),
+              const SizedBox(height: 8),
+              if (place.rating != null)
+                Row(
+                  children: [
+                    const Icon(Icons.star, color: Colors.orange, size: 18),
+                    const SizedBox(width: 4),
+                    Text(
+                      place.rating.toString(),
+                      style: const TextStyle(
+                          fontSize: 14, fontWeight: FontWeight.w600, color: Colors.orange),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => PlaceDetailPage(placeId: place.id)));
-                    },
-                    icon: const Icon(Icons.info),
-                    label: const Text('查看更多'),
+              const Spacer(),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        Navigator.pop(context); // ✅ 关闭ModalSheet
+                        final targetLat = place.lat!;
+                        final targetLng = place.lng!;
+
+                        // 标记导航状态
+                        setState(() {
+                          _isNavigating = true;
+
+                          // 清除其他Markers，只保留用户 + 目的地
+                          _markers.retainWhere((m) =>
+                              m.markerId.value == 'me' || m.position == LatLng(targetLat, targetLng));
+
+                          // 清除附近地点列表
+                          _nearbyPlaces.clear();
+
+                          // Sheet会隐藏，因为 build里加了 !_isNavigating
+                        });
+
+                        final result = await Navigator.push<RouteResult>(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => GuidePage(
+                              startLat: _currentPosition!.latitude,
+                              startLng: _currentPosition!.longitude,
+                              endLat: targetLat,
+                              endLng: targetLng,
+                            ),
+                          ),
+                        );
+
+                        if (result != null) {
+                          _showRouteOnMap(result, LatLng(targetLat, targetLng));
+                        }
+                      },
+                      icon: const Icon(Icons.directions),
+                      label: const Text('导航'),
+                    ),
                   ),
-                ),
-              ],
-            ),
-          ],
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => PlaceDetailPage(placeId: place.id),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.info),
+                      label: const Text('更多信息'),
+                    ),
+                  ),
+                ],
+              )
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+
+  bool _isNavigating = false;
+  Set<Polyline> _polylines = {};
+
+  // ✅ 只需要替换这个方法
+  void _showRouteOnMap(RouteResult result, LatLng destination) async {
+    if (_mapController == null) return;
+
+    setState(() {
+      _polylines = {
+        Polyline(
+          polylineId: const PolylineId('route'),
+          points: result.polylinePoints,
+          color: Colors.blue,
+          width: 6,
+        ),
+      };
+    });
+
+    // 给一点延迟确保地图加载
+    await Future.delayed(const Duration(milliseconds: 100));
+
+    final startPoint = result.polylinePoints.first;
+
+    // 这里的配置是关键：模拟图 2 的效果
+    await _mapController!.animateCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(
+          target: startPoint,
+          zoom: 19.0,      // 足够近，看到街道细节
+          tilt: 0,      // 大角度倾斜，产生 3D 纵深感
+          bearing: _currentPosition?.heading ?? 0, // 初始朝向
         ),
       ),
     );
+
+    _startNavigationTracking(); 
   }
+
+
+  void _startNavigationTracking() {
+    _positionStream?.cancel();
+    
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 2, // 移动 2 米就更新，更平滑
+      ),
+    ).listen((Position position) {
+      if (_mapController == null || !_isNavigating) return;
+
+      // 更新 Marker 位置
+      setState(() {
+        _markers.removeWhere((m) => m.markerId.value == 'me');
+        _markers.add(
+          Marker(
+            markerId: const MarkerId('me'),
+            position: LatLng(position.latitude, position.longitude),
+            // 这里可以使用一个自定义的箭头图标，根据 position.heading 旋转
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+            rotation: position.heading, 
+            anchor: const Offset(0.5, 0.5), // 确保旋转中心在图标中间
+          ),
+        );
+        _currentPosition = position;
+      });
+
+      // 核心：相机跟随更新
+      _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: LatLng(position.latitude, position.longitude),
+            zoom: 19.0,
+            tilt: 0, 
+            bearing: position.heading, // 关键：让地图随你的方向转动
+          ),
+        ),
+      );
+    });
+  }
+
 
   void _showErrorDialog(String title, String message) {
     showDialog(
@@ -569,159 +694,163 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   double _lastExtent = 0.4; // 记录上一次的面板高度
 
  @override
-Widget build(BuildContext context) {
-  // 获取屏幕总高度，用于计算具体的像素 padding
-  final screenHeight = MediaQuery.of(context).size.height;
+  Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
 
-  return Scaffold(
-    // 防止键盘弹起挤压地图
-    resizeToAvoidBottomInset: false,
-    body: Stack(
-      children: [
-        // 1. 地图层：使用 ValueListenableBuilder 局部刷新地图的 Padding
-        // 这样当地图中心移动时，面板不会因为 setState 而重置状态（解决滑不上去的 bug）
-        ValueListenableBuilder<double>(
-          valueListenable: _bottomPaddingNotifier,
-          builder: (context, extent, child) {
-            return GoogleMap(
-              initialCameraPosition: _initialCameraPosition,
-              myLocationEnabled: true,
-              myLocationButtonEnabled: false, // 建议关闭默认按钮，因为它会被遮挡
-              markers: _markers,
-              onMapCreated: (controller) => _mapController = controller,
-              // --- 核心改动：动态设置 Padding ---
-              // 通过设置 bottom padding，Google Map 会自动把蓝点推向“可见区域”的中心
-              padding: EdgeInsets.only(
-                bottom: extent * screenHeight, 
+    return Scaffold(
+      resizeToAvoidBottomInset: false,
+      body: Stack(
+        children: [
+          // 地图层
+          ValueListenableBuilder<double>(
+            valueListenable: _bottomPaddingNotifier,
+            builder: (context, extent, child) {
+              return GoogleMap(
+                initialCameraPosition: _initialCameraPosition,
+                myLocationEnabled: true,
+                myLocationButtonEnabled: false,
+                markers: _markers,
+                polylines: _polylines,
+                onMapCreated: (controller) => _mapController = controller,
+                // 在 GoogleMap 构造函数里修改
+                padding: EdgeInsets.only(
+                bottom: _isNavigating ? 100 : 400, // 导航时底部留白改小，标就会回到中间
                 top: 60,
-              ),
-            );
-          },
-        ),
-
-        // 2. 返回按钮
-        Positioned(
-          top: 40,
-          left: 20,
-          child: SafeArea(
-            child: Material(
-              color: Colors.white,
-              shape: const CircleBorder(),
-              elevation: 4,
-              child: IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () => Navigator.pop(context),
-              ),
-            ),
-          ),
-        ),
-
-        // 3. 底部面板
-        NotificationListener<DraggableScrollableNotification>(
-          onNotification: (notification) {
-            // 实时将面板的高度比例传给地图的 Padding 监听器
-            // 这里不调用 setState，所以面板非常稳，不会自己掉下去
-            _bottomPaddingNotifier.value = notification.extent;
-            return true;
-          },
-          child: DraggableScrollableSheet(
-            key: const PageStorageKey('gotrip_sheet_unique'), // 锁定状态，防止自动下滑
-            initialChildSize: 0.4,
-            minChildSize: 0.2,
-            maxChildSize: 0.7,
-            snap: true,
-            builder: (context, scrollController) {
-              return Container(
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-                  boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 10)],
-                ),
-                child: Column(
-                  children: [
-                    // 面板把手
-                    Container(
-                      width: 40,
-                      height: 4,
-                      margin: const EdgeInsets.symmetric(vertical: 10),
-                      decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
-                    ),
-
-                    // 一级分类 Category Bar
-                    SizedBox(
-                      height: 90,
-                      child: ListView.builder(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
-                        itemCount: categories.length,
-                        itemBuilder: (context, index) {
-                          final cat = categories[index];
-                          final isSelected = _selectedTypes.contains(cat['type']);
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 5),
-                            child: GestureDetector(
-                              onTap: () => _toggleType(cat['type']),
-                              child: Container(
-                                width: 80,
-                                decoration: BoxDecoration(
-                                  color: isSelected ? cat['color'] : Colors.grey[200],
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(cat['icon'], color: isSelected ? Colors.white : Colors.grey[600], size: 30),
-                                    const SizedBox(height: 5),
-                                    Text(
-                                      cat['name'],
-                                      style: TextStyle(
-                                        color: isSelected ? Colors.white : Colors.grey[600],
-                                        fontSize: 12,
-                                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                                      ),
-                                    )
-                                  ],
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-
-                    const SizedBox(height: 10),
-                    const Divider(height: 1),
-
-                    // 二级分类 Bar
-                    if (_selectedPrimary != null && subCategories.containsKey(_selectedPrimary)) 
-                      _buildSecondaryBar(),
-
-                    const Divider(height: 1),
-
-                    // 地点列表
-                    Expanded(
-                      child: _nearbyPlaces.isEmpty && !_isLoading
-                          ? _buildEmptyState()
-                          : ListView.builder(
-                              controller: scrollController,
-                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                              itemCount: _nearbyPlaces.length,
-                              itemBuilder: (context, index) => _buildPlaceCard(_nearbyPlaces[index]),
-                            ),
-                    ),
-                  ],
                 ),
               );
             },
           ),
-        ),
 
-        // 加载动画
-        if (_isLoading) const Center(child: CircularProgressIndicator()),
-      ],
-    ),
-  );
-}
+          // 返回按钮
+          Positioned(
+            top: 40,
+            left: 20,
+            child: SafeArea(
+              child: Material(
+                color: Colors.white,
+                shape: const CircleBorder(),
+                elevation: 4,
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
+            ),
+          ),
+
+          // DraggableScrollableSheet（仅在非导航时显示）
+          if (!_isNavigating)
+            NotificationListener<DraggableScrollableNotification>(
+              onNotification: (notification) {
+                _bottomPaddingNotifier.value = notification.extent;
+                return true;
+              },
+              child: DraggableScrollableSheet(
+                key: const PageStorageKey('gotrip_sheet_unique'),
+                initialChildSize: 0.4,
+                minChildSize: 0.2,
+                maxChildSize: 0.7,
+                snap: true,
+                builder: (context, scrollController) {
+                  return Container(
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                      boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 10)],
+                    ),
+                    child: Column(
+                      children: [
+                        // 面板把手
+                        Container(
+                          width: 40,
+                          height: 4,
+                          margin: const EdgeInsets.symmetric(vertical: 10),
+                          decoration: BoxDecoration(
+                            color: Colors.grey[300],
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+
+                        // 一级分类 Category Bar
+                        SizedBox(
+                          height: 90,
+                          child: ListView.builder(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            itemCount: categories.length,
+                            itemBuilder: (context, index) {
+                              final cat = categories[index];
+                              final isSelected = _selectedTypes.contains(cat['type']);
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 5),
+                                child: GestureDetector(
+                                  onTap: () => _toggleType(cat['type']),
+                                  child: Container(
+                                    width: 80,
+                                    decoration: BoxDecoration(
+                                      color: isSelected ? cat['color'] : Colors.grey[200],
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(cat['icon'],
+                                            color: isSelected ? Colors.white : Colors.grey[600],
+                                            size: 30),
+                                        const SizedBox(height: 5),
+                                        Text(
+                                          cat['name'],
+                                          style: TextStyle(
+                                            color: isSelected ? Colors.white : Colors.grey[600],
+                                            fontSize: 12,
+                                            fontWeight:
+                                                isSelected ? FontWeight.bold : FontWeight.normal,
+                                          ),
+                                        )
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+
+                        const SizedBox(height: 10),
+                        const Divider(height: 1),
+
+                        // 二级分类 Bar
+                        if (_selectedPrimary != null && subCategories.containsKey(_selectedPrimary))
+                          _buildSecondaryBar(),
+
+                        const Divider(height: 1),
+
+                        // 地点列表
+                        Expanded(
+                          child: _nearbyPlaces.isEmpty && !_isLoading
+                              ? _buildEmptyState()
+                              : ListView.builder(
+                                  controller: scrollController,
+                                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                                  itemCount: _nearbyPlaces.length,
+                                  itemBuilder: (context, index) =>
+                                      _buildPlaceCard(_nearbyPlaces[index]),
+                                ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+
+          // 加载动画
+          if (_isLoading) const Center(child: CircularProgressIndicator()),
+        ],
+      ),
+    );
+  }
+
 
 
   Widget _buildSecondaryBar() {
