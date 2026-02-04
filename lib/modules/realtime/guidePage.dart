@@ -1,5 +1,3 @@
-// AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc
-
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -9,10 +7,14 @@ import 'package:http/http.dart' as http;
 class RouteResult {
   final List<LatLng> polylinePoints;
   final LatLngBounds bounds;
+  final double distanceMeters;
+  final int durationSeconds;
 
   RouteResult({
     required this.polylinePoints,
     required this.bounds,
+    required this.distanceMeters,
+    required this.durationSeconds,
   });
 }
 
@@ -46,28 +48,16 @@ class _GuidePageState extends State<GuidePage> {
 
   Future<void> _loadRoute() async {
     try {
-      final points = await _fetchRoutePolyline(
+      final result = await _fetchRoute(
         widget.startLat,
         widget.startLng,
         widget.endLat,
         widget.endLng,
       );
 
-      if (points.isEmpty) {
-        throw Exception('路线为空');
-      }
-
-      final bounds = _computeBounds(points);
-
-      // ✅ 把结果 pop 回 DetectPage
+      // 返回给 DetectPage
       if (mounted) {
-        Navigator.pop(
-          context,
-          RouteResult(
-            polylinePoints: points,
-            bounds: bounds,
-          ),
-        );
+        Navigator.pop(context, result);
       }
     } catch (e) {
       setState(() {
@@ -77,13 +67,9 @@ class _GuidePageState extends State<GuidePage> {
     }
   }
 
-  /// 调用 Google Directions API 拿 polyline
-  Future<List<LatLng>> _fetchRoutePolyline(
-    double startLat,
-    double startLng,
-    double endLat,
-    double endLng,
-  ) async {
+  /// 调用 Google Directions API，返回 RouteResult
+  Future<RouteResult> _fetchRoute(
+      double startLat, double startLng, double endLat, double endLng) async {
     const apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
 
     final url =
@@ -104,15 +90,29 @@ class _GuidePageState extends State<GuidePage> {
       throw Exception('Directions API 错误: ${data['status']}');
     }
 
-    final routes = data['routes'] as List;
-    if (routes.isEmpty) return [];
+    final route = data['routes'][0];
 
-    final overviewPolyline = routes[0]['overview_polyline']['points'] as String;
+    // 解码 polyline
+    final overviewPolyline = route['overview_polyline']['points'] as String;
+    final polylinePoints = _decodePolyline(overviewPolyline);
 
-    return _decodePolyline(overviewPolyline);
+    // bounds
+    final bounds = _parseBounds(route['bounds']);
+
+    // distance & duration
+    final leg = (route['legs'] as List).first;
+    final distanceMeters = (leg['distance']['value'] as num).toDouble();
+    final durationSeconds = (leg['duration']['value'] as num).toInt();
+
+    return RouteResult(
+      polylinePoints: polylinePoints,
+      bounds: bounds,
+      distanceMeters: distanceMeters,
+      durationSeconds: durationSeconds,
+    );
   }
 
-  /// 解 Google polyline
+  /// Google polyline 解码
   List<LatLng> _decodePolyline(String encoded) {
     List<LatLng> points = [];
     int index = 0, len = encoded.length;
@@ -144,26 +144,18 @@ class _GuidePageState extends State<GuidePage> {
     return points;
   }
 
-  /// 计算整条路线的 bounds，用来 zoom 到整条路线
-  LatLngBounds _computeBounds(List<LatLng> points) {
-    double minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
-
-    for (final p in points) {
-      if (p.latitude < minLat) minLat = p.latitude;
-      if (p.latitude > maxLat) maxLat = p.latitude;
-      if (p.longitude < minLng) minLng = p.longitude;
-      if (p.longitude > maxLng) maxLng = p.longitude;
-    }
-
+  /// 解析 Google bounds
+  LatLngBounds _parseBounds(Map<String, dynamic> bounds) {
+    final ne = bounds['northeast'];
+    final sw = bounds['southwest'];
     return LatLngBounds(
-      southwest: LatLng(minLat, minLng),
-      northeast: LatLng(maxLat, maxLng),
+      southwest: LatLng(sw['lat'], sw['lng']),
+      northeast: LatLng(ne['lat'], ne['lng']),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    // 这个页面只是个“中转计算页”，用户几乎看不到
     return Scaffold(
       backgroundColor: Colors.white,
       body: Center(

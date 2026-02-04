@@ -33,9 +33,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   final Set<Marker> _markers = {};
 
+  Timer? _locationIdleTimer;
+  static const Duration _locationIdleDelay = Duration(seconds: 2000); // 你可以调 5~15 秒
+
+
   StreamSubscription<Position>? _positionStream; // 添加位置监听的变量
   
   final List<PlaceModel> _nearbyPlaces = [];
+  Map<String, RouteResult> _routeResults = {};
 
   int _searchToken = 0;
   bool _isLoading = false;
@@ -180,6 +185,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
     setState(() {});
     _searchSelectedFilters();
+    await _refreshAllPlacesFromApi(); // 首次进来一定拉一次
+    _startLocationWatch();
+
   }
 
   void _toggleType(String type) {
@@ -204,9 +212,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     _searchSelectedFilters();
   }
 
-  Future<void> _searchSelectedFilters() async {
-    if (_currentPosition == null) return;
-    final int currentToken = ++_searchToken;
+  void _searchSelectedFilters() {
+    final int token = ++_searchToken;
 
     setState(() {
       _isLoading = true;
@@ -214,28 +221,26 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       _markers.removeWhere((m) => m.markerId.value != 'me');
     });
 
-    if (_selectedTypes.contains('all') && _allPlacesCache.isNotEmpty) {
-      _drawFromCache(_allPlacesCache, currentToken);
-      return;
-    }
+    List<PlaceModel> base;
 
-    final List<String> typesToSearch = _selectedTypes.contains('all')
-        ? categories.where((c) => c['type'] != 'all').map((c) => c['type'] as String).toList()
-        : List<String>.from(_selectedTypes);
-
-    try {
-      for (final type in typesToSearch) {
-        if (currentToken != _searchToken) return;
-        await _searchNearbyPlaces(type, currentToken);
+    if (_selectedTypes.contains('all')) {
+      base = List.from(_allPlacesCache);
+    } else {
+      base = [];
+      for (final t in _selectedTypes) {
+        base.addAll(_placesByTypeCache[t] ?? []);
       }
-      if (currentToken != _searchToken) return;
-      setState(() => _isLoading = false);
-      _animateToFitMarkers();
-    } catch (_) {
-      if (currentToken != _searchToken) return;
-      setState(() => _isLoading = false);
     }
+
+    for (final p in base) {
+      if (token != _searchToken) return;
+      _addMarkerAndPlace(p);
+    }
+
+    setState(() => _isLoading = false);
+    _animateToFitMarkers(keepZoom: true);
   }
+
 
   void _drawFromCache(List<PlaceModel> cache, int token) {
     for (final place in cache) {
@@ -420,6 +425,76 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
 
+  void _startLocationWatch() {
+    _positionStream?.cancel();
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10, // 走 10m 才触发
+      ),
+    ).listen((pos) {
+      _currentPosition = pos;
+
+      // 每次位置变化都重置 timer
+      _locationIdleTimer?.cancel();
+      _locationIdleTimer = Timer(_locationIdleDelay, () {
+        // ✅ 用户“停下来”了
+        _refreshAllPlacesFromApi();
+      });
+    });
+  }
+
+    Future<void> _refreshAllPlacesFromApi() async {
+    if (_currentPosition == null) return;
+
+    setState(() {
+      _isLoading = true;
+      _allPlacesCache.clear();
+      _placesByTypeCache.clear();
+      _nearbyPlaces.clear();
+      _markers.removeWhere((m) => m.markerId.value != 'me');
+    });
+
+    final types = categories
+        .where((c) => c['type'] != 'all')
+        .map((c) => c['type'] as String)
+        .toList();
+
+    for (final type in types) {
+      final apiResults = await PlacesApiService.searchNearby(
+        lat: _currentPosition!.latitude,
+        lng: _currentPosition!.longitude,
+        type: type,
+        radius: 5000,
+      );
+
+      final results = apiResults.map((p) {
+        try {
+          final place = PlaceModel.fromGoogle(p, primary: type);
+          if (place.lat == null || place.lng == null) return null;
+          return place;
+        } catch (_) {
+          return null;
+        }
+      }).whereType<PlaceModel>().toList();
+
+      _placesByTypeCache[type] = results;
+
+      for (final p in results) {
+        if (!_allPlacesCache.any((e) => e.id == p.id)) {
+          _allPlacesCache.add(p);
+        }
+      }
+    }
+
+    // 默认显示 All
+    _drawFromCache(_allPlacesCache, ++_searchToken);
+
+    setState(() => _isLoading = false);
+  }
+
+
+
   void _addMarkerAndPlace(PlaceModel place) {
     if (place.lat == null || place.lng == null) return;
 
@@ -442,7 +517,38 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     if (!_nearbyPlaces.any((p) => p.id == place.id)) {
       _nearbyPlaces.add(place);
     }
+
+    // -----------------------------
+    // 新增：用直线距离 + 估算时间
+    // -----------------------------
+    if (_currentPosition != null) {
+      final distanceMeters = Geolocator.distanceBetween(
+        _currentPosition!.latitude,
+        _currentPosition!.longitude,
+        place.lat!,
+        place.lng!,
+      );
+
+      final durationSeconds = (distanceMeters / 1.4).round(); // 步行速度 1.4 m/s
+
+      _routeResults[place.id] = RouteResult(
+        polylinePoints: [], // 不需要路线
+        bounds: LatLngBounds(
+          southwest: LatLng(
+            min(_currentPosition!.latitude, place.lat!),
+            min(_currentPosition!.longitude, place.lng!),
+          ),
+          northeast: LatLng(
+            max(_currentPosition!.latitude, place.lat!),
+            max(_currentPosition!.longitude, place.lng!),
+          ),
+        ),
+        distanceMeters: distanceMeters,
+        durationSeconds: durationSeconds,
+      );
+    }
   }
+
 
   void _animateToFitMarkers({bool keepZoom = false}) {
     if (_mapController == null || _markers.isEmpty) return;
@@ -482,71 +588,144 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
+      backgroundColor: Colors.transparent, // 保持透明以支持圆角
       builder: (context) {
+        final theme = Theme.of(context);
+        
         return Container(
-          height: MediaQuery.of(context).size.height * 0.4,
+          height: MediaQuery.of(context).size.height * 0.42, // 稍微缩减高度，更精炼
           decoration: const BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)), // 更加圆润的现代感
+            boxShadow: [
+              BoxShadow(color: Colors.black12, blurRadius: 10, spreadRadius: 1),
+            ],
           ),
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.fromLTRB(24, 12, 24, 32), // 底部留白增加，适配全面屏
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // 顶部指示条
               Center(
                 child: Container(
-                  width: 40,
-                  height: 4,
+                  width: 48,
+                  height: 5,
                   decoration: BoxDecoration(
-                      color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
               ),
-              const SizedBox(height: 20),
-              Text(place.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
+              const SizedBox(height: 24),
+
+              // 标题与评分
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Icon(Icons.location_on, size: 20, color: Colors.grey),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text(place.address ?? '地址未知')),
+                  Expanded(
+                    child: Text(
+                      place.name,
+                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (place.rating != null)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.star_rounded, color: Colors.orange, size: 20),
+                          const SizedBox(width: 2),
+                          Text(
+                            place.rating.toString(),
+                            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange),
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
-              const SizedBox(height: 8),
-              if (place.rating != null)
-                Row(
+              
+              const SizedBox(height: 12),
+
+              // 地址
+              Row(
+                children: [
+                  Icon(Icons.location_on_rounded, size: 18, color: theme.primaryColor),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      place.address ?? '地址未知',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 16),
+
+              // 路线结果标签 (Chip 风格)
+              if (_routeResults[place.id] != null)
+                Wrap(
+                  spacing: 12,
                   children: [
-                    const Icon(Icons.star, color: Colors.orange, size: 18),
-                    const SizedBox(width: 4),
-                    Text(
-                      place.rating.toString(),
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w600, color: Colors.orange),
+                    _buildInfoChip(
+                      Icons.directions_car_filled_rounded,
+                      '${(_routeResults[place.id]!.distanceMeters / 1000).toStringAsFixed(1)} km',
+                      Colors.blue,
+                    ),
+                    _buildInfoChip(
+                      Icons.access_time_filled_rounded,
+                      '${(_routeResults[place.id]!.durationSeconds ~/ 60)} min',
+                      Colors.teal,
                     ),
                   ],
                 ),
+
               const Spacer(),
+
+              // 底部操作栏
               Row(
                 children: [
+                  // 更多信息 - 次要按钮
                   Expanded(
-                    child: OutlinedButton.icon(
+                    flex: 2,
+                    child: OutlinedButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => PlaceDetailPage(placeId: place.id)),
+                        );
+                      },
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        side: BorderSide(color: Colors.grey[300]!),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                      child: const Text('详情', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // 导航 - 主要按钮
+                  Expanded(
+                    flex: 3,
+                    child: ElevatedButton.icon(
                       onPressed: () async {
-                        Navigator.pop(context); // ✅ 关闭ModalSheet
+                        Navigator.pop(context);
                         final targetLat = place.lat!;
                         final targetLng = place.lng!;
 
-                        // 标记导航状态
                         setState(() {
                           _isNavigating = true;
-
-                          // 清除其他Markers，只保留用户 + 目的地
                           _markers.retainWhere((m) =>
-                              m.markerId.value == 'me' || m.position == LatLng(targetLat, targetLng));
-
-                          // 清除附近地点列表
+                              m.markerId.value == 'me' ||
+                              m.position == LatLng(targetLat, targetLng));
                           _nearbyPlaces.clear();
-
-                          // Sheet会隐藏，因为 build里加了 !_isNavigating
                         });
 
                         final result = await Navigator.push<RouteResult>(
@@ -562,27 +741,18 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                         );
 
                         if (result != null) {
+                          setState(() { _routeResults[place.id] = result; });
                           _showRouteOnMap(result, LatLng(targetLat, targetLng));
                         }
                       },
-                      icon: const Icon(Icons.directions),
-                      label: const Text('导航'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => PlaceDetailPage(placeId: place.id),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.info),
-                      label: const Text('更多信息'),
+                      icon: const Icon(Icons.near_me_rounded, color: Colors.white),
+                      label: const Text('开始导航', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: theme.primaryColor,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
                     ),
                   ),
                 ],
@@ -593,6 +763,26 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       },
     );
   }
+
+  // 辅助方法：构建信息标签
+  Widget _buildInfoChip(IconData icon, String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
 
 
   bool _isNavigating = false;
@@ -625,7 +815,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           target: startPoint,
           zoom: 19.0,      // 足够近，看到街道细节
           tilt: 0,      // 大角度倾斜，产生 3D 纵深感
-          bearing: _currentPosition?.heading ?? 0, // 初始朝向
+          bearing: 0, // 初始朝向
         ),
       ),
     );
@@ -668,7 +858,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             target: LatLng(position.latitude, position.longitude),
             zoom: 19.0,
             tilt: 0, 
-            bearing: position.heading, // 关键：让地图随你的方向转动
+            bearing: 0, // 固定北向  //bearing: position.heading, // 关键：让地图随你的方向转动
           ),
         ),
       );
@@ -818,6 +1008,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
                         const SizedBox(height: 10),
                         const Divider(height: 1),
+                        
 
                         // 二级分类 Bar
                         if (_selectedPrimary != null && subCategories.containsKey(_selectedPrimary))
@@ -914,9 +1105,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     final name = place.name;
     final rating = place.rating;
     final photoUrl = place.photoUrl;
+    final routeInfo = _routeResults[place.id];
 
     return Padding(
+      
       padding: const EdgeInsets.only(bottom: 12),
+      
       child: InkWell(
         onTap: () => _showPlaceDetails(place),
         borderRadius: BorderRadius.circular(15),
@@ -925,46 +1119,123 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(15),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05), 
+                blurRadius: 10, 
+                offset: const Offset(0, 4)
+              )
+            ],
             border: Border.all(color: Colors.grey[100]!),
           ),
           child: Row(
+            
+            crossAxisAlignment: CrossAxisAlignment.center, // 改为居中对齐，视觉更统一
             children: [
+              // 图片部分
               Container(
                 width: 40,
                 height: 40,
-                decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.blue[50]),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10), 
+                  color: Colors.blue[50]
+                ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(10),
                   child: photoUrl != null
-                      ? Image.network(photoUrl, fit: BoxFit.cover, errorBuilder: (c, e, s) => const Icon(Icons.image_not_supported))
-                      : Icon(Icons.location_on, color: Colors.blue[400], size: 26),
+                      ? Image.network(
+                          photoUrl, 
+                          fit: BoxFit.cover, 
+                          errorBuilder: (c, e, s) => const Icon(Icons.image_not_supported, size: 20)
+                        )
+                      : Icon(Icons.location_on, color: Colors.blue[400], size: 24),
                 ),
               ),
               const SizedBox(width: 12),
+              
+              // 信息部分
               Expanded(
-                child: Text(
-                  name,
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (rating != null)
-                Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min, // 紧凑布局
                   children: [
-                    const Icon(Icons.star, color: Colors.orange, size: 16),
-                    const SizedBox(width: 4),
                     Text(
-                      rating.toString(),
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.orange),
+                      name,
+                      style: const TextStyle(
+                        fontSize: 16, 
+                        fontWeight: FontWeight.bold, 
+                        color: Colors.black87
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    
+                    // Rating + Distance + Time (用 Dot 分隔)
+                    // 核心数据行：Rating · Distance · Time
+                    Row(
+                      children: [
+                        if (rating != null) ...[
+                          const Icon(Icons.star_rounded, color: Colors.orange, size: 18),
+                          const SizedBox(width: 2),
+                          Text(
+                            rating.toString(),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.orange,
+                            ),
+                          ),
+                          _buildDotSeparator(), // 后面定义的点分隔符
+                        ],
+                        
+                        if (routeInfo != null) ...[
+                          Icon(Icons.near_me_rounded, size: 14, color: Colors.blue[400]),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${(routeInfo.distanceMeters / 1000).toStringAsFixed(1)} km',
+                            style: TextStyle(fontSize: 13, color: Colors.grey[700], fontWeight: FontWeight.w500),
+                          ),
+                          _buildDotSeparator(),
+                          Icon(Icons.access_time_filled_rounded, size: 14, color: Colors.grey[400]),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${(routeInfo.durationSeconds ~/ 60)} min',
+                            style: TextStyle(fontSize: 13, color: Colors.grey[700], fontWeight: FontWeight.w500),
+                          ),
+                        ],
+                        
+                        // 如果都没有数据，显示默认提示
+                        if (rating == null && routeInfo == null)
+                          Text('查看详情', style: TextStyle(color: Colors.grey[400], fontSize: 13)),
+                      ],
                     ),
                   ],
                 ),
+              ),
+              
+              // 右侧小箭头指示
+              Icon(Icons.chevron_right_rounded, color: Colors.grey[300]),
             ],
           ),
         ),
       ),
     );
   }
+
+  // 辅助组件：分隔点
+  Widget _buildDotSeparator() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6), 
+      child: Text(
+        '•',
+        style: TextStyle(
+          color: Colors.grey[300], // 浅灰色，让它作为辅助元素存在
+          fontWeight: FontWeight.bold, // 改为 bold，粗细适中
+          fontSize: 14,
+        ),
+      ),
+    );
+  }
+
 }
