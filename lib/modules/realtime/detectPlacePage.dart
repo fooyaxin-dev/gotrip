@@ -16,6 +16,10 @@ import 'guidePage.dart';
     final List<PlaceModel> places;
     _CacheEntry(this.ts, this.places);
   }
+  
+  enum SortMode { distance, rating }
+  enum TravelMode { walk, drive, motor }
+
 
 class RealTimeDetectPage extends StatefulWidget {
   final double? landmarkLat;
@@ -28,14 +32,26 @@ class RealTimeDetectPage extends StatefulWidget {
 }
 
 class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+
   GoogleMapController? _mapController;
   Position? _currentPosition;
 
   final Set<Marker> _markers = {};
+  SortMode _sortMode = SortMode.distance; // 默认：按距离
+  TravelMode _travelMode = TravelMode.walk; // 默认：走路
+  bool _isTravelModeExpanded = false; // 放在 class 的顶部变量区
+  
+  IconData _getTravelIcon(TravelMode mode) {
+    switch (mode) {
+      case TravelMode.walk: return Icons.directions_walk;
+      case TravelMode.motor: return Icons.motorcycle;
+      case TravelMode.drive: return Icons.directions_car;
+      default: return Icons.directions_walk;
+    }
+  }
 
   Timer? _locationIdleTimer;
   static const Duration _locationIdleDelay = Duration(seconds: 2000); // 你可以调 5~15 秒
-
 
   StreamSubscription<Position>? _positionStream; // 添加位置监听的变量
   
@@ -529,7 +545,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         place.lng!,
       );
 
-      final durationSeconds = (distanceMeters / 1.4).round(); // 步行速度 1.4 m/s
+      final speed = _getSpeedMeterPerSecond();
+      final durationSeconds = (distanceMeters / speed).round();
+
 
       _routeResults[place.id] = RouteResult(
         polylinePoints: [], // 不需要路线
@@ -548,6 +566,18 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       );
     }
   }
+
+  double _getSpeedMeterPerSecond() {
+    switch (_travelMode) {
+      case TravelMode.walk:
+        return 1.4;   // 🚶 走路 ~5 km/h
+      case TravelMode.motor:
+        return 6.0;   // 🛵 摩托 / 骑车 ~20 km/h
+      case TravelMode.drive:
+        return 12.0;  // 🚗 开车（市区）~43 km/h
+    }
+  }
+
 
 
   void _animateToFitMarkers({bool keepZoom = false}) {
@@ -887,11 +917,35 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
 
+    // ✅ 新增：先准备一个按距离排序的列表
+    final List<PlaceModel> sortedPlaces = List.from(_nearbyPlaces);
+
+    sortedPlaces.sort((a, b) {
+      final aRoute = _routeResults[a.id];
+      final bRoute = _routeResults[b.id];
+
+      final aDistance = aRoute?.distanceMeters ?? double.infinity;
+      final bDistance = bRoute?.distanceMeters ?? double.infinity;
+
+      final aRating = a.rating ?? 0.0;
+      final bRating = b.rating ?? 0.0;
+
+      if (_sortMode == SortMode.distance) {
+        // 📍 距离近的排前面
+        return aDistance.compareTo(bDistance);
+      } else {
+        // ⭐ 评分高的排前面
+        return bRating.compareTo(aRating);
+      }
+
+    });
+
     return Scaffold(
       resizeToAvoidBottomInset: false,
+      extendBodyBehindAppBar: true, // 让地图延伸到状态栏
       body: Stack(
         children: [
-          // 地图层
+          // --- 1. 地图层 ---
           ValueListenableBuilder<double>(
             valueListenable: _bottomPaddingNotifier,
             builder: (context, extent, child) {
@@ -902,33 +956,33 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 markers: _markers,
                 polylines: _polylines,
                 onMapCreated: (controller) => _mapController = controller,
-                // 在 GoogleMap 构造函数里修改
                 padding: EdgeInsets.only(
-                bottom: _isNavigating ? 100 : 400, // 导航时底部留白改小，标就会回到中间
-                top: 60,
+                  bottom: _isNavigating ? 120 : (MediaQuery.of(context).size.height * extent),
+                  top: 60,
                 ),
               );
             },
           ),
 
-          // 返回按钮
+          // --- 2. 返回按钮 ---
           Positioned(
-            top: 40,
+            top: 50,
             left: 20,
             child: SafeArea(
               child: Material(
-                color: Colors.white,
-                shape: const CircleBorder(),
                 elevation: 4,
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                color: Colors.white,
                 child: IconButton(
-                  icon: const Icon(Icons.arrow_back),
+                  icon: const Icon(Icons.arrow_back_ios_new, size: 20, color: Colors.black87),
                   onPressed: () => Navigator.pop(context),
                 ),
               ),
             ),
           ),
 
-          // DraggableScrollableSheet（仅在非导航时显示）
+          // --- 3. 底部滑动面板 ---
           if (!_isNavigating)
             NotificationListener<DraggableScrollableNotification>(
               onNotification: (notification) {
@@ -939,66 +993,65 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 key: const PageStorageKey('gotrip_sheet_unique'),
                 initialChildSize: 0.4,
                 minChildSize: 0.2,
-                maxChildSize: 0.7,
+                maxChildSize: 0.85,
                 snap: true,
                 builder: (context, scrollController) {
                   return Container(
-                    decoration: const BoxDecoration(
+                    decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-                      boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 10)],
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+                      boxShadow: [
+                        BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15),
+                      ],
                     ),
                     child: Column(
                       children: [
                         // 面板把手
                         Container(
                           width: 40,
-                          height: 4,
-                          margin: const EdgeInsets.symmetric(vertical: 10),
+                          height: 5,
+                          margin: const EdgeInsets.symmetric(vertical: 12),
                           decoration: BoxDecoration(
                             color: Colors.grey[300],
-                            borderRadius: BorderRadius.circular(2),
+                            borderRadius: BorderRadius.circular(10),
                           ),
                         ),
 
-                        // 一级分类 Category Bar
+                        // --- 一级分类 Category Bar ---
                         SizedBox(
-                          height: 90,
+                          height: 95,
                           child: ListView.builder(
                             scrollDirection: Axis.horizontal,
-                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
                             itemCount: categories.length,
                             itemBuilder: (context, index) {
                               final cat = categories[index];
                               final isSelected = _selectedTypes.contains(cat['type']);
                               return Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 5),
+                                padding: const EdgeInsets.only(right: 12),
                                 child: GestureDetector(
                                   onTap: () => _toggleType(cat['type']),
-                                  child: Container(
-                                    width: 80,
-                                    decoration: BoxDecoration(
-                                      color: isSelected ? cat['color'] : Colors.grey[200],
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Icon(cat['icon'],
+                                  child: Column(
+                                    children: [
+                                      AnimatedContainer(
+                                        duration: const Duration(milliseconds: 200),
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: isSelected ? cat['color'] : Colors.grey[100],
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Icon(cat['icon'],
                                             color: isSelected ? Colors.white : Colors.grey[600],
-                                            size: 30),
-                                        const SizedBox(height: 5),
-                                        Text(
-                                          cat['name'],
+                                            size: 26),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(cat['name'],
                                           style: TextStyle(
-                                            color: isSelected ? Colors.white : Colors.grey[600],
-                                            fontSize: 12,
-                                            fontWeight:
-                                                isSelected ? FontWeight.bold : FontWeight.normal,
-                                          ),
-                                        )
-                                      ],
-                                    ),
+                                            fontSize: 11,
+                                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                            color: isSelected ? cat['color'] : Colors.grey[700],
+                                          )),
+                                    ],
                                   ),
                                 ),
                               );
@@ -1006,26 +1059,103 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                           ),
                         ),
 
-                        const SizedBox(height: 10),
-                        const Divider(height: 1),
-                        
+                        const Divider(height: 1, thickness: 0.5),
 
-                        // 二级分类 Bar
+                        // --- [新加内容] Travel Mode 选择器 ---
+                        // --- Travel Mode 弹出式设计 ---
+Padding(
+  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+  child: Row(
+    children: [
+      Text("Travel By:", style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+      const SizedBox(width: 12),
+      
+      // 这里是核心：点击会展开的容器
+      AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.blue[50],
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.blue[200]!),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 1. 当前选中的 Icon (点击它触发逻辑)
+            GestureDetector(
+              onTap: () {
+                setState(() {
+                  _isTravelModeExpanded = !(_isTravelModeExpanded ?? false);
+                });
+              },
+              child: Row(
+                children: [
+                  Icon(_getTravelIcon(_travelMode), color: Colors.blue[800], size: 20),
+                  Icon(
+                    _isTravelModeExpanded == true ? Icons.arrow_left : Icons.arrow_drop_down,
+                    color: Colors.blue[800],
+                  ),
+                ],
+              ),
+            ),
+
+            // 2. 展开的部分
+            if (_isTravelModeExpanded == true)
+              Row(
+                children: [
+                  const VerticalDivider(width: 16), // 分隔线
+                  _buildMiniIcon(TravelMode.walk, Icons.directions_walk),
+                  _buildMiniIcon(TravelMode.motor, Icons.motorcycle),
+                  _buildMiniIcon(TravelMode.drive, Icons.directions_car),
+                ],
+              ),
+          ],
+        ),
+      ),
+    ],
+  ),
+),
+
+                        // --- 排序功能 (Nearest / High Rating) ---
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                          child: Row(
+                            children: [
+                              ChoiceChip(
+                                label: const Text("Nearest"),
+                                selected: _sortMode == SortMode.distance,
+                                onSelected: (_) => setState(() => _sortMode = SortMode.distance),
+                                selectedColor: Colors.blue[100],
+                              ),
+                              const SizedBox(width: 8),
+                              ChoiceChip(
+                                label: const Text("High ⭐"),
+                                selected: _sortMode == SortMode.rating,
+                                onSelected: (_) => setState(() => _sortMode = SortMode.rating),
+                                selectedColor: Colors.blue[100],
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        // 二级分类 (如果有)
                         if (_selectedPrimary != null && subCategories.containsKey(_selectedPrimary))
                           _buildSecondaryBar(),
 
-                        const Divider(height: 1),
+                        const Divider(height: 1, thickness: 0.5),
 
-                        // 地点列表
+                        // --- 地点列表 ---
                         Expanded(
                           child: _nearbyPlaces.isEmpty && !_isLoading
                               ? _buildEmptyState()
                               : ListView.builder(
                                   controller: scrollController,
-                                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                                  itemCount: _nearbyPlaces.length,
+                                  padding: const EdgeInsets.all(16),
+                                  itemCount: sortedPlaces.length,
                                   itemBuilder: (context, index) =>
-                                      _buildPlaceCard(_nearbyPlaces[index]),
+                                      _buildPlaceCard(sortedPlaces[index]),
                                 ),
                         ),
                       ],
@@ -1035,14 +1165,91 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
               ),
             ),
 
-          // 加载动画
-          if (_isLoading) const Center(child: CircularProgressIndicator()),
+          // 加载中
+          if (_isLoading)
+            const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
         ],
       ),
     );
   }
 
 
+  Widget _buildModernChip({required String label, required bool isSelected, required VoidCallback onTap}) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: isSelected,
+      onSelected: (_) => onTap(),
+      selectedColor: Colors.blue[100],
+      labelStyle: TextStyle(
+        color: isSelected ? Colors.blue[800] : Colors.grey[600],
+        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+      ),
+      backgroundColor: Colors.grey[100],
+      shape: StadiumBorder(side: BorderSide(color: isSelected ? Colors.blue[300]! : Colors.transparent)),
+    );
+  }
+
+  Widget _buildTravelModeItem(TravelMode mode, IconData icon, String label) {
+    final isSelected = _travelMode == mode;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() => _travelMode = mode),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: isSelected ? Colors.blue[50] : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isSelected ? Colors.blue[400]! : Colors.grey[300]!,
+              width: 1,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 16, color: isSelected ? Colors.blue[700] : Colors.grey[600]),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  color: isSelected ? Colors.blue[800] : Colors.grey[700],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMiniIcon(TravelMode mode, IconData icon) {
+    bool isSelected = _travelMode == mode;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _travelMode = mode;
+          _isTravelModeExpanded = false; // 选完自动收起
+          _updateRouteTimesForTravelMode(); // ✅ 更新时间
+        });
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        margin: const EdgeInsets.only(left: 4),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.blue[200] : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Icon(
+          icon,
+          size: 18,
+          color: isSelected ? Colors.blue[900] : Colors.blue[400],
+        ),
+      ),
+    );
+}
 
   Widget _buildSecondaryBar() {
     final subs = subCategories[_selectedPrimary] ?? [];
@@ -1222,6 +1429,27 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       ),
     );
   }
+
+  void _updateRouteTimesForTravelMode() {
+    if (_currentPosition == null) return;
+
+    for (final place in _nearbyPlaces) {
+      final route = _routeResults[place.id];
+      if (route == null) continue;
+
+      final distanceMeters = route.distanceMeters;
+      final speed = _getSpeedMeterPerSecond();
+      final durationSeconds = (distanceMeters / speed).round();
+
+      _routeResults[place.id] = RouteResult(
+        polylinePoints: route.polylinePoints,
+        bounds: route.bounds,
+        distanceMeters: distanceMeters,
+        durationSeconds: durationSeconds,
+      );
+    }
+  }
+
 
   // 辅助组件：分隔点
   Widget _buildDotSeparator() {
