@@ -31,7 +31,4 @@ class PlaceModel {
       secondaryType: secondary,
     );
   }
-
-
-
 }
