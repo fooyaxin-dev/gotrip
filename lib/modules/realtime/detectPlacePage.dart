@@ -1,24 +1,23 @@
 import 'dart:async';
 import 'dart:math';
-import 'placeDetailPage.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import 'placeDetailPage.dart';
 import '../../services/placesAPI_service.dart';
 import '../../services/location_service.dart';
 import '../../services/placeModal.dart';
 import 'guidePage.dart';
 
-    // 二级缓存
-  class _CacheEntry {
-    final DateTime ts;
-    final List<PlaceModel> places;
-    _CacheEntry(this.ts, this.places);
-  }
-  
-  enum SortMode { distance, rating }
-  enum TravelMode { walk, drive, motor }
+// 二级缓存
+class _CacheEntry {
+  final DateTime ts;
+  final List<PlaceModel> places;
+  _CacheEntry(this.ts, this.places);
+}
+enum SortMode { distance, rating }
+enum TravelMode { walk, drive, motor }
 
 
 class RealTimeDetectPage extends StatefulWidget {
@@ -40,46 +39,41 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   SortMode _sortMode = SortMode.distance; // 默认：按距离
   TravelMode _travelMode = TravelMode.walk; // 默认：走路
   bool _isTravelModeExpanded = false; // 放在 class 的顶部变量区
-  
-  IconData _getTravelIcon(TravelMode mode) {
-    switch (mode) {
-      case TravelMode.walk: return Icons.directions_walk;
-      case TravelMode.motor: return Icons.motorcycle;
-      case TravelMode.drive: return Icons.directions_car;
-      default: return Icons.directions_walk;
-    }
-  }
 
+  //位置监听相关
   Timer? _locationIdleTimer;
   static const Duration _locationIdleDelay = Duration(seconds: 2000); // 你可以调 5~15 秒
-
   StreamSubscription<Position>? _positionStream; // 添加位置监听的变量
-  
+
+  //数据存储
   final List<PlaceModel> _nearbyPlaces = [];
   Map<String, RouteResult> _routeResults = {};
-
   int _searchToken = 0;
   bool _isLoading = false;
 
+  //筛选相关
   List<String> _selectedTypes = ['all'];
   String? _selectedPrimary;
   String? _selectedSecondary;
-
   Timer? _secondaryDebounce;
+  late CameraPosition _initialCameraPosition;
 
+  //缓存系统
   // -----------------------------
-  // 一级缓存（你原本就有）
+  // 一级缓存
   // -----------------------------
   final List<PlaceModel> _allPlacesCache = [];
   final Map<String, List<PlaceModel>> _placesByTypeCache = {};
 
   // -----------------------------
-  // 二级缓存（新增）
+  // 二级缓存
   // -----------------------------
 
   final Map<String, _CacheEntry> _secondaryCache = {};
   static const Duration _secondaryCacheTtl = Duration(minutes: 5);
 
+
+  //一级分类
   // -----------------------------
   // 一级 category bar
   // -----------------------------
@@ -95,6 +89,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     {'name': '银行', 'icon': Icons.account_balance, 'type': 'bank', 'color': Colors.teal},
   ];
 
+  //二级分类
   // -----------------------------
   // 二级筛选（按 primary 分类）
   // - keyword: 用于 Google searchText 召回
@@ -138,8 +133,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       {'key': 'homestay', 'label': 'Guest House', 'keyword': 'guest house homestay', 'allowTypes': <String>['lodging']},
     ],
   };
-
-  late CameraPosition _initialCameraPosition;
 
   @override
   void initState() {
@@ -206,6 +199,18 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   }
 
+      //辅助方法
+  void _showErrorDialog(String title, String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('确定'))],
+      ),
+    );
+  }
+
   void _toggleType(String type) {
     setState(() {
       if (type == 'all') {
@@ -255,16 +260,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
     setState(() => _isLoading = false);
     _animateToFitMarkers(keepZoom: true);
-  }
-
-
-  void _drawFromCache(List<PlaceModel> cache, int token) {
-    for (final place in cache) {
-      if (token != _searchToken) return;
-      _addMarkerAndPlace(place);
-    }
-    setState(() => _isLoading = false);
-    _animateToFitMarkers();
   }
 
   Future<void> _searchNearbyPlaces(String type, int token) async {
@@ -509,6 +504,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     setState(() => _isLoading = false);
   }
 
+  void _drawFromCache(List<PlaceModel> cache, int token) {
+    for (final place in cache) {
+      if (token != _searchToken) return;
+      _addMarkerAndPlace(place);
+    }
+    setState(() => _isLoading = false);
+    _animateToFitMarkers();
+  }
 
 
   void _addMarkerAndPlace(PlaceModel place) {
@@ -895,21 +898,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     });
   }
 
-
-  void _showErrorDialog(String title, String message) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('确定'))],
-      ),
-    );
-  }
-
-  // 替换掉之前的 _panelExtent
-  final ValueNotifier<double> _mapBottomPadding = ValueNotifier(0.4);
-  // 在类顶部定义
   final ValueNotifier<double> _bottomPaddingNotifier = ValueNotifier(0.4);
   double _lastExtent = 0.4; // 记录上一次的面板高度
 
@@ -1063,60 +1051,60 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
                         // --- [新加内容] Travel Mode 选择器 ---
                         // --- Travel Mode 弹出式设计 ---
-Padding(
-  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-  child: Row(
-    children: [
-      Text("Travel By:", style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-      const SizedBox(width: 12),
-      
-      // 这里是核心：点击会展开的容器
-      AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: Colors.blue[50],
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.blue[200]!),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 1. 当前选中的 Icon (点击它触发逻辑)
-            GestureDetector(
-              onTap: () {
-                setState(() {
-                  _isTravelModeExpanded = !(_isTravelModeExpanded ?? false);
-                });
-              },
-              child: Row(
-                children: [
-                  Icon(_getTravelIcon(_travelMode), color: Colors.blue[800], size: 20),
-                  Icon(
-                    _isTravelModeExpanded == true ? Icons.arrow_left : Icons.arrow_drop_down,
-                    color: Colors.blue[800],
-                  ),
-                ],
-              ),
-            ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          child: Row(
+                            children: [
+                              Text("Travel By:", style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+                              const SizedBox(width: 12),
+                              
+                              // 这里是核心：点击会展开的容器
+                              AnimatedContainer(
+                                duration: const Duration(milliseconds: 300),
+                                curve: Curves.easeInOut,
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue[50],
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: Colors.blue[200]!),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    // 1. 当前选中的 Icon (点击它触发逻辑)
+                                    GestureDetector(
+                                      onTap: () {
+                                        setState(() {
+                                          _isTravelModeExpanded = !(_isTravelModeExpanded ?? false);
+                                        });
+                                      },
+                                      child: Row(
+                                        children: [
+                                          Icon(_getTravelIcon(_travelMode), color: Colors.blue[800], size: 20),
+                                          Icon(
+                                            _isTravelModeExpanded == true ? Icons.arrow_left : Icons.arrow_drop_down,
+                                            color: Colors.blue[800],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
 
-            // 2. 展开的部分
-            if (_isTravelModeExpanded == true)
-              Row(
-                children: [
-                  const VerticalDivider(width: 16), // 分隔线
-                  _buildMiniIcon(TravelMode.walk, Icons.directions_walk),
-                  _buildMiniIcon(TravelMode.motor, Icons.motorcycle),
-                  _buildMiniIcon(TravelMode.drive, Icons.directions_car),
-                ],
-              ),
-          ],
-        ),
-      ),
-    ],
-  ),
-),
+                                    // 2. 展开的部分
+                                    if (_isTravelModeExpanded == true)
+                                      Row(
+                                        children: [
+                                          const VerticalDivider(width: 16), // 分隔线
+                                          _buildMiniIcon(TravelMode.walk, Icons.directions_walk),
+                                          _buildMiniIcon(TravelMode.motor, Icons.motorcycle),
+                                          _buildMiniIcon(TravelMode.drive, Icons.directions_car),
+                                        ],
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
 
                         // --- 排序功能 (Nearest / High Rating) ---
                         Padding(
@@ -1249,7 +1237,16 @@ Padding(
         ),
       ),
     );
-}
+  }
+
+  IconData _getTravelIcon(TravelMode mode) {
+    switch (mode) {
+      case TravelMode.walk: return Icons.directions_walk;
+      case TravelMode.motor: return Icons.motorcycle;
+      case TravelMode.drive: return Icons.directions_car;
+      default: return Icons.directions_walk;
+    }
+  }
 
   Widget _buildSecondaryBar() {
     final subs = subCategories[_selectedPrimary] ?? [];
