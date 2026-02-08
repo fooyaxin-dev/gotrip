@@ -66,7 +66,9 @@ class _HomePageState extends State<HomePage> {
 
       final pages = [
       MainPage(username: _username),
-      const RealTimeDetectPage(),
+      RealTimeDetectPage(onBack: () {
+        setState(() => _currentIndex = 0); // 👈 回到 Home
+      }),
       const SizedBox(),
       const InteractionPage(),
       const ProfilePage(),

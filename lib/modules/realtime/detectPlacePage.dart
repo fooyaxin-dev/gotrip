@@ -23,8 +23,9 @@ enum TravelMode { walk, drive, motor }
 class RealTimeDetectPage extends StatefulWidget {
   final double? landmarkLat;
   final double? landmarkLng;
+    final VoidCallback onBack;
 
-  const RealTimeDetectPage({super.key, this.landmarkLat, this.landmarkLng});
+  const RealTimeDetectPage({super.key, this.landmarkLat, this.landmarkLng, required this.onBack});
 
   @override
   State<RealTimeDetectPage> createState() => _RealTimeDetectPageState();
@@ -56,7 +57,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   String? _selectedPrimary;
   String? _selectedSecondary;
   Timer? _secondaryDebounce;
-  late CameraPosition _initialCameraPosition;
+  CameraPosition? _initialCameraPosition;
+
 
   //缓存系统
   // -----------------------------
@@ -210,6 +212,51 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       ),
     );
   }
+  
+  Future<void> _searchNearbyPlaces(String type, int token) async {
+      if (_currentPosition == null) return;
+
+      try {
+        List<PlaceModel> results;
+
+        if (_placesByTypeCache.containsKey(type)) {
+          results = _placesByTypeCache[type]!;
+        } else {
+          final apiResults = await PlacesApiService.searchNearby(
+            lat: _currentPosition!.latitude,
+            lng: _currentPosition!.longitude,
+            type: type,
+            radius: 5000,
+          );
+
+          results = apiResults.map((p) {
+            try {
+              final place = PlaceModel.fromGoogle(p, primary: type);
+              if (place.lat == null || place.lng == null) return null;
+              return place;
+            } catch (_) {
+              return null;
+            }
+          }).whereType<PlaceModel>().toList();
+
+          _placesByTypeCache[type] = results;
+          for (final p in results) {
+            if (!_allPlacesCache.any((e) => e.id == p.id)) _allPlacesCache.add(p);
+          }
+        }
+
+        for (final place in results) {
+          if (token != _searchToken) return;
+          _addMarkerAndPlace(place);
+        }
+
+        setState(() => _isLoading = false);
+        _animateToFitMarkers(keepZoom: true);
+      } catch (_) {
+        if (token != _searchToken) return;
+        setState(() => _isLoading = false);
+      }
+    }
 
   void _toggleType(String type) {
     setState(() {
@@ -262,51 +309,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     _animateToFitMarkers(keepZoom: true);
   }
 
-  Future<void> _searchNearbyPlaces(String type, int token) async {
-    if (_currentPosition == null) return;
-
-    try {
-      List<PlaceModel> results;
-
-      if (_placesByTypeCache.containsKey(type)) {
-        results = _placesByTypeCache[type]!;
-      } else {
-        final apiResults = await PlacesApiService.searchNearby(
-          lat: _currentPosition!.latitude,
-          lng: _currentPosition!.longitude,
-          type: type,
-          radius: 5000,
-        );
-
-        results = apiResults.map((p) {
-          try {
-            final place = PlaceModel.fromGoogle(p, primary: type);
-            if (place.lat == null || place.lng == null) return null;
-            return place;
-          } catch (_) {
-            return null;
-          }
-        }).whereType<PlaceModel>().toList();
-
-        _placesByTypeCache[type] = results;
-        for (final p in results) {
-          if (!_allPlacesCache.any((e) => e.id == p.id)) _allPlacesCache.add(p);
-        }
-      }
-
-      for (final place in results) {
-        if (token != _searchToken) return;
-        _addMarkerAndPlace(place);
-      }
-
-      setState(() => _isLoading = false);
-      _animateToFitMarkers(keepZoom: true);
-    } catch (_) {
-      if (token != _searchToken) return;
-      setState(() => _isLoading = false);
-    }
-  }
-
+  
   // -----------------------------
   // 二级（Google 化）：searchText + types 精筛 + cache + 去重
   // -----------------------------
@@ -318,7 +321,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     return '${_selectedPrimary ?? ''}|${_selectedSecondary ?? ''}|$rLat,$rLng';
   }
 
-// -----------------------------
+  // -----------------------------
   // 二级（Google 化）：searchText + types 精筛 + cache + 去重
   // -----------------------------
   Future<void> _applySecondaryFilterGoogle() async {
@@ -901,11 +904,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   final ValueNotifier<double> _bottomPaddingNotifier = ValueNotifier(0.4);
   double _lastExtent = 0.4; // 记录上一次的面板高度
 
- @override
+  @override
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
 
-    // ✅ 新增：先准备一个按距离排序的列表
+    // ✅ 先准备一个按排序模式排序的列表
     final List<PlaceModel> sortedPlaces = List.from(_nearbyPlaces);
 
     sortedPlaces.sort((a, b) {
@@ -919,26 +922,29 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       final bRating = b.rating ?? 0.0;
 
       if (_sortMode == SortMode.distance) {
-        // 📍 距离近的排前面
         return aDistance.compareTo(bDistance);
       } else {
-        // ⭐ 评分高的排前面
         return bRating.compareTo(aRating);
       }
-
     });
+
+    if (_initialCameraPosition == null) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
-      extendBodyBehindAppBar: true, // 让地图延伸到状态栏
+      extendBodyBehindAppBar: true,
       body: Stack(
         children: [
-          // --- 1. 地图层 ---
+          // ===== 1. 地图层 =====
           ValueListenableBuilder<double>(
             valueListenable: _bottomPaddingNotifier,
             builder: (context, extent, child) {
               return GoogleMap(
-                initialCameraPosition: _initialCameraPosition,
+                initialCameraPosition: _initialCameraPosition!,
                 myLocationEnabled: true,
                 myLocationButtonEnabled: false,
                 markers: _markers,
@@ -952,7 +958,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             },
           ),
 
-          // --- 2. 返回按钮 ---
+          // ===== 2. 返回按钮 =====
           Positioned(
             top: 50,
             left: 20,
@@ -964,18 +970,22 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 color: Colors.white,
                 child: IconButton(
                   icon: const Icon(Icons.arrow_back_ios_new, size: 20, color: Colors.black87),
-                  onPressed: () => Navigator.pop(context),
+                  onPressed: () {
+                    widget.onBack(); // ⭐ 注意：是 widget.onBack()
+                  },
+
+
                 ),
               ),
             ),
           ),
 
-          // --- 3. 底部滑动面板 ---
+          // ===== 3. 底部滑动面板 =====
           if (!_isNavigating)
             NotificationListener<DraggableScrollableNotification>(
               onNotification: (notification) {
                 _bottomPaddingNotifier.value = notification.extent;
-                return true;
+                return false;
               },
               child: DraggableScrollableSheet(
                 key: const PageStorageKey('gotrip_sheet_unique'),
@@ -992,20 +1002,38 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                         BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15),
                       ],
                     ),
-                    child: Column(
+                    child: ListView(
+                      controller: scrollController, // ⭐ 核心：整个面板共用这个
+                      padding: EdgeInsets.zero,
                       children: [
-                        // 面板把手
-                        Container(
-                          width: 40,
-                          height: 5,
-                          margin: const EdgeInsets.symmetric(vertical: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.grey[300],
-                            borderRadius: BorderRadius.circular(10),
+                        // ===== 把手 =====
+                        Center(
+                          child: Column(
+                            children: [
+                              const SizedBox(height: 8), // 顶部间距
+                              Container(
+                                width: 45,
+                                height: 5,
+                                decoration: BoxDecoration(
+                                  color: Colors.grey[300],
+                                  borderRadius: BorderRadius.circular(10),
+                                  // 加一个微弱的内阴影效果
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.05),
+                                      spreadRadius: 1,
+                                      blurRadius: 1,
+                                      offset: const Offset(0, 1),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 4), // 增加一点底部感
+                            ],
                           ),
                         ),
 
-                        // --- 一级分类 Category Bar ---
+                        // ===== 一级分类 =====
                         SizedBox(
                           height: 95,
                           child: ListView.builder(
@@ -1028,17 +1056,21 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                                           color: isSelected ? cat['color'] : Colors.grey[100],
                                           shape: BoxShape.circle,
                                         ),
-                                        child: Icon(cat['icon'],
-                                            color: isSelected ? Colors.white : Colors.grey[600],
-                                            size: 26),
+                                        child: Icon(
+                                          cat['icon'],
+                                          color: isSelected ? Colors.white : Colors.grey[600],
+                                          size: 26,
+                                        ),
                                       ),
                                       const SizedBox(height: 6),
-                                      Text(cat['name'],
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                                            color: isSelected ? cat['color'] : Colors.grey[700],
-                                          )),
+                                      Text(
+                                        cat['name'],
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                          color: isSelected ? cat['color'] : Colors.grey[700],
+                                        ),
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -1049,16 +1081,13 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
                         const Divider(height: 1, thickness: 0.5),
 
-                        // --- [新加内容] Travel Mode 选择器 ---
-                        // --- Travel Mode 弹出式设计 ---
+                        // ===== Travel Mode =====
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                           child: Row(
                             children: [
                               Text("Travel By:", style: TextStyle(color: Colors.grey[600], fontSize: 13)),
                               const SizedBox(width: 12),
-                              
-                              // 这里是核心：点击会展开的容器
                               AnimatedContainer(
                                 duration: const Duration(milliseconds: 300),
                                 curve: Curves.easeInOut,
@@ -1071,7 +1100,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    // 1. 当前选中的 Icon (点击它触发逻辑)
                                     GestureDetector(
                                       onTap: () {
                                         setState(() {
@@ -1082,18 +1110,18 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                                         children: [
                                           Icon(_getTravelIcon(_travelMode), color: Colors.blue[800], size: 20),
                                           Icon(
-                                            _isTravelModeExpanded == true ? Icons.arrow_left : Icons.arrow_drop_down,
+                                            _isTravelModeExpanded == true
+                                                ? Icons.arrow_left
+                                                : Icons.arrow_drop_down,
                                             color: Colors.blue[800],
                                           ),
                                         ],
                                       ),
                                     ),
-
-                                    // 2. 展开的部分
                                     if (_isTravelModeExpanded == true)
                                       Row(
                                         children: [
-                                          const VerticalDivider(width: 16), // 分隔线
+                                          const VerticalDivider(width: 16),
                                           _buildMiniIcon(TravelMode.walk, Icons.directions_walk),
                                           _buildMiniIcon(TravelMode.motor, Icons.motorcycle),
                                           _buildMiniIcon(TravelMode.drive, Icons.directions_car),
@@ -1106,46 +1134,50 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                           ),
                         ),
 
-                        // --- 排序功能 (Nearest / High Rating) ---
+                        // ===== 排序 =====
                         Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           child: Row(
                             children: [
-                              ChoiceChip(
-                                label: const Text("Nearest"),
-                                selected: _sortMode == SortMode.distance,
-                                onSelected: (_) => setState(() => _sortMode = SortMode.distance),
-                                selectedColor: Colors.blue[100],
+                              _buildStyledFilterChip(
+                                label: "Nearest",
+                                isSelected: _sortMode == SortMode.distance,
+                                onTap: () => setState(() => _sortMode = SortMode.distance),
+                                icon: Icons.near_me_outlined,
                               ),
                               const SizedBox(width: 8),
-                              ChoiceChip(
-                                label: const Text("High ⭐"),
-                                selected: _sortMode == SortMode.rating,
-                                onSelected: (_) => setState(() => _sortMode = SortMode.rating),
-                                selectedColor: Colors.blue[100],
+                              _buildStyledFilterChip(
+                                label: "High",
+                                isSelected: _sortMode == SortMode.rating,
+                                onTap: () => setState(() => _sortMode = SortMode.rating),
+                                icon: Icons.star_outline_rounded,
                               ),
                             ],
                           ),
                         ),
 
-                        // 二级分类 (如果有)
+                        // ===== 二级分类 =====
                         if (_selectedPrimary != null && subCategories.containsKey(_selectedPrimary))
                           _buildSecondaryBar(),
 
                         const Divider(height: 1, thickness: 0.5),
 
-                        // --- 地点列表 ---
-                        Expanded(
-                          child: _nearbyPlaces.isEmpty && !_isLoading
-                              ? _buildEmptyState()
-                              : ListView.builder(
-                                  controller: scrollController,
-                                  padding: const EdgeInsets.all(16),
-                                  itemCount: sortedPlaces.length,
-                                  itemBuilder: (context, index) =>
-                                      _buildPlaceCard(sortedPlaces[index]),
-                                ),
-                        ),
+                        // ===== 地点列表 =====
+                        if (_nearbyPlaces.isEmpty && !_isLoading)
+                          SizedBox(
+                            height: 300,
+                            child: _buildEmptyState(),
+                          )
+                        else
+                          ...List.generate(
+                            sortedPlaces.length,
+                            (index) => Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: _buildPlaceCard(sortedPlaces[index]),
+                            ),
+                          ),
+
+                        const SizedBox(height: 24),
                       ],
                     ),
                   );
@@ -1153,7 +1185,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
               ),
             ),
 
-          // 加载中
+          // ===== 加载中 =====
           if (_isLoading)
             const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
         ],
@@ -1250,10 +1282,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   Widget _buildSecondaryBar() {
     final subs = subCategories[_selectedPrimary] ?? [];
-    return SizedBox(
-      height: 60,
+    return Container(
+      height: 40, // 稍微压缩高度，更精致
+      margin: const EdgeInsets.only(
+        top: 4,     // 顶部间距
+        bottom: 12, // ✅ 这里增加了底部的 Margin，让它离下方的分隔线或列表远一点
+      ),
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
         itemCount: subs.length,
         itemBuilder: (context, index) {
           final item = subs[index];
@@ -1261,13 +1298,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           final isSelected = _selectedSecondary == key;
 
           return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: ChoiceChip(
-              label: Text(item['label'] as String),
-              selected: isSelected,
-              onSelected: (_) {
+            padding: const EdgeInsets.only(right: 8),
+            child: _buildStyledFilterChip(
+              label: item['label'] as String,
+              isSelected: isSelected,
+              onTap: () {
                 setState(() => _selectedSecondary = key);
-
                 _secondaryDebounce?.cancel();
                 _secondaryDebounce = Timer(const Duration(milliseconds: 350), () {
                   if (_selectedSecondary == 'all') {
@@ -1280,6 +1316,51 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildStyledFilterChip({
+    required String label,
+    required bool isSelected,
+    required VoidCallback onTap,
+    IconData? icon,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          // 选中时用深色/品牌色，未选中时用极浅灰色
+          color: isSelected ? Colors.blue[600] : Colors.grey[100],
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isSelected ? Colors.blue[600]! : Colors.grey[200]!,
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(
+                icon,
+                size: 16,
+                color: isSelected ? Colors.white : Colors.grey[600],
+              ),
+              const SizedBox(width: 4),
+            ],
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                color: isSelected ? Colors.white : Colors.grey[700],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

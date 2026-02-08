@@ -243,6 +243,9 @@ class _ResultPageState extends State<ResultPage>
                                                           builder: (_) => RealTimeDetectPage(
                                                             landmarkLat: pos.latitude,
                                                             landmarkLng: pos.longitude,
+                                                            onBack: () {
+                                                              Navigator.pop(context);
+                                                            },
                                                           ),
                                                         ),
                                                       );
