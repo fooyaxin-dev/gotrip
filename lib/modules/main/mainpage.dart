@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'bottomnav.dart';
 import '../../services/location_service.dart';
+import '../../services/placeModal.dart';
+import '../../services/nearbyPlace_service.dart';
 
 
 // ================= MainPage  =================
@@ -17,6 +19,8 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
 
   late PageController _pageController;
+  List<PlaceModel> _nearbyPlaces = [];
+  bool _loadingNearby = true;
 
   // ===== 天气状态（假数据）=====
   final String _weatherCondition = "sunny"; // sunny / cloudy / rainy
@@ -26,25 +30,25 @@ class _MainPageState extends State<MainPage> {
   void initState() {
     super.initState();
     _pageController = PageController(viewportFraction: 0.8);
-
-
-    // 初始化定位
-    _initLocation();
+    _initAndLoad();
   }
 
-  Future<void> _initLocation() async {
-    try {
-      await LocationService.instance.initLocation();
-      setState(() {
-      // 可以在界面显示用户位置
-      final pos = LocationService.instance.currentPosition;
-      print('User location: ${pos?.latitude}, ${pos?.longitude}');
-      });
-      } catch (e) {
-      print('Location error: $e');
-      // 可以弹窗提示用户打开定位
-    }
+  Future<void> _initAndLoad() async {
+    await _initLocation();
+    await _loadNearby();
   }
+
+
+Future<void> _initLocation() async {
+  try {
+    await LocationService.instance.initLocation();
+    final pos = LocationService.instance.currentPosition;
+    print('User location: ${pos?.latitude}, ${pos?.longitude}');
+  } catch (e) {
+    print('Location error: $e');
+  }
+}
+
 
   @override
   void dispose() {
@@ -70,35 +74,42 @@ class _MainPageState extends State<MainPage> {
   final List<Map<String, dynamic>> _categories = [
     {
       "label": "All",
-      "icon": Icons.grid_view_rounded,        // 全部 / 浏览
-      "color": const Color(0xFFCCFBF1),              // Mint
+      "type": "all",
+      "icon": Icons.grid_view_rounded,
+      "color": const Color(0xFFCCFBF1),
     },
     {
       "label": "Nature",
-      "icon": Icons.park_rounded,              // 🌿 自然 / 公园
-      "color": const Color(0xFFDCFCE7),              // Soft Green
+      "type": "park",
+      "icon": Icons.park_rounded,
+      "color": const Color(0xFFDCFCE7),
     },
     {
       "label": "Historical",
-      "icon": Icons.account_balance_rounded,   // 🏛️ 历史建筑
-      "color": const Color(0xFFFFEDD5),              // Warm Sand
+      "type": "tourist_attraction",
+      "icon": Icons.account_balance_rounded,
+      "color": const Color(0xFFFFEDD5),
     },
     {
       "label": "Shopping",
-      "icon": Icons.shopping_bag_rounded,      // 🛍️ 购物
-      "color": const Color(0xFFE0E7FF),              // Indigo Soft
+      "type": "shopping_mall",
+      "icon": Icons.shopping_bag_rounded,
+      "color": const Color(0xFFE0E7FF),
     },
     {
       "label": "Food",
-      "icon": Icons.restaurant_rounded,        // 🍴 美食
-      "color": const Color(0xFFFFE4E6),              // Rose
+      "type": "restaurant",
+      "icon": Icons.restaurant_rounded,
+      "color": const Color(0xFFFFE4E6),
     },
     {
       "label": "Entertainment",
-      "icon": Icons.local_activity_rounded,    // 🎡 娱乐 / 景点
-      "color": const Color(0xFFF3E8FF),              // Purple Soft
+      "type": "amusement_park",
+      "icon": Icons.local_activity_rounded,
+      "color": const Color(0xFFF3E8FF),
     },
   ];
+
 
   String _selectedCategory = "All";
 
@@ -166,31 +177,41 @@ Widget build(BuildContext context) {
           const SizedBox(height: 15),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 25),
-            child: Column(
-              children: _selectedCategory == "Food"
-                  ? [
-                      _buildTrendingCard("Jalan Alor", "Kuala Lumpur", "6 min", Icons.restaurant),
-                      _buildTrendingCard("Lot 10 Hutong", "Kuala Lumpur", "9 min", Icons.restaurant_menu),
-                    ]
-                  : _selectedCategory == "Shopping"
-                      ? [
-                          _buildTrendingCard("Pavilion KL", "Kuala Lumpur", "8 min", Icons.shopping_bag),
-                          _buildTrendingCard("Suria KLCC", "Kuala Lumpur", "10 min", Icons.store),
-                        ]
-                      : _selectedCategory == "Nature"
-                          ? [
-                              _buildTrendingCard("KL Forest Eco Park", "Kuala Lumpur", "7 min", Icons.park),
-                            ]
-                          : [ // All
-                              _buildTrendingCard("KLCC Park", "Kuala Lumpur", "5 min", Icons.park_rounded),
-                            ],
-            ),
+            child: _loadingNearby
+                ? const Center(child: CircularProgressIndicator())
+                : Column(
+                    children: _nearbyPlaces.take(5).map((p) {
+                      return _buildTrendingCard(
+                        p.name ?? "Unknown",
+                        p.address ?? "",
+                        p.rating ?? 0.0,        // ⭐ 评分（double）
+                        p.photoUrl ?? "",       // 🖼️ 图片 URL（String）
+                      );
+                    }).toList(),
+                  ),
           ),
-
         ],
       ),
     ),
   );
+}
+
+
+Future<void> _loadNearby() async {
+  try {
+    final places = await NearbyPlacesService.instance
+        .LoadNearbyPlacesFromApi(_categories);
+
+    setState(() {
+      _nearbyPlaces = places;
+      _loadingNearby = false;
+    });
+  } catch (e) {
+    print("Load nearby error: $e");
+    setState(() {
+      _loadingNearby = false;
+    });
+  }
 }
 
 
@@ -445,32 +466,112 @@ Widget build(BuildContext context) {
     );
   }
 
-  Widget _buildTrendingCard(String name, String loc, String dist, IconData icon) {
+  Widget _buildTrendingCard(String name, String loc, double rate, String pic) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 16, left: 4, right: 4), // 留出阴影空间
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10)],
+        borderRadius: BorderRadius.circular(20), // 更圆润的角
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            offset: const Offset(0, 4),
+            blurRadius: 16,
+          ),
+        ],
+        border: Border.all(color: Colors.grey.withOpacity(0.05)), // 极浅的边框增加高级感
       ),
       child: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: const Color(0xFF6366F1).withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, color: const Color(0xFF6366F1), size: 20),
+          // ---- 左边图片 ----
+          Hero( // 假设会有跳转，加个Hero动画占位
+            tag: name,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: pic.isNotEmpty
+                  ? Image.network(
+                      pic,
+                      width: 60, // 稍微加大
+                      height: 60,
+                      fit: BoxFit.cover,
+                    )
+                  : Container(
+                      width: 60,
+                      height: 60,
+                      color: const Color(0xFF6366F1).withOpacity(0.1),
+                      child: const Icon(Icons.map_rounded, color: Color(0xFF6366F1), size: 28),
+                    ),
+            ),
           ),
-          const SizedBox(width: 15),
+
+          const SizedBox(width: 16),
+
+          // ---- 中间文字 ----
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-              Text(loc, style: const TextStyle(color: Colors.grey, fontSize: 12)),
-            ]),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700, // 更粗的字体
+                    fontSize: 15,
+                    color: Color(0xFF1F2937), // 深灰色替代纯黑
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Icon(Icons.location_on_outlined, size: 14, color: Colors.grey[400]),
+                    const SizedBox(width: 2),
+                    Expanded(
+                      child: Text(
+                        loc,
+                        style: TextStyle(
+                          color: Colors.grey[500],
+                          fontSize: 12,
+                          letterSpacing: 0.2,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-          Text(dist, style: const TextStyle(color: Color(0xFF6366F1), fontWeight: FontWeight.bold)),
+
+          // ---- 右边评分 (胶囊设计) ----
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F3FF), // 淡淡的主色调背景
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.star_rounded, color: Colors.amber, size: 16),
+                const SizedBox(width: 4),
+                Text(
+                  rate.toStringAsFixed(1),
+                  style: const TextStyle(
+                    color: Color(0xFF6366F1),
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
+
+
 }

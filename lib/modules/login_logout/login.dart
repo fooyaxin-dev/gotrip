@@ -1,6 +1,9 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
+//import 'package:twitter_login/twitter_login.dart';
 import 'signup.dart';
 import '../main/homepage.dart';
 
@@ -13,10 +16,8 @@ class LoginPage extends StatefulWidget {
 
 class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
-
   final TextEditingController emailController = TextEditingController();
   final TextEditingController pwdController = TextEditingController();
-
   bool isLoading = false;
 
   @override
@@ -26,10 +27,9 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  // ================= Login Logic =================
+  // ================= Email/Password Login =================
   Future<void> loginUserWithEmailAndPassword() async {
     if (!_formKey.currentState!.validate()) return;
-
     setState(() => isLoading = true);
 
     try {
@@ -38,23 +38,14 @@ class _LoginPageState extends State<LoginPage> {
         password: pwdController.text.trim(),
       );
 
-      // ✅ 直接跳 HomePage
       if (mounted) {
         Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomePage()),
+          context,
+          MaterialPageRoute(builder: (_) => const HomePage()),
         );
       }
-
     } on FirebaseAuthException catch (e) {
-      print("email: ${emailController.text}");
-      print("password: ${pwdController.text}");
-      print("code: ${e.code}");
-      print("stack: ${e.stackTrace}");
-
-      
       String message;
-
       switch (e.code) {
         case 'user-not-found':
           message = 'No user found for this email';
@@ -68,19 +59,14 @@ class _LoginPageState extends State<LoginPage> {
         case 'network-request-failed':
           message = 'Network error. Please try again';
           break;
-
         default:
           message = 'Login failed. Please try again';
       }
-
       _showError(message);
-
     } catch (_) {
       _showError('Something went wrong');
     } finally {
-      if (mounted) {
-        setState(() => isLoading = false);
-      }
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
@@ -92,6 +78,95 @@ class _LoginPageState extends State<LoginPage> {
       ),
     );
   }
+
+  // ================= Social Login =================
+
+  // --- Google ---
+  final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email']);
+  Future<void> _handleGoogleSignIn() async {
+    try {
+      final googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) return; // 用户取消登录
+
+      final googleAuth = await googleUser.authentication;
+
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      await FirebaseAuth.instance.signInWithCredential(credential);
+
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const HomePage()),
+        );
+      }
+    } catch (e) {
+      _showError('Google login failed: $e');
+    }
+  }
+
+  // --- Facebook (flutter_facebook_auth 7.1.5) ---
+  Future<void> _handleFacebookSignIn() async {
+    try {
+      final LoginResult result = await FacebookAuth.instance.login();
+
+      if (result.status == LoginStatus.success && result.accessToken != null) {
+        // ⚠️ 正确写法：用 tokenString
+        final String facebookToken = result.accessToken!.tokenString;
+
+        final credential = FacebookAuthProvider.credential(facebookToken);
+        await FirebaseAuth.instance.signInWithCredential(credential);
+
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (_) => const HomePage()),
+          );
+        }
+      } else if (result.status == LoginStatus.cancelled) {
+        _showError('Facebook login cancelled by user');
+      } else {
+        _showError('Facebook login failed: ${result.message}');
+      }
+    } catch (e) {
+      _showError('Facebook login failed: $e');
+    }
+  }
+
+
+  // --- Twitter ---
+  // Future<void> _handleTwitterSignIn() async {
+  //   final twitterLogin = TwitterLogin(
+  //     apiKey: 'YOUR_API_KEY',          // 替换你的 Twitter API Key
+  //     apiSecretKey: 'YOUR_API_SECRET', // 替换你的 Twitter API Secret
+  //     redirectURI: 'YOUR_CALLBACK_URL',// 替换你的回调 URI
+  //   );
+
+  //   final authResult = await twitterLogin.login();
+
+  //   final status = authResult.status;
+  //   if (status == TwitterLoginStatus.loggedIn) {
+  //     final twitterCredential = TwitterAuthProvider.credential(
+  //       accessToken: authResult.authToken!,
+  //       secret: authResult.authTokenSecret!,
+  //     );
+  //     await FirebaseAuth.instance.signInWithCredential(twitterCredential);
+
+  //     if (mounted) {
+  //       Navigator.pushReplacement(
+  //         context,
+  //         MaterialPageRoute(builder: (_) => const HomePage()),
+  //       );
+  //     }
+  //   } else if (status == TwitterLoginStatus.cancelledByUser) {
+  //     _showError('Twitter login cancelled');
+  //   } else {
+  //     _showError('Twitter login failed: ${authResult.errorMessage}');
+  //   }
+  // }
 
   // ================= UI =================
   @override
@@ -163,12 +238,8 @@ class _LoginPageState extends State<LoginPage> {
                   hint: 'Enter your email',
                   keyboardType: TextInputType.emailAddress,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Email is required';
-                    }
-                    if (!value.contains('@')) {
-                      return 'Invalid email';
-                    }
+                    if (value == null || value.isEmpty) return 'Email is required';
+                    if (!value.contains('@')) return 'Invalid email';
                     return null;
                   },
                 ),
@@ -182,23 +253,20 @@ class _LoginPageState extends State<LoginPage> {
                   hint: 'Enter your password',
                   obscure: true,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Password is required';
-                    }
+                    if (value == null || value.isEmpty) return 'Password is required';
                     return null;
                   },
                 ),
 
                 const SizedBox(height: 20),
 
-                // ===== Login Button (Design Preserved) =====
+                // ===== Login Button =====
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 25),
                   child: SizedBox(
                     height: 55,
                     child: ElevatedButton(
-                      onPressed:
-                          isLoading ? null : loginUserWithEmailAndPassword,
+                      onPressed: isLoading ? null : loginUserWithEmailAndPassword,
                       style: ElevatedButton.styleFrom(
                         padding: EdgeInsets.zero,
                         shape: RoundedRectangleBorder(
@@ -256,14 +324,11 @@ class _LoginPageState extends State<LoginPage> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    _socialCircle(
-                        FontAwesomeIcons.google, const Color(0xFF4285F4)),
+                    _socialCircle(FontAwesomeIcons.google, const Color(0xFF4285F4), _handleGoogleSignIn),
                     const SizedBox(width: 15),
-                    _socialCircle(
-                        FontAwesomeIcons.facebook, const Color(0xFF1877F2)),
+                    _socialCircle(FontAwesomeIcons.facebook, const Color(0xFF1877F2), _handleFacebookSignIn),
                     const SizedBox(width: 15),
-                    _socialCircle(
-                        FontAwesomeIcons.twitter, const Color(0xFF1DA1F2)),
+                    _socialCircle(FontAwesomeIcons.twitter, const Color(0xFF1DA1F2),null),
                   ],
                 ),
 
@@ -278,8 +343,7 @@ class _LoginPageState extends State<LoginPage> {
                       onTap: () {
                         Navigator.pushReplacement(
                           context,
-                          MaterialPageRoute(
-                              builder: (context) => const SignupPage()),
+                          MaterialPageRoute(builder: (context) => const SignupPage()),
                         );
                       },
                       child: const Text(
@@ -343,26 +407,25 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  Widget _socialCircle(IconData icon, Color color) {
-    return Container(
-      height: 50,
-      width: 50,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.25),
-            blurRadius: 6,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Icon(
-        icon,
-        color: color,
-        size: 22,
+  Widget _socialCircle(IconData icon, Color color, VoidCallback? onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 50,
+        width: 50,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.grey.withOpacity(0.25),
+              blurRadius: 6,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Icon(icon, color: color, size: 22),
       ),
     );
   }

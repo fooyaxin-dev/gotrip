@@ -4,22 +4,33 @@ import '../../services/placesAPI_service.dart';
 
 class PlaceDetailPage extends StatefulWidget {
   final String placeId;
+  final double? lat;
+  final double? lng;
 
-  const PlaceDetailPage({super.key, required this.placeId});
+  const PlaceDetailPage({
+    super.key,
+    required this.placeId,
+    this.lat,
+    this.lng,
+  });
 
   @override
   State<PlaceDetailPage> createState() => _PlaceDetailPageState();
 }
 
+
+
 class _PlaceDetailPageState extends State<PlaceDetailPage> {
   Map<String, dynamic>? placeDetail;
   bool loading = true;
   String? error;
+  
 
   @override
   void initState() {
     super.initState();
     _fetchPlaceDetails();
+    
   }
 
   Future<void> _fetchPlaceDetails() async {
@@ -59,6 +70,20 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     final website = placeDetail?['websiteUri'];
     final isOpen = placeDetail?['regularOpeningHours']?['openNow'];
     final photos = placeDetail?['photos'] as List?;
+    //price Level
+
+    final geometry = placeDetail?['geometry'];
+    final location = geometry?['location'];
+    final double? lat = widget.lat;
+    final double? lng = widget.lng;
+
+
+    print('geometry = $geometry');
+    print('lat = $lat, lng = $lng');
+
+
+
+
 
     // 构造图片 URL (如果存在)
     String? photoUrl;
@@ -167,7 +192,25 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                     children: [
                       _buildActionButton(Icons.phone, "电话", phone != null),
                       _buildActionButton(Icons.public, "网站", website != null),
-                      _buildActionButton(Icons.directions, "路线", true),
+                      _buildActionButton(
+                        Icons.directions,
+                        "路线",
+                        widget.lat != null && widget.lng != null,
+                        onTap: () {
+                          if (widget.lat != null && widget.lng != null) {
+                            Navigator.pop(context, {
+                              'lat': widget.lat,
+                              'lng': widget.lng,
+                              'name': name,
+                            });
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('位置数据还没加载完成')),
+                            );
+                          }
+                        },
+
+                      ),
                       _buildActionButton(Icons.share, "分享", true),
                     ],
                   ),
@@ -211,21 +254,31 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   }
 
   // 辅助方法：构建功能按钮
-  Widget _buildActionButton(IconData icon, String label, bool isAvailable) {
+  Widget _buildActionButton(
+    IconData icon,
+    String label,
+    bool isAvailable, {
+    VoidCallback? onTap,
+  }) {
     return Opacity(
       opacity: isAvailable ? 1.0 : 0.3,
-      child: Column(
-        children: [
-          CircleAvatar(
-            backgroundColor: Colors.blue[50],
-            child: Icon(icon, color: Colors.blue[600]),
-          ),
-          const SizedBox(height: 8),
-          Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-        ],
+      child: InkWell(
+        onTap: isAvailable ? onTap : null,
+        borderRadius: BorderRadius.circular(30),
+        child: Column(
+          children: [
+            CircleAvatar(
+              backgroundColor: Colors.blue[50],
+              child: Icon(icon, color: Colors.blue[600]),
+            ),
+            const SizedBox(height: 8),
+            Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+          ],
+        ),
       ),
     );
   }
+
 
   // 辅助方法：构建信息行
   Widget _buildInfoSection(IconData icon, String title, String content) {

@@ -36,6 +36,13 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   GoogleMapController? _mapController;
   Position? _currentPosition;
 
+  // 当前正在导航的 PlaceModel
+  PlaceModel? _currentNavPlace;
+
+  // 当前导航的路线结果
+  RouteResult? _currentRouteResult;
+
+
   final Set<Marker> _markers = {};
   SortMode _sortMode = SortMode.distance; // 默认：按距离
   TravelMode _travelMode = TravelMode.walk; // 默认：走路
@@ -213,50 +220,50 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     );
   }
   
-  Future<void> _searchNearbyPlaces(String type, int token) async {
-      if (_currentPosition == null) return;
+  // Future<void> _searchNearbyPlaces(String type, int token) async {
+  //     if (_currentPosition == null) return;
 
-      try {
-        List<PlaceModel> results;
+  //     try {
+  //       List<PlaceModel> results;
 
-        if (_placesByTypeCache.containsKey(type)) {
-          results = _placesByTypeCache[type]!;
-        } else {
-          final apiResults = await PlacesApiService.searchNearby(
-            lat: _currentPosition!.latitude,
-            lng: _currentPosition!.longitude,
-            type: type,
-            radius: 5000,
-          );
+  //       if (_placesByTypeCache.containsKey(type)) {
+  //         results = _placesByTypeCache[type]!;
+  //       } else {
+  //         final apiResults = await PlacesApiService.searchNearby(
+  //           lat: _currentPosition!.latitude,
+  //           lng: _currentPosition!.longitude,
+  //           type: type,
+  //           radius: 5000,
+  //         );
 
-          results = apiResults.map((p) {
-            try {
-              final place = PlaceModel.fromGoogle(p, primary: type);
-              if (place.lat == null || place.lng == null) return null;
-              return place;
-            } catch (_) {
-              return null;
-            }
-          }).whereType<PlaceModel>().toList();
+  //         results = apiResults.map((p) {
+  //           try {
+  //             final place = PlaceModel.fromGoogle(p, primary: type);
+  //             if (place.lat == null || place.lng == null) return null;
+  //             return place;
+  //           } catch (_) {
+  //             return null;
+  //           }
+  //         }).whereType<PlaceModel>().toList();
 
-          _placesByTypeCache[type] = results;
-          for (final p in results) {
-            if (!_allPlacesCache.any((e) => e.id == p.id)) _allPlacesCache.add(p);
-          }
-        }
+  //         _placesByTypeCache[type] = results;
+  //         for (final p in results) {
+  //           if (!_allPlacesCache.any((e) => e.id == p.id)) _allPlacesCache.add(p);
+  //         }
+  //       }
 
-        for (final place in results) {
-          if (token != _searchToken) return;
-          _addMarkerAndPlace(place);
-        }
+  //       for (final place in results) {
+  //         if (token != _searchToken) return;
+  //         _addMarkerAndPlace(place);
+  //       }
 
-        setState(() => _isLoading = false);
-        _animateToFitMarkers(keepZoom: true);
-      } catch (_) {
-        if (token != _searchToken) return;
-        setState(() => _isLoading = false);
-      }
-    }
+  //       setState(() => _isLoading = false);
+  //       _animateToFitMarkers(keepZoom: true);
+  //     } catch (_) {
+  //       if (token != _searchToken) return;
+  //       setState(() => _isLoading = false);
+  //     }
+  //   }
 
   void _toggleType(String type) {
     setState(() {
@@ -419,8 +426,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       setState(() => _isLoading = false);
 
       if (placesList.isNotEmpty) {
-        // --- 核心修复：这里传入 keepZoom: true ---
-        // 这样点击 Dessert 时地图只会平移中心点，不会改变你的 Zoom Level
+
         _animateToFitMarkers(keepZoom: true); 
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -458,7 +464,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     });
   }
 
-    Future<void> _refreshAllPlacesFromApi() async {
+  Future<void> _refreshAllPlacesFromApi() async {
     if (_currentPosition == null) return;
 
     setState(() {
@@ -621,6 +627,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   }
 
   void _showPlaceDetails(PlaceModel place) {
+    
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -731,12 +738,44 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                   Expanded(
                     flex: 2,
                     child: OutlinedButton(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        Navigator.push(
+                      onPressed: () async {
+                        // 直接 push 到详情页
+                        final result = await Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (_) => PlaceDetailPage(placeId: place.id)),
+                          MaterialPageRoute(
+                            builder: (_) => PlaceDetailPage(
+                              placeId: place.id,
+                              lat: place.lat,
+                              lng: place.lng,
+                            ),
+                          ),
                         );
+
+                        // 先关闭 BottomSheet
+                        Navigator.of(context).pop(); // <-- 关闭 Draggable/BottomSheet
+
+                        // 当 PlaceDetailPage 返回坐标时
+                        if (result != null && result['lat'] != null && result['lng'] != null) {
+                          final dest = LatLng(result['lat'], result['lng']);
+
+                          // 打开 GuidePage 计算路线
+                          final routeResult = await Navigator.push<RouteResult>(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => GuidePage(
+                                startLat: _currentPosition!.latitude,
+                                startLng: _currentPosition!.longitude,
+                                endLat: dest.latitude,
+                                endLng: dest.longitude,
+                              ),
+                            ),
+                          );
+
+                          // 绘制路线
+                          if (routeResult != null) {
+                            _showRouteOnMap(routeResult, dest);
+                          }
+                        }
                       },
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
@@ -752,12 +791,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                     flex: 3,
                     child: ElevatedButton.icon(
                       onPressed: () async {
-                        Navigator.pop(context);
+                        // ✅ 先关闭 BottomSheet
+                        Navigator.of(context).pop(); // 这里 context 是 BottomSheet builder 内
                         final targetLat = place.lat!;
                         final targetLng = place.lng!;
 
                         setState(() {
                           _isNavigating = true;
+                           _currentNavPlace = place; // ⭐ 保存当前导航的 place
                           _markers.retainWhere((m) =>
                               m.markerId.value == 'me' ||
                               m.position == LatLng(targetLat, targetLng));
@@ -778,6 +819,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
                         if (result != null) {
                           setState(() { _routeResults[place.id] = result; });
+                           _currentRouteResult = result; // ⭐ 保存当前路线
                           _showRouteOnMap(result, LatLng(targetLat, targetLng));
                         }
                       },
@@ -904,294 +946,371 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   final ValueNotifier<double> _bottomPaddingNotifier = ValueNotifier(0.4);
   double _lastExtent = 0.4; // 记录上一次的面板高度
 
-  @override
-  Widget build(BuildContext context) {
-    final screenHeight = MediaQuery.of(context).size.height;
+@override
+Widget build(BuildContext context) {
+  final screenHeight = MediaQuery.of(context).size.height;
 
-    // ✅ 先准备一个按排序模式排序的列表
-    final List<PlaceModel> sortedPlaces = List.from(_nearbyPlaces);
+  // 先准备一个按排序模式排序的列表
+  final List<PlaceModel> sortedPlaces = List.from(_nearbyPlaces);
+  sortedPlaces.sort((a, b) {
+    final aRoute = _routeResults[a.id];
+    final bRoute = _routeResults[b.id];
 
-    sortedPlaces.sort((a, b) {
-      final aRoute = _routeResults[a.id];
-      final bRoute = _routeResults[b.id];
+    final aDistance = aRoute?.distanceMeters ?? double.infinity;
+    final bDistance = bRoute?.distanceMeters ?? double.infinity;
 
-      final aDistance = aRoute?.distanceMeters ?? double.infinity;
-      final bDistance = bRoute?.distanceMeters ?? double.infinity;
+    final aRating = a.rating ?? 0.0;
+    final bRating = b.rating ?? 0.0;
 
-      final aRating = a.rating ?? 0.0;
-      final bRating = b.rating ?? 0.0;
-
-      if (_sortMode == SortMode.distance) {
-        return aDistance.compareTo(bDistance);
-      } else {
-        return bRating.compareTo(aRating);
-      }
-    });
-
-    if (_initialCameraPosition == null) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+    if (_sortMode == SortMode.distance) {
+      return aDistance.compareTo(bDistance);
+    } else {
+      return bRating.compareTo(aRating);
     }
+  });
 
-    return Scaffold(
-      resizeToAvoidBottomInset: false,
-      extendBodyBehindAppBar: true,
-      body: Stack(
-        children: [
-          // ===== 1. 地图层 =====
-          ValueListenableBuilder<double>(
-            valueListenable: _bottomPaddingNotifier,
-            builder: (context, extent, child) {
-              return GoogleMap(
-                initialCameraPosition: _initialCameraPosition!,
-                myLocationEnabled: true,
-                myLocationButtonEnabled: false,
-                markers: _markers,
-                polylines: _polylines,
-                onMapCreated: (controller) => _mapController = controller,
-                padding: EdgeInsets.only(
-                  bottom: _isNavigating ? 120 : (MediaQuery.of(context).size.height * extent),
-                  top: 60,
-                ),
-              );
-            },
-          ),
+  if (_initialCameraPosition == null) {
+    return const Scaffold(
+      body: Center(child: CircularProgressIndicator()),
+    );
+  }
 
-          // ===== 2. 返回按钮 =====
-          Positioned(
-            top: 50,
-            left: 20,
-            child: SafeArea(
-              child: Material(
-                elevation: 4,
-                shape: const CircleBorder(),
-                clipBehavior: Clip.antiAlias,
-                color: Colors.white,
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back_ios_new, size: 20, color: Colors.black87),
-                  onPressed: () {
-                    widget.onBack(); // ⭐ 注意：是 widget.onBack()
-                  },
-
-
-                ),
+  return Scaffold(
+    resizeToAvoidBottomInset: false,
+    extendBodyBehindAppBar: true,
+    body: Stack(
+      children: [
+        // ===== 1. 地图层 =====
+        ValueListenableBuilder<double>(
+          valueListenable: _bottomPaddingNotifier,
+          builder: (context, extent, child) {
+            return GoogleMap(
+              initialCameraPosition: _initialCameraPosition!,
+              myLocationEnabled: true,
+              myLocationButtonEnabled: false,
+              markers: _markers,
+              polylines: _polylines,
+              onMapCreated: (controller) => _mapController = controller,
+              padding: EdgeInsets.only(
+                bottom: _isNavigating ? 120 : (screenHeight * extent),
+                top: 60,
               ),
-            ),
-          ),
+            );
+          },
+        ),
 
-          // ===== 3. 底部滑动面板 =====
-          if (!_isNavigating)
-            NotificationListener<DraggableScrollableNotification>(
-              onNotification: (notification) {
-                _bottomPaddingNotifier.value = notification.extent;
-                return false;
-              },
-              child: DraggableScrollableSheet(
-                key: const PageStorageKey('gotrip_sheet_unique'),
-                initialChildSize: 0.4,
-                minChildSize: 0.2,
-                maxChildSize: 0.85,
-                snap: true,
-                builder: (context, scrollController) {
-                  return Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-                      boxShadow: [
-                        BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15),
-                      ],
-                    ),
-                    child: ListView(
-                      controller: scrollController, // ⭐ 核心：整个面板共用这个
-                      padding: EdgeInsets.zero,
-                      children: [
-                        // ===== 把手 =====
-                        Center(
-                          child: Column(
-                            children: [
-                              const SizedBox(height: 8), // 顶部间距
-                              Container(
-                                width: 45,
-                                height: 5,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[300],
-                                  borderRadius: BorderRadius.circular(10),
-                                  // 加一个微弱的内阴影效果
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withOpacity(0.05),
-                                      spreadRadius: 1,
-                                      blurRadius: 1,
-                                      offset: const Offset(0, 1),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 4), // 增加一点底部感
-                            ],
-                          ),
-                        ),
-
-                        // ===== 一级分类 =====
-                        SizedBox(
-                          height: 95,
-                          child: ListView.builder(
-                            scrollDirection: Axis.horizontal,
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            itemCount: categories.length,
-                            itemBuilder: (context, index) {
-                              final cat = categories[index];
-                              final isSelected = _selectedTypes.contains(cat['type']);
-                              return Padding(
-                                padding: const EdgeInsets.only(right: 12),
-                                child: GestureDetector(
-                                  onTap: () => _toggleType(cat['type']),
-                                  child: Column(
-                                    children: [
-                                      AnimatedContainer(
-                                        duration: const Duration(milliseconds: 200),
-                                        padding: const EdgeInsets.all(12),
-                                        decoration: BoxDecoration(
-                                          color: isSelected ? cat['color'] : Colors.grey[100],
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: Icon(
-                                          cat['icon'],
-                                          color: isSelected ? Colors.white : Colors.grey[600],
-                                          size: 26,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        cat['name'],
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                                          color: isSelected ? cat['color'] : Colors.grey[700],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-
-                        const Divider(height: 1, thickness: 0.5),
-
-                        // ===== Travel Mode =====
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          child: Row(
-                            children: [
-                              Text("Travel By:", style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-                              const SizedBox(width: 12),
-                              AnimatedContainer(
-                                duration: const Duration(milliseconds: 300),
-                                curve: Curves.easeInOut,
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: Colors.blue[50],
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(color: Colors.blue[200]!),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    GestureDetector(
-                                      onTap: () {
-                                        setState(() {
-                                          _isTravelModeExpanded = !(_isTravelModeExpanded ?? false);
-                                        });
-                                      },
-                                      child: Row(
-                                        children: [
-                                          Icon(_getTravelIcon(_travelMode), color: Colors.blue[800], size: 20),
-                                          Icon(
-                                            _isTravelModeExpanded == true
-                                                ? Icons.arrow_left
-                                                : Icons.arrow_drop_down,
-                                            color: Colors.blue[800],
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    if (_isTravelModeExpanded == true)
-                                      Row(
-                                        children: [
-                                          const VerticalDivider(width: 16),
-                                          _buildMiniIcon(TravelMode.walk, Icons.directions_walk),
-                                          _buildMiniIcon(TravelMode.motor, Icons.motorcycle),
-                                          _buildMiniIcon(TravelMode.drive, Icons.directions_car),
-                                        ],
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        // ===== 排序 =====
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          child: Row(
-                            children: [
-                              _buildStyledFilterChip(
-                                label: "Nearest",
-                                isSelected: _sortMode == SortMode.distance,
-                                onTap: () => setState(() => _sortMode = SortMode.distance),
-                                icon: Icons.near_me_outlined,
-                              ),
-                              const SizedBox(width: 8),
-                              _buildStyledFilterChip(
-                                label: "High",
-                                isSelected: _sortMode == SortMode.rating,
-                                onTap: () => setState(() => _sortMode = SortMode.rating),
-                                icon: Icons.star_outline_rounded,
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        // ===== 二级分类 =====
-                        if (_selectedPrimary != null && subCategories.containsKey(_selectedPrimary))
-                          _buildSecondaryBar(),
-
-                        const Divider(height: 1, thickness: 0.5),
-
-                        // ===== 地点列表 =====
-                        if (_nearbyPlaces.isEmpty && !_isLoading)
-                          SizedBox(
-                            height: 300,
-                            child: _buildEmptyState(),
-                          )
-                        else
-                          ...List.generate(
-                            sortedPlaces.length,
-                            (index) => Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: _buildPlaceCard(sortedPlaces[index]),
-                            ),
-                          ),
-
-                        const SizedBox(height: 24),
-                      ],
-                    ),
-                  );
+        // ===== 2. 返回按钮 =====
+        Positioned(
+          top: 50,
+          left: 20,
+          child: SafeArea(
+            child: Material(
+              elevation: 4,
+              shape: const CircleBorder(),
+              clipBehavior: Clip.antiAlias,
+              color: Colors.white,
+              child: IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new, size: 20, color: Colors.black87),
+                onPressed: () {
+                  widget.onBack();
                 },
               ),
             ),
+          ),
+        ),
 
-          // ===== 加载中 =====
-          if (_isLoading)
-            const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
+        // ===== 3. 底部滑动面板 =====
+        NotificationListener<DraggableScrollableNotification>(
+          onNotification: (notification) {
+            _bottomPaddingNotifier.value = notification.extent;
+            return false;
+          },
+          child: DraggableScrollableSheet(
+            key: const PageStorageKey('gotrip_sheet_unique'),
+            initialChildSize: _isNavigating ? 0.18 : 0.4,
+            minChildSize: _isNavigating ? 0.18 : 0.2,
+            maxChildSize: _isNavigating ? 0.25 : 0.85,
+            snap: true,
+            builder: (context, scrollController) {
+              return Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15)],
+                ),
+                child: _isNavigating
+                    ? _buildNavigationSheet()
+                    : _buildPlaceListSheet(scrollController, sortedPlaces),
+              );
+            },
+          ),
+        ),
+
+        // ===== 4. 加载中 =====
+        if (_isLoading)
+          const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
+      ],
+    ),
+  );
+}
+
+  /// ===== 导航状态底部 Sheet =====
+  Widget _buildNavigationSheet() {
+    if (_currentNavPlace == null || !_routeResults.containsKey(_currentNavPlace!.id)) {
+      return const SizedBox.shrink(); // 没有导航时返回空
+    }
+
+    final place = _currentNavPlace!;
+    final route = _routeResults[place.id]!; // ⭐ 从 placeCard 同步的数据
+
+    return Container(
+      height: 150,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 顶部把手
+          Center(
+            child: Container(
+              width: 45,
+              height: 5,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // 标题 + 距离/时间
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  place.name,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Row(
+                children: [
+                  _buildInfoChip(Icons.directions_car, '${(route.distanceMeters / 1000).toStringAsFixed(1)} km', Colors.blue),
+                  const SizedBox(width: 12),
+                  _buildInfoChip(Icons.access_time, '${(route.durationSeconds ~/ 60)} min', Colors.teal),
+                ],
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // 底部操作按钮：取消导航 / 导航到 place
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () {
+                    setState(() {
+                      _isNavigating = false;
+                      _currentNavPlace = null;
+                      _markers.removeWhere((m) => m.markerId.value != 'me');
+                      _routeResults.remove(place.id);
+                    });
+                  },
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: BorderSide(color: Colors.grey[300]!),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  ),
+                  child: const Text('取消导航', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    // 可以重复 push GuidePage 或者直接刷新路线
+                  },
+                  icon: const Icon(Icons.near_me_rounded, color: Colors.white),
+                  label: const Text('继续导航', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).primaryColor,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
   }
+
+
+  /// ===== 原始 Place List / Filter Sheet =====
+  Widget _buildPlaceListSheet(ScrollController scrollController, List<PlaceModel> sortedPlaces) {
+    return ListView(
+      controller: scrollController,
+      padding: EdgeInsets.zero,
+      children: [
+        // 把手
+        Center(
+          child: Column(
+            children: [
+              const SizedBox(height: 8),
+              Container(
+                width: 45,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withOpacity(0.05), spreadRadius: 1, blurRadius: 1, offset: const Offset(0, 1)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 4),
+            ],
+          ),
+        ),
+
+        // 一级分类
+        SizedBox(
+          height: 95,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: categories.length,
+            itemBuilder: (context, index) {
+              final cat = categories[index];
+              final isSelected = _selectedTypes.contains(cat['type']);
+              return Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: GestureDetector(
+                  onTap: () => _toggleType(cat['type']),
+                  child: Column(
+                    children: [
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isSelected ? cat['color'] : Colors.grey[100],
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(cat['icon'], color: isSelected ? Colors.white : Colors.grey[600], size: 26),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        cat['name'],
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          color: isSelected ? cat['color'] : Colors.grey[700],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+
+        const Divider(height: 1, thickness: 0.5),
+
+        // Travel Mode
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              Text("Travel By:", style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+              const SizedBox(width: 12),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.blue[200]!),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _isTravelModeExpanded = !(_isTravelModeExpanded ?? false);
+                        });
+                      },
+                      child: Row(
+                        children: [
+                          Icon(_getTravelIcon(_travelMode), color: Colors.blue[800], size: 20),
+                          Icon(
+                            _isTravelModeExpanded == true ? Icons.arrow_left : Icons.arrow_drop_down,
+                            color: Colors.blue[800],
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_isTravelModeExpanded == true)
+                      Row(
+                        children: [
+                          const VerticalDivider(width: 16),
+                          _buildMiniIcon(TravelMode.walk, Icons.directions_walk),
+                          _buildMiniIcon(TravelMode.motor, Icons.motorcycle),
+                          _buildMiniIcon(TravelMode.drive, Icons.directions_car),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // 排序 & 二级分类
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              _buildStyledFilterChip(label: "Nearest", isSelected: _sortMode == SortMode.distance, onTap: () => setState(() => _sortMode = SortMode.distance), icon: Icons.near_me_outlined),
+              const SizedBox(width: 8),
+              _buildStyledFilterChip(label: "High", isSelected: _sortMode == SortMode.rating, onTap: () => setState(() => _sortMode = SortMode.rating), icon: Icons.star_outline_rounded),
+            ],
+          ),
+        ),
+        if (_selectedPrimary != null && subCategories.containsKey(_selectedPrimary)) _buildSecondaryBar(),
+
+        const Divider(height: 1, thickness: 0.5),
+
+        // 地点列表
+        if (_nearbyPlaces.isEmpty && !_isLoading)
+          SizedBox(height: 300, child: _buildEmptyState())
+        else
+          ...List.generate(
+            sortedPlaces.length,
+            (index) => Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: _buildPlaceCard(sortedPlaces[index]),
+            ),
+          ),
+
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
 
 
   Widget _buildModernChip({required String label, required bool isSelected, required VoidCallback onTap}) {

@@ -14,45 +14,45 @@ class PlacesApiService {
   }
 
   /// 🟢 一次性 bootstrap（给 All / 一级分类用）
-  static Future<List<Map<String, dynamic>>> bootstrapAllNearby({
-    required double lat,
-    required double lng,
-    int radius = 5000,
-    int maxResultCount = 40,
-  }) async {
-    final url = Uri.parse('$_baseUrl/places:searchText');
+  // static Future<List<Map<String, dynamic>>> bootstrapAllNearby({
+  //   required double lat,
+  //   required double lng,
+  //   int radius = 5000,
+  //   int maxResultCount = 40,
+  // }) async {
+  //   final url = Uri.parse('$_baseUrl/places:searchText');
 
-    const query =
-        'restaurants cafes coffee bakery dessert shopping mall supermarket hotel lodging museum park tourist attraction bank hospital gas station';
+  //   const query =
+  //       'restaurants cafes coffee bakery dessert shopping mall supermarket hotel lodging museum park tourist attraction bank hospital gas station';
 
-    final body = jsonEncode({
-      "textQuery": query,
-      "locationBias": {
-        "circle": {
-          "center": {"latitude": lat, "longitude": lng},
-          "radius": radius.toDouble()
-        }
-      },
-      "maxResultCount": maxResultCount,
-    });
+  //   final body = jsonEncode({
+  //     "textQuery": query,
+  //     "locationBias": {
+  //       "circle": {
+  //         "center": {"latitude": lat, "longitude": lng},
+  //         "radius": radius.toDouble()
+  //       }
+  //     },
+  //     "maxResultCount": maxResultCount,
+  //   });
 
-    final response = await http.post(
-      url,
-      headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos',
-      ),
-      body: body,
-    );
+  //   final response = await http.post(
+  //     url,
+  //     headers: _headers(
+  //       'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos',
+  //     ),
+  //     body: body,
+  //   );
 
-    if (response.statusCode != 200) {
-      throw Exception('bootstrapAllNearby failed: ${response.body}');
-    }
+  //   if (response.statusCode != 200) {
+  //     throw Exception('bootstrapAllNearby failed: ${response.body}');
+  //   }
 
-    final data = json.decode(response.body);
-    final List rawPlaces = data['places'] ?? [];
+  //   final data = json.decode(response.body);
+  //   final List rawPlaces = data['places'] ?? [];
 
-    return rawPlaces.map(_normalizePlace).toList();
-  }
+  //   return rawPlaces.map(_normalizePlace).toList();
+  // }
 
   /// 🟡 一级分类 searchNearby
   static Future<List<Map<String, dynamic>>> searchNearby({
@@ -175,6 +175,7 @@ class PlacesApiService {
       'rating': (p['rating'] as num?)?.toDouble(),
       'photos': photoList,
       'source': 'google',
+      //pricelevel
     };
   }
 }
