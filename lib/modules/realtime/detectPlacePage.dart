@@ -8,6 +8,7 @@ import 'placeDetailPage.dart';
 import '../../services/placesAPI_service.dart';
 import '../../services/location_service.dart';
 import '../../services/placeModal.dart';
+import '../../services/nearbyPlace_service.dart';
 import 'guidePage.dart';
 
 // 二级缓存
@@ -18,7 +19,7 @@ class _CacheEntry {
 }
 enum SortMode { distance, rating }
 enum TravelMode { walk, drive, motor }
-
+ 
 
 class RealTimeDetectPage extends StatefulWidget {
   final double? landmarkLat;
@@ -71,8 +72,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // -----------------------------
   // 一级缓存
   // -----------------------------
-  final List<PlaceModel> _allPlacesCache = [];
-  final Map<String, List<PlaceModel>> _placesByTypeCache = {};
+
 
   // -----------------------------
   // 二级缓存
@@ -88,14 +88,16 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // -----------------------------
   final List<Map<String, dynamic>> categories = [
     {'name': 'All', 'icon': Icons.all_inclusive, 'type': 'all', 'color': Colors.black},
-    {'name': '餐厅', 'icon': Icons.restaurant, 'type': 'restaurant', 'color': Colors.orange},
-    {'name': '酒店', 'icon': Icons.hotel, 'type': 'lodging', 'color': Colors.blue},
-    {'name': '景点', 'icon': Icons.place, 'type': 'tourist_attraction', 'color': Colors.green},
-    {'name': '购物', 'icon': Icons.shopping_bag, 'type': 'shopping_mall', 'color': Colors.purple},
-    {'name': '咖啡厅', 'icon': Icons.local_cafe, 'type': 'cafe', 'color': Colors.brown},
-    {'name': '加油站', 'icon': Icons.local_gas_station, 'type': 'gas_station', 'color': Colors.red},
-    {'name': '医院', 'icon': Icons.local_hospital, 'type': 'hospital', 'color': Colors.redAccent},
-    {'name': '银行', 'icon': Icons.account_balance, 'type': 'bank', 'color': Colors.teal},
+    {'name': 'Food', 'icon': Icons.restaurant, 'type': 'restaurant', 'color': Colors.orange},
+    {'name': 'Nature', 'icon': Icons.park, 'type': 'park', 'color': Colors.blue},
+    // {'name': 'Stay', 'icon': Icons.hotel, 'type': 'lodging', 'color': Colors.blue},
+    {'name': 'Historical', 'icon': Icons.place, 'type': 'tourist_attraction', 'color': Colors.green},
+    {'name': 'Shopping', 'icon': Icons.shopping_bag, 'type': 'shopping_mall', 'color': Colors.purple},
+    {'name': 'Entertainment', 'icon': Icons.local_activity_rounded, 'type': 'amusement_park', 'color': Colors.purple},
+    // {'name': 'Cafe', 'icon': Icons.local_cafe, 'type': 'cafe', 'color': Colors.brown},
+    // {'name': 'Oil', 'icon': Icons.local_gas_station, 'type': 'gas_station', 'color': Colors.red},
+    // {'name': 'Hospital', 'icon': Icons.local_hospital, 'type': 'hospital', 'color': Colors.redAccent},
+    // {'name': 'Bank', 'icon': Icons.account_balance, 'type': 'bank', 'color': Colors.teal},
   ];
 
   //二级分类
@@ -202,8 +204,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     );
 
     setState(() {});
-    _searchSelectedFilters();
-    await _refreshAllPlacesFromApi(); // 首次进来一定拉一次
+    // ✅ 改成这样
+    await _loadFromServiceCache();      // 先从 Service 缓存加载
+    if (_nearbyPlaces.isEmpty) {        // 如果没有缓存
+      await _refreshAllPlacesFromService(); // 才去请求 API
+    }
     _startLocationWatch();
 
   }
@@ -296,14 +301,18 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       _markers.removeWhere((m) => m.markerId.value != 'me');
     });
 
+    // ✅ 改成从 Service 获取
+    final allPlacesCache = NearbyPlacesService.instance.allPlaces;
+    final placesByTypeCache = NearbyPlacesService.instance.placesByType;
+
     List<PlaceModel> base;
 
     if (_selectedTypes.contains('all')) {
-      base = List.from(_allPlacesCache);
+      base = List.from(allPlacesCache);
     } else {
       base = [];
       for (final t in _selectedTypes) {
-        base.addAll(_placesByTypeCache[t] ?? []);
+        base.addAll(placesByTypeCache[t] ?? []);
       }
     }
 
@@ -445,73 +454,123 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
 
+
   void _startLocationWatch() {
     _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 10, // 走 10m 才触发
+        distanceFilter: 10,
       ),
     ).listen((pos) {
       _currentPosition = pos;
 
-      // 每次位置变化都重置 timer
       _locationIdleTimer?.cancel();
       _locationIdleTimer = Timer(_locationIdleDelay, () {
-        // ✅ 用户“停下来”了
-        _refreshAllPlacesFromApi();
+        _refreshAllPlacesFromService(); // ✅ 改用新方法
       });
     });
   }
 
-  Future<void> _refreshAllPlacesFromApi() async {
-    if (_currentPosition == null) return;
+  // Future<void> _refreshAllPlacesFromApi() async {
+  //   if (_currentPosition == null) return;
 
-    setState(() {
-      _isLoading = true;
-      _allPlacesCache.clear();
-      _placesByTypeCache.clear();
-      _nearbyPlaces.clear();
-      _markers.removeWhere((m) => m.markerId.value != 'me');
-    });
+  //   setState(() {
+  //     _isLoading = true;
+  //     _allPlacesCache.clear();
+  //     _placesByTypeCache.clear();
+  //     _nearbyPlaces.clear();
+  //     _markers.removeWhere((m) => m.markerId.value != 'me');
+  //   });
 
-    final types = categories
-        .where((c) => c['type'] != 'all')
-        .map((c) => c['type'] as String)
-        .toList();
+  //   final types = categories
+  //       .where((c) => c['type'] != 'all')
+  //       .map((c) => c['type'] as String)
+  //       .toList();
 
-    for (final type in types) {
-      final apiResults = await PlacesApiService.searchNearby(
-        lat: _currentPosition!.latitude,
-        lng: _currentPosition!.longitude,
-        type: type,
-        radius: 5000,
-      );
+  //   for (final type in types) {
+  //     final apiResults = await PlacesApiService.searchNearby(
+  //       lat: _currentPosition!.latitude,
+  //       lng: _currentPosition!.longitude,
+  //       type: type,
+  //       radius: 5000,
+  //     );
 
-      final results = apiResults.map((p) {
-        try {
-          final place = PlaceModel.fromGoogle(p, primary: type);
-          if (place.lat == null || place.lng == null) return null;
-          return place;
-        } catch (_) {
-          return null;
-        }
-      }).whereType<PlaceModel>().toList();
+  //     final results = apiResults.map((p) {
+  //       try {
+  //         final place = PlaceModel.fromGoogle(p, primary: type);
+  //         if (place.lat == null || place.lng == null) return null;
+  //         return place;
+  //       } catch (_) {
+  //         return null;
+  //       }
+  //     }).whereType<PlaceModel>().toList();
 
-      _placesByTypeCache[type] = results;
+  //     _placesByTypeCache[type] = results;
 
-      for (final p in results) {
-        if (!_allPlacesCache.any((e) => e.id == p.id)) {
-          _allPlacesCache.add(p);
-        }
-      }
+  //     for (final p in results) {
+  //       if (!_allPlacesCache.any((e) => e.id == p.id)) {
+  //         _allPlacesCache.add(p);
+  //       }
+  //     }
+  //   }
+
+  //   // 默认显示 All
+  //   _drawFromCache(_allPlacesCache, ++_searchToken);
+
+  //   setState(() => _isLoading = false);
+  // }
+  // ✅ 新增：从 Service 加载缓存
+Future<void> _loadFromServiceCache() async {
+  final cachedPlaces = NearbyPlacesService.instance.allPlaces;
+  
+  if (cachedPlaces.isEmpty) return;
+
+  setState(() {
+    _isLoading = true;
+    _nearbyPlaces.clear();
+    _markers.removeWhere((m) => m.markerId.value != 'me');
+  });
+
+  for (final place in cachedPlaces) {
+    _addMarkerAndPlace(place);
+  }
+
+  setState(() => _isLoading = false);
+  _animateToFitMarkers(keepZoom: true);
+}
+
+// ✅ 新增：从 Service 刷新数据
+Future<void> _refreshAllPlacesFromService() async {
+  if (_currentPosition == null) return;
+
+  setState(() {
+    _isLoading = true;
+    _nearbyPlaces.clear();
+    _markers.removeWhere((m) => m.markerId.value != 'me');
+  });
+
+  try {
+    final places = await NearbyPlacesService.instance
+        .loadNearbyPlacesOnce(categories);
+
+    for (final place in places) {
+      _addMarkerAndPlace(place);
     }
 
-    // 默认显示 All
-    _drawFromCache(_allPlacesCache, ++_searchToken);
-
     setState(() => _isLoading = false);
+    _animateToFitMarkers(keepZoom: true);
+
+  } catch (e) {
+    setState(() => _isLoading = false);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('加载失败: $e')),
+      );
+    }
   }
+}
+
 
   void _drawFromCache(List<PlaceModel> cache, int token) {
     for (final place in cache) {
@@ -1310,8 +1369,6 @@ Widget build(BuildContext context) {
       ],
     );
   }
-
-
 
   Widget _buildModernChip({required String label, required bool isSelected, required VoidCallback onTap}) {
     return ChoiceChip(

@@ -16,6 +16,15 @@ class PlaceModel {
     required this.source, this.primaryType, this.secondaryType,
   });
 
+    /// ✅ 新增 getter
+  List<String> get types {
+    final list = <String>[];
+    if (primaryType != null) list.add(primaryType!);
+    if (secondaryType != null) list.add(secondaryType!);
+    return list;
+  }
+  
+
   factory PlaceModel.fromGoogle(Map<String, dynamic> g, {String? primary, String? secondary}) {
     return PlaceModel(
       id: g['id'] ?? '',
@@ -26,7 +35,7 @@ class PlaceModel {
       rating: (g['rating'] as num?)?.toDouble(),
       // 这里的 photoUri 是你在 PlacesApiService 里已经拼好的 URL
       photoUrl: g['photos'] != null && g['photos'].isNotEmpty ? g['photos'][0]['photoUri'] : null,
-      source: 'google',
+      source: 'google', 
       primaryType: primary,
       secondaryType: secondary,
     );
