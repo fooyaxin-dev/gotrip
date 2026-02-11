@@ -1,12 +1,11 @@
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:geolocator/geolocator.dart'; // 新增
-import 'package:gotrip/modules/realtime/detectPlacePage.dart';
-import '../../services/wikipedia_service.dart';
+import 'dart:typed_data';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/foundation.dart';
+import 'package:gotrip/modules/realtime/detectPlacePage.dart';
 import '../../services/location_service.dart';   
+import '../../services/wikipedia_service.dart';
+
 
 class ResultPage extends StatefulWidget {
   final Uint8List imageBytes;
@@ -32,11 +31,12 @@ class _ResultPageState extends State<ResultPage>
   // Wikipedia 信息
   String wikiTitle = '';
   String wikiExtract = '';
-  String wikiImage = '';
+  List<String> wikiImages = []; // 👈 只需要这一个列表
   String wikiUrl = '';
   bool wikiLoading = true;
 
   bool _autoExpanded = false;
+  int _currentImageIndex = 0;
 
 
   @override
@@ -61,7 +61,7 @@ class _ResultPageState extends State<ResultPage>
       setState(() {
         wikiTitle = wikiResult['title'] ?? landmarkName;
         wikiExtract = wikiResult['summary'] ?? 'No historical info available';
-        wikiImage = wikiResult['thumbnail'] ?? '';
+        wikiImages = List<String>.from(wikiResult['images'] ?? []);
         wikiUrl = wikiResult['wikiUrl'] ?? '';
         if (wikiUrl.isEmpty) {
           wikiUrl = 'https://en.wikipedia.org/wiki/${landmarkName.replaceAll(' ', '_')}';
@@ -359,29 +359,83 @@ Widget _buildProSummaryContent() {
         const SizedBox(height: 16),
 
         // 2. 维基百科封面图 (带精致投影)
-        if (wikiImage.isNotEmpty)
-          Container(
-            margin: const EdgeInsets.only(bottom: 20),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 20,
-                  offset: const Offset(0, 10),
-                )
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: Image.network(
-                wikiImage,
+         // 2. 图片 Gallery
+        if (wikiImages.isNotEmpty) // 👈 直接判断 wikiImages
+          Column(
+            children: [
+              Container(
+                margin: const EdgeInsets.only(bottom: 12),
                 height: 220,
-                width: double.infinity,
-                fit: BoxFit.cover,
+                child: PageView.builder(
+                  itemCount: wikiImages.length,
+                  onPageChanged: (index) {
+                    setState(() => _currentImageIndex = index);
+                  },
+                  itemBuilder: (context, index) {
+                    return Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 8),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 20,
+                            offset: const Offset(0, 10),
+                          )
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: Image.network(
+                          wikiImages[index],
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted && index < wikiImages.length) {
+                                setState(() {
+                                  wikiImages.removeAt(index);
+                                  if (_currentImageIndex >= wikiImages.length) {
+                                    _currentImageIndex = 0;
+                                  }
+                                });
+                              }
+                            });
+                            return Container(
+                              color: Colors.grey[200],
+                              child: const Center(
+                                child: Icon(Icons.broken_image, size: 40, color: Colors.grey),
+                              ),
+                            );
+                          },
+                        )
+                      ),
+                    );
+                  },
+                ),
               ),
-            ),
+              // 图片指示器
+              if (wikiImages.length > 1)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(
+                    wikiImages.length,
+                    (index) => Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 4),
+                      width: _currentImageIndex == index ? 24 : 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: _currentImageIndex == index
+                            ? Colors.black
+                            : Colors.grey[300],
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 20),
+            ],
           ),
+
 
         // 3. 摘要文字 (去掉黄色背景，改用左边框装饰)
         Container(

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../../services/placesAPI_service.dart';
 
@@ -8,7 +10,7 @@ class PlaceDetailPage extends StatefulWidget {
   final double? lng;
 
   const PlaceDetailPage({
-    super.key,
+    super.key, 
     required this.placeId,
     this.lat,
     this.lng,
@@ -24,30 +26,74 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   Map<String, dynamic>? placeDetail;
   bool loading = true;
   String? error;
+  int _currentPhotoIndex = 0; // 当前显示的照片索引
   
+
+  late PageController _pageController;
+  Timer? _autoPlayTimer;
+  bool _isUserInteracting = false;
 
   @override
   void initState() {
     super.initState();
+    _pageController = PageController(viewportFraction: 1.0);
     _fetchPlaceDetails();
-    
   }
+
+  @override
+  void dispose() {
+    _autoPlayTimer?.cancel();
+    _pageController.dispose();
+    super.dispose();
+  }
+
 
   Future<void> _fetchPlaceDetails() async {
-  try {
-    final data = await PlacesApiService.getPlaceDetails(widget.placeId);
+    setState(() {
+      loading = true;
+      error = null;
+    });
 
-    setState(() {
-      placeDetail = data;
-      loading = false;
-    });
-  } catch (e) {
-    setState(() {
-      error = e.toString();
-      loading = false;
-    });
+    try {
+      // 调用新的 getPlaceDetails（按需从 Firebase 读，缓存不存在才 API）
+      final data = await PlacesApiService.getPlaceDetails(widget.placeId);
+
+      setState(() {
+        placeDetail = data;
+        loading = false;
+      });
+    } catch (e) {
+      setState(() {
+        error = e.toString();
+        loading = false;
+      });
+    }
   }
-}
+
+
+  void _startAutoPlay(int total) {
+    _autoPlayTimer?.cancel();
+
+    if (total <= 1) return;
+
+    _autoPlayTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (timer) {
+        if (_isUserInteracting) return;
+
+        int nextPage = _currentPhotoIndex + 1;
+        if (nextPage >= total) nextPage = 0;
+
+        _pageController.animateToPage(
+          nextPage,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOutCubic,
+        );
+      },
+    );
+  }
+
+
 
 
   @override
@@ -70,7 +116,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     final website = placeDetail?['websiteUri'];
     final isOpen = placeDetail?['regularOpeningHours']?['openNow'];
     final photos = placeDetail?['photos'] as List?;
-    //price Level
 
     final geometry = placeDetail?['geometry'];
     final location = geometry?['location'];
@@ -81,50 +126,21 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     print('geometry = $geometry');
     print('lat = $lat, lng = $lng');
 
-
-
-
-
-    // 构造图片 URL (如果存在)
-    String? photoUrl;
-
+    // 构造所有图片 URL
+    List<String> photoUrls = [];
     if (photos != null && photos.isNotEmpty) {
-      final photoName = photos[0]['name'];
-      photoUrl = PlacesApiService.buildPhotoUrl(photoName, maxWidth: 800);
+      for (var photo in photos) {
+        final photoName = photo['name'];
+        photoUrls.add(PlacesApiService.buildPhotoUrl(photoName, maxWidth: 800));
+      }
     }
 
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 1. 顶部大图封面
-          Stack(
-            children: [
-              Container(
-                height: 250,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: Colors.grey[200],
-                  image: photoUrl != null
-                      ? DecorationImage(image: NetworkImage(photoUrl), fit: BoxFit.cover)
-                      : null,
-                ),
-                child: photoUrl == null ? const Icon(Icons.image, size: 50, color: Colors.grey) : null,
-              ),
-              // 顶部渐变遮罩，让返回键更清晰
-              Positioned.fill(
-                child: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [Colors.black.withOpacity(0.3), Colors.transparent, Colors.transparent],
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+          // 1. 顶部图片轮播
+          _buildPhotoCarousel(photoUrls),
 
           Padding(
             padding: const EdgeInsets.all(20),
@@ -198,10 +214,20 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                         widget.lat != null && widget.lng != null,
                         onTap: () {
                           if (widget.lat != null && widget.lng != null) {
+                            // ✅ 返回完整信息，包括 name
                             Navigator.pop(context, {
                               'lat': widget.lat,
                               'lng': widget.lng,
-                              'name': name,
+                              'name': placeDetail?['displayName']?['text'] ?? 'Unknown',
+                              'id': widget.placeId, // 👈 加上 placeId
+                              'rating': placeDetail?['rating'],
+                              'address': placeDetail?['formattedAddress'],
+                              'photoUrl': placeDetail?['photos']?[0] != null 
+                                  ? PlacesApiService.buildPhotoUrl(
+                                      placeDetail!['photos'][0]['name'], 
+                                      maxWidth: 400
+                                    ) 
+                                  : null,
                             });
                           } else {
                             ScaffoldMessenger.of(context).showSnackBar(
@@ -209,7 +235,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                             );
                           }
                         },
-
                       ),
                       _buildActionButton(Icons.share, "分享", true),
                     ],
@@ -249,6 +274,138 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // 新增：图片轮播组件
+  Widget _buildPhotoCarousel(List<String> photoUrls) {
+    if (photoUrls.isEmpty) {
+      return Container(
+        height: 250,
+        color: Colors.grey[200],
+        child: const Icon(Icons.image, size: 50),
+      );
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startAutoPlay(photoUrls.length);
+    });
+
+    return Stack(
+      children: [
+        SizedBox(
+          height: 250,
+          child: NotificationListener<ScrollNotification>(
+            onNotification: (notification) {
+              if (notification is ScrollStartNotification) {
+                _isUserInteracting = true;
+              } else if (notification is ScrollEndNotification) {
+                _isUserInteracting = false;
+              }
+              return false; // ⚠️ 一定要 return false
+            },
+            child: PageView.builder(
+              controller: _pageController,
+              itemCount: photoUrls.length,
+              physics: const PageScrollPhysics(), // Snap + 惯性
+              onPageChanged: (index) {
+                setState(() {
+                  _currentPhotoIndex = index;
+                });
+              },
+              itemBuilder: (context, index) {
+                return GestureDetector(
+                  onTap: () {
+                    _showFullScreenPhoto(context, photoUrls, index);
+                  },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      image: DecorationImage(
+                        image: NetworkImage(photoUrls[index]),
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+
+        // 指示点
+        if (photoUrls.length > 1)
+          Positioned(
+            bottom: 15,
+            left: 0,
+            right: 0,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(photoUrls.length, (index) {
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                  width: _currentPhotoIndex == index ? 10 : 8,
+                  height: _currentPhotoIndex == index ? 10 : 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _currentPhotoIndex == index
+                        ? Colors.white
+                        : Colors.white.withOpacity(0.4),
+                  ),
+                );
+              }),
+            ),
+          ),
+
+        // 计数器
+        if (photoUrls.length > 1)
+          Positioned(
+            top: 15,
+            right: 15,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.6),
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: Text(
+                '${_currentPhotoIndex + 1}/${photoUrls.length}',
+                style: const TextStyle(color: Colors.white, fontSize: 12),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+
+  // 新增：全屏查看照片
+  void _showFullScreenPhoto(BuildContext context, List<String> photoUrls, int initialIndex) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            iconTheme: const IconThemeData(color: Colors.white),
+          ),
+          body: PageView.builder(
+            controller: PageController(initialPage: initialIndex),
+            itemCount: photoUrls.length,
+            itemBuilder: (context, index) {
+              return InteractiveViewer(
+                child: Center(
+                  child: Image.network(
+                    photoUrls[index],
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
       ),
     );
   }

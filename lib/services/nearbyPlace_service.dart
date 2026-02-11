@@ -130,10 +130,6 @@ class NearbyPlacesService {
 //   }).toList();
 // }
 
-
-
-
-
   /// 🔄 手动清 cache（换城市 / 下拉刷新用）
   void clearCache() {
     print('♻️ NearbyPlacesService: cache cleared');

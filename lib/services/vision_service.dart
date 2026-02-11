@@ -56,7 +56,7 @@ class VisionService {
           'lat': lat,
           'lng': lng,
         };
-      }
+      } 
     }
 
     // Landmark not detected
