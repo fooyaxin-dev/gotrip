@@ -1,4 +1,4 @@
-import 'dart:math';
+import '../realtime/detectPlacePage.dart';
 import 'package:flutter/material.dart';
 import 'bottomnav.dart';
 import '../../services/location_service.dart';
@@ -652,183 +652,109 @@ final List<Map<String, dynamic>> _categories = [
   }
 
 
-// Widget _buildNearbyCard(String name, String pic, String distanceText) {
-//   return Container(
-//     margin: const EdgeInsets.only(bottom: 16),
-//     // 增加内部 Padding 让呼吸感更强
-//     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-//     decoration: BoxDecoration(
-//       color: Colors.white,
-//       borderRadius: BorderRadius.circular(24),
-//       boxShadow: [
-//         BoxShadow(
-//           color: const Color(0xFF6366F1).withOpacity(0.06), // 使用主色调的超淡阴影
-//           offset: const Offset(0, 8),
-//           blurRadius: 24,
-//         ),
-//       ],
-//     ),
-//     child: Row(
-//       children: [
-//         // ---- 1. 照片 (固定比例，增加轻微阴影) ----
-//         Container(
-//           decoration: BoxDecoration(
-//             borderRadius: BorderRadius.circular(18),
-//             boxShadow: [
-//               BoxShadow(
-//                 color: Colors.black.withOpacity(0.08),
-//                 blurRadius: 8,
-//                 offset: const Offset(0, 4),
-//               )
-//             ],
-//           ),
-//           child: ClipRRect(
-//             borderRadius: BorderRadius.circular(18),
-//             child: pic.isNotEmpty
-//                 ? Image.network(
-//                     pic,
-//                     width: 80, 
-//                     height: 80, 
-//                     fit: BoxFit.cover,
-//                   )
-//                 : Container(
-//                     width: 80,
-//                     height: 80,
-//                     color: const Color(0xFFF1F5F9),
-//                     child: const Icon(Icons.map_outlined, color: Color(0xFF94A3B8)),
-//                   ),
-//           ),
-//         ),
-        
-//         const SizedBox(width: 18),
-        
-//         // ---- 2. 名字 & 距离用时组合 ----
-//         Expanded(
-//           child: Column(
-//             crossAxisAlignment: CrossAxisAlignment.start,
-//             mainAxisSize: MainAxisSize.min,
-//             children: [
-//               // 名字：字体稍微拉大，颜色使用 Slate-800 更有质感
-//               Text(
-//                 name,
-//                 style: const TextStyle(
-//                   fontWeight: FontWeight.w800,
-//                   fontSize: 16,
-//                   color: Color(0xFF1E293B),
-//                   letterSpacing: -0.3,
-//                 ),
-//                 maxLines: 1,
-//                 overflow: TextOverflow.ellipsis,
-//               ),
-              
-//               const SizedBox(height: 10),
-              
-//               // 距离与用时：使用横向并列的图标，看起来更清晰
-//               Row(
-//                 children: [
-//                   // 距离
-//                   _buildMiniInfoTag(Icons.location_on_rounded, distanceText.split("away").first.trim()),
-//                   const SizedBox(width: 8),
-//                   // 用时
-//                   _buildMiniInfoTag(Icons.access_time_filled_rounded, distanceText.split("•").last.trim()),
-//                 ],
-//               ),
-//             ],
-//           ),
-//         ),
+  Widget _buildSpecialAsymmetricCard(PlaceModel place, int index) {
+    final route = _routeResults[place.id];
+    final dist = route != null ? (route.distanceMeters / 1000).toStringAsFixed(1) : "--";
+    final time = route != null ? (route.durationSeconds ~/ 60).toString() : "--";
+    
+    bool isEven = index % 2 == 0;
 
-//         // 右侧引导箭头
-//         Icon(Icons.chevron_right_rounded, color: Colors.grey[300], size: 28),
-//       ],
-//     ),
-//   );
-// }
-
-
-Widget _buildSpecialAsymmetricCard(PlaceModel place, int index) {
-  final route = _routeResults[place.id];
-  final dist = route != null ? (route.distanceMeters / 1000).toStringAsFixed(1) : "--";
-  final time = route != null ? (route.durationSeconds ~/ 60).toString() : "--";
-  
-  bool isEven = index % 2 == 0;
-
-  return GestureDetector(
-    onTap: () {
-      if (place.id != null) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => PlaceDetailPage(
-              placeId: place.id!,
-              lat: place.lat,
-              lng: place.lng,
-            ),
-          ),
-        );
-      }
-    },
-    child: Padding(
-      padding: const EdgeInsets.only(bottom: 40),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          // ✅ 修复点 1: 传入 place.id
-          if (isEven) _buildImage(place.photoUrl ?? "", place.id), 
-          
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(
-                left: isEven ? 20 : 0,
-                right: isEven ? 0 : 20,
-                bottom: 10,
-              ),
-              child: Column(
-                crossAxisAlignment: isEven ? CrossAxisAlignment.start : CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    "$dist KM",
-                    style: TextStyle(
-                      fontFamily: 'Courier', 
-                      fontSize: 24,
-                      fontWeight: FontWeight.w900,
-                      color: const Color(0xFF6366F1).withOpacity(0.2),
-                    ),
-                  ),
-                  Text(
-                    place.name ?? "未知地点",
-                    textAlign: isEven ? TextAlign.left : TextAlign.right,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
-                      height: 1.2,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black, 
-                      borderRadius: BorderRadius.circular(5),
-                    ),
-                    child: Text(
-                      "$time MINS WALK",
-                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ],
+    return GestureDetector(
+      onTap: () async {
+        if (place.id != null) {
+          final result = await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PlaceDetailPage(
+                placeId: place.id!,
+                lat: place.lat,
+                lng: place.lng,
               ),
             ),
-          ),
+          );
 
-          // ✅ 修复点 2: 传入 place.id
-          if (!isEven) _buildImage(place.photoUrl ?? "", place.id),
-        ],
+          // ✅ 处理导航请求
+          if (result != null && result['action'] == 'start_navigation') {
+            // 打开 RealTimeDetectPage 并传入导航数据
+            if (!mounted) return;
+            
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => RealTimeDetectPage(
+                  landmarkLat: result['lat'],
+                  landmarkLng: result['lng'],
+                  onBack: () => Navigator.pop(context),
+                  initialNavigation: result, // ✅ 传入导航数据
+                ),
+              ),
+            );
+          }
+        }
+      },
+      
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 40),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            // ✅ 修复点 1: 传入 place.id
+            if (isEven) _buildImage(place.photoUrl ?? "", place.id), 
+            
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: isEven ? 20 : 0,
+                  right: isEven ? 0 : 20,
+                  bottom: 10,
+                ),
+                child: Column(
+                  crossAxisAlignment: isEven ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      "$dist KM",
+                      style: TextStyle(
+                        fontFamily: 'Courier', 
+                        fontSize: 24,
+                        fontWeight: FontWeight.w900,
+                        color: const Color(0xFF6366F1).withOpacity(0.2),
+                      ),
+                    ),
+                    Text(
+                      place.name ?? "未知地点",
+                      textAlign: isEven ? TextAlign.left : TextAlign.right,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E293B),
+                        height: 1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.black, 
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                      child: Text(
+                        "$time MINS WALK",
+                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // ✅ 修复点 2: 传入 place.id
+            if (!isEven) _buildImage(place.photoUrl ?? "", place.id),
+          ],
+        ),
       ),
-    ),
-  );
-}
-  
+    );
+  }
+    
   
   // 独立的图片构建组件，增加漂浮感阴影
   Widget _buildImage(String url, String? placeId) {

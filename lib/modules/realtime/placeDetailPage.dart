@@ -208,18 +208,20 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                     children: [
                       _buildActionButton(Icons.phone, "电话", phone != null),
                       _buildActionButton(Icons.public, "网站", website != null),
+                      // 在 placeDetailPage.dart 中
                       _buildActionButton(
                         Icons.directions,
                         "路线",
                         widget.lat != null && widget.lng != null,
                         onTap: () {
                           if (widget.lat != null && widget.lng != null) {
-                            // ✅ 返回完整信息，包括 name
+                            // ✅ 直接返回导航所需的完整数据
                             Navigator.pop(context, {
+                              'action': 'navigate', // 👈 标记这是导航请求
                               'lat': widget.lat,
                               'lng': widget.lng,
                               'name': placeDetail?['displayName']?['text'] ?? 'Unknown',
-                              'id': widget.placeId, // 👈 加上 placeId
+                              'id': widget.placeId,
                               'rating': placeDetail?['rating'],
                               'address': placeDetail?['formattedAddress'],
                               'photoUrl': placeDetail?['photos']?[0] != null 
@@ -229,10 +231,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                                     ) 
                                   : null,
                             });
-                          } else {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('位置数据还没加载完成')),
-                            );
                           }
                         },
                       ),

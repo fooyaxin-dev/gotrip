@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class PlacesApiService {
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; 
+  static const String _apiKey = '';//'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; 
   static const String _baseUrl = 'https://places.googleapis.com/v1';
 
   // Firebase Firestore 实例

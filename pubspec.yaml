@@ -50,7 +50,10 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/images/
+    - assets/images/profile.jpg
+    - assets/images/image1.jpg
+    - assets/images/image2.jpg
+    - assets/images/planess.jpg
     - assets/Mobile Apps.json
     - assets/Map Location Pointer.json
 

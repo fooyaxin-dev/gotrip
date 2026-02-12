@@ -1,184 +1,296 @@
-import 'package:flutter/material.dart';
+import 'dart:ui';
 
-class ProfilePage extends StatelessWidget {
+import 'package:flutter/material.dart';
+import 'barSwap.dart';
+import 'postWidget.dart';
+
+class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
 
   @override
+  State<ProfilePage> createState() => _ProfilePageState();
+}
+
+class _ProfilePageState extends State<ProfilePage> {
+
+  bool showProfile = true;
+
+  void zoomProfile(){
+    setState(() {
+      showProfile = !showProfile;
+    });
+  }
+
+
+  @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      physics: const BouncingScrollPhysics(),
-      child: Column(
-        children: [
-          _buildHeader(),
-          const SizedBox(height: 30),
 
-          // ✅ 原本 MainPage 的 Summary
-          _buildSectionHeader("Your Travel Summary"),
-          const SizedBox(height: 15),
-          _buildUpgradedSummary(),
+    var height = MediaQuery.of(context).size.height;
 
-          const SizedBox(height: 120),
-        ],
-      ),
-    );
-  }
-
-  // ================= Header =================
-  Widget _buildHeader() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(25, 70, 25, 35),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF4F46E5), Color(0xFF818CF8)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(40),
-          bottomRight: Radius.circular(40),
-        ),
-      ),
-      child: const Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            "Profile",
-            style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
-          ),
-          SizedBox(height: 8),
-          Text(
-            "Your travel activity & progress",
-            style: TextStyle(color: Colors.white70),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ================= Section Header =================
-  Widget _buildSectionHeader(String title) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 25),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF1E293B),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ================= 原本的 Upgraded Summary =================
-  Widget _buildUpgradedSummary() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 25),
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF6366F1), Color(0xFF818CF8)],
+    return SafeArea(
+      child: Scaffold(
+        body: showProfile ?  Stack(
+          children: [
+            
+            //1
+            Image.asset('assets/images/profile.jpg', fit: BoxFit.cover, height:200,),
+            Container(
+              decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.transparent, Colors.white],
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    stops: [0, .2]
+                  )
               ),
-              borderRadius: BorderRadius.circular(25),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFF6366F1).withValues(alpha: 0.3),
-                  blurRadius: 15,
-                  offset: const Offset(0, 8),
-                )
-              ],
             ),
-            child: Row(
-              children: [
-                Stack(
-                  alignment: Alignment.center,
+            
+            //2
+            Center(
+              child: SingleChildScrollView(
+                child: Column(
                   children: [
-                    SizedBox(
-                      width: 60,
-                      height: 60,
-                      child: CircularProgressIndicator(
-                        value: 0.7,
-                        strokeWidth: 6,
-                        backgroundColor: Colors.white.withValues(alpha: 0.2),
-                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                
+                    SizedBox(height: height * 0.13),
+                
+                    CircleAvatar(
+                      backgroundColor: Colors.orange,
+                      radius: 47,
+                      child: CircleAvatar(
+                        backgroundColor: Colors.white,
+                        radius: 45,
+                        child: InkWell(
+                          onTap: zoomProfile ,
+                          child: const CircleAvatar(
+                            radius: 43,
+                            backgroundImage: AssetImage('asset/images/profile.jpg'),
+                                          
+                          ),
+                        ),
                       ),
                     ),
-                    const Text(
-                      "70%",
-                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                
+                    SizedBox(height: height * 0.02),
+                
+                    const Text('YAXIN', 
+                      style: TextStyle(
+                      fontSize: 23,
+                      fontWeight: FontWeight.bold,
+                      ),
                     ),
+                
+                    const Text('@YAxin', 
+                      style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey,
+                      ),
+                    ),
+                
+                    Padding(
+                      padding: const EdgeInsets.only(left: 30.0, right: 30.0, top:10),
+                      child: Text('Bio', 
+                        style: TextStyle(
+                        fontSize: 15,
+                        color: Colors.grey.shade400,
+                        ),
+                      ),
+                    ),
+                
+                    SizedBox(height: height * 0.05),
+                
+                    _totalPostwithHistory(),
+                
+                    SizedBox(height: height * 0.03),
+                    barSwap(),
+                
+                    SizedBox(height: height * 0.02),
+                    postWidget(),
+                
+                
+                
                   ],
                 ),
-                const SizedBox(width: 20),
-                const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "Visited Places",
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
-                    Text(
-                      "12 destinations explored",
-                      style: TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                  ],
-                ),
-                const Spacer(),
-                const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white, size: 16),
-              ],
-            ),
-          ),
-          const SizedBox(height: 15),
-          Row(
-            children: [
-              Expanded(
-                child: _buildMiniStatCard("Saved", "5", Icons.bookmark_rounded, const Color(0xFFEC4899)),
-              ),
-              const SizedBox(width: 15),
-              Expanded(
-                child: _buildMiniStatCard("Routes", "3", Icons.map_rounded, const Color(0xFF10B981)),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+              )
+            )
+          ], 
+        )  ////NEXT
 
-  Widget _buildMiniStatCard(String label, String value, IconData icon, Color color) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 10)],
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(color: color.withValues(alpha: 0.1), shape: BoxShape.circle),
-            child: Icon(icon, color: color, size: 20),
-          ),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        : InkWell(
+          onTap: zoomProfile,
+          child: Stack(
             children: [
-              Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
-              Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+              
+              //1
+              Image.asset('asset/images/profile.jpg', fit: BoxFit.cover, height:200,),
+              Container(
+                decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.transparent, Colors.white],
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      stops: [0, .2]
+                    )
+                ),
+              ),
+              
+              //2
+              Center(
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                  
+                      SizedBox(height: height * 0.13),
+                  
+                      const CircleAvatar(
+                        backgroundColor: Colors.orange,
+                        radius: 47,
+                        child: CircleAvatar(
+                          backgroundColor: Colors.white,
+                          radius: 45,
+                          child: CircleAvatar(
+                            radius: 43,
+                            backgroundImage: AssetImage('asset/images/profile.jpg'),
+                  
+                          ),
+                        ),
+                      ),
+                  
+                      SizedBox(height: height * 0.02),
+                  
+                      const Text('YAXIN', 
+                        style: TextStyle(
+                        fontSize: 23,
+                        fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                  
+                      const Text('@YAxin', 
+                        style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey,
+                        ),
+                      ),
+                  
+                      Padding(
+                        padding: const EdgeInsets.only(left: 30.0, right: 30.0, top:10),
+                        child: Text('Bio', 
+                          style: TextStyle(
+                          fontSize: 15,
+                          color: Colors.grey.shade400,
+                          ),
+                        ),
+                      ),
+                  
+                      SizedBox(height: height * 0.05),
+                  
+                      _totalPostwithHistory(),
+                  
+                      SizedBox(height: height * 0.03),
+                      barSwap(),
+                  
+                      SizedBox(height: height * 0.02),
+                      postWidget(),
+                    ],
+                  ),
+                )
+              ),
+          
+              BackdropFilter(
+
+                filter: ImageFilter.blur(
+                  sigmaX:10,
+                  sigmaY:10
+                ),
+
+                child: Container(
+                  height:height,
+                  color: Colors.white.withOpacity(0.3),
+                  child: const Center(
+                    child: CircleAvatar(
+                      radius: 120,
+                      backgroundImage: AssetImage('asset/images/profile,jpg',  ),
+                    ),
+                  ),
+                ),
+              )
+          
+          
+          
+          
+          
             ],
           ),
-        ],
+        )
       ),
     );
   }
 }
+
+  Widget _totalPostwithHistory() {
+
+    return const Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        Column(
+          children: [
+            Text('Post' , style: TextStyle(
+              fontSize: 15,
+              color: Colors.grey,
+              ),
+            ),
+
+              Padding(
+                padding: EdgeInsets.only(top: 6.0),
+                child: Text('5' , style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+                ),
+               ),
+              ),
+          ],
+        ),
+
+        Column(
+          children: [
+            Text('Favourite' , style: TextStyle(
+              fontSize: 15,
+              color: Colors.grey,
+              ),
+            ),
+
+              Padding(
+                padding: EdgeInsets.only(top: 6.0),
+                child: Text('5' , style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+                ),
+               ),
+              ),
+          ],
+        ),
+
+        Column(
+          children: [
+            Text('Route' , style: TextStyle(
+              fontSize: 15,
+              color: Colors.grey,
+              ),
+            ),
+
+              Padding(
+                padding: EdgeInsets.only(top: 6.0),
+                child: Text('5' , style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+                ),
+               ),
+              ),
+          ],
+        )
+      ],
+    );
+  }
+

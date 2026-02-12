@@ -24,9 +24,16 @@ enum TravelMode { walk, drive, motor }
 class RealTimeDetectPage extends StatefulWidget {
   final double? landmarkLat;
   final double? landmarkLng;
-    final VoidCallback onBack;
+  final VoidCallback onBack;
+  final Map<String, dynamic>? initialNavigation;
 
-  const RealTimeDetectPage({super.key, this.landmarkLat, this.landmarkLng, required this.onBack});
+    const RealTimeDetectPage({
+      super.key, 
+      this.landmarkLat, 
+      this.landmarkLng, 
+      required this.onBack,
+      this.initialNavigation, // ✅ 新增
+    });
 
   @override
   State<RealTimeDetectPage> createState() => _RealTimeDetectPageState();
@@ -211,7 +218,47 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
     _startLocationWatch();
 
+      // ✅ 如果有初始导航数据，自动开启导航
+    if (widget.initialNavigation != null) {
+      _handleInitialNavigation(widget.initialNavigation!);
+    }
+
   }
+
+  // ✅ 新增方法：处理初始导航
+  void _handleInitialNavigation(Map<String, dynamic> navData) {
+    final targetLat = navData['lat'] as double;
+    final targetLng = navData['lng'] as double;
+    final routeResult = navData['routeResult'] as RouteResult?;
+
+    setState(() {
+      _isNavigating = true;
+      
+      _currentNavPlace = PlaceModel(
+        id: navData['id'] ?? '',
+        name: navData['name'] ?? 'Unknown',
+        lat: targetLat,
+        lng: targetLng,
+        rating: navData['rating'],
+        address: navData['address'],
+        photoUrl: navData['photoUrl'],
+        source: 'google',
+      );
+      
+      // 清理地图
+      _markers.retainWhere((m) =>
+          m.markerId.value == 'me' ||
+          m.position == LatLng(targetLat, targetLng));
+      _nearbyPlaces.clear();
+    });
+
+    if (routeResult != null) {
+      _routeResults[_currentNavPlace!.id] = routeResult;
+      _currentRouteResult = routeResult;
+      _showRouteOnMap(routeResult, LatLng(targetLat, targetLng));
+    }
+  }
+
 
       //辅助方法
   void _showErrorDialog(String title, String message) {
@@ -685,186 +732,163 @@ Future<void> _refreshAllPlacesFromService() async {
     }
   }
 
-  void _showPlaceDetails(PlaceModel place) {
-    
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent, // 保持透明以支持圆角
-      builder: (context) {
-        final theme = Theme.of(context);
-        
-        return Container(
-          height: MediaQuery.of(context).size.height * 0.42, // 稍微缩减高度，更精炼
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(28)), // 更加圆润的现代感
-            boxShadow: [
-              BoxShadow(color: Colors.black12, blurRadius: 10, spreadRadius: 1),
-            ],
-          ),
-          padding: const EdgeInsets.fromLTRB(24, 12, 24, 32), // 底部留白增加，适配全面屏
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 顶部指示条
-              Center(
-                child: Container(
-                  width: 48,
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[300],
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+void _showPlaceDetails(PlaceModel place) {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) {
+      final theme = Theme.of(context);
+      
+      return Container(
+        height: MediaQuery.of(context).size.height * 0.42,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          boxShadow: [
+            BoxShadow(color: Colors.black12, blurRadius: 10, spreadRadius: 1),
+          ],
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 顶部指示条
+            Center(
+              child: Container(
+                width: 48,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(10),
                 ),
               ),
-              const SizedBox(height: 24),
+            ),
+            const SizedBox(height: 24),
 
-              // 标题与评分
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Text(
-                      place.name,
-                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: -0.5),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+            // 标题与评分
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    place.name,
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  if (place.rating != null)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.star_rounded, color: Colors.orange, size: 20),
-                          const SizedBox(width: 2),
-                          Text(
-                            place.rating.toString(),
-                            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange),
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-              
-              const SizedBox(height: 12),
-
-              // 地址
-              Row(
-                children: [
-                  Icon(Icons.location_on_rounded, size: 18, color: theme.primaryColor),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      place.address ?? '地址未知',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 14),
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 16),
-
-              // 路线结果标签 (Chip 风格)
-              if (_routeResults[place.id] != null)
-                Wrap(
-                  spacing: 12,
-                  children: [
-                    _buildInfoChip(
-                      Icons.directions_car_filled_rounded,
-                      '${(_routeResults[place.id]!.distanceMeters / 1000).toStringAsFixed(1)} km',
-                      Colors.blue,
-                    ),
-                    _buildInfoChip(
-                      Icons.access_time_filled_rounded,
-                      '${(_routeResults[place.id]!.durationSeconds ~/ 60)} min',
-                      Colors.teal,
-                    ),
-                  ],
                 ),
-
-              const Spacer(),
-
-              // 底部操作栏
-              Row(
-                children: [
-                  // 更多信息 - 次要按钮
-                  Expanded(
-                    flex: 2,
-                    child: OutlinedButton(
-                      onPressed: () async {
-                        // 直接 push 到详情页
-                        final result = await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => PlaceDetailPage(
-                              placeId: place.id,
-                              lat: place.lat,
-                              lng: place.lng,
-                            ),
-                          ),
-                        );
-
-                        // 先关闭 BottomSheet
-                        Navigator.of(context).pop(); // <-- 关闭 Draggable/BottomSheet
-
-                        // 当 PlaceDetailPage 返回坐标时
-                        if (result != null && result['lat'] != null && result['lng'] != null) {
-                          final dest = LatLng(result['lat'], result['lng']);
-
-                          // 打开 GuidePage 计算路线
-                          final routeResult = await Navigator.push<RouteResult>(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => GuidePage(
-                                startLat: _currentPosition!.latitude,
-                                startLng: _currentPosition!.longitude,
-                                endLat: dest.latitude,
-                                endLng: dest.longitude,
-                              ),
-                            ),
-                          );
-
-                          // 绘制路线
-                          if (routeResult != null) {
-                            _showRouteOnMap(routeResult, dest);
-                          }
-                        }
-                      },
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        side: BorderSide(color: Colors.grey[300]!),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      ),
-                      child: const Text('详情', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+                if (place.rating != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.star_rounded, color: Colors.orange, size: 20),
+                        const SizedBox(width: 2),
+                        Text(
+                          place.rating.toString(),
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  // 导航 - 主要按钮
-                  Expanded(
-                    flex: 3,
-                    child: ElevatedButton.icon(
-                      onPressed: () async {
-                        // ✅ 先关闭 BottomSheet
-                        Navigator.of(context).pop(); // 这里 context 是 BottomSheet builder 内
-                        final targetLat = place.lat!;
-                        final targetLng = place.lng!;
+              ],
+            ),
+            
+            const SizedBox(height: 12),
 
+            // 地址
+            Row(
+              children: [
+                Icon(Icons.location_on_rounded, size: 18, color: theme.primaryColor),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    place.address ?? '地址未知',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 16),
+
+            // 路线结果标签 (Chip 风格)
+            if (_routeResults[place.id] != null)
+              Wrap(
+                spacing: 12,
+                children: [
+                  _buildInfoChip(
+                    Icons.directions_car_filled_rounded,
+                    '${(_routeResults[place.id]!.distanceMeters / 1000).toStringAsFixed(1)} km',
+                    Colors.blue,
+                  ),
+                  _buildInfoChip(
+                    Icons.access_time_filled_rounded,
+                    '${(_routeResults[place.id]!.durationSeconds ~/ 60)} min',
+                    Colors.teal,
+                  ),
+                ],
+              ),
+
+            const Spacer(),
+
+            // 底部操作栏
+            Row(
+              children: [
+                // ✅ 更多信息按钮 - 修改后的版本
+                Expanded(
+                  flex: 2,
+                  child: OutlinedButton(
+                    onPressed: () async {
+                      // 1. 先关闭 BottomSheet
+                      Navigator.of(context).pop();
+                      
+                      // 2. 打开详情页
+                      final result = await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => PlaceDetailPage(
+                            placeId: place.id,
+                            lat: place.lat,
+                            lng: place.lng,
+                          ),
+                        ),
+                      );
+
+                      // 3. ✅ 处理返回结果
+                      if (result != null && result['action'] == 'navigate') {
+                        final targetLat = result['lat'] as double;
+                        final targetLng = result['lng'] as double;
+
+                        // 4. 开启导航模式
                         setState(() {
                           _isNavigating = true;
-                           _currentNavPlace = place; // ⭐ 保存当前导航的 place
+                          _currentNavPlace = PlaceModel(
+                            id: result['id'] ?? place.id,
+                            name: result['name'] ?? place.name,
+                            lat: targetLat,
+                            lng: targetLng,
+                            rating: result['rating'] ?? place.rating,
+                            address: result['address'] ?? place.address,
+                            photoUrl: result['photoUrl'] ?? place.photoUrl,
+                            source: place.source,              
+                            primaryType: place.primaryType,    
+                            secondaryType: place.secondaryType, 
+                          );
+                          
+                          // 清理地图，只保留起点和终点
                           _markers.retainWhere((m) =>
                               m.markerId.value == 'me' ||
                               m.position == LatLng(targetLat, targetLng));
                           _nearbyPlaces.clear();
                         });
 
-                        final result = await Navigator.push<RouteResult>(
+                        // 5. 计算路线
+                        final routeResult = await Navigator.push<RouteResult>(
                           context,
                           MaterialPageRoute(
                             builder: (_) => GuidePage(
@@ -876,30 +900,84 @@ Future<void> _refreshAllPlacesFromService() async {
                           ),
                         );
 
-                        if (result != null) {
-                          setState(() { _routeResults[place.id] = result; });
-                           _currentRouteResult = result; // ⭐ 保存当前路线
-                          _showRouteOnMap(result, LatLng(targetLat, targetLng));
+                        // 6. 显示路线
+                        if (routeResult != null) {
+                          setState(() {
+                            _routeResults[_currentNavPlace!.id] = routeResult;
+                            _currentRouteResult = routeResult;
+                          });
+                          _showRouteOnMap(routeResult, LatLng(targetLat, targetLng));
                         }
-                      },
-                      icon: const Icon(Icons.near_me_rounded, color: Colors.white),
-                      label: const Text('开始导航', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: theme.primaryColor,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      ),
+                      }
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: BorderSide(color: Colors.grey[300]!),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                    child: const Text('详情', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                
+                // 导航按钮 - 保持原样
+                Expanded(
+                  flex: 3,
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      // 先关闭 BottomSheet
+                      Navigator.of(context).pop();
+                      
+                      final targetLat = place.lat!;
+                      final targetLng = place.lng!;
+
+                      setState(() {
+                        _isNavigating = true;
+                        _currentNavPlace = place;
+                        _markers.retainWhere((m) =>
+                            m.markerId.value == 'me' ||
+                            m.position == LatLng(targetLat, targetLng));
+                        _nearbyPlaces.clear();
+                      });
+
+                      final result = await Navigator.push<RouteResult>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => GuidePage(
+                            startLat: _currentPosition!.latitude,
+                            startLng: _currentPosition!.longitude,
+                            endLat: targetLat,
+                            endLng: targetLng,
+                          ),
+                        ),
+                      );
+
+                      if (result != null) {
+                        setState(() { 
+                          _routeResults[place.id] = result;
+                          _currentRouteResult = result;
+                        });
+                        _showRouteOnMap(result, LatLng(targetLat, targetLng));
+                      }
+                    },
+                    icon: const Icon(Icons.near_me_rounded, color: Colors.white),
+                    label: const Text('开始导航', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: theme.primaryColor,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     ),
                   ),
-                ],
-              )
-            ],
-          ),
-        );
-      },
-    );
-  }
+                ),
+              ],
+            )
+          ],
+        ),
+      );
+    },
+  );
+}
 
   // 辅助方法：构建信息标签
   Widget _buildInfoChip(IconData icon, String label, Color color) {
@@ -1114,108 +1192,132 @@ Widget build(BuildContext context) {
 }
 
   /// ===== 导航状态底部 Sheet =====
-  Widget _buildNavigationSheet() {
-    if (_currentNavPlace == null || !_routeResults.containsKey(_currentNavPlace!.id)) {
-      return const SizedBox.shrink(); // 没有导航时返回空
-    }
-
-    final place = _currentNavPlace!;
-    final route = _routeResults[place.id]!; // ⭐ 从 placeCard 同步的数据
-
-    return Container(
-      height: 150,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 顶部把手
-          Center(
-            child: Container(
-              width: 45,
-              height: 5,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          // 标题 + 距离/时间
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Text(
-                  place.name,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              Row(
-                children: [
-                  _buildInfoChip(Icons.directions_car, '${(route.distanceMeters / 1000).toStringAsFixed(1)} km', Colors.blue),
-                  const SizedBox(width: 12),
-                  _buildInfoChip(Icons.access_time, '${(route.durationSeconds ~/ 60)} min', Colors.teal),
-                ],
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 12),
-
-          // 底部操作按钮：取消导航 / 导航到 place
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () {
-                    setState(() {
-                      _isNavigating = false;
-                      _currentNavPlace = null;
-                      _markers.removeWhere((m) => m.markerId.value != 'me');
-                      _routeResults.remove(place.id);
-                    });
-                  },
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    side: BorderSide(color: Colors.grey[300]!),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  ),
-                  child: const Text('取消导航', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    // 可以重复 push GuidePage 或者直接刷新路线
-                  },
-                  icon: const Icon(Icons.near_me_rounded, color: Colors.white),
-                  label: const Text('继续导航', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Theme.of(context).primaryColor,
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
+Widget _buildNavigationSheet() {
+  if (_currentNavPlace == null || !_routeResults.containsKey(_currentNavPlace!.id)) {
+    return const SizedBox.shrink();
   }
 
+  final place = _currentNavPlace!;
+  final route = _routeResults[place.id]!;
 
+  // 根据你照片里的情况，底部导航栏+大紫色按钮的高度比较高
+  // 建议预留 100-110 左右的空间，内容才不会被挡住
+  final double bottomReservedSpace = 110.0;
+  final double safeAreaBottom = MediaQuery.of(context).padding.bottom;
+
+  return Container(
+    // 增加底部内边距，确保按钮被推到紫色按钮上方
+    padding: EdgeInsets.fromLTRB(20, 12, 20, 12 + bottomReservedSpace + safeAreaBottom),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withOpacity(0.15),
+          blurRadius: 20,
+          offset: const Offset(0, -5),
+        ),
+      ],
+    ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min, // 让高度随内容自适应
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 顶部把手
+        Center(
+          child: Container(
+            width: 40,
+            height: 4,
+            margin: const EdgeInsets.only(bottom: 16),
+            decoration: BoxDecoration(
+              color: Colors.grey[300],
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ),
+
+        // 核心信息：大字绿色时间 + 距离
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(
+              '${(route.durationSeconds ~/ 60)} min',
+              style: const TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF2E7D32), // 经典的导航绿
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '(${(route.distanceMeters / 1000).toStringAsFixed(1)} km)',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey[600],
+              ),
+            ),
+          ],
+        ),
+
+        // 目的地名称
+        Padding(
+          padding: const EdgeInsets.only(top: 4, bottom: 20),
+          child: Text(
+            '目的地: ${place.name}',
+            style: TextStyle(fontSize: 15, color: Colors.grey[600]),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+
+        // 操作按钮：现在它们会被顶到紫色按钮的上方
+        Row(
+          children: [
+            Expanded(
+              flex: 1,
+              child: OutlinedButton(
+                onPressed: () {
+                  setState(() {
+                    _isNavigating = false;
+                    _currentNavPlace = null;
+                  });
+                },
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  side: BorderSide(color: Colors.grey[300]!),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                child: const Text('取消', style: TextStyle(color: Colors.black87)),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              flex: 2,
+              child: ElevatedButton(
+                onPressed: () {
+                  // 继续导航逻辑
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Theme.of(context).primaryColor,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                child: const Text('继续导航', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+  
+  
+  
+  
   /// ===== 原始 Place List / Filter Sheet =====
   Widget _buildPlaceListSheet(ScrollController scrollController, List<PlaceModel> sortedPlaces) {
     return ListView(
