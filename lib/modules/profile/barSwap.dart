@@ -1,89 +1,115 @@
 import 'package:flutter/material.dart';
 
-class barSwap extends StatefulWidget {
-  const barSwap({super.key});
+class BarSwap extends StatefulWidget {
+  final Function(int)? onTabChanged; // 可选的回调函数，返回选中的索引
+  
+  const BarSwap({super.key, this.onTabChanged});
 
   @override
-  State<barSwap> createState() => _barSwapdState();
+  State<BarSwap> createState() => _BarSwapState();
 }
 
-class _barSwapdState extends State<barSwap> {
+class _BarSwapState extends State<BarSwap> {
+  int _selectedIndex = 0; // 0 = Post, 1 = History
 
-  Alignment _alignment = Alignment.centerLeft;
-
-  void _moveContainer(){
-    setState(() {
-      _alignment = Alignment.centerRight;
-    });
+  void _switchTab(int index) {
+    if (_selectedIndex != index) {
+      setState(() {
+        _selectedIndex = index;
+      });
+      widget.onTabChanged?.call(index); // 触发回调
+    }
   }
-
-  void _moveContainer1(){
-    setState(() {
-      _alignment = Alignment.centerLeft;
-    });
-  }
-
 
   @override
   Widget build(BuildContext context) {
     var width = MediaQuery.of(context).size.width;
-    return Padding(
-      padding: const EdgeInsets.only(left:25, right:25),
-      child: Stack(
-        alignment: _alignment,
-        children: [
-          InkWell(
-            onTap: _moveContainer1,
-            child: Container(
-              margin: EdgeInsets.only(left: 10),
-              height: 65,
-              width: width,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(20),
-              ),
-            ),
-          ),
+    var tabWidth = (width - 90) / 2; // 减去左右padding和间距
 
-          InkWell(
-            onTap: _moveContainer,
-            child: Padding(
-              padding: const EdgeInsets.only(right:5.0),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 25),
+      child: Container(
+        height: 55,
+        decoration: BoxDecoration(
+          color: Colors.grey.shade300,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Stack(
+          children: [
+            // 动画滑块
+            AnimatedAlign(
+              alignment: _selectedIndex == 0 
+                  ? Alignment.centerLeft 
+                  : Alignment.centerRight,
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.easeInOut,
               child: Container(
-                margin: EdgeInsets.only(left:5),
+                margin: const EdgeInsets.all(7.5),
                 height: 50,
-                width: width / 2 -20,
+                width: tabWidth,
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(15),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
                 ),
               ),
             ),
-          ),
 
-          const Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-
-              Padding(
-                padding: EdgeInsets.only(right:25),
-                child: Text('Post', style: TextStyle(fontSize: 17,),),
-              ),
-
-              Padding(
-                padding: EdgeInsets.only(left:25),
-                child: Text('History', style: TextStyle(fontSize: 17,),),
-              ),
-
-
-            ],
-            
-
-          ),
-
-          
-        ],
-         
+            // 可点击的文字区域
+            Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => _switchTab(0),
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      alignment: Alignment.center,
+                      child: Text(
+                        'Post',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: _selectedIndex == 0 
+                              ? FontWeight.w600 
+                              : FontWeight.normal,
+                          color: _selectedIndex == 0 
+                              ? Colors.black 
+                              : Colors.grey.shade600,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => _switchTab(1),
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      alignment: Alignment.center,
+                      child: Text(
+                        'History',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: _selectedIndex == 1 
+                              ? FontWeight.w600 
+                              : FontWeight.normal,
+                          color: _selectedIndex == 1 
+                              ? Colors.black 
+                              : Colors.grey.shade600,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

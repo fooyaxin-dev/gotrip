@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import '../realtime/detectPlacePage.dart';
 import 'package:flutter/material.dart';
 import 'bottomnav.dart';
@@ -6,6 +8,8 @@ import '../../services/placeModal.dart';
 import '../../services/nearbyPlace_service.dart';
 import 'package:geolocator/geolocator.dart';
 import '../realtime/placeDetailPage.dart';
+import 'package:geocoding/geocoding.dart';
+
 
 
 // ================= MainPage  =================
@@ -28,6 +32,8 @@ class _MainPageState extends State<MainPage> {
   // ===== 天气状态（假数据）=====
   final String _weatherCondition = "sunny"; // sunny / cloudy / rainy
   final int _temperature = 19;
+  String _currentLocationText = "Detecting your location...";
+
 
   @override
   void initState() {
@@ -43,16 +49,52 @@ class _MainPageState extends State<MainPage> {
     _calculateRoutes();
   }
 
+  Future<void> _initLocation() async {
+    try {
+      await LocationService.instance.initLocation();
+      final pos = LocationService.instance.currentPosition;
 
-Future<void> _initLocation() async {
-  try {
-    await LocationService.instance.initLocation();
-    final pos = LocationService.instance.currentPosition;
-    print('User location: ${pos?.latitude}, ${pos?.longitude}');
-  } catch (e) {
-    print('Location error: $e');
+      if (pos != null) {
+        print('User location: ${pos.latitude}, ${pos.longitude}');
+
+        // ✅ 用 geocoding 把坐标转成地址
+        final placemarks = await placemarkFromCoordinates(
+          pos.latitude!,
+          pos.longitude!,
+        );
+
+        if (placemarks.isNotEmpty) {
+          final place = placemarks.first;
+
+          final city = place.locality ??
+              place.subAdministrativeArea ??
+              place.administrativeArea ??
+              "Unknown";
+
+          final country = place.country ?? "";
+
+          setState(() {
+            _currentLocationText =
+                country.isNotEmpty ? "$city, $country" : city;
+          });
+        } else {
+          setState(() {
+            _currentLocationText = "Unknown location";
+          });
+        }
+      } else {
+        setState(() {
+          _currentLocationText = "Location unavailable";
+        });
+      }
+    } catch (e) {
+      print('Location error: $e');
+      setState(() {
+        _currentLocationText = "Failed to get location";
+      });
+    }
   }
-}
+
 
 
   @override
@@ -344,120 +386,184 @@ final List<Map<String, dynamic>> _categories = [
     // }
 
   Widget _buildHeader() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(25, 60, 25, 35),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF4F46E5), Color(0xFF818CF8)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(40),
-          bottomRight: Radius.circular(40),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Builder(
-                    builder: (context) => IconButton(
-                      icon: const Icon(Icons.menu_rounded, color: Colors.white),
-                      onPressed: () {
-                        Scaffold.of(context).openDrawer();
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        "Hello, ${widget.username.isEmpty ? "User" : widget.username} 👋",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const Text(
-                        "Explore the world!",
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
+    return Stack(
+      clipBehavior: Clip.none, 
+      children: [
+        // 1. 背景层
+        Container(
+          height: 260, 
+          width: double.infinity,
+          decoration: const BoxDecoration(
+            image: DecorationImage(
+              image: AssetImage('assets/images/longbg.jpg'),
+              fit: BoxFit.cover,
+            ),
+            borderRadius: BorderRadius.only(
+              bottomLeft: Radius.circular(30),
+              bottomRight: Radius.circular(30),
+            ),
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: const BorderRadius.only(
+                bottomLeft: Radius.circular(30),
+                bottomRight: Radius.circular(30),
+              ),
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.black.withOpacity(0.6),
+                  Colors.transparent,
                 ],
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
+            ),
+          ),
+        ),
+
+        // 2. 内容层
+        SafeArea( 
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 20), 
+                
+                // 顶部栏：Drawer + Location + Weather
+                Row(
                   children: [
-                    Icon(
-                      _getWeatherIcon(_weatherCondition),
-                      color: Colors.white,
-                      size: 20,
+                    // --- 这里把 Drawer 按钮补回来了 ---
+                    Builder(
+                      builder: (context) => GestureDetector(
+                        onTap: () => Scaffold.of(context).openDrawer(),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.15),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white.withOpacity(0.2)),
+                          ),
+                          child: const Icon(Icons.menu_rounded, color: Colors.white, size: 20),
+                        ),
+                      ),
                     ),
-                    const SizedBox(width: 8),
-                    Text(
-                      "$_temperature°C",
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    
+                    const SizedBox(width: 12), // 间隔一下
+
+                    // 定位展示
+                    Expanded( // 用 Expanded 包裹让它自动填充中间空间
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.white.withOpacity(0.2)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.location_on_rounded, color: Colors.orangeAccent, size: 14),
+                              const SizedBox(width: 4),
+                              Flexible( // 防止地名太长溢出
+                                child: Text(
+                                  _currentLocationText,
+                                  style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // 天气图标
+                    Container(
+                      margin: const EdgeInsets.only(left: 10),
+                      decoration: const BoxDecoration(
+                        boxShadow: [
+                          BoxShadow(color: Colors.black26, blurRadius: 10)
+                        ]
+                      ),
+                      child: Icon(_getWeatherIcon(_weatherCondition), color: Colors.amber, size: 24),
                     ),
                   ],
                 ),
-              ),
-            ],
+                
+                const SizedBox(height: 48), 
+                
+                Text(
+                  "Hello, ${widget.username.isEmpty ? "Traveler" : widget.username} 👋",
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 32, 
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                const Text(
+                  "Your next adventure starts here.",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w300,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
           ),
+        ),
 
-          const SizedBox(height: 25),
-          InkWell(
-            onTap: () {},
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(15),
-                border: Border.all(color: Colors.white.withOpacity(0.2)),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.location_searching_rounded, color: Colors.white, size: 18),
-                  SizedBox(width: 12),
-                  Text("Detect where the user are", style: TextStyle(color: Colors.white, fontSize: 14)),
-                  Spacer(),
-                ],
-              ),
+        // 3. 搜索框
+        Positioned(
+          bottom: -28, 
+          left: 20,
+          right: 20,
+          child: Container(
+            height: 56,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.06),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                const SizedBox(width: 15),
+                const Icon(Icons.search_rounded, color: Color(0xFF6366F1), size: 24),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: TextField(
+                    decoration: InputDecoration(
+                      hintText: "Explore new places...",
+                      hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
+                      border: InputBorder.none,
+                    ),
+                  ),
+                ),
+                Container(height: 20, width: 1, color: Colors.grey.shade200),
+                IconButton(
+                  icon: const Icon(Icons.tune_rounded, color: Color(0xFF6366F1), size: 20),
+                  onPressed: () {},
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 15),
-          TextField(
-            decoration: InputDecoration(
-              hintText: "Search places...",
-              hintStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
-              prefixIcon: const Icon(Icons.search_rounded, color: Colors.white70),
-              filled: true,
-              fillColor: Colors.white.withOpacity(0.2),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
-              contentPadding: EdgeInsets.zero,
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
-
+    
+  
   Widget _buildCategorySection() {
     return SizedBox(
       height: 110,

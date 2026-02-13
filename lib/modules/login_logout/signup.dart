@@ -40,7 +40,7 @@ class _SignupPageState extends State<SignupPage> {
     return query.docs.isNotEmpty;
   }
 
-  // ================= Signup Logic (全部在这里) =================
+  // ================= Signup Logic =================
   Future<void> createUserWithEmailAndPassword() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -66,17 +66,28 @@ class _SignupPageState extends State<SignupPage> {
 
       final uid = userCredential.user!.uid;
 
-      // save user info in Firestore
+      // ✅ 保存完整的用户资料（包含所有需要的字段）
       await FirebaseFirestore.instance.collection('users').doc(uid).set({
         'email': email,
         'username': username,
+        'bio': 'Hello! I\'m new here 👋', // 默认简介
+        'profileImageUrl': '', // 空字符串表示使用默认头像
+        'backgroundImageUrl': '', // 空字符串表示使用默认背景
+        'postCount': 0,
+        'favouriteCount': 0,
+        'routeCount': 0,
       });
+
+      print('✅ User created successfully！');
+      print('   UID: $uid');
+      print('   Username: $username');
+      print('   Email: $email');
 
       /// ✅ 直接跳 HomePage
       if (mounted) {
         Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomePage()),
+          context,
+          MaterialPageRoute(builder: (_) => const HomePage()),
         );
       }
     } on FirebaseAuthException catch (e) {
@@ -100,7 +111,8 @@ class _SignupPageState extends State<SignupPage> {
       }
 
       _showError(message);
-    } catch (_) {
+    } catch (e) {
+      print('❌ Sign Up failed: $e');
       _showError('Something went wrong');
     } finally {
       if (mounted) setState(() => isLoading = false);
