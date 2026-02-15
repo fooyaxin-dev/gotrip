@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:ui'; // 用于模糊效果
+import 'login.dart'; // 假设你有一个登录页面
 
 class AuthService {
   static Future<void> logout(BuildContext context) async {
@@ -55,7 +56,7 @@ class AuthService {
                 // 确认退出按钮
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: () => Navigator.pop(context, true),
+                    onPressed: () => Navigator.pop(context, true), // ✅ 重点
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.redAccent,
                       foregroundColor: Colors.white,
@@ -76,7 +77,12 @@ class AuthService {
 
     if (confirm == true) {
       await FirebaseAuth.instance.signOut();
-      // 可以在这里跳转到登录页：Navigator.of(context).pushReplacementNamed('/login');
+
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginPage()),
+        (route) => false,
+      );
     }
+
   }
 }

@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../realtime/detectPlacePage.dart';
 import '../dashboard/dashboard_page.dart';
 import '../profile/profile.dart';
-import '../interaction/interaction_page.dart';
+import '../interaction/interactionPage.dart';
 import '../landmark/landmarkFAB.dart';
 import '../login_logout/logout.dart';
 import 'mainpage.dart';
