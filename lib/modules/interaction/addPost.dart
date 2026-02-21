@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:io';
+import 'dart:convert';
+import 'package:path_provider/path_provider.dart';
 
 class PostingPage extends StatefulWidget {
   const PostingPage({super.key});
@@ -14,6 +17,7 @@ class _PostingPageState extends State<PostingPage> {
   bool isAnonymous = false;
   bool allowComments = true;
   bool allowShare = true;
+  bool isUploading = false;
   
   // 图片和视频
   List<File> selectedImages = [];
@@ -28,7 +32,10 @@ class _PostingPageState extends State<PostingPage> {
   List<String> selectedTags = [];
   List<String> mentionedFriends = [];
   String? selectedTopic;
-  String selectedVisibility = "公开"; // 公开、仅好友、私密
+  String selectedVisibility = "公开";
+  
+  // Firestore 实例
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   
   // 可选的标签列表
   final List<String> availableTags = [
@@ -42,11 +49,93 @@ class _PostingPageState extends State<PostingPage> {
     '#吉隆坡生活', '#周末去哪儿'
   ];
 
+  // ===== 方案1: 保存图片到本地，只存路径到 Firestore =====
+  Future<List<String>> _saveImagesToLocal(List<File> images) async {
+    List<String> imagePaths = [];
+    
+    try {
+      // 获取应用文档目录
+      final directory = await getApplicationDocumentsDirectory();
+      final postsDir = Directory('${directory.path}/posts');
+      
+      // 创建 posts 目录（如果不存在）
+      if (!await postsDir.exists()) {
+        await postsDir.create(recursive: true);
+      }
+      
+      for (int i = 0; i < images.length; i++) {
+        // 生成唯一文件名
+        String fileName = '${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
+        String filePath = '${postsDir.path}/$fileName';
+        
+        // 复制图片到本地存储
+        await images[i].copy(filePath);
+        imagePaths.add(filePath);
+      }
+      
+      return imagePaths;
+    } catch (e) {
+      throw Exception('保存图片失败: $e');
+    }
+  }
+
+  // ===== 方案2: 将图片转为 Base64 存储到 Firestore (适合小图片) =====
+  Future<List<String>> _convertImagesToBase64(List<File> images) async {
+    List<String> base64Images = [];
+    
+    try {
+      for (var image in images) {
+        // 读取图片字节
+        List<int> imageBytes = await image.readAsBytes();
+        
+        // 转换为 Base64
+        String base64Image = base64Encode(imageBytes);
+        base64Images.add(base64Image);
+      }
+      
+      return base64Images;
+    } catch (e) {
+      throw Exception('图片转换失败: $e');
+    }
+  }
+
+  // ===== 保存帖子到 Firestore (使用本地路径) =====
+  Future<void> _savePostToFirestore(List<String> imagePaths) async {
+    try {
+      // 创建帖子数据
+      Map<String, dynamic> postData = {
+        'title': _titleController.text,
+        'content': _contentController.text,
+        'imagePaths': imagePaths, // 本地路径或 Base64
+        'rating': rating,
+        'isAnonymous': isAnonymous,
+        'allowComments': allowComments,
+        'allowShare': allowShare,
+        'location': selectedLocation,
+        'tags': selectedTags,
+        'mentionedFriends': mentionedFriends,
+        'topic': selectedTopic,
+        'visibility': selectedVisibility,
+        'createdAt': FieldValue.serverTimestamp(),
+        'userId': 'user_123', // 替换为真实用户ID
+        'likes': 0,
+        'comments': 0,
+        'shares': 0,
+      };
+      
+      // 保存到 Firestore
+      await _firestore.collection('posts').add(postData);
+      
+    } catch (e) {
+      throw Exception('保存帖子失败: $e');
+    }
+  }
+
   // ===== 图片相关功能 =====
   Future<void> _pickImageFromGallery() async {
     try {
-      final List<XFile> images = await _picker.pickMultiImage(imageQuality: 80);
-      if (images.isNotEmpty) {
+      final List<XFile>? images = await _picker.pickMultiImage();
+      if (images != null && images.isNotEmpty) {
         setState(() {
           for (var image in images) {
             if (selectedImages.length < 9) {
@@ -505,7 +594,7 @@ class _PostingPageState extends State<PostingPage> {
   }
 
   // ===== 发布功能 =====
-  void _publishPost() {
+  Future<void> _publishPost() async {
     if (_titleController.text.isEmpty || _contentController.text.isEmpty) {
       _showErrorDialog('请填写标题和内容');
       return;
@@ -516,12 +605,42 @@ class _PostingPageState extends State<PostingPage> {
       return;
     }
 
-    // 这里可以调用API发布帖子
-    _showSuccessDialog('发布成功!');
-    
-    Future.delayed(const Duration(seconds: 1), () {
-      Navigator.pop(context);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(color: Color(0xFFD35D3E)),
+      ),
+    );
+
+    setState(() {
+      isUploading = true;
     });
+
+    try {
+      // 保存图片到本地 (选择其中一种方案)
+      List<String> imagePaths = await _saveImagesToLocal(selectedImages);
+      
+      // 如果要用 Base64，取消上面的注释，用下面这行
+      // List<String> imagePaths = await _convertImagesToBase64(selectedImages);
+      
+      // 保存到 Firestore
+      await _savePostToFirestore(imagePaths);
+      
+      Navigator.pop(context);
+      _showSuccessDialog('发布成功!');
+      
+      await Future.delayed(const Duration(seconds: 1));
+      Navigator.pop(context);
+      
+    } catch (e) {
+      Navigator.pop(context);
+      _showErrorDialog('发布失败: $e');
+    } finally {
+      setState(() {
+        isUploading = false;
+      });
+    }
   }
 
   void _showErrorDialog(String message) {
@@ -559,8 +678,14 @@ class _PostingPageState extends State<PostingPage> {
         elevation: 0,
         leadingWidth: 70,
         leading: TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text("取消", style: TextStyle(color: Colors.black54, fontSize: 16)),
+          onPressed: isUploading ? null : () => Navigator.pop(context),
+          child: Text(
+            "取消", 
+            style: TextStyle(
+              color: isUploading ? Colors.grey : Colors.black54, 
+              fontSize: 16
+            ),
+          ),
         ),
         title: Row(
           mainAxisSize: MainAxisSize.min,
@@ -574,18 +699,24 @@ class _PostingPageState extends State<PostingPage> {
         actions: [
           Center(
             child: GestureDetector(
-              onTap: () => _showSuccessDialog('草稿已保存'),
-              child: Text("保存", style: TextStyle(color: Colors.grey[700], fontSize: 15)),
+              onTap: isUploading ? null : () => _showSuccessDialog('草稿已保存'),
+              child: Text(
+                "保存", 
+                style: TextStyle(
+                  color: isUploading ? Colors.grey : Colors.grey[700], 
+                  fontSize: 15
+                ),
+              ),
             ),
           ),
           const SizedBox(width: 12),
           Center(
             child: GestureDetector(
-              onTap: _publishPost,
+              onTap: isUploading ? null : _publishPost,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFD35D3E),
+                  color: isUploading ? Colors.grey : const Color(0xFFD35D3E),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: const Text("发布", style: TextStyle(color: Colors.white, fontSize: 14)),
@@ -604,7 +735,6 @@ class _PostingPageState extends State<PostingPage> {
               children: [
                 const SizedBox(height: 20),
                 
-                // 图片展示区域
                 Wrap(
                   spacing: 10,
                   runSpacing: 10,
@@ -668,9 +798,9 @@ class _PostingPageState extends State<PostingPage> {
                 
                 const SizedBox(height: 30),
                 
-                // 标题
                 TextField(
                   controller: _titleController,
+                  enabled: !isUploading,
                   decoration: const InputDecoration(
                     hintText: "填写标题更容易上首页哦~",
                     hintStyle: TextStyle(color: Colors.grey, fontSize: 16),
@@ -679,9 +809,9 @@ class _PostingPageState extends State<PostingPage> {
                 ),
                 Divider(color: Colors.grey[200], thickness: 1),
 
-                // 内容
                 TextField(
                   controller: _contentController,
+                  enabled: !isUploading,
                   maxLines: 8,
                   decoration: const InputDecoration(
                     hintText: "今天也是元气满满的一天，我要赶紧用笔记记录下来",
@@ -692,7 +822,6 @@ class _PostingPageState extends State<PostingPage> {
                 
                 const SizedBox(height: 20),
 
-                // ===== 新增功能区域 =====
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -701,7 +830,6 @@ class _PostingPageState extends State<PostingPage> {
                   ),
                   child: Column(
                     children: [
-                      // 添加地点
                       _buildFeatureButton(
                         icon: Icons.location_on_outlined,
                         label: selectedLocation ?? '添加地点',
@@ -710,7 +838,6 @@ class _PostingPageState extends State<PostingPage> {
                       ),
                       const Divider(height: 20),
                       
-                      // 添加话题
                       _buildFeatureButton(
                         icon: Icons.tag,
                         label: selectedTopic ?? '添加话题',
@@ -719,7 +846,6 @@ class _PostingPageState extends State<PostingPage> {
                       ),
                       const Divider(height: 20),
                       
-                      // 添加标签
                       _buildFeatureButton(
                         icon: Icons.sell_outlined,
                         label: selectedTags.isEmpty 
@@ -730,7 +856,6 @@ class _PostingPageState extends State<PostingPage> {
                       ),
                       const Divider(height: 20),
                       
-                      // @ 好友
                       _buildFeatureButton(
                         icon: Icons.alternate_email,
                         label: mentionedFriends.isEmpty 
@@ -741,7 +866,6 @@ class _PostingPageState extends State<PostingPage> {
                       ),
                       const Divider(height: 20),
                       
-                      // 可见范围
                       _buildFeatureButton(
                         icon: Icons.visibility_outlined,
                         label: '可见范围: $selectedVisibility',
@@ -754,13 +878,12 @@ class _PostingPageState extends State<PostingPage> {
                 
                 const SizedBox(height: 30),
 
-                // 描述相符
                 Row(
                   children: [
                     const Text("描述相符", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     const SizedBox(width: 15),
                     ...List.generate(5, (index) => GestureDetector(
-                      onTap: () => setState(() => rating = index + 1),
+                      onTap: isUploading ? null : () => setState(() => rating = index + 1),
                       child: Padding(
                         padding: const EdgeInsets.only(right: 8),
                         child: Icon(
@@ -775,7 +898,6 @@ class _PostingPageState extends State<PostingPage> {
                 
                 const SizedBox(height: 25),
 
-                // 其他设置
                 _buildSwitchOption(
                   '匿名',
                   '匿名会隐藏头像和昵称',
@@ -802,45 +924,44 @@ class _PostingPageState extends State<PostingPage> {
             ),
           ),
 
-          // 悬浮发布按钮
-          Positioned(
-            right: 20,
-            bottom: 30,
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: _publishPost,
-                borderRadius: BorderRadius.circular(40),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFD35D3E).withOpacity(0.9),
-                    borderRadius: BorderRadius.circular(40),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFD35D3E).withOpacity(0.3),
-                        blurRadius: 15,
-                        offset: const Offset(0, 5),
-                      ),
-                    ],
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                      SizedBox(width: 10),
-                      Text("发布", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-                    ],
+          if (!isUploading)
+            Positioned(
+              right: 20,
+              bottom: 30,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: _publishPost,
+                  borderRadius: BorderRadius.circular(40),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD35D3E).withOpacity(0.9),
+                      borderRadius: BorderRadius.circular(40),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFD35D3E).withOpacity(0.3),
+                          blurRadius: 15,
+                          offset: const Offset(0, 5),
+                        ),
+                      ],
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                        SizedBox(width: 10),
+                        Text("发布", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
   }
 
-  // 功能按钮
   Widget _buildFeatureButton({
     required IconData icon,
     required String label,
@@ -848,7 +969,7 @@ class _PostingPageState extends State<PostingPage> {
     required bool hasValue,
   }) {
     return InkWell(
-      onTap: onTap,
+      onTap: isUploading ? null : onTap,
       child: Row(
         children: [
           Icon(icon, color: hasValue ? const Color(0xFFD35D3E) : Colors.grey[600], size: 22),
@@ -871,7 +992,6 @@ class _PostingPageState extends State<PostingPage> {
     );
   }
 
-  // 开关选项
   Widget _buildSwitchOption(String title, String subtitle, bool value, Function(bool) onChanged) {
     return Row(
       children: [
@@ -888,7 +1008,7 @@ class _PostingPageState extends State<PostingPage> {
         Switch(
           value: value,
           activeColor: const Color(0xFFD35D3E),
-          onChanged: onChanged,
+          onChanged: isUploading ? null : onChanged,
         ),
       ],
     );
@@ -902,7 +1022,6 @@ class _PostingPageState extends State<PostingPage> {
   }
 }
 
-// 虚线画笔
 class DottedBorderPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {

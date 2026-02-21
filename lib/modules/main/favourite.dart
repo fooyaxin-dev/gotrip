@@ -1,154 +1,182 @@
 import 'package:flutter/material.dart';
 
-class favouritePage extends StatefulWidget {
-  const favouritePage({super.key});
+class FavouritePage extends StatefulWidget {
+  const FavouritePage({super.key});
 
   @override
-  State<favouritePage> createState() => _favouritePageState();
+  State<FavouritePage> createState() => _FavouritePageState();
 }
 
-class _favouritePageState extends State<favouritePage> {
-  // Hardcode 数据，之后替换为 Database 资料
+class _FavouritePageState extends State<FavouritePage> with TickerProviderStateMixin {
+  late TabController _tabController;
+
   final List<Map<String, String>> favorites = [
-    {
-      "name": "Moraine Lake",
-      "location": "Alberta, Canada",
-      "image": "assets/images/lake.jpg", // 确保路径正确
-      "rating": "4.9"
-    },
-    {
-      "name": "Niagara Falls",
-      "location": "Ontario, Canada",
-      "image": "assets/images/falls.jpg",
-      "rating": "4.8"
-    },
-    {
-      "name": "Baffin Island",
-      "location": "Nunavut, Canada",
-      "image": "assets/images/island.jpg",
-      "rating": "4.7"
-    },
-    {
-      "name": "Banff Park",
-      "location": "Alberta, Canada",
-      "image": "assets/images/park.jpg",
-      "rating": "5.0"
-    },
+    {"name": "Moraine Lake", "location": "Alberta, Canada", "image": "https://picsum.photos/400/600?random=1", "rating": "4.9", "type": "Nature"},
+    {"name": "Niagara Falls", "location": "Ontario, Canada", "image": "https://picsum.photos/400/400?random=2", "rating": "4.8", "type": "Water"},
+    {"name": "Baffin Island", "location": "Nunavut, Canada", "image": "https://picsum.photos/400/500?random=3", "rating": "4.7", "type": "Nature"},
+    {"name": "Banff Park", "location": "Alberta, Canada", "image": "https://picsum.photos/400/700?random=4", "rating": "5.0", "type": "Park"},
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 4, vsync: this);
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        title: const Text("My Favourites", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        centerTitle: true,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0),
-        child: GridView.builder(
-          itemCount: favorites.length,
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2, // 一行显示两个
-            crossAxisSpacing: 15, // 左右间距
-            mainAxisSpacing: 15, // 上下间距
-            childAspectRatio: 0.75, // 卡片长宽比
+      backgroundColor: const Color(0xFFF8FAFF),
+      body: CustomScrollView(
+        slivers: [
+          // 漂亮的沉浸式大标题
+          SliverAppBar(
+            expandedHeight: 120.0,
+            floating: false,
+            pinned: true,
+            elevation: 0,
+            backgroundColor: Colors.white,
+            flexibleSpace: FlexibleSpaceBar(
+              titlePadding: const EdgeInsetsDirectional.only(start: 20, bottom: 16),
+              title: const Text("My Favourites", 
+                style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 24)),
+            ),
+            actions: [
+              IconButton(onPressed: () {}, icon: const Icon(Icons.search, color: Colors.black)),
+            ],
           ),
-          itemBuilder: (context, index) {
-            final item = favorites[index];
-            return _buildFavoriteCard(item);
-          },
-        ),
+
+          // 分类选择器
+          SliverToBoxAdapter(
+            child: Container(
+              color: Colors.white,
+              child: TabBar(
+                controller: _tabController,
+                isScrollable: true,
+                indicatorColor: const Color(0xFF6366F1),
+                labelColor: const Color(0xFF6366F1),
+                unselectedLabelColor: Colors.grey,
+                indicatorSize: TabBarIndicatorSize.label,
+                tabs: const [
+                  Tab(text: "All"),
+                  Tab(text: "Nature"),
+                  Tab(text: "Park"),
+                  Tab(text: "Water"),
+                ],
+              ),
+            ),
+          ),
+
+          // 网格列表
+          SliverPadding(
+            padding: const EdgeInsets.all(16),
+            sliver: SliverGrid(
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                mainAxisSpacing: 16,
+                crossAxisSpacing: 16,
+                childAspectRatio: 0.7,
+              ),
+              delegate: SliverChildBuilderDelegate(
+                (context, index) {
+                  return _buildModernCard(favorites[index]);
+                },
+                childCount: favorites.length,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildFavoriteCard(Map<String, String> item) {
+  Widget _buildModernCard(Map<String, String> item) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(24),
         boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.15),
-            spreadRadius: 2,
-            blurRadius: 10,
-            offset: const Offset(0, 5),
-          ),
+          BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 5)),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 1. 图片部分
-          Expanded(
-            flex: 3,
-            child: Stack(
-              children: [
-                ClipRRect(
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-                  child: Image.asset(
-                    item['image']!,
-                    fit: BoxFit.cover,
-                    width: double.infinity,
-                  ),
-                ),
-                // 右上角的红色爱心
-                Positioned(
-                  top: 10,
-                  right: 10,
-                  child: CircleAvatar(
-                    backgroundColor: Colors.white.withOpacity(0.8),
-                    radius: 15,
-                    child: const Icon(Icons.favorite, color: Colors.red, size: 18),
-                  ),
-                ),
-              ],
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: Stack(
+          children: [
+            // 背景大图
+            Positioned.fill(
+              child: Image.network(
+                item['image']!,
+                fit: BoxFit.cover,
+              ),
             ),
-          ),
-          // 2. 文字描述部分
-          Expanded(
-            flex: 2,
-            child: Padding(
-              padding: const EdgeInsets.all(10.0),
+            // 渐变蒙层，防止文字看不清
+            Positioned.fill(
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Colors.transparent, Colors.black.withOpacity(0.7)],
+                  ),
+                ),
+              ),
+            ),
+            // 评分标签 (Glassmorphism)
+            Positioned(
+              top: 12,
+              left: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.star, color: Colors.amber, size: 14),
+                    const SizedBox(width: 4),
+                    Text(item['rating']!, 
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                  ],
+                ),
+              ),
+            ),
+            // 收藏按钮
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                icon: const Icon(Icons.favorite, color: Colors.red),
+                onPressed: () {},
+              ),
+            ),
+            // 文字信息区
+            Positioned(
+              bottom: 16,
+              left: 16,
+              right: 16,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  Text(
-                    item['name']!,
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  Text(item['name']!, 
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 4),
                   Row(
                     children: [
-                      const Icon(Icons.location_on, size: 14, color: Color(0xFF4DB6AC)),
+                      const Icon(Icons.location_on, color: Colors.white70, size: 12),
                       const SizedBox(width: 4),
                       Expanded(
-                        child: Text(
-                          item['location']!,
-                          style: const TextStyle(color: Colors.grey, fontSize: 12),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                        child: Text(item['location']!, 
+                          style: const TextStyle(color: Colors.white70, fontSize: 11),
+                          maxLines: 1, overflow: TextOverflow.ellipsis),
                       ),
-                    ],
-                  ),
-                  Row(
-                    children: [
-                      const Icon(Icons.star, size: 14, color: Colors.amber),
-                      const SizedBox(width: 4),
-                      Text(item['rating']!, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ],
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

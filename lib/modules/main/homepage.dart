@@ -261,7 +261,7 @@ class _HomePageState extends State<HomePage> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const favouritePage(),
+                  builder: (_) => const FavouritePage(),
                 ),
               );
             },
