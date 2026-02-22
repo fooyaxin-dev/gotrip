@@ -3,7 +3,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../modules/interaction/postModel.dart';
 
-
+/// Firebase 服务类 - 本地存储版本 (不使用 Firebase Storage)
 class PostService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
@@ -133,13 +133,17 @@ class PostService {
 
   /// 根据可见范围过滤
   Stream<List<Post>> getPublicPosts() {
+    // 简化查询,不需要索引
     return _firestore
         .collection('posts')
-        .where('visibility', isEqualTo: '公开')
         .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) {
-      return snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
+      // 在客户端过滤 (先获取所有,再过滤公开的)
+      return snapshot.docs
+          .map((doc) => Post.fromFirestore(doc))
+          .where((post) => post.visibility == '公开')
+          .toList();
     });
   }
 

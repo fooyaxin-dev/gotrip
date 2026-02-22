@@ -23,7 +23,7 @@ class MainPage extends StatefulWidget {
   State<MainPage> createState() => _MainPageState();
 }
 
-class _MainPageState extends State<MainPage> {
+class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
 
   late PageController _pageController;
   List<PlaceModel> _nearbyPlaces = [];
@@ -35,12 +35,26 @@ class _MainPageState extends State<MainPage> {
   String _currentLocationText = "Detecting your location...";
 
 
-  @override
+@override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _pageController = PageController(viewportFraction: 0.8);
     _initAndLoad();
+  }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _initAndLoad();
+    }
   }
 
   Future<void> _initAndLoad() async {
@@ -50,57 +64,112 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _initLocation() async {
-    try {
-      await LocationService.instance.initLocation();
-      final pos = LocationService.instance.currentPosition;
+    final status = await LocationService.instance.initLocation();
 
-      if (pos != null) {
-        print('User location: ${pos.latitude}, ${pos.longitude}');
+    switch (status) {
+      case LocationStatus.serviceDisabled:
+        _showLocationServiceDialog();
+        return;
 
-        // ✅ 用 geocoding 把坐标转成地址
-        final placemarks = await placemarkFromCoordinates(
-          pos.latitude!,
-          pos.longitude!,
-        );
+      case LocationStatus.permissionDenied:
+        _showPermissionDialog();
+        return;
 
-        if (placemarks.isNotEmpty) {
-          final place = placemarks.first;
+      case LocationStatus.permissionDeniedForever:
+        _showPermissionForeverDialog();
+        return;
 
-          final city = place.locality ??
-              place.subAdministrativeArea ??
-              place.administrativeArea ??
-              "Unknown";
+      case LocationStatus.success:
+        break;
+    }
 
-          final country = place.country ?? "";
+    final pos = LocationService.instance.currentPosition;
 
-          setState(() {
-            _currentLocationText =
-                country.isNotEmpty ? "$city, $country" : city;
-          });
-        } else {
-          setState(() {
-            _currentLocationText = "Unknown location";
-          });
-        }
-      } else {
+    if (pos != null) {
+      print('User location: ${pos.latitude}, ${pos.longitude}');
+
+      final placemarks = await placemarkFromCoordinates(
+        pos.latitude,
+        pos.longitude,
+      );
+
+      if (placemarks.isNotEmpty) {
+        final place = placemarks.first;
+
+        final city = place.locality ??
+            place.subAdministrativeArea ??
+            place.administrativeArea ??
+            "Unknown";
+
+        final country = place.country ?? "";
+
         setState(() {
-          _currentLocationText = "Location unavailable";
+          _currentLocationText =
+              country.isNotEmpty ? "$city, $country" : city;
         });
       }
-    } catch (e) {
-      print('Location error: $e');
-      setState(() {
-        _currentLocationText = "Failed to get location";
-      });
     }
   }
 
+  void _showLocationServiceDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text("Location Disabled"),
+        content: const Text(
+            "Please enable location services to see nearby places."),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Geolocator.openLocationSettings();
+            },
+            child: const Text("Open Settings"),
+          ),
+        ],
+      ),
+    );
+  }
 
 
-  @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
+  void _showPermissionDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text("Permission Required"),
+        content: const Text(
+            "Location permission is required to load nearby places."),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _initAndLoad(); // 🔥 重新尝试
+            },
+            child: const Text("Retry"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showPermissionForeverDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text("Permission Permanently Denied"),
+        content: const Text(
+            "Please enable location permission in app settings."),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Geolocator.openAppSettings();
+            },
+            child: const Text("Open App Settings"),
+          ),
+        ],
+      ),
+    );
   }
 
   // 保存每个地点的距离和预计用时
