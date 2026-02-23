@@ -17,6 +17,9 @@ class Post {
   final String visibility;
   final DateTime? createdAt;
   final String userId;
+  final String userName; // 用户名 ← 新增
+  final String? userPhoto; // 用户头像 URL ← 新增
+  final String? userEmail; // 用户邮箱 ← 新增
   final int likes;
   final int comments;
   final int shares;
@@ -37,6 +40,9 @@ class Post {
     this.visibility = '公开',
     this.createdAt,
     required this.userId,
+    required this.userName, // 必填
+    this.userPhoto, // 可选
+    this.userEmail, // 可选
     this.likes = 0,
     this.comments = 0,
     this.shares = 0,
@@ -45,6 +51,16 @@ class Post {
   /// 从 Firestore 文档创建 Post 对象
   factory Post.fromFirestore(DocumentSnapshot doc) {
     Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+    
+    // 安全获取 userName,提供默认值
+    String userName = 'Unknown User';
+    if (data['userName'] != null && data['userName'].toString().isNotEmpty) {
+      userName = data['userName'];
+    } else if (data['userEmail'] != null) {
+      userName = data['userEmail'].toString().split('@')[0];
+    } else if (data['userId'] != null) {
+      userName = 'User_${data['userId'].toString().substring(0, 8)}';
+    }
     
     return Post(
       id: doc.id,
@@ -62,6 +78,9 @@ class Post {
       visibility: data['visibility'] ?? '公开',
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       userId: data['userId'] ?? '',
+      userName: userName, // 使用安全获取的用户名
+      userPhoto: data['userPhoto'], // 读取头像
+      userEmail: data['userEmail'], // 读取邮箱
       likes: data['likes'] ?? 0,
       comments: data['comments'] ?? 0,
       shares: data['shares'] ?? 0,
@@ -87,6 +106,9 @@ class Post {
         ? Timestamp.fromDate(createdAt!) 
         : FieldValue.serverTimestamp(),
       'userId': userId,
+      'userName': userName, // 保存用户名
+      'userPhoto': userPhoto, // 保存头像
+      'userEmail': userEmail, // 保存邮箱
       'likes': likes,
       'comments': comments,
       'shares': shares,
@@ -110,6 +132,9 @@ class Post {
     String? visibility,
     DateTime? createdAt,
     String? userId,
+    String? userName,
+    String? userPhoto,
+    String? userEmail,
     int? likes,
     int? comments,
     int? shares,
@@ -130,6 +155,9 @@ class Post {
       visibility: visibility ?? this.visibility,
       createdAt: createdAt ?? this.createdAt,
       userId: userId ?? this.userId,
+      userName: userName ?? this.userName,
+      userPhoto: userPhoto ?? this.userPhoto,
+      userEmail: userEmail ?? this.userEmail,
       likes: likes ?? this.likes,
       comments: comments ?? this.comments,
       shares: shares ?? this.shares,
@@ -139,7 +167,7 @@ class Post {
   /// 转换为 JSON 字符串 (用于调试)
   @override
   String toString() {
-    return 'Post{id: $id, title: $title, images: ${images.length}, likes: $likes}';
+    return 'Post{id: $id, title: $title, userName: $userName, images: ${images.length}, likes: $likes}';
   }
 
   /// 判断是否相等
@@ -155,4 +183,5 @@ class Post {
 
   @override
   int get hashCode => id.hashCode ^ title.hashCode ^ userId.hashCode;
+  
 }

@@ -2,10 +2,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../modules/interaction/postModel.dart';
+import '../../services/userPost_service.dart'; // 导入统计服务
 
 /// Firebase 服务类 - 本地存储版本 (不使用 Firebase Storage)
 class PostService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final UserStatsService _statsService = UserStatsService(); // 统计服务
 
   // ===== 创建帖子 =====
   
@@ -85,13 +87,25 @@ class PostService {
 
   /// 获取用户的帖子
   Stream<List<Post>> getUserPosts(String userId) {
+    // 简化查询,只用 where,在客户端排序
     return _firestore
         .collection('posts')
         .where('userId', isEqualTo: userId)
-        .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) {
-      return snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
+      // 在客户端排序 (按创建时间降序)
+      List<Post> posts = snapshot.docs
+          .map((doc) => Post.fromFirestore(doc))
+          .toList();
+      
+      // 手动排序
+      posts.sort((a, b) {
+        if (a.createdAt == null) return 1;
+        if (b.createdAt == null) return -1;
+        return b.createdAt!.compareTo(a.createdAt!);
+      });
+      
+      return posts;
     });
   }
 
@@ -222,6 +236,9 @@ class PostService {
         
         // 3. 删除帖子文档
         await _firestore.collection('posts').doc(postId).delete();
+        
+        // 4. 减少用户的帖子计数 ← 新增
+        await _statsService.decrementPostCount();
       }
     } catch (e) {
       throw Exception('删除帖子失败: $e');

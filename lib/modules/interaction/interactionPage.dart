@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart'; // 添加这行
+import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'addPost.dart';
 import 'postModel.dart';
 import '../../services/post_service.dart';
+import '../../services/like_service.dart';
 
 class InteractionPage extends StatefulWidget {
   const InteractionPage({super.key});
@@ -15,7 +18,8 @@ class InteractionPage extends StatefulWidget {
 
 class _InteractionPageState extends State<InteractionPage> {
   final PostService _postService = PostService();
-  final FirebaseAuth _auth = FirebaseAuth.instance; // 添加这行
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final LikeService _likeService = LikeService(); // 添加点赞服务
 
   @override
   Widget build(BuildContext context) {
@@ -179,16 +183,7 @@ class _InteractionPageState extends State<InteractionPage> {
                   shape: BoxShape.circle,
                   border: Border.all(color: Colors.orange.withOpacity(0.5), width: 1.5),
                 ),
-                child: CircleAvatar(
-                  radius: 20,
-                  backgroundColor: _getUserColor(post.userId),
-                  child: post.isAnonymous
-                      ? const Icon(Icons.person_outline, color: Colors.white, size: 22)
-                      : Text(
-                          post.userId.substring(0, 1).toUpperCase(),
-                          style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-                        ),
-                ),
+                child: _buildUserAvatar(post),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -196,7 +191,7 @@ class _InteractionPageState extends State<InteractionPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      post.isAnonymous ? '匿名用户' : _formatUsername(post.userId),
+                      post.isAnonymous ? '匿名用户' : post.userName,
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                     ),
                     const SizedBox(height: 2),
@@ -312,16 +307,22 @@ class _InteractionPageState extends State<InteractionPage> {
                 Icons.share_outlined,
                 post.shares > 0 ? '${post.shares}' : '转发',
                 () => _handleShare(post),
+                false,
               ),
               _buildSocialBtn(
                 Icons.chat_bubble_outline,
                 post.comments > 0 ? '${post.comments}' : '评论',
                 () => _handleComment(post),
+                false,
               ),
-              _buildSocialBtn(
-                Icons.thumb_up_outlined,
-                post.likes > 0 ? '${post.likes}' : '赞',
-                () => _handleLike(post),
+              // 点赞按钮 - 使用 StreamBuilder 实时显示状态
+              StreamBuilder<bool>(
+                stream: _likeService.likeStatusStream(post.id!),
+                initialData: false,
+                builder: (context, snapshot) {
+                  bool isLiked = snapshot.data ?? false;
+                  return _buildLikeButton(post, isLiked);
+                },
               ),
             ],
           ),
@@ -404,7 +405,44 @@ class _InteractionPageState extends State<InteractionPage> {
     );
   }
 
-  Widget _buildSocialBtn(IconData icon, String label, VoidCallback onTap) {
+  // 构建点赞按钮 (特殊处理,支持高亮)
+  Widget _buildLikeButton(Post post, bool isLiked) {
+    return StreamBuilder<int>(
+      stream: _likeService.likeCountStream(post.id!),
+      initialData: post.likes,
+      builder: (context, snapshot) {
+        int likeCount = snapshot.data ?? post.likes;
+        
+        return InkWell(
+          onTap: () => _handleLike(post),
+          borderRadius: BorderRadius.circular(20),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              children: [
+                Icon(
+                  isLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
+                  size: 20,
+                  color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700],
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  likeCount > 0 ? '$likeCount' : '赞',
+                  style: TextStyle(
+                    color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700],
+                    fontSize: 13,
+                    fontWeight: isLiked ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSocialBtn(IconData icon, String label, VoidCallback onTap, bool isActive) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),
@@ -424,17 +462,19 @@ class _InteractionPageState extends State<InteractionPage> {
   // 处理点赞
   void _handleLike(Post post) async {
     try {
-      await _postService.toggleLike(post.id!, true);
+      bool isLiked = await _likeService.toggleLike(post.id!);
+      
+      // 显示反馈
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('已点赞'),
-          duration: Duration(seconds: 1),
-          backgroundColor: Color(0xFFD35D3E),
+        SnackBar(
+          content: Text(isLiked ? '已点赞' : '已取消点赞'),
+          duration: const Duration(milliseconds: 500),
+          backgroundColor: isLiked ? const Color(0xFFD35D3E) : Colors.grey,
         ),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('点赞失败: $e')),
+        SnackBar(content: Text('操作失败: $e')),
       );
     }
   }
@@ -465,6 +505,60 @@ class _InteractionPageState extends State<InteractionPage> {
     }
   }
 
+  // 构建用户头像 (支持 Base64 和 URL)
+  Widget _buildUserAvatar(Post post) {
+    // 匿名用户
+    if (post.isAnonymous) {
+      return CircleAvatar(
+        radius: 20,
+        backgroundColor: _getUserColor(post.userId),
+        child: const Icon(Icons.person_outline, color: Colors.white, size: 22),
+      );
+    }
+
+    // 有头像
+    if (post.userPhoto != null && post.userPhoto!.isNotEmpty) {
+      // 判断是 Base64 还是 URL
+      if (post.userPhoto!.startsWith('data:image')) {
+        // Base64 图片
+        try {
+          String base64String = post.userPhoto!.split(',')[1];
+          Uint8List bytes = base64Decode(base64String);
+          return CircleAvatar(
+            radius: 20,
+            backgroundImage: MemoryImage(bytes),
+            backgroundColor: Colors.transparent,
+          );
+        } catch (e) {
+          print('Base64 解码失败: $e');
+        }
+      } else if (post.userPhoto!.startsWith('http')) {
+        // URL 图片
+        return CircleAvatar(
+          radius: 20,
+          backgroundImage: NetworkImage(post.userPhoto!),
+          backgroundColor: Colors.transparent,
+        );
+      }
+    }
+
+    // 默认: 显示用户名首字母
+    return CircleAvatar(
+      radius: 20,
+      backgroundColor: _getUserColor(post.userId),
+      child: Text(
+        post.userName.isNotEmpty 
+          ? post.userName.substring(0, 1).toUpperCase()
+          : '?', // 安全检查
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
   // 格式化时间
   String _formatTime(DateTime? dateTime) {
     if (dateTime == null) return '刚刚';
@@ -483,15 +577,6 @@ class _InteractionPageState extends State<InteractionPage> {
     } else {
       return '${dateTime.month}月${dateTime.day}日';
     }
-  }
-
-  // 格式化用户名
-  String _formatUsername(String userId) {
-    // 如果是 user_123 这种格式,转换成更友好的显示
-    if (userId.startsWith('user_')) {
-      return 'User${userId.substring(5)}';
-    }
-    return userId;
   }
 
   // 根据用户ID生成颜色

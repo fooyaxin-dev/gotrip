@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart'; // 直接用 FirebaseAuth
+import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
+import '../../services/userPost_service.dart'; // 导入统计服务
 
 class PostingPage extends StatefulWidget {
   const PostingPage({super.key});
@@ -37,7 +38,8 @@ class _PostingPageState extends State<PostingPage> {
   
   // Firebase 实例
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance; // 直接使用 FirebaseAuth
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final UserStatsService _statsService = UserStatsService(); // 统计服务
   
   // 可选的标签列表
   final List<String> availableTags = [
@@ -111,11 +113,25 @@ class _PostingPageState extends State<PostingPage> {
         throw Exception('用户未登录');
       }
       
-      // 获取用户信息
       String userId = currentUser.uid;
-      String userName = currentUser.displayName ?? 
-                       currentUser.email?.split('@')[0] ?? 
-                       'User_${userId.substring(0, 8)}';
+      
+      // 从 users 集合获取用户信息
+      DocumentSnapshot userDoc = await _firestore
+          .collection('users')
+          .doc(userId)
+          .get();
+      
+      String userName = 'Unknown User';
+      String? userPhoto;
+      
+      if (userDoc.exists) {
+        Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+        userName = userData['username'] ?? 
+                   currentUser.displayName ?? 
+                   currentUser.email?.split('@')[0] ?? 
+                   'User_${userId.substring(0, 8)}';
+        userPhoto = userData['profileImageUrl']; // Base64 图片
+      }
       
       // 创建帖子数据
       Map<String, dynamic> postData = {
@@ -132,10 +148,10 @@ class _PostingPageState extends State<PostingPage> {
         'topic': selectedTopic,
         'visibility': selectedVisibility,
         'createdAt': FieldValue.serverTimestamp(),
-        'userId': userId, // 真实用户 ID
-        'userName': userName, // 用户名
-        'userEmail': currentUser.email, // 邮箱 (可选)
-        'userPhoto': currentUser.photoURL, // 头像 (可选)
+        'userId': userId,
+        'userName': userName, // 从 users 集合读取
+        'userPhoto': userPhoto, // Base64 头像
+        'userEmail': currentUser.email,
         'likes': 0,
         'comments': 0,
         'shares': 0,
@@ -644,6 +660,9 @@ class _PostingPageState extends State<PostingPage> {
       
       // 保存到 Firestore
       await _savePostToFirestore(imagePaths);
+      
+      // 增加用户的帖子计数 ← 新增
+      await _statsService.incrementPostCount();
       
       Navigator.pop(context);
       _showSuccessDialog('发布成功!');
