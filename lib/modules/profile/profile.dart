@@ -244,7 +244,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           SizedBox(height: height * 0.02),
 
                           // 根据选中的tab显示不同内容
-                          _currentIndex == 0 ? postWidget() : historyWidget(),
+                          _currentIndex == 0 ? const postWidget() : const historyWidget(),
                         ],
                       ),
                     ),
@@ -346,7 +346,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
                             SizedBox(height: height * 0.02),
 
-                            _currentIndex == 0 ? postWidget() : historyWidget(),
+                            _currentIndex == 0 ? const postWidget() : const historyWidget(),
                           ],
                         ),
                       ),
@@ -357,6 +357,7 @@ class _ProfilePageState extends State<ProfilePage> {
                       filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
                       child: Container(
                         height: height,
+                        // ignore: deprecated_member_use
                         color: Colors.white.withOpacity(0.3),
                         child: Center(
                           child: CircleAvatar(

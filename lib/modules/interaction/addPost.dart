@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // 直接用 FirebaseAuth
 import 'dart:io';
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
@@ -34,8 +35,9 @@ class _PostingPageState extends State<PostingPage> {
   String? selectedTopic;
   String selectedVisibility = "公开";
   
-  // Firestore 实例
+  // Firebase 实例
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance; // 直接使用 FirebaseAuth
   
   // 可选的标签列表
   final List<String> availableTags = [
@@ -102,11 +104,24 @@ class _PostingPageState extends State<PostingPage> {
   // ===== 保存帖子到 Firestore (使用本地路径) =====
   Future<void> _savePostToFirestore(List<String> imagePaths) async {
     try {
+      // 获取当前登录的用户
+      User? currentUser = _auth.currentUser;
+      
+      if (currentUser == null) {
+        throw Exception('用户未登录');
+      }
+      
+      // 获取用户信息
+      String userId = currentUser.uid;
+      String userName = currentUser.displayName ?? 
+                       currentUser.email?.split('@')[0] ?? 
+                       'User_${userId.substring(0, 8)}';
+      
       // 创建帖子数据
       Map<String, dynamic> postData = {
         'title': _titleController.text,
         'content': _contentController.text,
-        'imagePaths': imagePaths, // 本地路径或 Base64
+        'imagePaths': imagePaths,
         'rating': rating,
         'isAnonymous': isAnonymous,
         'allowComments': allowComments,
@@ -117,7 +132,10 @@ class _PostingPageState extends State<PostingPage> {
         'topic': selectedTopic,
         'visibility': selectedVisibility,
         'createdAt': FieldValue.serverTimestamp(),
-        'userId': 'user_123', // 替换为真实用户ID
+        'userId': userId, // 真实用户 ID
+        'userName': userName, // 用户名
+        'userEmail': currentUser.email, // 邮箱 (可选)
+        'userPhoto': currentUser.photoURL, // 头像 (可选)
         'likes': 0,
         'comments': 0,
         'shares': 0,

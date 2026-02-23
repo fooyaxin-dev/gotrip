@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // 添加这行
 import 'dart:io';
 import 'addPost.dart';
 import 'postModel.dart';
@@ -13,9 +15,12 @@ class InteractionPage extends StatefulWidget {
 
 class _InteractionPageState extends State<InteractionPage> {
   final PostService _postService = PostService();
+  final FirebaseAuth _auth = FirebaseAuth.instance; // 添加这行
 
   @override
   Widget build(BuildContext context) {
+    // 获取当前用户
+    User? currentUser = _auth.currentUser;
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FA),
       appBar: AppBar(
@@ -73,7 +78,7 @@ class _InteractionPageState extends State<InteractionPage> {
                   const Icon(Icons.error_outline, size: 64, color: Colors.red),
                   const SizedBox(height: 16),
                   Text(
-                    'Fail Loaded: ${snapshot.error}',
+                    '加载失败: ${snapshot.error}',
                     style: const TextStyle(color: Colors.red),
                   ),
                   const SizedBox(height: 16),
@@ -81,7 +86,7 @@ class _InteractionPageState extends State<InteractionPage> {
                     onPressed: () {
                       setState(() {}); // 重新加载
                     },
-                    child: const Text('RETRY'),
+                    child: const Text('重试'),
                   ),
                 ],
               ),
