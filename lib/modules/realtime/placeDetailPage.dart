@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import '../../services/placesAPI_service.dart';
-
+import 'favouriteButton.dart'; // 👈 新增导入
 
 class PlaceDetailPage extends StatefulWidget {
   final String placeId;
@@ -10,7 +10,7 @@ class PlaceDetailPage extends StatefulWidget {
   final double? lng;
 
   const PlaceDetailPage({
-    super.key, 
+    super.key,
     required this.placeId,
     this.lat,
     this.lng,
@@ -20,14 +20,11 @@ class PlaceDetailPage extends StatefulWidget {
   State<PlaceDetailPage> createState() => _PlaceDetailPageState();
 }
 
-
-
 class _PlaceDetailPageState extends State<PlaceDetailPage> {
   Map<String, dynamic>? placeDetail;
   bool loading = true;
   String? error;
-  int _currentPhotoIndex = 0; // 当前显示的照片索引
-  
+  int _currentPhotoIndex = 0;
 
   late PageController _pageController;
   Timer? _autoPlayTimer;
@@ -47,7 +44,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     super.dispose();
   }
 
-
   Future<void> _fetchPlaceDetails() async {
     setState(() {
       loading = true;
@@ -55,9 +51,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     });
 
     try {
-      // 调用新的 getPlaceDetails（按需从 Firebase 读，缓存不存在才 API）
       final data = await PlacesApiService.getPlaceDetails(widget.placeId);
-
       setState(() {
         placeDetail = data;
         loading = false;
@@ -70,10 +64,8 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     }
   }
 
-
   void _startAutoPlay(int total) {
     _autoPlayTimer?.cancel();
-
     if (total <= 1) return;
 
     _autoPlayTimer = Timer.periodic(
@@ -93,9 +85,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     );
   }
 
-
-
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -111,20 +100,20 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   Widget _buildContent() {
     final name = placeDetail?['displayName']?['text'] ?? 'Unknown';
     final address = placeDetail?['formattedAddress'] ?? 'No address';
-    final rating = placeDetail?['rating'];
+    final rating = (placeDetail?['rating'] as num?)?.toDouble();
     final phone = placeDetail?['internationalPhoneNumber'];
     final website = placeDetail?['websiteUri'];
     final isOpen = placeDetail?['regularOpeningHours']?['openNow'];
     final photos = placeDetail?['photos'] as List?;
 
-    final geometry = placeDetail?['geometry'];
-    final location = geometry?['location'];
-    final double? lat = widget.lat;
-    final double? lng = widget.lng;
-
-
-    print('geometry = $geometry');
-    print('lat = $lat, lng = $lng');
+    // 获取第一张图片 URL（用于存收藏）
+    String? firstPhotoUrl;
+    if (photos != null && photos.isNotEmpty) {
+      firstPhotoUrl = PlacesApiService.buildPhotoUrl(
+        photos[0]['name'],
+        maxWidth: 400,
+      );
+    }
 
     // 构造所有图片 URL
     List<String> photoUrls = [];
@@ -147,42 +136,66 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 2. 标题与评分
+                // 2. 标题与收藏按钮 + 评分
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Expanded(
                       child: Text(
                         name,
-                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.bold),
                       ),
                     ),
-                    if (rating != null)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.orange[50],
-                          borderRadius: BorderRadius.circular(8),
+                    Row(
+                      children: [
+                        // ✅ 替换旧的 _toggleFavourite，改用 FavouriteButton
+                        FavouriteButton(
+                          placeId: widget.placeId,
+                          name: name,
+                          address: address,
+                          rating: rating,
+                          photoUrl: firstPhotoUrl,
+                          lat: widget.lat,
+                          lng: widget.lng,
+                          iconSize: 26,
+                          activeColor: Colors.red,
+                          inactiveColor: Colors.grey,
+                          showBackground: false, // DetailPage 用普通 IconButton 模式
                         ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.star, color: Colors.orange, size: 18),
-                            const SizedBox(width: 4),
-                            Text(
-                              rating.toString(),
-                              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange),
+                        if (rating != null)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.orange[50],
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                          ],
-                        ),
-                      ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.star,
+                                    color: Colors.orange, size: 18),
+                                const SizedBox(width: 4),
+                                Text(
+                                  rating.toString(),
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.orange),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ],
                 ),
                 const SizedBox(height: 10),
-                
+
                 // 3. 营业状态标签
                 if (isOpen != null)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
                       color: isOpen ? Colors.green[50] : Colors.red[50],
                       borderRadius: BorderRadius.circular(20),
@@ -196,11 +209,11 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                       ),
                     ),
                   ),
-                  
+
                 const SizedBox(height: 20),
                 const Divider(),
-                
-                // 4. 快速操作栏 (电话, 网站, 路线)
+
+                // 4. 快速操作栏
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 15),
                   child: Row(
@@ -208,28 +221,21 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                     children: [
                       _buildActionButton(Icons.phone, "电话", phone != null),
                       _buildActionButton(Icons.public, "网站", website != null),
-                      // 在 placeDetailPage.dart 中
                       _buildActionButton(
                         Icons.directions,
                         "路线",
                         widget.lat != null && widget.lng != null,
                         onTap: () {
                           if (widget.lat != null && widget.lng != null) {
-                            // ✅ 直接返回导航所需的完整数据
                             Navigator.pop(context, {
-                              'action': 'navigate', // 👈 标记这是导航请求
+                              'action': 'navigate',
                               'lat': widget.lat,
                               'lng': widget.lng,
-                              'name': placeDetail?['displayName']?['text'] ?? 'Unknown',
+                              'name': name,
                               'id': widget.placeId,
-                              'rating': placeDetail?['rating'],
-                              'address': placeDetail?['formattedAddress'],
-                              'photoUrl': placeDetail?['photos']?[0] != null 
-                                  ? PlacesApiService.buildPhotoUrl(
-                                      placeDetail!['photos'][0]['name'], 
-                                      maxWidth: 400
-                                    ) 
-                                  : null,
+                              'rating': rating,
+                              'address': address,
+                              'photoUrl': firstPhotoUrl,
                             });
                           }
                         },
@@ -241,15 +247,19 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                 const Divider(),
                 const SizedBox(height: 20),
 
-                // 5. 详细信息卡片
+                // 5. 详细信息
                 _buildInfoSection(Icons.location_on, "地址", address),
-                // --- 新增：营业时间展开列表 ---
-                if (placeDetail?['regularOpeningHours']?['weekdayDescriptions'] != null)
-                  _buildOpeningHours(placeDetail!['regularOpeningHours']['weekdayDescriptions']),
-                if (phone != null) _buildInfoSection(Icons.call, "联系电话", phone),
-                if (website != null) _buildInfoSection(Icons.language, "官方网站", website),
+                if (placeDetail?['regularOpeningHours']
+                        ?['weekdayDescriptions'] !=
+                    null)
+                  _buildOpeningHours(placeDetail!['regularOpeningHours']
+                      ['weekdayDescriptions']),
+                if (phone != null)
+                  _buildInfoSection(Icons.call, "联系电话", phone),
+                if (website != null)
+                  _buildInfoSection(Icons.language, "官方网站", website),
 
-                //6. 用户评价标题
+                // 6. 用户评价
                 const Divider(),
                 const SizedBox(height: 10),
                 const Text(
@@ -258,16 +268,15 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                 ),
                 const SizedBox(height: 16),
 
-                // 6. 评价列表
                 if (placeDetail?['reviews'] != null)
-                  ...((placeDetail!['reviews'] as List).map((review) => _buildReviewItem(review)))
+                  ...((placeDetail!['reviews'] as List)
+                      .map((review) => _buildReviewItem(review)))
                 else
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 20),
-                    child: Text("暂无评价", style: TextStyle(color: Colors.grey)),
+                    child: Text("暂无评价",
+                        style: TextStyle(color: Colors.grey)),
                   ),
-
-
               ],
             ),
           ),
@@ -276,7 +285,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     );
   }
 
-  // 新增：图片轮播组件
   Widget _buildPhotoCarousel(List<String> photoUrls) {
     if (photoUrls.isEmpty) {
       return Container(
@@ -301,12 +309,12 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
               } else if (notification is ScrollEndNotification) {
                 _isUserInteracting = false;
               }
-              return false; // ⚠️ 一定要 return false
+              return false;
             },
             child: PageView.builder(
               controller: _pageController,
               itemCount: photoUrls.length,
-              physics: const PageScrollPhysics(), // Snap + 惯性
+              physics: const PageScrollPhysics(),
               onPageChanged: (index) {
                 setState(() {
                   _currentPhotoIndex = index;
@@ -331,7 +339,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
           ),
         ),
 
-        // 指示点
         if (photoUrls.length > 1)
           Positioned(
             bottom: 15,
@@ -356,20 +363,21 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
             ),
           ),
 
-        // 计数器
         if (photoUrls.length > 1)
           Positioned(
             top: 15,
             right: 15,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
                 color: Colors.black.withOpacity(0.6),
                 borderRadius: BorderRadius.circular(15),
               ),
               child: Text(
                 '${_currentPhotoIndex + 1}/${photoUrls.length}',
-                style: const TextStyle(color: Colors.white, fontSize: 12),
+                style:
+                    const TextStyle(color: Colors.white, fontSize: 12),
               ),
             ),
           ),
@@ -377,9 +385,8 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     );
   }
 
-
-  // 新增：全屏查看照片
-  void _showFullScreenPhoto(BuildContext context, List<String> photoUrls, int initialIndex) {
+  void _showFullScreenPhoto(
+      BuildContext context, List<String> photoUrls, int initialIndex) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => Scaffold(
@@ -408,7 +415,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     );
   }
 
-  // 辅助方法：构建功能按钮
   Widget _buildActionButton(
     IconData icon,
     String label,
@@ -427,15 +433,15 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
               child: Icon(icon, color: Colors.blue[600]),
             ),
             const SizedBox(height: 8),
-            Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w500)),
           ],
         ),
       ),
     );
   }
 
-
-  // 辅助方法：构建信息行
   Widget _buildInfoSection(IconData icon, String title, String content) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
@@ -448,9 +454,13 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                Text(title,
+                    style:
+                        TextStyle(color: Colors.grey[500], fontSize: 12)),
                 const SizedBox(height: 4),
-                Text(content, style: const TextStyle(fontSize: 15, height: 1.4)),
+                Text(content,
+                    style:
+                        const TextStyle(fontSize: 15, height: 1.4)),
               ],
             ),
           ),
@@ -458,7 +468,6 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
       ),
     );
   }
-
 
   Widget _buildOpeningHours(List<dynamic> weekdayDescriptions) {
     return Padding(
@@ -470,8 +479,8 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
           const SizedBox(width: 15),
           Expanded(
             child: Theme(
-              // 去掉 ExpansionTile 默认的边框线
-              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              data: Theme.of(context)
+                  .copyWith(dividerColor: Colors.transparent),
               child: ExpansionTile(
                 title: const Text(
                   "Opening Hours",
@@ -485,7 +494,8 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     child: Text(
                       desc.toString(),
-                      style: TextStyle(color: Colors.grey[700], fontSize: 14),
+                      style:
+                          TextStyle(color: Colors.grey[700], fontSize: 14),
                     ),
                   );
                 }).toList(),
@@ -497,9 +507,9 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     );
   }
 
-
   Widget _buildReviewItem(Map<String, dynamic> review) {
-    final authorName = review['authorAttribution']?['displayName'] ?? '匿名用户';
+    final authorName =
+        review['authorAttribution']?['displayName'] ?? '匿名用户';
     final photoUrl = review['authorAttribution']?['photoUri'];
     final rating = review['rating'] ?? 0;
     final text = review['text']?['text'] ?? '';
@@ -517,46 +527,48 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
         children: [
           Row(
             children: [
-              // 用户头像
               CircleAvatar(
                 radius: 20,
                 backgroundColor: Colors.blue[100],
-                backgroundImage: photoUrl != null ? NetworkImage(photoUrl) : null,
-                child: photoUrl == null 
-                    ? Text(authorName[0], style: const TextStyle(color: Colors.blue)) 
+                backgroundImage:
+                    photoUrl != null ? NetworkImage(photoUrl) : null,
+                child: photoUrl == null
+                    ? Text(authorName[0],
+                        style: const TextStyle(color: Colors.blue))
                     : null,
               ),
               const SizedBox(width: 12),
-              // 名字和时间
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       authorName,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 14),
                     ),
                     Text(
                       timeDesc,
-                      style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                      style: TextStyle(
+                          color: Colors.grey[500], fontSize: 12),
                     ),
                   ],
                 ),
               ),
-              // 评分星星
               Row(
                 children: List.generate(5, (index) {
                   return Icon(
                     Icons.star,
                     size: 14,
-                    color: index < rating ? Colors.orange : Colors.grey[300],
+                    color: index < rating
+                        ? Colors.orange
+                        : Colors.grey[300],
                   );
                 }),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          // 评论内容
           Text(
             text,
             maxLines: 3,
@@ -571,6 +583,4 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
       ),
     );
   }
-
-
 }

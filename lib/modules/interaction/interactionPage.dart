@@ -20,6 +20,7 @@ class _InteractionPageState extends State<InteractionPage> {
   final PostService _postService = PostService();
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final LikeService _likeService = LikeService(); // 添加点赞服务
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance; 
 
   @override
   Widget build(BuildContext context) {
@@ -156,180 +157,175 @@ class _InteractionPageState extends State<InteractionPage> {
     );
   }
 
+  // ===== 构建帖子卡片 =====
   Widget _buildPostCard(Post post) {
-    return Container(
+    return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.03),
-            blurRadius: 10,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 用户信息
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.orange.withOpacity(0.5), width: 1.5),
-                ),
-                child: _buildUserAvatar(post),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      post.isAnonymous ? '匿名用户' : post.userName,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      "${_formatTime(post.createdAt)} · GoTrip 极速版",
-                      style: TextStyle(color: Colors.grey[500], fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-              PopupMenuButton(
-                icon: const Icon(Icons.more_horiz, color: Colors.grey),
-                itemBuilder: (context) => [
-                  const PopupMenuItem(
-                    value: 'share',
-                    child: Row(
-                      children: [
-                        Icon(Icons.share, size: 20),
-                        SizedBox(width: 8),
-                        Text('分享'),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: 'report',
-                    child: Row(
-                      children: [
-                        Icon(Icons.flag, size: 20),
-                        SizedBox(width: 8),
-                        Text('举报'),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
+      elevation: 0.5,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ✅ 改用 StreamBuilder 实时读取用户信息
+            _buildUserInfoWithStream(post),
+            
+            const SizedBox(height: 12),
 
-          // 标题 (如果有)
-          if (post.title.isNotEmpty) ...[
+            // 标题
             Text(
               post.title,
               style: const TextStyle(
-                fontSize: 17,
+                fontSize: 18,
                 fontWeight: FontWeight.bold,
-                color: Color(0xFF222222),
+                color: Colors.black87,
               ),
             ),
             const SizedBox(height: 8),
-          ],
 
-          // 内容
-          Text(
-            post.content,
-            style: const TextStyle(fontSize: 15, color: Color(0xFF333333), height: 1.5),
-          ),
-          const SizedBox(height: 12),
-
-          // 图片展示
-          if (post.images.isNotEmpty) _buildImageGrid(post.images),
-
-          // 标签
-          if (post.tags.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: post.tags.map((tag) {
-                return Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFF3E0),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    tag,
-                    style: const TextStyle(
-                      color: Color(0xFFD35D3E),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                );
-              }).toList(),
+            // 内容
+            Text(
+              post.content,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[800],
+                height: 1.4,
+              ),
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
             ),
-          ],
-
-          // 地点
-          if (post.location != null) ...[
             const SizedBox(height: 12),
+
+            // 图片
+            _buildImageGrid(post.images),
+
+            // 标签
+            if (post.tags.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: post.tags.map((tag) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD35D3E).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Text(
+                      '#$tag',
+                      style: const TextStyle(
+                        color: Color(0xFFD35D3E),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+
+            const SizedBox(height: 16),
+            const Divider(height: 1, thickness: 0.5),
+            const SizedBox(height: 12),
+
+            // 互动按钮
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                const Icon(Icons.location_on, size: 16, color: Color(0xFFD35D3E)),
-                const SizedBox(width: 4),
-                Text(
-                  post.location!,
-                  style: const TextStyle(color: Color(0xFF666666), fontSize: 13),
+                _buildSocialBtn(
+                  Icons.share_outlined,
+                  post.shares > 0 ? '${post.shares}' : '转发',
+                  () => _handleShare(post),
+                  false,
+                ),
+                _buildSocialBtn(
+                  Icons.chat_bubble_outline,
+                  post.comments > 0 ? '${post.comments}' : '评论',
+                  () => _handleComment(post),
+                  false,
+                ),
+                StreamBuilder<bool>(
+                  stream: _likeService.likeStatusStream(post.id!),
+                  initialData: false,
+                  builder: (context, snapshot) {
+                    bool isLiked = snapshot.data ?? false;
+                    return _buildLikeButton(post, isLiked);
+                  },
                 ),
               ],
             ),
           ],
-
-          const SizedBox(height: 16),
-          const Divider(height: 1, thickness: 0.5),
-          const SizedBox(height: 12),
-
-          // 互动按钮
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildSocialBtn(
-                Icons.share_outlined,
-                post.shares > 0 ? '${post.shares}' : '转发',
-                () => _handleShare(post),
-                false,
-              ),
-              _buildSocialBtn(
-                Icons.chat_bubble_outline,
-                post.comments > 0 ? '${post.comments}' : '评论',
-                () => _handleComment(post),
-                false,
-              ),
-              // 点赞按钮 - 使用 StreamBuilder 实时显示状态
-              StreamBuilder<bool>(
-                stream: _likeService.likeStatusStream(post.id!),
-                initialData: false,
-                builder: (context, snapshot) {
-                  bool isLiked = snapshot.data ?? false;
-                  return _buildLikeButton(post, isLiked);
-                },
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
+
+  // ✅ 新增: 实时读取用户信息
+  Widget _buildUserInfoWithStream(Post post) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: _firestore.collection('users').doc(post.userId).snapshots(),
+      builder: (context, snapshot) {
+        // 默认值 (从帖子中获取)
+        String userName = post.userName;
+        String? userPhoto = post.userPhoto;
+
+        // 如果能读取到最新数据,使用最新的
+        if (snapshot.hasData && snapshot.data!.exists) {
+          Map<String, dynamic> userData = snapshot.data!.data() as Map<String, dynamic>;
+          userName = userData['username'] ?? userName;
+          userPhoto = userData['profileImageUrl'] ?? userPhoto;
+        }
+
+        return Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.orange.withOpacity(0.5), width: 1.5),
+              ),
+              child: _buildUserAvatar(userName, userPhoto, post.userId, post.isAnonymous),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    post.isAnonymous ? '匿名用户' : userName,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    "${_formatTime(post.createdAt)} · GoTrip 极速版",
+                    style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            PopupMenuButton(
+              icon: Icon(Icons.more_horiz, color: Colors.grey[600]),
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'report',
+                  child: Row(
+                    children: [
+                      Icon(Icons.flag_outlined, size: 20),
+                      SizedBox(width: 12),
+                      Text('举报'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+
 
   // 构建图片网格
   Widget _buildImageGrid(List<String> images) {
@@ -506,59 +502,51 @@ class _InteractionPageState extends State<InteractionPage> {
   }
 
   // 构建用户头像 (支持 Base64 和 URL)
-  Widget _buildUserAvatar(Post post) {
-    // 匿名用户
-    if (post.isAnonymous) {
-      return CircleAvatar(
-        radius: 20,
-        backgroundColor: _getUserColor(post.userId),
-        child: const Icon(Icons.person_outline, color: Colors.white, size: 22),
-      );
-    }
-
-    // 有头像
-    if (post.userPhoto != null && post.userPhoto!.isNotEmpty) {
-      // 判断是 Base64 还是 URL
-      if (post.userPhoto!.startsWith('data:image')) {
-        // Base64 图片
-        try {
-          String base64String = post.userPhoto!.split(',')[1];
-          Uint8List bytes = base64Decode(base64String);
-          return CircleAvatar(
-            radius: 20,
-            backgroundImage: MemoryImage(bytes),
-            backgroundColor: Colors.transparent,
-          );
-        } catch (e) {
-          print('Base64 解码失败: $e');
-        }
-      } else if (post.userPhoto!.startsWith('http')) {
-        // URL 图片
+  Widget _buildUserAvatar(String userName, String? userPhoto, String userId, bool isAnonymous) {
+      if (isAnonymous) {
         return CircleAvatar(
           radius: 20,
-          backgroundImage: NetworkImage(post.userPhoto!),
-          backgroundColor: Colors.transparent,
+          backgroundColor: _getUserColor(userId),
+          child: const Icon(Icons.person_outline, color: Colors.white, size: 22),
         );
       }
-    }
 
-    // 默认: 显示用户名首字母
-    return CircleAvatar(
-      radius: 20,
-      backgroundColor: _getUserColor(post.userId),
-      child: Text(
-        post.userName.isNotEmpty 
-          ? post.userName.substring(0, 1).toUpperCase()
-          : '?', // 安全检查
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
+      if (userPhoto != null && userPhoto.isNotEmpty) {
+        if (userPhoto.startsWith('data:image')) {
+          try {
+            String base64String = userPhoto.split(',')[1];
+            Uint8List bytes = base64Decode(base64String);
+            return CircleAvatar(
+              radius: 20,
+              backgroundImage: MemoryImage(bytes),
+              backgroundColor: Colors.transparent,
+            );
+          } catch (e) {
+            print('Base64 解码失败: $e');
+          }
+        } else if (userPhoto.startsWith('http')) {
+          return CircleAvatar(
+            radius: 20,
+            backgroundImage: NetworkImage(userPhoto),
+            backgroundColor: Colors.transparent,
+          );
+        }
+      }
+
+      return CircleAvatar(
+        radius: 20,
+        backgroundColor: _getUserColor(userId),
+        child: Text(
+          userName.isNotEmpty ? userName.substring(0, 1).toUpperCase() : '?',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
         ),
-      ),
-    );
-  }
-
+      );
+    }
+  
   // 格式化时间
   String _formatTime(DateTime? dateTime) {
     if (dateTime == null) return '刚刚';
