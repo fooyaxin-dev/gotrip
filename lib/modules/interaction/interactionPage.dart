@@ -146,7 +146,10 @@ class _InteractionPageState extends State<InteractionPage> {
             child: ListView.builder(
               physics: const BouncingScrollPhysics(),
               itemCount: posts.length,
-              padding: const EdgeInsets.symmetric(vertical: 10),
+              padding: const EdgeInsets.only(
+                top: 10,
+                bottom: 90, // ← 给底部导航栏留出空间
+              ),
               itemBuilder: (context, index) {
                 return _buildPostCard(posts[index]);
               },

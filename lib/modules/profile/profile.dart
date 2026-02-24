@@ -156,6 +156,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   //2 主要内容
                   Center(
                     child: SingleChildScrollView(
+                      padding: const EdgeInsets.only(bottom: kBottomNavigationBarHeight + 16),
                       child: Column(
                         children: [
                           SizedBox(height: height * 0.13),

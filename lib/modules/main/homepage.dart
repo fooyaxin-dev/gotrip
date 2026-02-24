@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -24,61 +25,72 @@ class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
   String _username = "UserName";
   String _email = "user@email.com";
-  String _profileImageUrl = ""; // ⭐ 新增：存储头像
+  String _profileImageUrl = "";
+  StreamSubscription? _userSubscription; // ⭐ 实时监听订阅
 
   @override
   void initState() {
     super.initState();
-    _loadUserData();
+    _loadCachedData();   // 先加载缓存，加快首屏显示
+    _listenToUserData(); // 再监听 Firestore 实时更新
   }
 
-  Future<void> _loadUserData() async {
+  @override
+  void dispose() {
+    _userSubscription?.cancel(); // ⭐ 页面销毁时取消监听，防止内存泄漏
+    super.dispose();
+  }
+
+  // 先从本地缓存加载，加快首屏速度
+  Future<void> _loadCachedData() async {
     final prefs = await SharedPreferences.getInstance();
-    String cachedUsername = prefs.getString('username') ?? "";
-    String cachedEmail = prefs.getString('email') ?? "";
-    String cachedProfileImage = prefs.getString('profileImageUrl') ?? ""; // ⭐ 读取缓存的头像
-
-    // 先显示缓存
     setState(() {
-      _username = cachedUsername.isEmpty ? "UserName" : cachedUsername;
-      _email = cachedEmail.isEmpty ? "user@email.com" : cachedEmail;
-      _profileImageUrl = cachedProfileImage; // ⭐ 设置头像
+      _username = prefs.getString('username') ?? "UserName";
+      _email = prefs.getString('email') ?? "user@email.com";
+      _profileImageUrl = prefs.getString('profileImageUrl') ?? "";
     });
+  }
 
-    // 再去 Firestore 拿最新
+  // ⭐ 实时监听 Firestore，数据库一有变化，UI 立即自动更新
+  void _listenToUserData() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
-    if (doc.exists) {
-      final latestUsername = doc.data()?['username'] ?? _username;
-      final latestEmail = doc.data()?['email'] ?? _email;
-      final latestProfileImage = doc.data()?['profileImageUrl'] ?? ""; // ⭐ 读取头像
+    _userSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .snapshots() // 用 snapshots() 实时监听，替代 get()
+        .listen((doc) async {
+      if (doc.exists) {
+        final data = doc.data()!;
+        final latestUsername = data['username'] ?? _username;
+        final latestEmail = data['email'] ?? _email;
+        final latestProfileImage = data['profileImageUrl'] ?? "";
 
-      setState(() {
-        _username = latestUsername;
-        _email = latestEmail;
-        _profileImageUrl = latestProfileImage; // ⭐ 更新头像
-      });
+        setState(() {
+          _username = latestUsername;
+          _email = latestEmail;
+          _profileImageUrl = latestProfileImage;
+        });
 
-      // 更新缓存
-      prefs.setString('username', latestUsername);
-      prefs.setString('email', latestEmail);
-      prefs.setString('profileImageUrl', latestProfileImage); // ⭐ 缓存头像
-    }
+        // 同步更新本地缓存
+        final prefs = await SharedPreferences.getInstance();
+        prefs.setString('username', latestUsername);
+        prefs.setString('email', latestEmail);
+        prefs.setString('profileImageUrl', latestProfileImage);
+      }
+    });
   }
 
-  // ⭐ 新增：从 Base64 或 URL 获取 ImageProvider
+  // 从 Base64 或 URL 获取 ImageProvider
   ImageProvider _getProfileImageProvider() {
     if (_profileImageUrl.isEmpty) {
-      // 没有头像，返回默认图标
       return const AssetImage('assets/images/profile.jpg');
     }
 
     // 检查是否是 Base64 图片
     if (_profileImageUrl.startsWith('data:image')) {
       try {
-        // 提取 Base64 部分
         String base64String = _profileImageUrl.split(',')[1];
         Uint8List bytes = base64Decode(base64String);
         return MemoryImage(bytes);
@@ -88,7 +100,7 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
-    // 如果是 URL（未来可能用）
+    // 如果是 URL
     if (_profileImageUrl.startsWith('http')) {
       return NetworkImage(_profileImageUrl);
     }
@@ -181,20 +193,18 @@ class _HomePageState extends State<HomePage> {
             ),
             child: Row(
               children: [
-                // ⭐ 修改：使用数据库中的头像
                 CircleAvatar(
                   radius: 28,
                   backgroundColor: Colors.white,
                   child: CircleAvatar(
                     radius: 26,
                     backgroundImage: _getProfileImageProvider(),
-                    // 如果图片加载失败，显示默认图标
                     onBackgroundImageError: (exception, stackTrace) {
                       print('❌ 头像加载失败: $exception');
                     },
                     child: _profileImageUrl.isEmpty
                         ? const Icon(Icons.person, size: 32, color: Color(0xFF6366F1))
-                        : null, // 有头像时不显示图标
+                        : null,
                   ),
                 ),
                 const SizedBox(width: 15),
