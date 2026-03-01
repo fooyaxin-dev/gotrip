@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 import '../../services/favourite_service.dart';
 
-/// ❤️ 可复用的收藏按钮组件
-/// 支持两种模式：
-///   - IconButton 模式（用于 PlaceDetailPage 标题栏）
-///   - Overlay 模式（用于 PlaceCard 右上角浮层）
-/// 
+/// ❤️ 可复用的收藏按钮
+/// showBackground: true  → 白色圆形背景（用于 PlaceCard 图片浮层）
+/// showBackground: false → 普通 IconButton（用于 PlaceDetailPage / BottomSheet）
 class FavouriteButton extends StatefulWidget {
   final String placeId;
   final String name;
@@ -14,12 +12,12 @@ class FavouriteButton extends StatefulWidget {
   final String? photoUrl;
   final double? lat;
   final double? lng;
+  final List<String>? types; // 👈 新增：用于 FavouritePage 分类 filter
 
-  /// 外观控制
   final Color activeColor;
   final Color inactiveColor;
   final double iconSize;
-  final bool showBackground; // true = 显示圆形背景（用于卡片浮层）
+  final bool showBackground;
 
   const FavouriteButton({
     super.key,
@@ -30,6 +28,7 @@ class FavouriteButton extends StatefulWidget {
     this.photoUrl,
     this.lat,
     this.lng,
+    this.types,           // 👈 新增
     this.activeColor = Colors.red,
     this.inactiveColor = Colors.grey,
     this.iconSize = 24,
@@ -67,9 +66,7 @@ class _FavouriteButtonState extends State<FavouriteButton>
   Future<void> _handleTap(bool currentStatus) async {
     if (_isLoading) return;
 
-    // 播放动画
     _animController.forward().then((_) => _animController.reverse());
-
     setState(() => _isLoading = true);
 
     try {
@@ -81,6 +78,7 @@ class _FavouriteButtonState extends State<FavouriteButton>
         photoUrl: widget.photoUrl,
         lat: widget.lat,
         lng: widget.lng,
+        types: widget.types, // 👈 传入
       );
 
       if (mounted) {
@@ -131,7 +129,6 @@ class _FavouriteButtonState extends State<FavouriteButton>
                 ),
         );
 
-        // 带背景模式（用于卡片浮层）
         if (widget.showBackground) {
           return GestureDetector(
             onTap: () => _handleTap(isFav),
@@ -153,7 +150,6 @@ class _FavouriteButtonState extends State<FavouriteButton>
           );
         }
 
-        // 普通 IconButton 模式（用于 DetailPage）
         return IconButton(
           onPressed: () => _handleTap(isFav),
           icon: icon,

@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../realtime/detectPlacePage.dart';
+import '../place/detectPlacePage.dart';
 import '../dashboard/dashboard_page.dart';
 import '../profile/profile.dart';
 import '../interaction/interactionPage.dart';

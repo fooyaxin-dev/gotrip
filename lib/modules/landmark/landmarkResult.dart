@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:typed_data';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/foundation.dart';
-import 'package:gotrip/modules/realtime/detectPlacePage.dart';
+import 'package:gotrip/modules/place/detectPlacePage.dart';
 import '../../services/location_service.dart';   
 import '../../services/wikipedia_service.dart';
 

@@ -1,13 +1,13 @@
 import 'dart:ui';
 
-import '../realtime/detectPlacePage.dart';
+import '../place/detectPlacePage.dart';
 import 'package:flutter/material.dart';
 import 'bottomnav.dart';
 import '../../services/location_service.dart';
 import '../../services/placeModal.dart';
 import '../../services/nearbyPlace_service.dart';
 import 'package:geolocator/geolocator.dart';
-import '../realtime/placeDetailPage.dart';
+import '../place/placeDetailPage.dart';
 import 'package:geocoding/geocoding.dart';
 
 
@@ -859,8 +859,7 @@ final List<Map<String, dynamic>> _categories = [
                 builder: (_) => RealTimeDetectPage(
                   landmarkLat: result['lat'],
                   landmarkLng: result['lng'],
-                  onBack: () => Navigator.pop(context),
-                  initialNavigation: result, // ✅ 传入导航数据
+                  onBack: () => Navigator.pop(context)
                 ),
               ),
             );

@@ -182,7 +182,7 @@ class _PostingPageState extends State<PostingPage> {
       _showErrorDialog('选择图片失败: $e');
     }
   }
-
+ 
   Future<void> _takePhoto() async {
     try {
       final XFile? photo = await _picker.pickImage(
