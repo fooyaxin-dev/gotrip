@@ -18,10 +18,16 @@ class FavouriteService {
     return _firestore.collection('users').doc(uid).collection('favourites');
   }
 
-  /// 🔍 直接从 Google API fetch types（只请求 types 字段，最便宜）
+  // users/{uid} document 的 reference
+  static DocumentReference? get _userDoc {
+    final uid = _userId;
+    if (uid == null) return null;
+    return _firestore.collection('users').doc(uid);
+  }
+
+  /// 🔍 从 API 或缓存获取 types
   static Future<List<String>> _fetchTypesFromApi(String placeId) async {
     try {
-      // Step 1: 先看 place_details 缓存有没有
       final cached = await _firestore
           .collection('place_details')
           .doc(placeId)
@@ -29,38 +35,32 @@ class FavouriteService {
 
       if (cached.exists) {
         final types = (cached.data()!['types'] as List?)
-            ?.map((e) => e.toString())
-            .toList() ?? [];
-        if (types.isNotEmpty) {
-          print('✅ Got types from place_details cache: $types');
-          return types;
-        }
+                ?.map((e) => e.toString())
+                .toList() ??
+            [];
+        if (types.isNotEmpty) return types;
       }
 
-      // Step 2: 缓存也没有，直接 call Google API（只要 types 字段）
-      print('🌐 Fetching types from Google API for $placeId...');
       final url = Uri.parse('$_baseUrl/places/$placeId');
       final response = await http.get(url, headers: {
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': _apiKey,
-        'X-Goog-FieldMask': 'types', // 只要 types，最省钱
+        'X-Goog-FieldMask': 'types',
       });
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final types = (data['types'] as List?)
-            ?.map((e) => e.toString())
-            .toList() ?? [];
-        print('✅ Got types from API: $types');
+                ?.map((e) => e.toString())
+                .toList() ??
+            [];
 
-        // 顺便更新 place_details 缓存里的 types
         if (types.isNotEmpty && cached.exists) {
           await _firestore
               .collection('place_details')
               .doc(placeId)
               .update({'types': types});
         }
-
         return types;
       }
     } catch (e) {
@@ -69,8 +69,7 @@ class FavouriteService {
     return [];
   }
 
-  /// ❤️ 添加收藏
-  /// 如果 types 是空的，自动去 fetch
+  /// ❤️ 添加收藏 + favouriteCount + 1
   static Future<void> addFavourite({
     required String placeId,
     required String name,
@@ -82,16 +81,18 @@ class FavouriteService {
     List<String>? types,
   }) async {
     final collection = _favouritesCollection;
-    if (collection == null) throw Exception('User not logged in');
+    final userDoc = _userDoc;
+    if (collection == null || userDoc == null) throw Exception('User not logged in');
 
-    // ✅ 如果 types 是空的，自动补
+    // types 为空时自动 fetch
     List<String> finalTypes = (types != null && types.isNotEmpty)
         ? types
         : await _fetchTypesFromApi(placeId);
 
-    print('💾 Saving favourite with types: $finalTypes');
+    // ✅ 用 batch 同时写两个 document，保证原子性
+    final batch = _firestore.batch();
 
-    await collection.doc(placeId).set({
+    batch.set(collection.doc(placeId), {
       'placeId': placeId,
       'name': name,
       'address': address,
@@ -102,13 +103,37 @@ class FavouriteService {
       'types': finalTypes,
       'savedAt': FieldValue.serverTimestamp(),
     });
+
+    // favouriteCount + 1
+    batch.update(userDoc, {
+      'favouriteCount': FieldValue.increment(1),
+    });
+
+    await batch.commit();
+    print('✅ Added favourite, favouriteCount +1');
   }
 
-  /// 💔 移除收藏
+  /// 💔 移除收藏 + favouriteCount - 1
   static Future<void> removeFavourite(String placeId) async {
     final collection = _favouritesCollection;
-    if (collection == null) throw Exception('User not logged in');
-    await collection.doc(placeId).delete();
+    final userDoc = _userDoc;
+    if (collection == null || userDoc == null) throw Exception('User not logged in');
+
+    final batch = _firestore.batch();
+
+    batch.delete(collection.doc(placeId));
+
+    // favouriteCount - 1（最低为 0，防止负数）
+    final userSnapshot = await userDoc.get();
+    final currentCount = (userSnapshot.data() as Map<String, dynamic>?)?['favouriteCount'] ?? 0;
+    if (currentCount > 0) {
+      batch.update(userDoc, {
+        'favouriteCount': FieldValue.increment(-1),
+      });
+    }
+
+    await batch.commit();
+    print('✅ Removed favourite, favouriteCount -1');
   }
 
   /// 🔍 检查是否已收藏
