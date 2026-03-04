@@ -292,4 +292,4 @@ class PlacesApiService {
       'source': 'google',
     };
   }
-}
+} 

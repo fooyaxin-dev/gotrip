@@ -372,7 +372,7 @@ final List<Map<String, dynamic>> _categories = [
     try {
       // 从 Service 获取真实数据
       final places = await NearbyPlacesService.instance
-          .loadNearbyPlacesOnce(_categories);
+          .loadNearbyPlacesOnce(_categories,context);
 
       if (!mounted) return;
 
@@ -433,6 +433,7 @@ final List<Map<String, dynamic>> _categories = [
     final pos = LocationService.instance.currentPosition;
     if (pos == null) return [];
     final sorted = List<PlaceModel>.from(_nearbyPlaces)
+      ..removeWhere((p) => p.photoUrl == null || p.photoUrl!.isEmpty) // ← 加这行
       ..sort((a, b) {
         final distA = _routeResults[a.id]?.distanceMeters ?? double.infinity;
         final distB = _routeResults[b.id]?.distanceMeters ?? double.infinity;

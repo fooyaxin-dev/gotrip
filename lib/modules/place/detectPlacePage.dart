@@ -12,13 +12,6 @@ import '../../services/nearbyPlace_service.dart';
 import 'guidePage.dart';
 import 'favouriteButton.dart';
 
-// 二级缓存
-class _CacheEntry {
-  final DateTime ts;
-  final List<PlaceModel> places;
-  _CacheEntry(this.ts, this.places);
-}
-
 enum SortMode { distance, rating }
 enum TravelMode { walk, drive, motor }
 
@@ -47,77 +40,253 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   TravelMode _travelMode = TravelMode.walk;
   bool _isTravelModeExpanded = false;
 
-  // 位置监听
-  Timer? _locationIdleTimer;
-  static const Duration _locationIdleDelay = Duration(seconds: 2000);
-  StreamSubscription<Position>? _positionStream;
-
-  // 数据存储
-  final List<PlaceModel> _nearbyPlaces = [];
+  // 数据
+  final List<PlaceModel> _displayedPlaces = [];
   Map<String, RouteResult> _routeResults = {};
-  int _searchToken = 0;
   bool _isLoading = false;
 
-  // 筛选
-  List<String> _selectedTypes = ['all'];
-  String? _selectedPrimary;
-  String? _selectedSecondary;
-  Timer? _secondaryDebounce;
-  CameraPosition? _initialCameraPosition;
+  // 筛选状态
+  String? _selectedPrimary;       // null = 'all'
+  String _selectedSecondary = 'all';
 
-  // 二级缓存
-  final Map<String, _CacheEntry> _secondaryCache = {};
-  static const Duration _secondaryCacheTtl = Duration(minutes: 5);
+  CameraPosition? _initialCameraPosition;
 
   // 一级分类
   final List<Map<String, dynamic>> categories = [
-    {'name': 'All', 'icon': Icons.all_inclusive, 'type': 'all', 'color': Colors.black},
-    {'name': 'Food', 'icon': Icons.restaurant, 'type': 'restaurant', 'color': Colors.orange},
-    {'name': 'Nature', 'icon': Icons.park, 'type': 'park', 'color': Colors.blue},
-    {'name': 'Historical', 'icon': Icons.place, 'type': 'tourist_attraction', 'color': Colors.green},
-    {'name': 'Shopping', 'icon': Icons.shopping_bag, 'type': 'shopping_mall', 'color': Colors.purple},
-    {'name': 'Entertainment', 'icon': Icons.local_activity_rounded, 'type': 'amusement_park', 'color': Colors.purple},
+    {'name': 'All',           'icon': Icons.all_inclusive,           'type': 'all',              'color': Colors.black},
+    {'name': 'Food',          'icon': Icons.restaurant,              'type': 'restaurant',        'color': Colors.orange},
+    {'name': 'Nature',        'icon': Icons.park,                    'type': 'park',              'color': Colors.blue},
+    {'name': 'Historical',    'icon': Icons.place,                   'type': 'tourist_attraction','color': Colors.green},
+    {'name': 'Shopping',      'icon': Icons.shopping_bag,            'type': 'shopping_mall',     'color': Colors.purple},
+    {'name': 'Entertainment', 'icon': Icons.local_activity_rounded,  'type': 'amusement_park',    'color': Colors.purple},
   ];
 
   // 二级分类
-  final Map<String, List<Map<String, dynamic>>> subCategories = {
-    'restaurant': [
-      {'key': 'all', 'label': 'All', 'keyword': '', 'allowTypes': <String>[]},
-      {'key': 'korean', 'label': 'Korean', 'keyword': 'korean restaurant', 'allowTypes': <String>['korean_restaurant', 'restaurant']},
-      {'key': 'chinese', 'label': 'Chinese', 'keyword': 'chinese restaurant dim sum', 'allowTypes': <String>['chinese_restaurant', 'restaurant']},
-      {'key': 'japanese', 'label': 'Japanese', 'keyword': 'japanese restaurant sushi ramen', 'allowTypes': <String>['japanese_restaurant', 'restaurant']},
-      {'key': 'dessert', 'label': 'Dessert', 'keyword': 'dessert bakery cake ice cream gelato', 'allowTypes': <String>['bakery', 'cafe', 'restaurant', 'meal_takeaway']},
-      {'key': 'western', 'label': 'Western', 'keyword': 'western restaurant steak grill', 'allowTypes': <String>['restaurant']},
-      {'key': 'malay', 'label': 'Malay', 'keyword': 'malay restaurant nasi lemak', 'allowTypes': <String>['malay_restaurant', 'restaurant']},
-      {'key': 'indian', 'label': 'Indian', 'keyword': 'indian restaurant', 'allowTypes': <String>['indian_restaurant', 'restaurant']},
-    ],
-    'cafe': [
-      {'key': 'all', 'label': 'All', 'keyword': '', 'allowTypes': <String>[]},
-      {'key': 'coffee', 'label': 'Coffee', 'keyword': 'coffee cafe', 'allowTypes': <String>['cafe', 'coffee_shop']},
-      {'key': 'bakery', 'label': 'Bakery', 'keyword': 'bakery pastry', 'allowTypes': <String>['bakery']},
-      {'key': 'tea', 'label': 'Tea', 'keyword': 'tea bubble tea', 'allowTypes': <String>['cafe', 'tea_house']},
-    ],
-    'tourist_attraction': [
-      {'key': 'all', 'label': 'All', 'keyword': '', 'allowTypes': <String>[]},
-      {'key': 'museum', 'label': 'Museum', 'keyword': 'museum', 'allowTypes': <String>['museum', 'tourist_attraction']},
-      {'key': 'park', 'label': 'Park', 'keyword': 'park garden', 'allowTypes': <String>['park', 'tourist_attraction']},
-      {'key': 'historic', 'label': 'Historic', 'keyword': 'heritage site monument', 'allowTypes': <String>['tourist_attraction']},
-      {'key': 'temple', 'label': 'Temple', 'keyword': 'temple mosque church shrine', 'allowTypes': <String>['hindu_temple', 'mosque', 'church', 'tourist_attraction']},
-    ],
-    'shopping_mall': [
-      {'key': 'all', 'label': 'All', 'keyword': '', 'allowTypes': <String>[]},
-      {'key': 'fashion', 'label': 'Clothing', 'keyword': 'clothing store fashion', 'allowTypes': <String>['clothing_store', 'shopping_mall', 'store']},
-      {'key': 'electronics', 'label': 'Electronics', 'keyword': 'electronics store', 'allowTypes': <String>['electronics_store', 'store']},
-      {'key': 'supermarket', 'label': 'Supermarket', 'keyword': 'supermarket grocery', 'allowTypes': <String>['supermarket', 'grocery_store', 'store']},
-    ],
-    'lodging': [
-      {'key': 'all', 'label': 'All', 'keyword': '', 'allowTypes': <String>[]},
-      {'key': 'hotel', 'label': 'Hotel', 'keyword': 'hotel', 'allowTypes': <String>['lodging']},
-      {'key': 'resort', 'label': 'Resort', 'keyword': 'resort', 'allowTypes': <String>['lodging']},
-      {'key': 'hostel', 'label': 'Hostel', 'keyword': 'hostel', 'allowTypes': <String>['lodging']},
-      {'key': 'homestay', 'label': 'Guest House', 'keyword': 'guest house homestay', 'allowTypes': <String>['lodging']},
-    ],
-  };
+// 替换 RealTimeDetectPage 里的 subCategories
+//
+// 每个二级分类有两个匹配方式：
+// allowTypes  → 匹配 Google 返回的 types（准确但覆盖少）
+// nameKeywords → 匹配地点名字（覆盖更广）
+// 任意一个命中就显示
+
+final Map<String, List<Map<String, dynamic>>> subCategories = {
+  'restaurant': [
+    {
+      'key': 'all',
+      'label': 'All',
+      'allowTypes': <String>[],
+      'nameKeywords': <String>[],
+    },
+    {
+      'key': 'korean',
+      'label': 'Korean',
+      'allowTypes': <String>['korean_restaurant'],
+      'nameKeywords': <String>['korea', 'korean', '한국', 'kimchi', 'bbq korean'],
+    },
+    {
+      'key': 'chinese',
+      'label': 'Chinese',
+      'allowTypes': <String>['chinese_restaurant'],
+      'nameKeywords': <String>[
+        'chinese', 'canton', 'dim sum', 'claypot', 'clay pot',
+        '中', '华', '粤', '龙', '金', '福', '记', 'kopitiam', 'restoran yee',
+        'restaurant yee', 'seafood', 'wonton', 'bak kut',
+      ],
+    },
+    {
+      'key': 'japanese',
+      'label': 'Japanese',
+      'allowTypes': <String>['japanese_restaurant'],
+      'nameKeywords': <String>[
+        'japanese', 'japan', 'sushi', 'ramen', 'mentai',
+        'yakitori', 'tempura', 'udon', 'tonkatsu', 'izakaya',
+      ],
+    },
+    {
+      'key': 'malay',
+      'label': 'Malay',
+      'allowTypes': <String>['malaysian_restaurant'],
+      'nameKeywords': <String>[
+        'nasi', 'mee', 'laksa', 'satay', 'rendang', 'malay',
+        'restoran', 'warung', 'wanggey', 'popia', 'lemak',
+        'kampung', 'sup', 'ayam', 'ikan bakar',
+      ],
+    },
+    {
+      'key': 'indian',
+      'label': 'Indian',
+      'allowTypes': <String>['indian_restaurant'],
+      'nameKeywords': <String>[
+        'indian', 'india', 'naan', 'curry', 'briyani', 'biryani',
+        'tandoor', 'mamak', 'kandar', 'roti canai', 'chapati',
+        'banana leaf', 'thali',
+      ],
+    },
+    {
+      'key': 'western',
+      'label': 'Western',
+      'allowTypes': <String>['western_restaurant', 'american_restaurant', 'steak_house', 'bar_and_grill'],
+      'nameKeywords': <String>[
+        'western', 'steak', 'burger', 'pizza', 'pasta',
+        'grill', 'bbq', 'cafe', 'bistro', 'secret recipe',
+        'mcdonalds', 'mcdonald', 'kfc', 'subway',
+      ],
+    },
+    {
+      'key': 'dessert',
+      'label': 'Dessert',
+      'allowTypes': <String>['dessert_shop', 'ice_cream_shop', 'bakery', 'confectionery'],
+      'nameKeywords': <String>[
+        'dessert', 'ice cream', 'gelato', 'cake', 'bakery',
+        'pastry', 'sweet', 'bubble tea', 'boba', 'cendol',
+        'ais krim', 'waffle', 'crepe',
+      ],
+    },
+    {
+      'key': 'cafe',
+      'label': 'Cafe',
+      'allowTypes': <String>['cafe', 'coffee_shop'],
+      'nameKeywords': <String>[
+        'cafe', 'coffee', 'kopitiam', 'kopi', 'espresso',
+        'latte', 'brew', 'roast',
+      ],
+    },
+  ],
+  'tourist_attraction': [
+    {
+      'key': 'all',
+      'label': 'All',
+      'allowTypes': <String>[],
+      'nameKeywords': <String>[],
+    },
+    {
+      'key': 'museum',
+      'label': 'Museum',
+      'allowTypes': <String>['museum', 'art_gallery'],
+      'nameKeywords': <String>['museum', 'gallery', 'muzium'],
+    },
+    {
+      'key': 'park',
+      'label': 'Park',
+      'allowTypes': <String>['park', 'national_park', 'botanical_garden'],
+      'nameKeywords': <String>['park', 'taman', 'garden', 'hutan'],
+    },
+    {
+      'key': 'historic',
+      'label': 'Historic',
+      'allowTypes': <String>['historical_landmark', 'cultural_landmark', 'monument'],
+      'nameKeywords': <String>['heritage', 'historic', 'monument', 'memorial', 'fort', 'old'],
+    },
+    {
+      'key': 'temple',
+      'label': 'Temple',
+      'allowTypes': <String>['hindu_temple', 'buddhist_temple', 'shrine'],
+      'nameKeywords': <String>['temple', 'tokong', 'kuil', 'shrine', '庙', '寺'],
+    },
+    {
+      'key': 'mosque',
+      'label': 'Mosque',
+      'allowTypes': <String>['mosque'],
+      'nameKeywords': <String>['mosque', 'masjid', 'surau'],
+    },
+    {
+      'key': 'church',
+      'label': 'Church',
+      'allowTypes': <String>['church'],
+      'nameKeywords': <String>['church', 'gereja', 'cathedral', 'chapel'],
+    },
+  ],
+  'shopping_mall': [
+    {
+      'key': 'all',
+      'label': 'All',
+      'allowTypes': <String>[],
+      'nameKeywords': <String>[],
+    },
+    {
+      'key': 'mall',
+      'label': 'Mall',
+      'allowTypes': <String>['shopping_mall'],
+      'nameKeywords': <String>['mall', 'plaza', 'square', 'kompleks'],
+    },
+    {
+      'key': 'fashion',
+      'label': 'Clothing',
+      'allowTypes': <String>['clothing_store', 'shoe_store'],
+      'nameKeywords': <String>['fashion', 'clothing', 'apparel', 'boutique', 'shoe'],
+    },
+    {
+      'key': 'electronics',
+      'label': 'Electronics',
+      'allowTypes': <String>['electronics_store', 'cell_phone_store'],
+      'nameKeywords': <String>['electronics', 'electrical', 'phone', 'computer', 'digital'],
+    },
+    {
+      'key': 'supermarket',
+      'label': 'Supermarket',
+      'allowTypes': <String>['supermarket', 'grocery_store'],
+      'nameKeywords': <String>['supermarket', 'grocery', 'mydin', 'aeon', 'tesco', 'giant', 'econsave'],
+    },
+  ],
+  'amusement_park': [
+    {
+      'key': 'all',
+      'label': 'All',
+      'allowTypes': <String>[],
+      'nameKeywords': <String>[],
+    },
+    {
+      'key': 'karaoke',
+      'label': 'Karaoke',
+      'allowTypes': <String>['karaoke'],
+      'nameKeywords': <String>['karaoke', 'neway', 'redsun', 'red box'],
+    },
+    {
+      'key': 'bowling',
+      'label': 'Bowling',
+      'allowTypes': <String>['bowling_alley'],
+      'nameKeywords': <String>['bowling'],
+    },
+    {
+      'key': 'cinema',
+      'label': 'Cinema',
+      'allowTypes': <String>['movie_theater'],
+      'nameKeywords': <String>['cinema', 'gsc', 'tgv', 'mbo', 'movie', 'theatre'],
+    },
+  ],
+  'park': [
+    {
+      'key': 'all',
+      'label': 'All',
+      'allowTypes': <String>[],
+      'nameKeywords': <String>[],
+    },
+    {
+      'key': 'park',
+      'label': 'Park',
+      'allowTypes': <String>['park'],
+      'nameKeywords': <String>['park', 'taman'],
+    },
+    {
+      'key': 'garden',
+      'label': 'Garden',
+      'allowTypes': <String>['botanical_garden'],
+      'nameKeywords': <String>['garden', 'botanical', 'taman bunga'],
+    },
+    {
+      'key': 'beach',
+      'label': 'Beach',
+      'allowTypes': <String>['beach'],
+      'nameKeywords': <String>['beach', 'pantai'],
+    },
+    {
+      'key': 'trail',
+      'label': 'Trail/Hiking',
+      'allowTypes': <String>['hiking_area', 'national_park'],
+      'nameKeywords': <String>['trail', 'hiking', 'bukit', 'hill', 'forest', 'hutan'],
+    },
+  ],
+};
 
   // ─────────────────────────────────────────────
   // Lifecycle
@@ -131,9 +300,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   @override
   void dispose() {
-    _secondaryDebounce?.cancel();
-    _locationIdleTimer?.cancel();
-    _positionStream?.cancel();
     super.dispose();
   }
 
@@ -144,6 +310,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   Future<void> _bootstrap() async {
     setState(() => _isLoading = true);
 
+    // 1. 定位
     if (widget.landmarkLat != null && widget.landmarkLng != null) {
       _currentPosition = Position(
         latitude: widget.landmarkLat!,
@@ -172,250 +339,133 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       }
     }
 
+    // 2. 设置初始地图位置
     _initialCameraPosition = CameraPosition(
       target: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
       zoom: 14,
     );
 
-    _markers.add(
-      Marker(
-        markerId: const MarkerId('me'),
-        position: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-        infoWindow: const InfoWindow(title: '我的位置'),
-      ),
-    );
+    // 3. 放自己的标记
+    _markers.add(Marker(
+      markerId: const MarkerId('me'),
+      position: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+      infoWindow: const InfoWindow(title: '我的位置'),
+    ));
 
     setState(() {});
 
-    await _loadFromServiceCache();
-    if (_nearbyPlaces.isEmpty) {
-      await _refreshAllPlacesFromService();
-    }
-
-    _startLocationWatch();
-  }
-
-  // ─────────────────────────────────────────────
-  // Location
-  // ─────────────────────────────────────────────
-
-  void _startLocationWatch() {
-    _positionStream?.cancel();
-    _positionStream = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 10,
-      ),
-    ).listen((pos) {
-      _currentPosition = pos;
-      _locationIdleTimer?.cancel();
-      _locationIdleTimer = Timer(_locationIdleDelay, () {
-        _refreshAllPlacesFromService();
-      });
-    });
-  }
-
-  // ─────────────────────────────────────────────
-  // Data loading
-  // ─────────────────────────────────────────────
-
-  Future<void> _loadFromServiceCache() async {
-    final cachedPlaces = NearbyPlacesService.instance.allPlaces;
-    if (cachedPlaces.isEmpty) return;
-
-    setState(() {
-      _isLoading = true;
-      _nearbyPlaces.clear();
-      _markers.removeWhere((m) => m.markerId.value != 'me');
-    });
-
-    for (final place in cachedPlaces) {
-      _addMarkerAndPlace(place);
-    }
-
-    setState(() => _isLoading = false);
-    _animateToFitMarkers(keepZoom: true);
-  }
-
-  Future<void> _refreshAllPlacesFromService() async {
-    if (_currentPosition == null) return;
-
-    setState(() {
-      _isLoading = true;
-      _nearbyPlaces.clear();
-      _markers.removeWhere((m) => m.markerId.value != 'me');
-    });
-
+    // 4. 一次过 load 所有 type 进 cache，之后所有 filter 都不会再 call API
     try {
-      final places = await NearbyPlacesService.instance.loadNearbyPlacesOnce(categories);
+      await NearbyPlacesService.instance.loadNearbyPlacesOnce(categories, context);
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('加载失败: $e')),
+        );
+      }
+      return;
+    }
+
+    // 5. 显示默认（all）
+    _applyFilter();
+  }
+
+  // ─────────────────────────────────────────────
+  // 核心：统一 filter 入口
+  // 一级 / 二级 / 刷新，全部走这里
+  // ─────────────────────────────────────────────
+
+// 把 _applyFilter() 里的 getBySecondary 调用改成这样，加上 nameKeywords
+
+  void _applyFilter() {
+    List<PlaceModel> places;
+
+    if (_selectedPrimary == null) {
+      places = NearbyPlacesService.instance.getByPrimary(null);
+    } else if (_selectedSecondary == 'all') {
+      places = NearbyPlacesService.instance.getByPrimary(_selectedPrimary);
+    } else {
+      final subs = subCategories[_selectedPrimary] ?? [];
+      final cfg = subs.firstWhere(
+        (e) => e['key'] == _selectedSecondary,
+        orElse: () => {'allowTypes': <String>[], 'nameKeywords': <String>[]},
+      );
+      places = NearbyPlacesService.instance.getBySecondary(
+        primary: _selectedPrimary!,
+        secondary: _selectedSecondary,
+        allowTypes: (cfg['allowTypes'] as List?)?.cast<String>() ?? [],
+        nameKeywords: (cfg['nameKeywords'] as List?)?.cast<String>() ?? [],
+      );
+    }
+
+    setState(() {
+      _isLoading = false;
+      _displayedPlaces.clear();
+      _markers.removeWhere((m) => m.markerId.value != 'me');
+      _routeResults.clear();
       for (final place in places) {
         _addMarkerAndPlace(place);
       }
-      setState(() => _isLoading = false);
-      _animateToFitMarkers(keepZoom: true);
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('加载失败: $e')));
-      }
+    });
+
+    _animateToFitMarkers(keepZoom: true);
+
+    if (places.isEmpty && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('附近没有找到相关地点'),
+          duration: Duration(seconds: 2),
+        ),
+      );
     }
   }
-
+    
   // ─────────────────────────────────────────────
-  // Filtering
+  // Filter 状态更新
   // ─────────────────────────────────────────────
 
-  void _toggleType(String type) {
+  void _onPrimaryTap(String type) {
     setState(() {
       if (type == 'all') {
-        _selectedTypes = ['all'];
+        _selectedPrimary = null;
       } else {
-        _selectedTypes.remove('all');
-        if (_selectedTypes.contains(type)) {
-          _selectedTypes.remove(type);
-        } else {
-          _selectedTypes.add(type);
-        }
-        if (_selectedTypes.isEmpty) _selectedTypes = ['all'];
+        _selectedPrimary = type;
       }
-      _selectedPrimary = type == 'all' ? null : type;
       _selectedSecondary = 'all';
     });
-    _searchSelectedFilters();
+    _applyFilter();
   }
 
-  void _searchSelectedFilters() {
-    final int token = ++_searchToken;
+  void _onSecondaryTap(String key) {
+    setState(() => _selectedSecondary = key);
+    _applyFilter();
+  }
 
+  // ─────────────────────────────────────────────
+  // 手动刷新：清 cache 重新 call API
+  // ─────────────────────────────────────────────
+
+  Future<void> _onRefresh() async {
+    NearbyPlacesService.instance.clearCache();
     setState(() {
+      _selectedPrimary = null;
+      _selectedSecondary = 'all';
       _isLoading = true;
-      _nearbyPlaces.clear();
-      _markers.removeWhere((m) => m.markerId.value != 'me');
     });
-
-    final allPlacesCache = NearbyPlacesService.instance.allPlaces;
-    final placesByTypeCache = NearbyPlacesService.instance.placesByType;
-
-    List<PlaceModel> base;
-    if (_selectedTypes.contains('all')) {
-      base = List.from(allPlacesCache);
-    } else {
-      base = [];
-      for (final t in _selectedTypes) {
-        base.addAll(placesByTypeCache[t] ?? []);
-      }
-    }
-
-    for (final p in base) {
-      if (token != _searchToken) return;
-      _addMarkerAndPlace(p);
-    }
-
-    setState(() => _isLoading = false);
-    _animateToFitMarkers(keepZoom: true);
-  }
-
-  String _secondaryCacheKey() {
-    final lat = _currentPosition?.latitude ?? 0;
-    final lng = _currentPosition?.longitude ?? 0;
-    final rLat = (lat * 1000).round() / 1000;
-    final rLng = (lng * 1000).round() / 1000;
-    return '${_selectedPrimary ?? ''}|${_selectedSecondary ?? ''}|$rLat,$rLng';
-  }
-
-  Future<void> _applySecondaryFilterGoogle() async {
-    if (_currentPosition == null || _selectedPrimary == null || _selectedSecondary == null) return;
-
-    if (_selectedSecondary == 'all') {
-      _searchSelectedFilters();
-      return;
-    }
-
-    final int currentToken = ++_searchToken;
-    final key = _secondaryCacheKey();
-    final cached = _secondaryCache[key];
-
-    if (cached != null && DateTime.now().difference(cached.ts) <= _secondaryCacheTtl) {
-      setState(() {
-        _isLoading = true;
-        _nearbyPlaces.clear();
-        _markers.removeWhere((m) => m.markerId.value != 'me');
-      });
-      for (final p in cached.places) {
-        if (currentToken != _searchToken) return;
-        _addMarkerAndPlace(p);
-      }
-      setState(() => _isLoading = false);
-      _animateToFitMarkers(keepZoom: true);
-      return;
-    }
-
-    final list = subCategories[_selectedPrimary] ?? [];
-    final cfg = list.firstWhere((e) => e['key'] == _selectedSecondary, orElse: () => {});
-    final keyword = (cfg['keyword'] as String?)?.trim();
-    final allowTypes = (cfg['allowTypes'] as List?)?.cast<String>() ?? <String>[];
-
-    if (keyword == null || keyword.isEmpty) {
-      _searchSelectedFilters();
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-      _nearbyPlaces.clear();
-      _markers.removeWhere((m) => m.markerId.value != 'me');
-    });
-
     try {
-      final raw = await PlacesApiService.searchNearbyWithKeyword(
-        lat: _currentPosition!.latitude,
-        lng: _currentPosition!.longitude,
-        keyword: keyword,
-        radius: 5000,
-        maxResultCount: 30,
-      );
-
-      if (currentToken != _searchToken) return;
-
-      bool pass(Map<String, dynamic> p) {
-        final types = (p['types'] as List?)?.map((e) => e.toString()).toList() ?? <String>[];
-        final primaryOk = types.contains(_selectedPrimary);
-        if (allowTypes.isEmpty) return primaryOk;
-        return primaryOk || types.any((t) => allowTypes.contains(t));
-      }
-
-      final Map<String, PlaceModel> uniq = {};
-      for (final m in raw.where(pass)) {
-        final place = PlaceModel.fromGoogle(m, primary: _selectedPrimary, secondary: _selectedSecondary);
-        if (place.lat == null || place.lng == null) continue;
-        uniq[place.id] = place;
-      }
-
-      final placesList = uniq.values.toList();
-      if (currentToken != _searchToken) return;
-
-      for (final p in placesList) _addMarkerAndPlace(p);
-
-      _secondaryCache[key] = _CacheEntry(DateTime.now(), placesList);
-      setState(() => _isLoading = false);
-
-      if (placesList.isNotEmpty) {
-        _animateToFitMarkers(keepZoom: true);
-      } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('附近没有找到相关地点'), duration: Duration(seconds: 2)),
-        );
-      }
+      await NearbyPlacesService.instance.loadNearbyPlacesOnce(categories, context);
     } catch (e) {
-      if (currentToken != _searchToken) return;
       setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('加载失败: $e'), duration: const Duration(seconds: 3)),
+          SnackBar(content: Text('刷新失败: $e')),
         );
       }
+      return;
     }
+    _applyFilter();
   }
 
   // ─────────────────────────────────────────────
@@ -425,27 +475,27 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   void _addMarkerAndPlace(PlaceModel place) {
     if (place.lat == null || place.lng == null) return;
 
+    // Marker
     final markerId = MarkerId(place.id);
     if (!_markers.any((m) => m.markerId == markerId)) {
-      _markers.add(
-        Marker(
-          markerId: markerId,
-          position: LatLng(place.lat!, place.lng!),
-          infoWindow: InfoWindow(
-            title: place.name,
-            snippet: place.address,
-            onTap: () => _showPlaceDetails(place),
-          ),
+      _markers.add(Marker(
+        markerId: markerId,
+        position: LatLng(place.lat!, place.lng!),
+        infoWindow: InfoWindow(
+          title: place.name,
+          snippet: place.address,
           onTap: () => _showPlaceDetails(place),
         ),
-      );
+        onTap: () => _showPlaceDetails(place),
+      ));
     }
 
-    if (!_nearbyPlaces.any((p) => p.id == place.id)) {
-      _nearbyPlaces.add(place);
+    // Place list
+    if (!_displayedPlaces.any((p) => p.id == place.id)) {
+      _displayedPlaces.add(place);
     }
 
-    // 直线距离估算（无需真实路线请求）
+    // 直线距离估算
     if (_currentPosition != null) {
       final distanceMeters = Geolocator.distanceBetween(
         _currentPosition!.latitude,
@@ -483,7 +533,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   void _updateRouteTimesForTravelMode() {
     if (_currentPosition == null) return;
-    for (final place in _nearbyPlaces) {
+    for (final place in _displayedPlaces) {
       final route = _routeResults[place.id];
       if (route == null) continue;
       final durationSeconds = (route.distanceMeters / _getSpeedMeterPerSecond()).round();
@@ -500,7 +550,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     if (_mapController == null || _markers.isEmpty) return;
 
     if (_markers.length == 1) {
-      _mapController!.animateCamera(CameraUpdate.newLatLngZoom(_markers.first.position, 15));
+      _mapController!.animateCamera(
+        CameraUpdate.newLatLngZoom(_markers.first.position, 15),
+      );
       return;
     }
 
@@ -519,7 +571,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     } else {
       _mapController!.animateCamera(
         CameraUpdate.newLatLngBounds(
-          LatLngBounds(southwest: LatLng(minLat, minLng), northeast: LatLng(maxLat, maxLng)),
+          LatLngBounds(
+            southwest: LatLng(minLat, minLng),
+            northeast: LatLng(maxLat, maxLng),
+          ),
           80,
         ),
       );
@@ -527,12 +582,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   }
 
   // ─────────────────────────────────────────────
-  // Navigation: push to GuidePage directly
+  // Navigation
   // ─────────────────────────────────────────────
 
   Future<void> _navigateTo(PlaceModel place) async {
     if (_currentPosition == null) return;
-
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -545,7 +599,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         ),
       ),
     );
-    // GuidePage 返回后，Detect 页恢复正常探索状态，无需任何处理
   }
 
   // ─────────────────────────────────────────────
@@ -558,7 +611,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       builder: (context) => AlertDialog(
         title: Text(title),
         content: Text(message),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('确定'))],
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('确定'),
+          ),
+        ],
       ),
     );
   }
@@ -581,16 +639,16 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 把手
               Center(
                 child: Container(
                   width: 48, height: 5,
-                  decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(10)),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
               ),
               const SizedBox(height: 24),
-
-              // 标题 + 评分 + 收藏
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -615,8 +673,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                             children: [
                               const Icon(Icons.star_rounded, color: Colors.orange, size: 20),
                               const SizedBox(width: 2),
-                              Text(place.rating.toString(),
-                                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                              Text(
+                                place.rating.toString(),
+                                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange),
+                              ),
                             ],
                           ),
                         ),
@@ -639,40 +699,38 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 ],
               ),
               const SizedBox(height: 12),
-
-              // 地址
               Row(
                 children: [
                   Icon(Icons.location_on_rounded, size: 18, color: theme.primaryColor),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(place.address ?? '地址未知',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+                    child: Text(
+                      place.address ?? '地址未知',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 16),
-
-              // 距离 & 时间 chip
               if (_routeResults[place.id] != null)
                 Wrap(
                   spacing: 12,
                   children: [
-                    _buildInfoChip(Icons.directions_car_filled_rounded,
+                    _buildInfoChip(
+                      Icons.directions_car_filled_rounded,
                       '${(_routeResults[place.id]!.distanceMeters / 1000).toStringAsFixed(1)} km',
-                      Colors.blue),
-                    _buildInfoChip(Icons.access_time_filled_rounded,
+                      Colors.blue,
+                    ),
+                    _buildInfoChip(
+                      Icons.access_time_filled_rounded,
                       '${(_routeResults[place.id]!.durationSeconds ~/ 60)} min',
-                      Colors.teal),
+                      Colors.teal,
+                    ),
                   ],
                 ),
-
               const Spacer(),
-
-              // 底部按钮
               Row(
                 children: [
-                  // 详情
                   Expanded(
                     flex: 2,
                     child: OutlinedButton(
@@ -700,18 +758,18 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                     ),
                   ),
                   const SizedBox(width: 12),
-
-                  // 导航 → 直接跳转 GuidePage
                   Expanded(
                     flex: 3,
                     child: ElevatedButton.icon(
                       onPressed: () {
-                        Navigator.of(context).pop(); // 先关 bottom sheet
+                        Navigator.of(context).pop();
                         _navigateTo(place);
                       },
                       icon: const Icon(Icons.near_me_rounded, color: Colors.white),
-                      label: const Text('开始导航',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                      label: const Text(
+                        '开始导航',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: theme.primaryColor,
                         elevation: 0,
@@ -757,13 +815,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
 
-    final List<PlaceModel> sortedPlaces = List.from(_nearbyPlaces);
+    // 排序在 build 里做，不影响 _displayedPlaces 本身
+    final List<PlaceModel> sortedPlaces = List.from(_displayedPlaces);
     sortedPlaces.sort((a, b) {
-      final aRoute = _routeResults[a.id];
-      final bRoute = _routeResults[b.id];
       if (_sortMode == SortMode.distance) {
-        final aD = aRoute?.distanceMeters ?? double.infinity;
-        final bD = bRoute?.distanceMeters ?? double.infinity;
+        final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
+        final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
         return aD.compareTo(bD);
       } else {
         return (b.rating ?? 0.0).compareTo(a.rating ?? 0.0);
@@ -812,6 +869,25 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             ),
           ),
 
+          // ── 刷新按钮 ──
+          Positioned(
+            top: 50,
+            right: 20,
+            child: SafeArea(
+              child: Material(
+                elevation: 4,
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                color: Colors.white,
+                child: IconButton(
+                  icon: const Icon(Icons.refresh_rounded, size: 20, color: Colors.black87),
+                  onPressed: _isLoading ? null : _onRefresh,
+                  tooltip: '刷新附近地点',
+                ),
+              ),
+            ),
+          ),
+
           // ── 底部面板 ──
           NotificationListener<DraggableScrollableNotification>(
             onNotification: (n) {
@@ -829,7 +905,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15)],
+                    boxShadow: [
+                      BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15),
+                    ],
                   ),
                   child: _buildPlaceListSheet(scrollController, sortedPlaces),
                 );
@@ -864,7 +942,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 decoration: BoxDecoration(
                   color: Colors.grey[300],
                   borderRadius: BorderRadius.circular(10),
-                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), spreadRadius: 1, blurRadius: 1, offset: const Offset(0, 1))],
                 ),
               ),
               const SizedBox(height: 4),
@@ -881,11 +958,13 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             itemCount: categories.length,
             itemBuilder: (context, index) {
               final cat = categories[index];
-              final isSelected = _selectedTypes.contains(cat['type']);
+              final isSelected = cat['type'] == 'all'
+                  ? _selectedPrimary == null
+                  : _selectedPrimary == cat['type'];
               return Padding(
                 padding: const EdgeInsets.only(right: 12),
                 child: GestureDetector(
-                  onTap: () => _toggleType(cat['type']),
+                  onTap: () => _onPrimaryTap(cat['type']),
                   child: Column(
                     children: [
                       AnimatedContainer(
@@ -895,7 +974,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                           color: isSelected ? cat['color'] : Colors.grey[100],
                           shape: BoxShape.circle,
                         ),
-                        child: Icon(cat['icon'], color: isSelected ? Colors.white : Colors.grey[600], size: 26),
+                        child: Icon(
+                          cat['icon'],
+                          color: isSelected ? Colors.white : Colors.grey[600],
+                          size: 26,
+                        ),
                       ),
                       const SizedBox(height: 6),
                       Text(
@@ -963,7 +1046,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           ),
         ),
 
-        // 排序 & 二级分类
+        // 排序 chips
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
@@ -976,7 +1059,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
               ),
               const SizedBox(width: 8),
               _buildStyledFilterChip(
-                label: "High",
+                label: "High Rated",
                 isSelected: _sortMode == SortMode.rating,
                 onTap: () => setState(() => _sortMode = SortMode.rating),
                 icon: Icons.star_outline_rounded,
@@ -985,13 +1068,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           ),
         ),
 
+        // 二级分类（只在有一级选中且有二级列表时显示）
         if (_selectedPrimary != null && subCategories.containsKey(_selectedPrimary))
           _buildSecondaryBar(),
 
         const Divider(height: 1, thickness: 0.5),
 
         // 地点列表
-        if (_nearbyPlaces.isEmpty && !_isLoading)
+        if (_displayedPlaces.isEmpty && !_isLoading)
           SizedBox(height: 300, child: _buildEmptyState())
         else
           ...List.generate(
@@ -1002,7 +1086,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             ),
           ),
 
-        const SizedBox(height: 24),
+        SizedBox(height: 24 + MediaQuery.of(context).padding.bottom + kBottomNavigationBarHeight),
       ],
     );
   }
@@ -1051,23 +1135,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         itemBuilder: (context, index) {
           final item = subs[index];
           final key = item['key'] as String;
-          final isSelected = _selectedSecondary == key;
           return Padding(
             padding: const EdgeInsets.only(right: 8),
             child: _buildStyledFilterChip(
               label: item['label'] as String,
-              isSelected: isSelected,
-              onTap: () {
-                setState(() => _selectedSecondary = key);
-                _secondaryDebounce?.cancel();
-                _secondaryDebounce = Timer(const Duration(milliseconds: 350), () {
-                  if (_selectedSecondary == 'all') {
-                    _searchSelectedFilters();
-                  } else {
-                    _applySecondaryFilterGoogle();
-                  }
-                });
-              },
+              isSelected: _selectedSecondary == key,
+              onTap: () => _onSecondaryTap(key),
             ),
           );
         },
@@ -1089,7 +1162,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         decoration: BoxDecoration(
           color: isSelected ? Colors.blue[600] : Colors.grey[100],
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: isSelected ? Colors.blue[600]! : Colors.grey[200]!, width: 1),
+          border: Border.all(
+            color: isSelected ? Colors.blue[600]! : Colors.grey[200]!,
+            width: 1,
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1098,11 +1174,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
               Icon(icon, size: 16, color: isSelected ? Colors.white : Colors.grey[600]),
               const SizedBox(width: 4),
             ],
-            Text(label, style: TextStyle(
-              fontSize: 13,
-              fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-              color: isSelected ? Colors.white : Colors.grey[700],
-            )),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                color: isSelected ? Colors.white : Colors.grey[700],
+              ),
+            ),
           ],
         ),
       ),
@@ -1120,8 +1199,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           const SizedBox(height: 12),
           ElevatedButton(
             onPressed: () {
-              setState(() => _selectedSecondary = 'all');
-              _searchSelectedFilters();
+              setState(() {
+                _selectedPrimary = null;
+                _selectedSecondary = 'all';
+              });
+              _applyFilter();
             },
             child: const Text('显示全部'),
           ),
@@ -1142,27 +1224,33 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(15),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+            boxShadow: [
+              BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
+            ],
             border: Border.all(color: Colors.grey[100]!),
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // 图片
               Container(
                 width: 40, height: 40,
-                decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.blue[50]),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  color: Colors.blue[50],
+                ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(10),
                   child: place.photoUrl != null
-                      ? Image.network(place.photoUrl!, fit: BoxFit.cover,
-                          errorBuilder: (c, e, s) => const Icon(Icons.image_not_supported, size: 20))
+                      ? Image.network(
+                          place.photoUrl!,
+                          fit: BoxFit.cover,
+                          errorBuilder: (c, e, s) =>
+                              const Icon(Icons.image_not_supported, size: 20),
+                        )
                       : Icon(Icons.location_on, color: Colors.blue[400], size: 24),
                 ),
               ),
               const SizedBox(width: 12),
-
-              // 信息
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1180,29 +1268,32 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                         if (place.rating != null) ...[
                           const Icon(Icons.star_rounded, color: Colors.orange, size: 18),
                           const SizedBox(width: 2),
-                          Text(place.rating.toString(),
-                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.orange)),
+                          Text(
+                            place.rating.toString(),
+                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.orange),
+                          ),
                           _buildDotSeparator(),
                         ],
                         if (routeInfo != null) ...[
                           Icon(Icons.near_me_rounded, size: 14, color: Colors.blue[400]),
                           const SizedBox(width: 4),
-                          Text('${(routeInfo.distanceMeters / 1000).toStringAsFixed(1)} km',
-                            style: TextStyle(fontSize: 13, color: Colors.grey[700], fontWeight: FontWeight.w500)),
+                          Text(
+                            '${(routeInfo.distanceMeters / 1000).toStringAsFixed(1)} km',
+                            style: TextStyle(fontSize: 13, color: Colors.grey[700], fontWeight: FontWeight.w500),
+                          ),
                           _buildDotSeparator(),
                           Icon(Icons.access_time_filled_rounded, size: 14, color: Colors.grey[400]),
                           const SizedBox(width: 4),
-                          Text('${(routeInfo.durationSeconds ~/ 60)} min',
-                            style: TextStyle(fontSize: 13, color: Colors.grey[700], fontWeight: FontWeight.w500)),
+                          Text(
+                            '${(routeInfo.durationSeconds ~/ 60)} min',
+                            style: TextStyle(fontSize: 13, color: Colors.grey[700], fontWeight: FontWeight.w500),
+                          ),
                         ],
-                        if (place.rating == null && routeInfo == null)
-                          Text('查看详情', style: TextStyle(color: Colors.grey[400], fontSize: 13)),
                       ],
                     ),
                   ],
                 ),
               ),
-
               Icon(Icons.chevron_right_rounded, color: Colors.grey[300]),
             ],
           ),
@@ -1214,7 +1305,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   Widget _buildDotSeparator() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
-      child: Text('•', style: TextStyle(color: Colors.grey[300], fontWeight: FontWeight.bold, fontSize: 14)),
+      child: Text(
+        '•',
+        style: TextStyle(color: Colors.grey[300], fontWeight: FontWeight.bold, fontSize: 14),
+      ),
     );
   }
 }
