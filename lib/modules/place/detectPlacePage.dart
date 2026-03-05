@@ -5,7 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import 'placeDetailPage.dart';
-import '../../services/placesAPI_service.dart';
+import '../../services/route_service.dart';
 import '../../services/location_service.dart';
 import '../../services/placeModal.dart';
 import '../../services/nearbyPlace_service.dart';
@@ -13,7 +13,6 @@ import 'guidePage.dart';
 import 'favouriteButton.dart';
 
 enum SortMode { distance, rating }
-enum TravelMode { walk, drive, motor }
 
 class RealTimeDetectPage extends StatefulWidget {
   final double? landmarkLat;
