@@ -7,16 +7,16 @@ import 'location_service.dart';
 enum TravelMode { walk, drive, motor }
 
 class RouteResult {
-  final List<LatLng> polylinePoints;
-  final LatLngBounds? bounds;
   final double distanceMeters;
   final int durationSeconds;
+  final List<dynamic> polylinePoints;
+  final dynamic bounds;
 
   RouteResult({
-    required this.polylinePoints,
-    this.bounds,
     required this.distanceMeters,
     required this.durationSeconds,
+    this.polylinePoints = const [],
+    this.bounds,
   });
 }
 

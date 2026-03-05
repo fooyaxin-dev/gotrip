@@ -9,6 +9,7 @@ import '../../services/nearbyPlace_service.dart';
 import 'package:geolocator/geolocator.dart';
 import '../place/placeDetailPage.dart';
 import 'package:geocoding/geocoding.dart';
+import '../../services/route_service.dart';
 
 
 
@@ -53,7 +54,9 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _initAndLoad();
+      if (!NearbyPlacesService.instance.hasLoaded) {
+        _initAndLoad();
+      }
     }
   }
 
@@ -406,8 +409,7 @@ final List<Map<String, dynamic>> _categories = [
     _routeResults.clear();
     for (final place in _nearbyPlaces) {
       if (place.lat != null && place.lng != null) {
-        _routeResults[place.id!] =
-            _calcRoute(pos.latitude!, pos.longitude!, place);
+        _routeResults[place.id] = _calcRoute(pos.latitude, pos.longitude, place);
       }
     }
     setState(() {});
@@ -420,7 +422,7 @@ final List<Map<String, dynamic>> _categories = [
       place.lat!,
       place.lng!,
     );
-    final speed = 1.4; // walking speed in m/s
+    const speed = 1.4;
     final durationSeconds = (distanceMeters / speed).round();
     return RouteResult(
       distanceMeters: distanceMeters,
@@ -432,13 +434,15 @@ final List<Map<String, dynamic>> _categories = [
     if (_nearbyPlaces.isEmpty) return [];
     final pos = LocationService.instance.currentPosition;
     if (pos == null) return [];
+
     final sorted = List<PlaceModel>.from(_nearbyPlaces)
-      ..removeWhere((p) => p.photoUrl == null || p.photoUrl!.isEmpty) // ← 加这行
+      ..removeWhere((p) => p.photoUrl == null || p.photoUrl!.isEmpty)
       ..sort((a, b) {
         final distA = _routeResults[a.id]?.distanceMeters ?? double.infinity;
         final distB = _routeResults[b.id]?.distanceMeters ?? double.infinity;
         return distA.compareTo(distB);
       });
+
     return sorted.take(6).toList();
   }
 
@@ -960,14 +964,5 @@ final List<Map<String, dynamic>> _categories = [
 
 }
 
-  // ===== RouteResult =====
-  class RouteResult {
-    final double distanceMeters;
-    final int durationSeconds;
 
-    RouteResult({
-      required this.distanceMeters,
-      required this.durationSeconds,
-    });
-  }
 

@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 
-/// 路线结果（DetectPage 里用直线估算时仍需要此 model，故保留）
 class RouteResult {
   final List<LatLng> polylinePoints;
   final LatLngBounds bounds;
@@ -20,12 +22,27 @@ class RouteResult {
   });
 }
 
+// 单步导航指令
+class NavStep {
+  final String instruction; // 纯文字指令，e.g. "Turn right onto Jalan Besar"
+  final String maneuver;    // e.g. "turn-right", "turn-left", "straight"
+  final double distanceMeters;
+  final LatLng startLocation;
+
+  NavStep({
+    required this.instruction,
+    required this.maneuver,
+    required this.distanceMeters,
+    required this.startLocation,
+  });
+}
+
 class GuidePage extends StatefulWidget {
   final double startLat;
   final double startLng;
   final double endLat;
   final double endLng;
-  final String? destinationName; // 可选：显示目的地名称
+  final String? destinationName;
 
   const GuidePage({
     super.key,
@@ -41,19 +58,41 @@ class GuidePage extends StatefulWidget {
 }
 
 class _GuidePageState extends State<GuidePage> {
-  // ── 地图 ──
   GoogleMapController? _mapController;
-  final Set<Marker> _markers = {};
+  final Set<Marker> _markers    = {};
   final Set<Polyline> _polylines = {};
 
-  // ── 路线 ──
-  bool _loading = true;
+  bool   _loading = true;
   String? _error;
   RouteResult? _routeResult;
 
-  // ── GPS 跟踪 ──
+  // 剩余
+  double _remainingMeters  = 0;
+  int    _remainingSeconds = 0;
+
+  // Steps (turn-by-turn)
+  List<NavStep> _steps        = [];
+  int           _currentStep  = 0;
+  double        _distToNextStep = 0;
+
+  // GPS
   StreamSubscription<Position>? _positionStream;
   Position? _currentPosition;
+
+  // Re-center
+  bool _isFollowing = true; // true = 相机跟着用户走
+
+  // Overview
+  bool _isOverview = false;
+
+  // Reroute
+  bool _isRerouting = false;
+  static const double _offRouteThresholdMeters = 50.0;
+  static const double _arrivedThresholdMeters  = 30.0;
+  bool _hasArrived = false;
+
+  // 自定义箭头 marker
+  BitmapDescriptor? _arrowIcon;
 
   static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
 
@@ -65,18 +104,12 @@ class _GuidePageState extends State<GuidePage> {
   void initState() {
     super.initState();
     _currentPosition = Position(
-      latitude: widget.startLat,
-      longitude: widget.startLng,
-      timestamp: DateTime.now(),
-      accuracy: 1,
-      altitude: 0,
-      heading: 0,
-      speed: 0,
-      speedAccuracy: 0,
-      altitudeAccuracy: 0.0,
-      headingAccuracy: 0.0,
+      latitude: widget.startLat, longitude: widget.startLng,
+      timestamp: DateTime.now(), accuracy: 1, altitude: 0,
+      heading: 0, speed: 0, speedAccuracy: 0,
+      altitudeAccuracy: 0.0, headingAccuracy: 0.0,
     );
-    _loadRoute();
+    _createArrowIcon().then((_) => _loadRoute(widget.startLat, widget.startLng));
   }
 
   @override
@@ -87,37 +120,78 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // Route loading
+  // 用 Canvas 画自定义箭头 marker
   // ─────────────────────────────────────────────
 
-  Future<void> _loadRoute() async {
-    try {
-      final result = await _fetchRoute(
-        widget.startLat,
-        widget.startLng,
-        widget.endLat,
-        widget.endLng,
-      );
+  Future<void> _createArrowIcon() async {
+    final recorder = ui.PictureRecorder();
+    final canvas   = Canvas(recorder);
+    const size     = 60.0;
 
-      if (!mounted) return;
+    // 外圆（白色）
+    final outerPaint = Paint()..color = Colors.white;
+    canvas.drawCircle(const Offset(size / 2, size / 2), size / 2, outerPaint);
 
-      setState(() {
-        _routeResult = result;
-        _loading = false;
-      });
+    // 内圆（蓝色）
+    final innerPaint = Paint()..color = const Color(0xFF1A73E8);
+    canvas.drawCircle(const Offset(size / 2, size / 2), size / 2 - 4, innerPaint);
 
-      _drawRoute(result);
-      _startNavigationTracking();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    // 箭头（白色三角形，指向上方）
+    final arrowPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+
+    final path = Path();
+    path.moveTo(size / 2, 8);           // 顶点
+    path.lineTo(size / 2 + 14, size - 10); // 右下
+    path.lineTo(size / 2, size - 18);   // 中间凹
+    path.lineTo(size / 2 - 14, size - 10); // 左下
+    path.close();
+    canvas.drawPath(path, arrowPaint);
+
+    final picture = recorder.endRecording();
+    final image   = await picture.toImage(size.toInt(), size.toInt());
+    final bytes   = await image.toByteData(format: ui.ImageByteFormat.png);
+
+    if (bytes != null) {
+      _arrowIcon = BitmapDescriptor.fromBytes(bytes.buffer.asUint8List());
     }
   }
 
-  Future<RouteResult> _fetchRoute(
+  // ─────────────────────────────────────────────
+  // Route loading
+  // ─────────────────────────────────────────────
+
+  Future<void> _loadRoute(double fromLat, double fromLng) async {
+    setState(() {
+      _loading    = true;
+      _error      = null;
+      _polylines.clear();
+      _isRerouting = false;
+    });
+
+    try {
+      final result = await _fetchRoute(fromLat, fromLng, widget.endLat, widget.endLng);
+      if (!mounted) return;
+
+      setState(() {
+        _routeResult      = result.route;
+        _steps            = result.steps;
+        _currentStep      = 0;
+        _remainingMeters  = result.route.distanceMeters;
+        _remainingSeconds = result.route.durationSeconds;
+        _loading          = false;
+      });
+
+      _drawRoute(result.route, fromLat, fromLng);
+      _startNavigationTracking();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _error = e.toString(); _loading = false; });
+    }
+  }
+
+  Future<({RouteResult route, List<NavStep> steps})> _fetchRoute(
       double startLat, double startLng, double endLat, double endLng) async {
     final url = 'https://maps.googleapis.com/maps/api/directions/json'
         '?origin=$startLat,$startLng'
@@ -126,74 +200,134 @@ class _GuidePageState extends State<GuidePage> {
         '&key=$_apiKey';
 
     final resp = await http.get(Uri.parse(url));
-    if (resp.statusCode != 200) {
-      throw Exception('Directions API 请求失败: ${resp.statusCode}');
-    }
+    if (resp.statusCode != 200) throw Exception('Directions API failed: ${resp.statusCode}');
 
     final data = json.decode(resp.body);
-    if (data['status'] != 'OK') {
-      throw Exception('Directions API 错误: ${data['status']}');
-    }
+    if (data['status'] != 'OK') throw Exception('Directions error: ${data['status']}');
 
-    final route = data['routes'][0];
+    final route          = data['routes'][0];
     final polylinePoints = _decodePolyline(route['overview_polyline']['points'] as String);
-    final bounds = _parseBounds(route['bounds']);
-    final leg = (route['legs'] as List).first;
-    final distanceMeters = (leg['distance']['value'] as num).toDouble();
-    final durationSeconds = (leg['duration']['value'] as num).toInt();
+    final bounds         = _parseBounds(route['bounds']);
+    final leg            = (route['legs'] as List).first;
 
-    return RouteResult(
+    // 解析 steps
+    final steps = (leg['steps'] as List).map((s) {
+      final maneuver    = (s['maneuver'] as String?) ?? 'straight';
+      final rawHtml     = s['html_instructions'] as String? ?? '';
+      final instruction = _stripHtml(rawHtml);
+      final dist        = (s['distance']['value'] as num).toDouble();
+      final startLoc    = s['start_location'];
+      return NavStep(
+        instruction:    instruction,
+        maneuver:       maneuver,
+        distanceMeters: dist,
+        startLocation:  LatLng(startLoc['lat'], startLoc['lng']),
+      );
+    }).toList();
+
+    final routeResult = RouteResult(
       polylinePoints: polylinePoints,
-      bounds: bounds,
-      distanceMeters: distanceMeters,
-      durationSeconds: durationSeconds,
+      bounds:         bounds,
+      distanceMeters: (leg['distance']['value'] as num).toDouble(),
+      durationSeconds:(leg['duration']['value'] as num).toInt(),
     );
+
+    return (route: routeResult, steps: steps);
+  }
+
+  // 去掉 HTML tag
+  String _stripHtml(String html) {
+    return html.replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
   // ─────────────────────────────────────────────
   // Map drawing
   // ─────────────────────────────────────────────
 
-  void _drawRoute(RouteResult result) {
+  void _drawRoute(RouteResult result, double fromLat, double fromLng) {
     setState(() {
-      // 路线
       _polylines.add(Polyline(
         polylineId: const PolylineId('route'),
-        points: result.polylinePoints,
-        color: Colors.blue,
-        width: 6,
+        points:     result.polylinePoints,
+        color:      const Color(0xFF5B3FD6), // 紫色，像 Waze
+        width:      8,
+        startCap:   Cap.roundCap,
+        endCap:     Cap.roundCap,
+        jointType:  JointType.round,
       ));
 
-      // 当前位置 marker
-      _markers.add(Marker(
-        markerId: const MarkerId('me'),
-        position: LatLng(widget.startLat, widget.startLng),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-        infoWindow: const InfoWindow(title: '我的位置'),
-      ));
+      _updateMyMarker(fromLat, fromLng, 0);
 
-      // 目的地 marker
-      _markers.add(Marker(
-        markerId: const MarkerId('destination'),
-        position: LatLng(widget.endLat, widget.endLng),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-        infoWindow: InfoWindow(title: widget.destinationName ?? '目的地'),
-      ));
+      _markers
+        ..removeWhere((m) => m.markerId.value == 'destination')
+        ..add(Marker(
+          markerId:    const MarkerId('destination'),
+          position:    LatLng(widget.endLat, widget.endLng),
+          icon:        BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          infoWindow:  InfoWindow(title: widget.destinationName ?? 'Destination'),
+        ));
     });
 
-    // 等地图创建好后再移动相机
     Future.delayed(const Duration(milliseconds: 300), () {
-      _mapController?.animateCamera(
-        CameraUpdate.newCameraPosition(
-          CameraPosition(
-            target: result.polylinePoints.first,
-            zoom: 18.0,
-            tilt: 0,
-            bearing: 0,
-          ),
-        ),
-      );
+      _moveCameraToUser(fromLat, fromLng, _currentPosition?.heading ?? 0);
     });
+  }
+
+  void _updateMyMarker(double lat, double lng, double heading) {
+    _markers
+      ..removeWhere((m) => m.markerId.value == 'me')
+      ..add(Marker(
+        markerId: const MarkerId('me'),
+        position: LatLng(lat, lng),
+        icon:     _arrowIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        rotation: heading,
+        anchor:   const Offset(0.5, 0.5),
+        flat:     true, // marker 跟着地图转
+      ));
+  }
+
+  // ─────────────────────────────────────────────
+  // Camera
+  // ─────────────────────────────────────────────
+
+  void _moveCameraToUser(double lat, double lng, double heading) {
+    _mapController?.animateCamera(
+      CameraUpdate.newCameraPosition(CameraPosition(
+        target:  LatLng(lat, lng),
+        zoom:    20.5,
+        tilt:    0,            
+        bearing: heading,      
+      )),
+    );
+  }
+
+  void _recenter() {
+    if (_currentPosition == null) return;
+    setState(() {
+      _isFollowing = true;
+      _isOverview  = false;
+    });
+    _moveCameraToUser(
+      _currentPosition!.latitude,
+      _currentPosition!.longitude,
+      _currentPosition!.heading,
+    );
+  }
+
+  void _toggleOverview() {
+    if (_routeResult == null) return;
+    setState(() {
+      _isOverview  = !_isOverview;
+      _isFollowing = !_isOverview;
+    });
+
+    if (_isOverview) {
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLngBounds(_routeResult!.bounds, 80),
+      );
+    } else {
+      _recenter();
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -204,49 +338,145 @@ class _GuidePageState extends State<GuidePage> {
     _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
+        accuracy:       LocationAccuracy.high,
         distanceFilter: 2,
       ),
     ).listen((Position position) {
-      if (_mapController == null || !mounted) return;
+      if (!mounted) return;
 
+      final userLatLng = LatLng(position.latitude, position.longitude);
+
+      // ── 1. 到达检测 ──────────────────────────
+      final distToDest = Geolocator.distanceBetween(
+        position.latitude, position.longitude,
+        widget.endLat, widget.endLng,
+      );
+      if (distToDest <= _arrivedThresholdMeters && !_hasArrived) {
+        _hasArrived = true;
+        _positionStream?.cancel();
+        _showArrivedDialog();
+        return;
+      }
+
+      // ── 2. 偏离检测 ──────────────────────────
+      if (!_isRerouting && _routeResult != null) {
+        final minDist = _minDistanceToRoute(userLatLng, _routeResult!.polylinePoints);
+        if (minDist > _offRouteThresholdMeters) {
+          _isRerouting = true;
+          _loadRoute(position.latitude, position.longitude);
+          return;
+        }
+      }
+
+      // ── 3. 更新当前 step ──────────────────────
+      if (_steps.isNotEmpty) {
+        int nextStep = _currentStep;
+        for (int i = _currentStep; i < _steps.length - 1; i++) {
+          final distToStep = Geolocator.distanceBetween(
+            position.latitude, position.longitude,
+            _steps[i + 1].startLocation.latitude,
+            _steps[i + 1].startLocation.longitude,
+          );
+          if (distToStep < 30) { // 30m 内切换到下一步
+            nextStep = i + 1;
+            break;
+          }
+        }
+
+        // 计算到下一步的距离
+        final nextStepIndex = min(_currentStep + 1, _steps.length - 1);
+        _distToNextStep = Geolocator.distanceBetween(
+          position.latitude, position.longitude,
+          _steps[nextStepIndex].startLocation.latitude,
+          _steps[nextStepIndex].startLocation.longitude,
+        );
+
+        setState(() => _currentStep = nextStep);
+      }
+
+      // ── 4. 剩余距离/时间 ─────────────────────
       setState(() {
-        _currentPosition = position;
-
-        // 更新位置 marker
-        _markers.removeWhere((m) => m.markerId.value == 'me');
-        _markers.add(Marker(
-          markerId: const MarkerId('me'),
-          position: LatLng(position.latitude, position.longitude),
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-          rotation: position.heading,
-          anchor: const Offset(0.5, 0.5),
-        ));
+        _currentPosition  = position;
+        _remainingMeters  = distToDest;
+        if (_routeResult != null && _routeResult!.distanceMeters > 0) {
+          _remainingSeconds = (_routeResult!.durationSeconds *
+              (distToDest / _routeResult!.distanceMeters)).round();
+        }
+        _updateMyMarker(position.latitude, position.longitude, position.heading);
       });
 
-      // 相机跟随
-      _mapController!.animateCamera(
-        CameraUpdate.newCameraPosition(
-          CameraPosition(
-            target: LatLng(position.latitude, position.longitude),
-            zoom: 18.0,
-            tilt: 0,
-            bearing: 0,
-          ),
-        ),
-      );
+      // ── 5. 相机跟随 ──────────────────────────
+      if (_isFollowing) {
+        _moveCameraToUser(position.latitude, position.longitude, position.heading);
+      }
     });
+  }
+
+  // ─────────────────────────────────────────────
+  // Turn icon
+  // ─────────────────────────────────────────────
+
+  IconData _maneuverIcon(String maneuver) {
+    if (maneuver.contains('right'))      return Icons.turn_right_rounded;
+    if (maneuver.contains('left'))       return Icons.turn_left_rounded;
+    if (maneuver.contains('uturn'))      return Icons.u_turn_left_rounded;
+    if (maneuver.contains('roundabout')) return Icons.roundabout_left_rounded;
+    if (maneuver.contains('merge'))      return Icons.merge_rounded;
+    return Icons.straight_rounded;
+  }
+
+  // ─────────────────────────────────────────────
+  // Arrived dialog
+  // ─────────────────────────────────────────────
+
+  void _showArrivedDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(children: [
+          Text('🎉', style: TextStyle(fontSize: 28)),
+          SizedBox(width: 8),
+          Text('You have arrived!', style: TextStyle(fontWeight: FontWeight.bold)),
+        ]),
+        content: Text(widget.destinationName != null
+            ? 'You have reached ${widget.destinationName}.'
+            : 'You have reached your destination.'),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.pop(context);
+            },
+            style: ElevatedButton.styleFrom(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
   }
 
   // ─────────────────────────────────────────────
   // Helpers
   // ─────────────────────────────────────────────
 
+  double _minDistanceToRoute(LatLng point, List<LatLng> polyline) {
+    double minDist = double.infinity;
+    for (final p in polyline) {
+      final d = Geolocator.distanceBetween(
+          point.latitude, point.longitude, p.latitude, p.longitude);
+      if (d < minDist) minDist = d;
+    }
+    return minDist;
+  }
+
   List<LatLng> _decodePolyline(String encoded) {
     List<LatLng> points = [];
     int index = 0, len = encoded.length;
     int lat = 0, lng = 0;
-
     while (index < len) {
       int b, shift = 0, result = 0;
       do {
@@ -254,19 +484,14 @@ class _GuidePageState extends State<GuidePage> {
         result |= (b & 0x1f) << shift;
         shift += 5;
       } while (b >= 0x20);
-      int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lat += dlat;
-
-      shift = 0;
-      result = 0;
+      lat += ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+      shift = 0; result = 0;
       do {
         b = encoded.codeUnitAt(index++) - 63;
         result |= (b & 0x1f) << shift;
         shift += 5;
       } while (b >= 0x20);
-      int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lng += dlng;
-
+      lng += ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
       points.add(LatLng(lat / 1e5, lng / 1e5));
     }
     return points;
@@ -286,7 +511,7 @@ class _GuidePageState extends State<GuidePage> {
     final mins = seconds ~/ 60;
     if (mins < 60) return '$mins min';
     final hours = mins ~/ 60;
-    final rem = mins % 60;
+    final rem   = mins % 60;
     return rem == 0 ? '${hours}h' : '${hours}h ${rem}min';
   }
 
@@ -301,17 +526,19 @@ class _GuidePageState extends State<GuidePage> {
 
   @override
   Widget build(BuildContext context) {
-    // 加载中 / 出错 状态
     if (_loading) {
       return Scaffold(
         backgroundColor: Colors.white,
-        body: const Center(
+        body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('正在计算路线...', style: TextStyle(fontSize: 16, color: Colors.grey)),
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                _isRerouting ? 'Recalculating route...' : 'Calculating route...',
+                style: const TextStyle(fontSize: 16, color: Colors.grey),
+              ),
             ],
           ),
         ),
@@ -332,7 +559,7 @@ class _GuidePageState extends State<GuidePage> {
               const SizedBox(height: 24),
               ElevatedButton(
                 onPressed: () => Navigator.pop(context),
-                child: const Text('返回'),
+                child: const Text('Go back'),
               ),
             ],
           ),
@@ -340,70 +567,130 @@ class _GuidePageState extends State<GuidePage> {
       );
     }
 
-    final route = _routeResult!;
+    final currentStepData = _steps.isNotEmpty ? _steps[_currentStep] : null;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
       body: Stack(
         children: [
-          // ── 地图 ──
+
+          // ── 地图 ──────────────────────────────
           GoogleMap(
             initialCameraPosition: CameraPosition(
               target: LatLng(widget.startLat, widget.startLng),
-              zoom: 14,
+              zoom: 18.0, tilt: 60,
             ),
-            markers: _markers,
-            polylines: _polylines,
-            myLocationEnabled: false,
+            markers:                 _markers,
+            polylines:               _polylines,
+            myLocationEnabled:       false,
             myLocationButtonEnabled: false,
-            zoomControlsEnabled: false,
+            zoomControlsEnabled:     false,
+            compassEnabled:          true,
             onMapCreated: (controller) {
               _mapController = controller;
-              // 地图创建后立刻移到路线起点
-              controller.animateCamera(
-                CameraUpdate.newCameraPosition(
-                  CameraPosition(
-                    target: route.polylinePoints.first,
-                    zoom: 18.0,
+              if (_routeResult != null) {
+                controller.animateCamera(
+                  CameraUpdate.newCameraPosition(CameraPosition(
+                    target: _routeResult!.polylinePoints.first,
+                    zoom: 20.5,
                     tilt: 0,
-                  ),
-                ),
-              );
+                  )),
+                );
+              }
             },
-            padding: const EdgeInsets.only(bottom: 200),
+            // 用户手动移动地图时停止跟随
+            onCameraMoveStarted: () {
+              if (_isFollowing) setState(() => _isFollowing = false);
+            },
+            padding: const EdgeInsets.only(bottom: 160),
           ),
 
-          // ── 返回按钮 ──
-          Positioned(
-            top: 50,
-            left: 20,
-            child: SafeArea(
-              child: Material(
-                elevation: 4,
-                shape: const CircleBorder(),
-                clipBehavior: Clip.antiAlias,
-                color: Colors.white,
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back_ios_new, size: 20, color: Colors.black87),
-                  onPressed: () => Navigator.pop(context),
+          // ── 顶部 turn-by-turn banner ──────────
+          if (currentStepData != null)
+            Positioned(
+              top: 0, left: 0, right: 0,
+              child: Container(
+                color: Colors.black,
+                padding: EdgeInsets.fromLTRB(
+                  20, 48 + MediaQuery.of(context).padding.top, 20, 16),
+                child: Row(
+                  children: [
+                    // 转向图标
+                    Icon(
+                      _maneuverIcon(currentStepData.maneuver),
+                      color: Colors.white,
+                      size: 42,
+                    ),
+                    const SizedBox(width: 16),
+                    // 距离 + 指令
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _formatDistance(_distToNextStep),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            currentStepData.instruction,
+                            style: TextStyle(
+                              color: Colors.grey[300],
+                              fontSize: 14,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
+
+          // ── 右侧按钮组 ────────────────────────
+          Positioned(
+            right: 16,
+            bottom: 180,
+            child: Column(
+              children: [
+                // Re-center 按钮（只在不跟随时显示）
+                if (!_isFollowing)
+                  _buildCircleButton(
+                    icon: Icons.my_location_rounded,
+                    color: Colors.white,
+                    iconColor: const Color(0xFF1A73E8),
+                    onTap: _recenter,
+                    tooltip: 'Re-center',
+                  ),
+                const SizedBox(height: 12),
+                // Overview 按钮
+                _buildCircleButton(
+                  icon: _isOverview ? Icons.navigation_rounded : Icons.map_rounded,
+                  color: _isOverview ? const Color(0xFF1A73E8) : Colors.white,
+                  iconColor: _isOverview ? Colors.white : Colors.black87,
+                  onTap: _toggleOverview,
+                  tooltip: _isOverview ? 'Follow' : 'Overview',
+                ),
+              ],
+            ),
           ),
 
-          // ── 底部导航信息面板 ──
+          // ── 底部信息面板 ──────────────────────
           Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
+            left: 0, right: 0, bottom: 0,
             child: Container(
               padding: EdgeInsets.fromLTRB(
-                24, 20, 24,
-                20 + MediaQuery.of(context).padding.bottom,
+                24, 16, 24,
+                16 + MediaQuery.of(context).padding.bottom,
               ),
               decoration: BoxDecoration(
                 color: Colors.white,
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.12),
@@ -412,118 +699,134 @@ class _GuidePageState extends State<GuidePage> {
                   ),
                 ],
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
                 children: [
-                  // 把手
-                  Center(
-                    child: Container(
-                      width: 40, height: 4,
-                      margin: const EdgeInsets.only(bottom: 16),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[300],
-                        borderRadius: BorderRadius.circular(2),
-                      ),
+                  // 左边：时间 + 距离 + 目的地
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.baseline,
+                          textBaseline: TextBaseline.alphabetic,
+                          children: [
+                            Text(
+                              _formatDuration(_remainingSeconds),
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.black87,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              _formatDistance(_remainingMeters),
+                              style: TextStyle(
+                                fontSize: 15,
+                                color: Colors.grey[600],
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (widget.destinationName != null)
+                          Row(
+                            children: [
+                              Icon(Icons.location_on_rounded,
+                                  size: 14, color: Colors.red[400]),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  widget.destinationName!,
+                                  style: TextStyle(
+                                      fontSize: 13, color: Colors.grey[500]),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                      ],
                     ),
                   ),
 
-                  // 时间 + 距离
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.baseline,
-                    textBaseline: TextBaseline.alphabetic,
-                    children: [
-                      Text(
-                        _formatDuration(route.durationSeconds),
-                        style: const TextStyle(
-                          fontSize: 30,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF2E7D32),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        '(${_formatDistance(route.distanceMeters)})',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w500,
-                          color: Colors.grey[600],
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  // 目的地名称
-                  if (widget.destinationName != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4, bottom: 16),
-                      child: Row(
-                        children: [
-                          Icon(Icons.location_on_rounded, size: 16, color: Colors.red[400]),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: Text(
-                              widget.destinationName!,
-                              style: TextStyle(fontSize: 15, color: Colors.grey[600]),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else
-                    const SizedBox(height: 16),
-
-                  // 操作按钮
-                  Row(
-                    children: [
-                      // 取消
-                      Expanded(
-                        flex: 1,
-                        child: OutlinedButton(
-                          onPressed: () => Navigator.pop(context),
-                          style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            side: BorderSide(color: Colors.grey[300]!),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14)),
-                          ),
-                          child: const Text('取消', style: TextStyle(color: Colors.black87)),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-
-                      // 重新规划路线
-                      Expanded(
-                        flex: 2,
-                        child: ElevatedButton.icon(
-                          onPressed: () {
-                            setState(() {
-                              _loading = true;
-                              _error = null;
-                              _polylines.clear();
-                            });
-                            _loadRoute();
-                          },
-                          icon: const Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
-                          label: const Text('重新规划',
-                              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Theme.of(context).primaryColor,
-                            elevation: 0,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14)),
-                          ),
-                        ),
-                      ),
-                    ],
+                  // 右边：取消按钮
+                  OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      side: BorderSide(color: Colors.grey[300]!),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
+                    ),
+                    child: const Text('Cancel',
+                        style: TextStyle(color: Colors.black87)),
                   ),
                 ],
               ),
             ),
           ),
+
+          // ── 偏离 banner ───────────────────────
+          if (_isRerouting)
+            Positioned(
+              top: 160, left: 20, right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.orange[700],
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.refresh_rounded,
+                        color: Colors.white, size: 18),
+                    SizedBox(width: 8),
+                    Text('Off route, recalculating...',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              ),
+            ),
         ],
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // Circle button helper
+  // ─────────────────────────────────────────────
+
+  Widget _buildCircleButton({
+    required IconData icon,
+    required Color color,
+    required Color iconColor,
+    required VoidCallback onTap,
+    required String tooltip,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 48, height: 48,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Icon(icon, color: iconColor, size: 24),
+        ),
       ),
     );
   }
