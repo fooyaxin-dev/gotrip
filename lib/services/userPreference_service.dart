@@ -1,6 +1,7 @@
 // services/user_preference_service.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 
 class UserPreferences {
   final List<String> categories;
@@ -25,10 +26,10 @@ class UserPreferences {
   factory UserPreferences.fromMap(Map<String, dynamic> map) {
     final prefs = map['preferences'] as Map<String, dynamic>? ?? {};
     return UserPreferences(
-      categories:     List<String>.from(prefs['categories']  ?? []),
-      cuisines:       List<String>.from(prefs['cuisines']    ?? []),
-      travelMode:     prefs['travelMode'] as String?         ?? 'walk',
-      onboardingDone: map['onboardingDone'] as bool?         ?? false,
+      categories:     List<String>.from(prefs['categories'] ?? []),
+      cuisines:       List<String>.from(prefs['cuisines']   ?? []),
+      travelMode:     prefs['travelMode'] as String?        ?? 'walk',
+      onboardingDone: map['onboardingDone'] as bool?        ?? false,
     );
   }
 
@@ -40,6 +41,20 @@ class UserPreferences {
       'travelMode': travelMode,
     },
   };
+
+  UserPreferences copyWith({
+    List<String>? categories,
+    List<String>? cuisines,
+    String? travelMode,
+    bool? onboardingDone,
+  }) {
+    return UserPreferences(
+      categories:     categories     ?? this.categories,
+      cuisines:       cuisines       ?? this.cuisines,
+      travelMode:     travelMode     ?? this.travelMode,
+      onboardingDone: onboardingDone ?? this.onboardingDone,
+    );
+  }
 }
 
 class UserPreferenceService {
@@ -49,10 +64,10 @@ class UserPreferenceService {
   UserPreferences _prefs = UserPreferences.empty();
   UserPreferences get current => _prefs;
 
-  // ── 收藏频率计数（内存，不存 Firestore）──────
-  // key = type string, value = 收藏次数
+  final ValueNotifier<int> preferencesChanged = ValueNotifier(0);
+
   final Map<String, int> _favouriteCount = {};
-  static const int _minCountToLearn = 3; // 收藏 3 次才学习
+  static const int _minCountToLearn = 3;
 
   // ─────────────────────────────────────────────
   // Load
@@ -69,7 +84,6 @@ class UserPreferenceService {
 
       _prefs = UserPreferences.fromMap(doc.data()!);
 
-      // 同时 load 收藏频率
       final countMap = doc.data()!['favouriteTypeCounts'] as Map<String, dynamic>? ?? {};
       _favouriteCount.clear();
       countMap.forEach((k, v) => _favouriteCount[k] = (v as num).toInt());
@@ -82,7 +96,7 @@ class UserPreferenceService {
   }
 
   // ─────────────────────────────────────────────
-  // Save (onboarding / edit preferences)
+  // Save
   // ─────────────────────────────────────────────
 
   Future<void> save(UserPreferences prefs) async {
@@ -91,10 +105,11 @@ class UserPreferenceService {
     _prefs = prefs;
     await FirebaseFirestore.instance
         .collection('users').doc(uid).update(prefs.toMap());
+    preferencesChanged.value++;
   }
 
   // ─────────────────────────────────────────────
-  // Reset preferences
+  // Reset
   // ─────────────────────────────────────────────
 
   Future<void> reset() async {
@@ -112,16 +127,17 @@ class UserPreferenceService {
       },
       'favouriteTypeCounts': {},
     });
+    preferencesChanged.value++;
   }
 
   // ─────────────────────────────────────────────
-  // Update from favourite — 用频率学习
+  // Update from favourite
   // ─────────────────────────────────────────────
 
   Future<void> updateFromFavourite({
     required String primaryType,
     required List<String> allTypes,
-    required bool isFavouriting, // true = 收藏, false = 取消收藏
+    required bool isFavouriting,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -150,7 +166,6 @@ class UserPreferenceService {
       'coffee_shop':          'cafe',
     };
 
-    // 收集这个地点涉及的所有 keys
     final List<String> involvedKeys = [];
     final category = typeToCategory[primaryType];
     if (category != null) involvedKeys.add('cat_$category');
@@ -161,17 +176,14 @@ class UserPreferenceService {
 
     if (involvedKeys.isEmpty) return;
 
-    // 更新计数
     for (final key in involvedKeys) {
       if (isFavouriting) {
         _favouriteCount[key] = (_favouriteCount[key] ?? 0) + 1;
       } else {
-        final current = _favouriteCount[key] ?? 0;
-        _favouriteCount[key] = (current - 1).clamp(0, 999);
+        _favouriteCount[key] = ((_favouriteCount[key] ?? 0) - 1).clamp(0, 999);
       }
     }
 
-    // 根据计数重新计算 preferences
     final updatedCategories = List<String>.from(_prefs.categories);
     final updatedCuisines   = List<String>.from(_prefs.cuisines);
 
@@ -182,10 +194,7 @@ class UserPreferenceService {
       if (key.startsWith('cat_')) {
         final cat = key.substring(4);
         if (count >= _minCountToLearn && !updatedCategories.contains(cat)) {
-          updatedCategories.add(cat); // 达到阈值 → 加入
-        } else if (count < _minCountToLearn && updatedCategories.contains(cat)) {
-          // ✅ 取消收藏导致低于阈值 → 如果不是 onboarding 选的才移除
-          // (onboarding 选的优先级更高，不自动移除)
+          updatedCategories.add(cat);
         }
       }
 
@@ -204,7 +213,6 @@ class UserPreferenceService {
       onboardingDone: _prefs.onboardingDone,
     );
 
-    // 存回 Firestore
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
       'preferences': {
         'categories': updatedCategories,
@@ -216,13 +224,13 @@ class UserPreferenceService {
   }
 
   // ─────────────────────────────────────────────
-  // Score — 加入距离因素
+  // Score
   // ─────────────────────────────────────────────
 
   double scorePlaceModel({
     required String? primaryType,
     required List<String> allTypes,
-    double? distanceMeters, // ← 新增距离参数
+    double? distanceMeters,
   }) {
     double score = 0;
 
@@ -256,7 +264,7 @@ class UserPreferenceService {
       score += 10;
     }
 
-    // Cuisine match → +5 each
+    // Cuisine match → +5
     for (final t in allTypes) {
       final cuisine = typeToCuisine[t];
       if (cuisine != null && _prefs.cuisines.contains(cuisine)) {
@@ -264,9 +272,12 @@ class UserPreferenceService {
       }
     }
 
-    // ✅ 距离加成：越近分越高（最多 +5）
+    // 时间段加成
+    score += _getTimeBonus(primaryType, allTypes);
+
+    // 距离加成（最多 +5）
     if (distanceMeters != null && distanceMeters > 0) {
-      final distKm = distanceMeters / 1000;
+      final distKm   = distanceMeters / 1000;
       final distBonus = (5 / distKm).clamp(0.0, 5.0);
       score += distBonus;
     }
@@ -275,21 +286,63 @@ class UserPreferenceService {
   }
 
   // ─────────────────────────────────────────────
-  // Reason string — 解释为什么推荐
+  // Time bonus
+  // ─────────────────────────────────────────────
+
+  double _getTimeBonus(String? primaryType, List<String> allTypes) {
+    final hour = DateTime.now().hour;
+
+    const timeBonus = <String, Map<String, double>>{
+      'morning':   {'cafe': 8.0, 'restaurant': 3.0},
+      'lunch':     {'restaurant': 8.0, 'cafe': 2.0},
+      'afternoon': {'tourist_attraction': 6.0, 'park': 6.0, 'shopping_mall': 5.0},
+      'evening':   {'restaurant': 8.0, 'amusement_park': 5.0},
+      'night':     {'amusement_park': 8.0, 'restaurant': 4.0},
+    };
+
+    const typeToPrimary = <String, String>{
+      'cafe':               'cafe',
+      'coffee_shop':        'cafe',
+      'restaurant':         'restaurant',
+      'tourist_attraction': 'tourist_attraction',
+      'park':               'park',
+      'shopping_mall':      'shopping_mall',
+      'amusement_park':     'amusement_park',
+    };
+
+    final String period;
+    if      (hour >= 6  && hour < 11) period = 'morning';
+    else if (hour >= 11 && hour < 14) period = 'lunch';
+    else if (hour >= 14 && hour < 17) period = 'afternoon';
+    else if (hour >= 17 && hour < 20) period = 'evening';
+    else                               period = 'night';
+
+    final bonusMap = timeBonus[period]!;
+
+    // ✅ 先检查 primaryType
+    if (primaryType != null && bonusMap.containsKey(primaryType)) {
+      return bonusMap[primaryType]!;
+    }
+
+    // ✅ 再检查 allTypes（给 cafe/coffee_shop 用）
+    for (final t in allTypes) {
+      final mapped = typeToPrimary[t];
+      if (mapped != null && bonusMap.containsKey(mapped)) {
+        return bonusMap[mapped]!;
+      }
+    }
+
+    return 0;
+  }
+
+  // ─────────────────────────────────────────────
+  // Recommend reason
   // ─────────────────────────────────────────────
 
   String? getRecommendReason({
     required String? primaryType,
     required List<String> allTypes,
   }) {
-    const typeToCategory = {
-      'restaurant':         'restaurant',
-      'park':               'park',
-      'tourist_attraction': 'tourist_attraction',
-      'shopping_mall':      'shopping_mall',
-      'amusement_park':     'amusement_park',
-    };
-
     const typeToCuisine = {
       'chinese_restaurant':   'Chinese',
       'malay_restaurant':     'Malay',
@@ -306,6 +359,14 @@ class UserPreferenceService {
       'coffee_shop':          'Cafe',
     };
 
+    const typeToCategory = {
+      'restaurant':         'restaurant',
+      'park':               'park',
+      'tourist_attraction': 'tourist_attraction',
+      'shopping_mall':      'shopping_mall',
+      'amusement_park':     'amusement_park',
+    };
+
     const categoryToLabel = {
       'restaurant':         'Food',
       'park':               'Nature',
@@ -314,16 +375,32 @@ class UserPreferenceService {
       'amusement_park':     'Entertainment',
     };
 
-    // Check cuisine first (more specific)
+    // 时间段原因
+    final hour = DateTime.now().hour;
+    if (hour >= 6  && hour < 11) {
+      if (primaryType == 'cafe' || allTypes.any((t) => t == 'cafe' || t == 'coffee_shop')) {
+        return 'Good morning ☕ Start your day here';
+      }
+    }
+    if (hour >= 11 && hour < 14) {
+      if (primaryType == 'restaurant') return 'Lunch time 🍽️ Try this place';
+    }
+    if (hour >= 17 && hour < 20) {
+      if (primaryType == 'restaurant') return 'Dinner time 🌆 Great for tonight';
+    }
+    if (hour >= 20 || hour < 2) {
+      if (primaryType == 'amusement_park') return 'Night out 🌙 Fun nearby';
+    }
+
+    // Cuisine match
     for (final t in allTypes) {
       final cuisine = typeToCuisine[t];
-      if (cuisine != null && _prefs.cuisines.contains(
-          cuisine.toLowerCase())) {
+      if (cuisine != null && _prefs.cuisines.contains(cuisine.toLowerCase())) {
         return 'Because you like $cuisine food';
       }
     }
 
-    // Check category
+    // Category match
     final category = typeToCategory[primaryType ?? ''];
     if (category != null && _prefs.categories.contains(category)) {
       final label = categoryToLabel[category] ?? category;
@@ -331,25 +408,5 @@ class UserPreferenceService {
     }
 
     return null;
-  }
-}
-
-// ─────────────────────────────────────────────
-// Extension for copyWith
-// ─────────────────────────────────────────────
-
-extension UserPreferencesX on UserPreferences {
-  UserPreferences copyWith({
-    List<String>? categories,
-    List<String>? cuisines,
-    String? travelMode,
-    bool? onboardingDone,
-  }) {
-    return UserPreferences(
-      categories:     categories     ?? this.categories,
-      cuisines:       cuisines       ?? this.cuisines,
-      travelMode:     travelMode     ?? this.travelMode,
-      onboardingDone: onboardingDone ?? this.onboardingDone,
-    );
   }
 }

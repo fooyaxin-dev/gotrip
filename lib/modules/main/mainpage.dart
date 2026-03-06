@@ -39,12 +39,19 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _pageController = PageController(viewportFraction: 0.8);
     _initAndLoad();
+
+    UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged);
+  }
+
+  void _onPreferencesChanged() {
+    if (mounted) _buildForYou();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pageController.dispose();
+    UserPreferenceService.instance.preferencesChanged.removeListener(_onPreferencesChanged);
     super.dispose();
   }
 
@@ -53,6 +60,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       if (!NearbyPlacesService.instance.hasLoaded) {
         _initAndLoad();
+      } else {
+        _buildForYou(); // ← 加这行，resume 时重新计算 For You
       }
     }
   }
@@ -130,7 +139,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     // ✅ 先按 travelMode 过滤距离
     final withinRange = _nearbyPlaces.where((place) {
       final dist = _routeResults[place.id]?.distanceMeters ?? double.infinity;
-      return dist <= limit;
+      return dist <= limit && place.photoUrl != null && place.photoUrl!.isNotEmpty; // ← 加这个
     }).toList();
 
     // 评分
@@ -436,9 +445,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
             children: [
               // 背景图
               Positioned.fill(
-                child: place.photoUrl != null
-                    ? Image.network(place.photoUrl!, fit: BoxFit.cover)
-                    : Container(color: Colors.indigo.shade50),
+                child: place.photoUrl != null && place.photoUrl!.isNotEmpty
+                    ? Image.network(
+                        place.photoUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _buildPlaceholderBg(place), // ← 网络错误也有 fallback
+                      )
+                    : _buildPlaceholderBg(place),
               ),
 
               // 渐变遮罩
@@ -539,6 +552,31 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlaceholderBg(PlaceModel place) {
+    // 根据 primaryType 显示不同颜色和图标
+    const typeConfig = {
+      'restaurant':         {'color': Color(0xFFFFE4E6), 'icon': Icons.restaurant_rounded},
+      'park':               {'color': Color(0xFFDCFCE7), 'icon': Icons.park_rounded},
+      'tourist_attraction': {'color': Color(0xFFFFEDD5), 'icon': Icons.account_balance_rounded},
+      'shopping_mall':      {'color': Color(0xFFE0E7FF), 'icon': Icons.shopping_bag_rounded},
+      'amusement_park':     {'color': Color(0xFFF3E8FF), 'icon': Icons.local_activity_rounded},
+    };
+
+    final config = typeConfig[place.primaryType] ?? 
+        {'color': const Color(0xFFE8E8E8), 'icon': Icons.location_on_rounded};
+
+    return Container(
+      color: config['color'] as Color,
+      child: Center(
+        child: Icon(
+          config['icon'] as IconData,
+          size: 48,
+          color: (config['color'] as Color).withOpacity(0.5),  // 淡淡的图标
         ),
       ),
     );

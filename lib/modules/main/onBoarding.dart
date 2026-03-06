@@ -31,6 +31,10 @@ class _OnboardingPageState extends State<OnboardingPage>
   late final AnimationController _fadeCtrl;
   late final Animation<double>    _fadeAnim;
 
+  // ✅ 只有选了 Food 才显示菜系页
+  bool get _showCuisinePage => _selectedCategories.contains('restaurant');
+  int  get _totalPages      => _showCuisinePage ? 3 : 2;
+
   @override
   void initState() {
     super.initState();
@@ -39,7 +43,6 @@ class _OnboardingPageState extends State<OnboardingPage>
     _fadeAnim = CurvedAnimation(parent: _fadeCtrl, curve: Curves.easeIn);
     _fadeCtrl.forward();
 
-    // ✅ Editing 模式：预填已有的 preferences
     if (widget.isEditing) {
       final prefs = UserPreferenceService.instance.current;
       _selectedCategories.addAll(prefs.categories);
@@ -94,7 +97,7 @@ class _OnboardingPageState extends State<OnboardingPage>
       return;
     }
 
-    if (_currentPage < 2) {
+    if (_currentPage < _totalPages - 1) {
       _fadeCtrl.reset();
       _pageController.nextPage(
         duration: const Duration(milliseconds: 400),
@@ -104,6 +107,15 @@ class _OnboardingPageState extends State<OnboardingPage>
     } else {
       _finish();
     }
+  }
+
+  void _prevPage() {
+    _fadeCtrl.reset();
+    _pageController.previousPage(
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeInOut,
+    );
+    _fadeCtrl.forward();
   }
 
   Future<void> _finish() async {
@@ -121,11 +133,9 @@ class _OnboardingPageState extends State<OnboardingPage>
     if (!mounted) return;
 
     if (widget.isEditing) {
-      // ✅ Editing 模式：保存完回到上一页
       widget.onDone?.call();
       Navigator.pop(context);
     } else {
-      // ✅ 新用户：跳 HomePage
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const HomePage()),
@@ -175,9 +185,10 @@ class _OnboardingPageState extends State<OnboardingPage>
                   controller: _pageController,
                   physics: const NeverScrollableScrollPhysics(),
                   onPageChanged: (i) => setState(() => _currentPage = i),
+                  // ✅ 动态 pages — 没选 Food 就没有菜系页
                   children: [
                     _buildCategoryPage(),
-                    _buildCuisinePage(),
+                    if (_showCuisinePage) _buildCuisinePage(),
                     _buildTravelModePage(),
                   ],
                 ),
@@ -191,18 +202,18 @@ class _OnboardingPageState extends State<OnboardingPage>
   }
 
   // ─────────────────────────────────────────────
-  // Progress bar
+  // Progress bar — 跟着 _totalPages 变
   // ─────────────────────────────────────────────
 
   Widget _buildProgressBar() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
       child: Row(
-        children: List.generate(3, (i) {
+        children: List.generate(_totalPages, (i) {
           return Expanded(
             child: Container(
               height: 4,
-              margin: EdgeInsets.only(right: i < 2 ? 6 : 0),
+              margin: EdgeInsets.only(right: i < _totalPages - 1 ? 6 : 0),
               decoration: BoxDecoration(
                 color: i <= _currentPage
                     ? const Color(0xFF7C4DFF)
@@ -299,7 +310,7 @@ class _OnboardingPageState extends State<OnboardingPage>
   }
 
   // ─────────────────────────────────────────────
-  // Page 2: Cuisines
+  // Page 2: Cuisines（只在选了 Food 时出现）
   // ─────────────────────────────────────────────
 
   Widget _buildCuisinePage() {
@@ -473,7 +484,7 @@ class _OnboardingPageState extends State<OnboardingPage>
   // ─────────────────────────────────────────────
 
   Widget _buildBottomButton() {
-    final isLast = _currentPage == 2;
+    final isLast = _currentPage == _totalPages - 1;
     return Padding(
       padding: EdgeInsets.fromLTRB(
           24, 16, 24, 24 + MediaQuery.of(context).padding.bottom),
@@ -481,14 +492,7 @@ class _OnboardingPageState extends State<OnboardingPage>
         children: [
           if (_currentPage > 0)
             GestureDetector(
-              onTap: () {
-                _fadeCtrl.reset();
-                _pageController.previousPage(
-                  duration: const Duration(milliseconds: 400),
-                  curve: Curves.easeInOut,
-                );
-                _fadeCtrl.forward();
-              },
+              onTap: _prevPage,
               child: Container(
                 width: 52, height: 52,
                 margin: const EdgeInsets.only(right: 12),
