@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'login.dart';
 import '../main/homepage.dart';
+import '../main/onBoarding.dart';
+
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -70,12 +72,18 @@ class _SignupPageState extends State<SignupPage> {
       await FirebaseFirestore.instance.collection('users').doc(uid).set({
         'email': email,
         'username': username,
-        'bio': 'Hello! I\'m new here 👋', // 默认简介
-        'profileImageUrl': '', // 空字符串表示使用默认头像
-        'backgroundImageUrl': '', // 空字符串表示使用默认背景
+        'bio': 'Hello! I\'m new here 👋',
+        'profileImageUrl': '',
+        'backgroundImageUrl': '',
         'postCount': 0,
         'favouriteCount': 0,
         'routeCount': 0,
+        'onboardingDone': false,          // ← 新增
+        'preferences': {                  // ← 新增
+          'categories': [],
+          'cuisines': [],
+          'travelMode': 'walk',
+        },
       });
 
       print('✅ User created successfully！');
@@ -87,7 +95,7 @@ class _SignupPageState extends State<SignupPage> {
       if (mounted) {
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const HomePage()),
+          MaterialPageRoute(builder: (_) => const OnboardingPage()), 
         );
       }
     } on FirebaseAuthException catch (e) {

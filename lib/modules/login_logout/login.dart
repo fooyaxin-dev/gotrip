@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
-//import 'package:twitter_login/twitter_login.dart';
+import '../main/onBoarding.dart';
+import '../../services/userPreference_service.dart';
 import 'signup.dart';
 import '../main/homepage.dart';
 
@@ -39,9 +40,16 @@ class _LoginPageState extends State<LoginPage> {
       );
 
       if (mounted) {
+        final prefs = await UserPreferenceService.instance.load();
+        if (!mounted) return;
+
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const HomePage()),
+          MaterialPageRoute(
+            builder: (_) => prefs.onboardingDone
+                ? const HomePage()
+                : const OnboardingPage(),
+          ),
         );
       }
     } on FirebaseAuthException catch (e) {
@@ -98,14 +106,21 @@ class _LoginPageState extends State<LoginPage> {
       await FirebaseAuth.instance.signInWithCredential(credential);
 
       if (mounted) {
+        final prefs = await UserPreferenceService.instance.load();
+        if (!mounted) return;
+
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const HomePage()),
+          MaterialPageRoute(
+            builder: (_) => prefs.onboardingDone
+                ? const HomePage()           // 做过 onboarding → 直接进
+                : const OnboardingPage(),    // 没做过 → 先做 onboarding
+          ),
         );
       }
-    } catch (e) {
-      _showError('Google login failed: $e');
-    }
+      } catch (e) {
+        _showError('Google login failed: $e');
+      }
   }
 
   // --- Facebook (flutter_facebook_auth 7.1.5) ---
@@ -121,9 +136,16 @@ class _LoginPageState extends State<LoginPage> {
         await FirebaseAuth.instance.signInWithCredential(credential);
 
         if (mounted) {
+          final prefs = await UserPreferenceService.instance.load();
+          if (!mounted) return;
+
           Navigator.pushReplacement(
             context,
-            MaterialPageRoute(builder: (_) => const HomePage()),
+            MaterialPageRoute(
+              builder: (_) => prefs.onboardingDone
+                  ? const HomePage()
+                  : const OnboardingPage(),
+            ),
           );
         }
       } else if (result.status == LoginStatus.cancelled) {

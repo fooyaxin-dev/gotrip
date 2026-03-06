@@ -11,6 +11,7 @@ import '../profile/profile.dart';
 import '../interaction/interactionPage.dart';
 import '../landmark/landmarkFAB.dart';
 import '../login_logout/logout.dart';
+import '../settings/settingsPage.dart';
 import 'mainpage.dart';
 import 'favourite.dart';
 
@@ -280,7 +281,15 @@ class _HomePageState extends State<HomePage> {
           ListTile(
             leading: const Icon(Icons.settings_rounded),
             title: const Text("Settings"),
-            onTap: () {},
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const SettingsPage(),
+                ),
+              );
+            },
           ),
 
           const Spacer(),

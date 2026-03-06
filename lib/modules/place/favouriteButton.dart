@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/favourite_service.dart';
+import '../../services/userPreference_service.dart';
 
 /// ❤️ 可复用的收藏按钮
 /// showBackground: true  → 白色圆形背景（用于 PlaceCard 图片浮层）
@@ -71,20 +72,29 @@ class _FavouriteButtonState extends State<FavouriteButton>
 
     try {
       final newStatus = await FavouriteService.toggleFavourite(
-        placeId: widget.placeId,
-        name: widget.name,
-        address: widget.address,
-        rating: widget.rating,
+        placeId:  widget.placeId,
+        name:     widget.name,
+        address:  widget.address,
+        rating:   widget.rating,
         photoUrl: widget.photoUrl,
-        lat: widget.lat,
-        lng: widget.lng,
-        types: widget.types, // 👈 传入
+        lat:      widget.lat,
+        lng:      widget.lng,
+        types:    widget.types,
       );
+
+      // ✅ 传入 isFavouriting 让 service 知道是收藏还是取消
+      if (widget.types != null) {
+        await UserPreferenceService.instance.updateFromFavourite(
+          primaryType:    widget.types!.isNotEmpty ? widget.types!.first : '',
+          allTypes:       widget.types!,
+          isFavouriting:  newStatus, // ← true = 收藏, false = 取消
+        );
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(newStatus ? '❤️ 已添加到收藏' : '已取消收藏'),
+            content: Text(newStatus ? '❤️ Added to favourites' : 'Removed from favourites'),
             duration: const Duration(seconds: 1),
             behavior: SnackBarBehavior.floating,
           ),
@@ -93,16 +103,14 @@ class _FavouriteButtonState extends State<FavouriteButton>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('操作失败，请重试'),
-            duration: Duration(seconds: 1),
-          ),
+          const SnackBar(content: Text('Something went wrong, please try again')),
         );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
+
 
   @override
   Widget build(BuildContext context) {
