@@ -6,6 +6,7 @@ import 'location_service.dart';
 class NearbyPlacesService {
   static final NearbyPlacesService instance = NearbyPlacesService._();
   NearbyPlacesService._();
+  List<PlaceModel> get cachedPlaces => _allPlacesCache; // 你现有的缓存列表
 
   bool _isLoading = false;
   bool _hasLoadedOnce = false;

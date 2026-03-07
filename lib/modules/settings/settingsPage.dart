@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../main/onBoarding.dart';
 import '../../services/userPreference_service.dart';
+import '../itinerary/iteneraryPage.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -63,6 +64,17 @@ class _SettingsPageState extends State<SettingsPage> {
             subtitle: 'Start fresh with new recommendations',
             onTap: () => _showResetDialog(),
           ),
+          _buildTile(
+            icon: Icons.tune_rounded,
+            iconColor: const Color(0xFF7C4DFF),
+            iconBg: const Color(0xFFF0EBFF),
+            title: 'Edit Preferences',
+            subtitle: 'Update your interests & travel style',
+            onTap: () => Navigator.push(context, MaterialPageRoute(
+              builder: (_) => const ItineraryPage(),
+            )),
+          ),
+
 
 
           const SizedBox(height: 20),
