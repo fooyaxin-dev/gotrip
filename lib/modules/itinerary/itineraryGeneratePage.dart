@@ -5,7 +5,7 @@ import '../itinerary/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
 import '../../services/placeModal.dart';
 import '../../services/userPreference_service.dart';
-import '../itinerary/iteneraryDetail.dart';
+import 'itineraryDetail.dart';
 
 class GenerateItineraryPage extends StatefulWidget {
   final List<PlaceModel> nearbyPlaces;

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../main/onBoarding.dart';
 import '../../services/userPreference_service.dart';
-import '../itinerary/iteneraryPage.dart';
+import '../itinerary/itineraryPage.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});

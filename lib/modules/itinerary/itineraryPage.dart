@@ -6,7 +6,7 @@ import '../../services/itinerary_service.dart';
 import '../../services/nearbyPlace_service.dart';
 import '../../services/userPreference_service.dart';
 import '../itinerary/itineraryGeneratePage.dart';
-import '../itinerary/iteneraryDetail.dart';
+import 'itineraryDetail.dart';
 
 class ItineraryPage extends StatefulWidget {
   const ItineraryPage({super.key});

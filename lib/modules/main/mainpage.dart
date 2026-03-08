@@ -137,9 +137,26 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     final limit = _distanceLimitMeters;
 
     // ✅ 先按 travelMode 过滤距离
+    // ✅ 只允许这些 category 出现在 For You
+    const allowedTypes = {
+      'restaurant',
+      'park',
+      'tourist_attraction',
+      'shopping_mall',
+      'amusement_park',
+      'cafe',
+      'night_club',
+      'museum',
+    };
+
     final withinRange = _nearbyPlaces.where((place) {
       final dist = _routeResults[place.id]?.distanceMeters ?? double.infinity;
-      return dist <= limit && place.photoUrl != null && place.photoUrl!.isNotEmpty; // ← 加这个
+      final isAllowed = allowedTypes.contains(place.primaryType) ||
+          place.allTypes.any((t) => allowedTypes.contains(t));
+      return dist <= limit &&
+          place.photoUrl != null &&
+          place.photoUrl!.isNotEmpty &&
+          isAllowed;
     }).toList();
 
     // 评分
@@ -153,6 +170,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
       return MapEntry(place, score);
     }).toList()
       ..sort((a, b) => b.value.compareTo(a.value));
+
+
+    print('🔍 ForYou withinRange: ${withinRange.length}');
+    for (final p in withinRange) {
+      print('  ${p.name} | primary: ${p.primaryType} | types: ${p.allTypes.take(3)}');
+    }
+
 
     // 过滤 score = 0，最多 7 个
     final filtered = scored

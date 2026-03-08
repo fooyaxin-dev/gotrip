@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import '../modules/itinerary/itineraryModel.dart';
 import '../services/placeModal.dart';
+import '../services/nearbyPlace_service.dart';
 import '../services/userPreference_service.dart';
 
 class ItineraryService {
@@ -17,6 +18,60 @@ class ItineraryService {
   CollectionReference? get _col => _uid == null
       ? null
       : _db.collection('users').doc(_uid).collection('itineraries');
+
+  // ─────────────────────────────────────────────
+  // Blocked types
+  // ─────────────────────────────────────────────
+
+  static const _blockedTypes = {
+    'lodging', 'hotel', 'motel', 'guest_house', 'hostel',
+    'campground', 'rv_park', 'hospital', 'doctor', 'dentist',
+    'pharmacy', 'bank', 'atm', 'finance', 'insurance_agency',
+    'gas_station', 'car_repair', 'car_wash', 'car_dealer',
+    'laundry', 'storage', 'funeral_home', 'cemetery',
+    'police', 'courthouse', 'embassy', 'real_estate_agency',
+    'electrician', 'plumber', 'roofing_contractor',
+  };
+
+  // ─────────────────────────────────────────────
+  // Blocked name keywords — 明显是公司/服务，不是旅游地点
+  // ─────────────────────────────────────────────
+
+  static const _blockedNameKeywords = [
+    'sdn bhd', 'sdn. bhd', 'sdnbhd',
+    'network', 'solution', 'solutions',
+    'enterprise', 'enterprises',
+    'management', 'services', 'trading',
+    'holdings', 'group berhad', 'berhad',
+    'consultant', 'consultancy',
+    'insurance', 'agency', 'agencies',
+    'clinic', 'hospital', 'pharmacy',
+    'hardware', 'spare part',
+  ];
+
+  bool _isBlocked(PlaceModel p) {
+    // 1. blocked by type
+    if (p.allTypes.any((t) => _blockedTypes.contains(t))) return true;
+
+    // 2. blocked by name keyword
+    final nameLower = p.name.toLowerCase();
+    if (_blockedNameKeywords.any((k) => nameLower.contains(k))) return true;
+
+    return false;
+  }
+
+  bool _isSuitableForTravel(PlaceModel p) {
+    // Must have photo
+    if (p.photoUrl == null || p.photoUrl!.isEmpty) return false;
+    // Must not be blocked
+    if (_isBlocked(p)) return false;
+    // Rating must be between 3.5 and 4.9 — 5.0 usually means too few reviews
+    // Accept null rating (we don't know) but reject obvious outliers
+    final r = p.rating;
+    if (r != null && r > 4.95) return false; // likely fake/few reviews
+    if (r != null && r < 3.5)  return false; // too low
+    return true;
+  }
 
   // ─────────────────────────────────────────────
   // Firestore CRUD
@@ -70,6 +125,74 @@ class ItineraryService {
   }
 
   // ─────────────────────────────────────────────
+  // ✅ 每个 category 取适合旅游的，按 rating 排序
+  // ─────────────────────────────────────────────
+
+  List<PlaceModel> _buildBalancedPlaces(int totalDays) {
+    final svc = NearbyPlacesService.instance;
+
+    final perCategory     = (totalDays + 1).clamp(2, 5);
+    final restaurantCount = (totalDays * 2 + 1).clamp(3, 8);
+
+    List<PlaceModel> topByType(String type, int count) {
+      final list = svc.getByPrimary(type)
+          .where(_isSuitableForTravel)
+          .toList()
+        ..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
+
+      // ✅ fallback: 如果过滤后太少，放宽 rating 5.0 限制
+      if (list.length < count) {
+        final fallback = svc.getByPrimary(type)
+            .where((p) =>
+                p.photoUrl != null &&
+                p.photoUrl!.isNotEmpty &&
+                !_isBlocked(p) &&
+                (p.rating == null || p.rating! >= 3.5))
+            .toList()
+          ..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
+        return fallback.take(count).toList();
+      }
+
+      return list.take(count).toList();
+    }
+
+    final restaurants   = topByType('restaurant',         restaurantCount);
+    final attractions   = topByType('tourist_attraction', perCategory);
+    final malls         = topByType('shopping_mall',      perCategory);
+    final entertainment = topByType('amusement_park',     perCategory);
+    final parks         = topByType('park',               perCategory);
+
+    print('📋 Per category (travel-suitable):');
+    print('  🍽️  Restaurants: ${restaurants.length}');
+    print('  🏛️  Attractions: ${attractions.length}');
+    print('  🛍️  Malls: ${malls.length}');
+    print('  🎭  Entertainment: ${entertainment.length}');
+    print('  🌿  Parks: ${parks.length}');
+
+    final seen   = <String>{};
+    final result = <PlaceModel>[];
+
+    void addAll(List<PlaceModel> list) {
+      for (final p in list) {
+        if (seen.add(p.id)) result.add(p);
+      }
+    }
+
+    addAll(restaurants);
+    addAll(attractions);
+    addAll(malls);
+    addAll(entertainment);
+    addAll(parks);
+
+    print('📍 Total places sent to Gemini: ${result.length}');
+    for (final p in result) {
+      print('  ${p.name} | ${p.primaryType} | ⭐${p.rating ?? "?"}');
+    }
+
+    return result;
+  }
+
+  // ─────────────────────────────────────────────
   // Generate via Gemini API
   // ─────────────────────────────────────────────
 
@@ -81,48 +204,8 @@ class ItineraryService {
     required String tripTitle,
   }) async {
     try {
-      final prefs = UserPreferenceService.instance.current;
-
-      final needed = (totalDays * placesPerDay * 1.5).ceil();
-      final maxPlaces = needed.clamp(15, 40);
-
-      // ✅ 所有有照片的地点
-      final allValid = nearbyPlaces
-          .where((p) => p.photoUrl != null && p.photoUrl!.isNotEmpty)
-          .toList();
-
-      // ✅ 分类：餐厅 vs 其他
-      final restaurants = allValid.where((p) =>
-          p.primaryType == 'restaurant' ||
-          p.allTypes.any((t) =>
-              t.contains('restaurant') ||
-              t == 'cafe'              ||
-              t == 'coffee_shop'       ||
-              t == 'food'              ||
-              t == 'bakery'            ||
-              t == 'meal_takeaway'     ||
-              t == 'meal_delivery')).toList();
-
-      final others = allValid
-          .where((p) => !restaurants.contains(p))
-          .toList();
-
-      // ✅ 强制至少 40% 是餐厅
-      final minRestaurants = (maxPlaces * 0.4).ceil();
-      final restCount  = restaurants.length.clamp(0, minRestaurants);
-      final otherCount = maxPlaces - restCount;
-
-      final validPlaces = [
-        ...restaurants.take(restCount),
-        ...others.take(otherCount),
-      ];
-
-      print('📍 $totalDays days × $placesPerDay places');
-      print('🍽️  Restaurants: $restCount | Others: ${validPlaces.length - restCount}');
-      print('📋 Places sent to Gemini:');
-      for (final p in validPlaces) {
-        print('  ${p.name} | ${p.primaryType} | ${p.allTypes.take(3).toList()}');
-      }
+      final prefs       = UserPreferenceService.instance.current;
+      final validPlaces = _buildBalancedPlaces(totalDays);
 
       if (validPlaces.isEmpty) {
         print('❌ No valid places');
@@ -171,50 +254,53 @@ class ItineraryService {
             }).join(', ');
 
       final prompt = '''
-You are an experienced local travel guide planning a real, enjoyable day trip itinerary.
+You are a local travel guide creating a day trip itinerary.
 
-About this traveler:
+Traveler profile:
 - Interests: $categoryText
 - Favourite cuisines: $cuisineText
-- Getting around by: ${prefs.travelMode}
+- Travel mode: ${prefs.travelMode}
 
 Trip: $tripTitle
-Days: $totalDays ($dayDatesList)
+Days: $totalDays | Dates: $dayDatesList
 Places per day: $placesPerDay
 
-Available places:
+Available places by category:
+🍽️ RESTAURANTS (use for lunch & dinner only):
+${validPlaces.where((p) => p.primaryType == 'restaurant').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
+
+🏛️ ATTRACTIONS:
+${validPlaces.where((p) => p.primaryType == 'tourist_attraction').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
+
+🛍️ SHOPPING:
+${validPlaces.where((p) => p.primaryType == 'shopping_mall').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
+
+🎭 ENTERTAINMENT:
+${validPlaces.where((p) => p.primaryType == 'amusement_park').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
+
+🌿 PARKS & NATURE:
+${validPlaces.where((p) => p.primaryType == 'park').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
+
+Full place details:
 ${jsonEncode(placesJson)}
 
-How to identify place types from the "types" field:
-- Restaurant/food: types contains "restaurant", "cafe", "coffee_shop", "food", "bakery"
-- Park/nature: types contains "park", "garden"
-- Attraction: types contains "tourist_attraction", "museum", "historical_landmark"
-- Shopping: types contains "shopping_mall", "store"
+STRICT DAILY STRUCTURE (follow exactly):
+Each day MUST have exactly $placesPerDay places:
+1. Morning (08:00-10:30): Non-restaurant place (attraction / park / shopping / entertainment)
+2. Lunch (11:30-13:30): MUST be a RESTAURANT — prefer $cuisineText
+3. Afternoon (14:00-17:00): Non-restaurant place, DIFFERENT category from morning
+4. Dinner (18:00-20:30): MUST be a RESTAURANT — prefer $cuisineText
+${placesPerDay > 4 ? '5. Evening (21:00+): Any non-restaurant place' : ''}
 
-MANDATORY meal rules (strictly follow):
-- Every day MUST have at least 1 lunch stop (between 11:30-14:00)
-- Every day MUST have at least 1 dinner stop (between 18:00-21:00)
-- For lunch and dinner, ONLY pick places whose types contain "restaurant", "cafe", "coffee_shop", "food", or "bakery"
-- Prefer restaurants matching traveler's cuisine preferences: $cuisineText
-
-Time structure per day:
-- 08:00-11:00: Morning activity or breakfast cafe
-- 11:30-14:00: LUNCH — must be a restaurant or cafe
-- 14:00-17:30: Afternoon activity
-- 18:00-21:00: DINNER — must be a restaurant
-
-Other rules:
-- NEVER repeat the same placeId across different days
-- Output MUST have exactly $totalDays day objects
-- Each day MUST have exactly $placesPerDay places
-- Order places by suggestedTime ascending within each day
-- suggestedTime: HH:MM format (24h)
-- durationMinutes: 30 to 180 depending on place type
-- notes: one practical sentence about visiting this place
+RULES:
+- NEVER use the same placeId twice across all days
+- Each day must cover at least 2 different non-restaurant categories
+- Prefer higher rated places
+- Prefer restaurants matching cuisine: $cuisineText
 - Use exact dates: $dayDatesList
 
-Return ONLY a raw JSON array. No markdown. No backticks. Start with [ and end with ].
-Each place needs only: placeId, suggestedTime, durationMinutes, notes.
+Return ONLY a raw JSON array. No markdown. No backticks. Start with [ end with ].
+Each place: placeId, suggestedTime, durationMinutes, notes (1 practical sentence).
 
 [
   {
@@ -224,7 +310,7 @@ Each place needs only: placeId, suggestedTime, durationMinutes, notes.
       {
         "placeId": "...",
         "suggestedTime": "09:00",
-        "durationMinutes": 60,
+        "durationMinutes": 90,
         "notes": "..."
       }
     ]
@@ -339,7 +425,7 @@ Each place needs only: placeId, suggestedTime, durationMinutes, notes.
             }
           ],
           'generationConfig': {
-            'temperature':      0.4,
+            'temperature':      0.3,
             'maxOutputTokens':  8000,
             'responseMimeType': 'application/json',
           }
