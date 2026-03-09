@@ -8,9 +8,11 @@ class ItineraryPlace {
   final double? lat;
   final double? lng;
   final String? primaryType;
-  final String suggestedTime;  // "09:00"
-  final int durationMinutes;   // 建议停留时间
-  final String? notes;         // AI 生成的备注
+  final String suggestedTime;   // "09:00"
+  final int durationMinutes;    // 建议停留时间
+  final String? notes;          // AI 生成的备注
+  final bool isVisited;         // ✅ 用户实际到访过
+  final DateTime? visitedAt;    // ✅ 实际到访时间
 
   ItineraryPlace({
     required this.placeId,
@@ -23,6 +25,8 @@ class ItineraryPlace {
     required this.suggestedTime,
     required this.durationMinutes,
     this.notes,
+    this.isVisited  = false,
+    this.visitedAt,
   });
 
   factory ItineraryPlace.fromMap(Map<String, dynamic> m) => ItineraryPlace(
@@ -36,6 +40,10 @@ class ItineraryPlace {
     suggestedTime:   m['suggestedTime']   ?? '09:00',
     durationMinutes: (m['durationMinutes'] as num?)?.toInt() ?? 60,
     notes:           m['notes'],
+    isVisited:       m['isVisited']       ?? false,
+    visitedAt:       m['visitedAt'] != null
+        ? (m['visitedAt'] as dynamic).toDate()
+        : null,
   );
 
   Map<String, dynamic> toMap() => {
@@ -49,12 +57,16 @@ class ItineraryPlace {
     'suggestedTime':   suggestedTime,
     'durationMinutes': durationMinutes,
     'notes':           notes,
+    'isVisited':       isVisited,
+    'visitedAt':       visitedAt,
   };
 
   ItineraryPlace copyWith({
-    String? suggestedTime,
-    int? durationMinutes,
-    String? notes,
+    String?   suggestedTime,
+    int?      durationMinutes,
+    String?   notes,
+    bool?     isVisited,
+    DateTime? visitedAt,
   }) => ItineraryPlace(
     placeId:         placeId,
     name:            name,
@@ -66,12 +78,16 @@ class ItineraryPlace {
     suggestedTime:   suggestedTime   ?? this.suggestedTime,
     durationMinutes: durationMinutes ?? this.durationMinutes,
     notes:           notes           ?? this.notes,
+    isVisited:       isVisited       ?? this.isVisited,
+    visitedAt:       visitedAt       ?? this.visitedAt,
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+
 class ItineraryDay {
   final int dayNumber;
-  final String date;         // "2026-03-07"
+  final String date;                  // "2026-03-07"
   final List<ItineraryPlace> places;
 
   ItineraryDay({
@@ -99,7 +115,21 @@ class ItineraryDay {
     date:      date,
     places:    places ?? this.places,
   );
+
+  // ── Convenience getters ──
+  int get visitedCount   => places.where((p) => p.isVisited).length;
+  int get totalCount     => places.length;
+  bool get isCompleted   => totalCount > 0 && visitedCount == totalCount;
+
+  /// Next unvisited place, or null if all done.
+  ItineraryPlace? get nextPlace =>
+      places.cast<ItineraryPlace?>().firstWhere(
+        (p) => !p!.isVisited,
+        orElse: () => null,
+      );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 class ItineraryModel {
   final String id;
@@ -118,16 +148,17 @@ class ItineraryModel {
     required this.createdAt,
   });
 
-  factory ItineraryModel.fromMap(String id, Map<String, dynamic> m) => ItineraryModel(
-    id:        id,
-    title:     m['title']     ?? 'My Trip',
-    startDate: m['startDate'] ?? '',
-    totalDays: (m['totalDays'] as num?)?.toInt() ?? 1,
-    days:      (m['days'] as List<dynamic>? ?? [])
-        .map((d) => ItineraryDay.fromMap(Map<String, dynamic>.from(d)))
-        .toList(),
-    createdAt: (m['createdAt'] as dynamic)?.toDate() ?? DateTime.now(),
-  );
+  factory ItineraryModel.fromMap(String id, Map<String, dynamic> m) =>
+      ItineraryModel(
+        id:        id,
+        title:     m['title']     ?? 'My Trip',
+        startDate: m['startDate'] ?? '',
+        totalDays: (m['totalDays'] as num?)?.toInt() ?? 1,
+        days:      (m['days'] as List<dynamic>? ?? [])
+            .map((d) => ItineraryDay.fromMap(Map<String, dynamic>.from(d)))
+            .toList(),
+        createdAt: (m['createdAt'] as dynamic)?.toDate() ?? DateTime.now(),
+      );
 
   Map<String, dynamic> toMap() => {
     'title':     title,
@@ -137,7 +168,10 @@ class ItineraryModel {
     'createdAt': createdAt,
   };
 
-  ItineraryModel copyWith({List<ItineraryDay>? days, String? title}) => ItineraryModel(
+  ItineraryModel copyWith({
+    List<ItineraryDay>? days,
+    String? title,
+  }) => ItineraryModel(
     id:        id,
     title:     title     ?? this.title,
     startDate: startDate,
@@ -145,4 +179,10 @@ class ItineraryModel {
     days:      days      ?? this.days,
     createdAt: createdAt,
   );
+
+  // ── Convenience getters ──
+  int get totalVisited =>
+      days.fold(0, (sum, d) => sum + d.visitedCount);
+  int get totalPlaces  =>
+      days.fold(0, (sum, d) => sum + d.totalCount);
 }

@@ -14,6 +14,7 @@ import '../login_logout/logout.dart';
 import '../settings/settingsPage.dart';
 import 'mainpage.dart';
 import 'favourite.dart';
+import '../itinerary/itineraryPage.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -237,7 +238,7 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(height: 15),
 
           ListTile(
-            leading: const Icon(Icons.dashboard_rounded),
+            leading: const Icon(Icons.location_on_sharp),
             title: const Text("Landmark Recognition"),
             onTap: () {
               Navigator.pop(context);
@@ -265,7 +266,7 @@ class _HomePageState extends State<HomePage> {
           ),
 
           ListTile(
-            leading: const Icon(Icons.dashboard_rounded),
+            leading: const Icon(Icons.favorite_outline_outlined),
             title: const Text("Favourite"),
             onTap: () {
               Navigator.pop(context);
@@ -275,6 +276,17 @@ class _HomePageState extends State<HomePage> {
                   builder: (_) => const FavouritePage(),
                 ),
               );
+            },
+          ),
+
+          ListTile(
+            leading: const Icon(Icons.book_rounded),
+            title: const Text("Itinerary"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(context, MaterialPageRoute(
+              builder: (_) => const ItineraryPage(),
+            ));
             },
           ),
 

@@ -207,7 +207,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
                               _currentIndex == 0
                                   ? const postWidget()
-                                  : const historyWidget(),
+                                  : const HistoryWidget(),
                             ],
                           ),
                         ),
@@ -296,7 +296,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                 SizedBox(height: height * 0.02),
                                 _currentIndex == 0
                                     ? const postWidget()
-                                    : const historyWidget(),
+                                    : const HistoryWidget(),
                               ],
                             ),
                           ),
