@@ -155,6 +155,80 @@ class PlacesApiService {
     return rawPlaces.map(_normalizePlace).toList();
   }
 
+  /// 🔍 Autocomplete — 用户输入时显示地点建议
+  static Future<List<Map<String, dynamic>>> autocomplete({
+    required String input,
+    double? lat,
+    double? lng,
+    int radius = 50000, // 50km bias，不是 restrict
+  }) async {
+    if (input.trim().isEmpty) return [];
+ 
+    final url = Uri.parse('$_baseUrl/places:autocomplete');
+ 
+    final body = <String, dynamic>{
+      'input': input,
+    };
+ 
+    // 如果有当前位置，加上 location bias（结果会偏向附近）
+    if (lat != null && lng != null) {
+      body['locationBias'] = {
+        'circle': {
+          'center': {'latitude': lat, 'longitude': lng},
+          'radius': radius.toDouble(),
+        }
+      };
+    }
+ 
+    final response = await http.post(
+      url,
+      headers: _headers('suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat'),
+      body: jsonEncode(body),
+    );
+ 
+    if (response.statusCode != 200) {
+      print('❌ Autocomplete failed: ${response.body}');
+      return [];
+    }
+ 
+    final data = json.decode(response.body);
+    final suggestions = (data['suggestions'] as List?) ?? [];
+ 
+    return suggestions.map((s) {
+      final pred = s['placePrediction'];
+      return {
+        'placeId':     pred['placeId'] ?? '',
+        'description': pred['text']?['text'] ?? '',
+        'mainText':    pred['structuredFormat']?['mainText']?['text'] ?? '',
+        'secondaryText': pred['structuredFormat']?['secondaryText']?['text'] ?? '',
+      };
+    }).where((s) => (s['placeId'] as String).isNotEmpty).toList();
+  }
+ 
+  /// 📍 通过 placeId 拿坐标（用于 autocomplete 选完之后定位）
+  static Future<Map<String, dynamic>?> getPlaceLatLng(String placeId) async {
+    final url = Uri.parse('$_baseUrl/places/$placeId');
+    final response = await http.get(
+      url,
+      headers: _headers('displayName,formattedAddress,location'),
+    );
+ 
+    if (response.statusCode != 200) {
+      print('❌ getPlaceLatLng failed: ${response.body}');
+      return null;
+    }
+ 
+    final data = json.decode(response.body);
+    return {
+      'name':    data['displayName']?['text'] ?? '',
+      'address': data['formattedAddress'] ?? '',
+      'lat':     data['location']?['latitude'],
+      'lng':     data['location']?['longitude'],
+    };
+  }
+ 
+
+
   /// 📄 Place Details (带 Firebase 缓存)
   static Future<Map<String, dynamic>> getPlaceDetails(String placeId) async {
     final startTime = DateTime.now();

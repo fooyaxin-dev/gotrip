@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart'; // ✅ 新增
+import 'package:geolocator/geolocator.dart'; 
 import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
-import 'guidePage.dart'; // ✅ 新增
+import 'routePreviewPage.dart'; 
 
 class PlaceDetailPage extends StatefulWidget {
   final String placeId;
@@ -119,7 +119,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => GuidePage(
+        builder: (_) => RoutePreviewPage(
           startLat: startLat!,
           startLng: startLng!,
           endLat: widget.lat!,

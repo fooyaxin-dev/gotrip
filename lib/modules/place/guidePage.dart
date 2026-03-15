@@ -3,16 +3,18 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:compassx/compassx.dart'; 
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
-import '../../services/route_service.dart'; // ← 统一用 route_service 的 RouteResult
+import '../../services/route_service.dart';
 
-// 单步导航指令
+// ── 修改 1：NavStep 加上 durationSeconds ──
 class NavStep {
   final String instruction;
   final String maneuver;
   final double distanceMeters;
+  final int    durationSeconds; // ← 新增
   final LatLng startLocation;
   final LatLng endLocation;
 
@@ -20,6 +22,7 @@ class NavStep {
     required this.instruction,
     required this.maneuver,
     required this.distanceMeters,
+    required this.durationSeconds, // ← 新增
     required this.startLocation,
     required this.endLocation,
   });
@@ -31,7 +34,7 @@ class GuidePage extends StatefulWidget {
   final double endLat;
   final double endLng;
   final String? destinationName;
-  final TravelMode travelMode; // ← 支持 walk / drive
+  final TravelMode travelMode;
 
   const GuidePage({
     super.key,
@@ -55,37 +58,43 @@ class _GuidePageState extends State<GuidePage> {
   bool    _loading = true;
   String? _error;
 
-  // 路线数据
-  List<LatLng> _polylinePoints = [];
+  List<LatLng>  _polylinePoints       = [];
   LatLngBounds? _routeBounds;
-  double _totalDistanceMeters  = 0;
-  int    _totalDurationSeconds = 0;
+  double        _totalDistanceMeters  = 0;
+  int           _totalDurationSeconds = 0;
 
-  // 剩余
   double _remainingMeters  = 0;
   int    _remainingSeconds = 0;
 
-  // Steps
-  List<NavStep> _steps           = [];
+  List<NavStep> _steps            = [];
   int           _currentStepIndex = 0;
   double        _distToNextTurn   = 0;
 
-  // GPS
+  int _stepEndConfirmCount = 0;
+  static const int _stepConfirmThreshold = 3;
+
   StreamSubscription<Position>? _positionStream;
   Position? _currentPosition;
 
-  // Camera
+  final List<Position> _positionBuffer = [];
+  static const int     _bufferSize     = 3;
+
   bool _isFollowing = true;
   bool _isOverview  = false;
 
-  // Reroute
-  bool _isRerouting = false;
+  bool   _isRerouting = false;
   static const double _offRouteThreshold = 50.0;
   static const double _arrivedThreshold  = 30.0;
-  bool _hasArrived = false;
+  bool   _hasArrived  = false;
 
-  // Arrow marker
+  int _offRouteConfirmCount = 0;
+  static const int _offRouteConfirmThreshold = 5;
+
   BitmapDescriptor? _arrowIcon;
+
+  // 指南针
+  StreamSubscription<CompassXEvent>? _compassStream;
+  double _currentHeading = 0; // 来自磁力计，静止也准确
 
   static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
 
@@ -103,11 +112,13 @@ class _GuidePageState extends State<GuidePage> {
       altitudeAccuracy: 0.0, headingAccuracy: 0.0,
     );
     _createArrowIcon().then((_) => _loadRoute(widget.startLat, widget.startLng));
+    _startCompass(); // ← 新增
   }
 
   @override
   void dispose() {
     _positionStream?.cancel();
+    _compassStream?.cancel(); // ← 新增
     _mapController?.dispose();
     super.dispose();
   }
@@ -121,17 +132,14 @@ class _GuidePageState extends State<GuidePage> {
     final canvas   = Canvas(recorder);
     const size     = 64.0;
 
-    // 白色外圆
     canvas.drawCircle(
       const Offset(size / 2, size / 2), size / 2,
       Paint()..color = Colors.white,
     );
-    // 蓝色内圆
     canvas.drawCircle(
       const Offset(size / 2, size / 2), size / 2 - 4,
       Paint()..color = const Color(0xFF1A73E8),
     );
-    // 白色箭头
     final path = Path()
       ..moveTo(size / 2, 10)
       ..lineTo(size / 2 + 14, size - 12)
@@ -148,15 +156,47 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // Route loading
+  // Compass
   // ─────────────────────────────────────────────
 
-  // Google Directions API mode string
+  void _startCompass() {
+    _compassStream = CompassX.events.listen((CompassXEvent event) {
+      if (!mounted) return;
+      final heading = event.heading;
+      if (heading == null) return;
+
+      _currentHeading = heading;
+
+      // 更新箭头 marker 朝向
+      if (_currentPosition != null) {
+        setState(() {
+          _updateMyMarker(
+            _currentPosition!.latitude,
+            _currentPosition!.longitude,
+            _currentHeading,
+          );
+        });
+      }
+
+      // 如果正在跟随模式，地图 bearing 跟着转
+      if (_isFollowing && _currentPosition != null) {
+        _mapController?.animateCamera(
+          CameraUpdate.newCameraPosition(CameraPosition(
+            target:  LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+            zoom:    17.0,
+            tilt:    0,
+            bearing: _currentHeading, // ← 用磁力计的 heading，静止也准
+          )),
+        );
+      }
+    });
+  }
+
   String get _apiMode {
     switch (widget.travelMode) {
-      case TravelMode.walk:   return 'walking';
-      case TravelMode.drive:  return 'driving';
-      case TravelMode.motor:  return 'driving'; // motor → driving
+      case TravelMode.walk:  return 'walking';
+      case TravelMode.drive: return 'driving';
+      case TravelMode.motor: return 'driving';
     }
   }
 
@@ -174,6 +214,8 @@ class _GuidePageState extends State<GuidePage> {
         '?origin=$fromLat,$fromLng'
         '&destination=${widget.endLat},${widget.endLng}'
         '&mode=$_apiMode'
+        '&departure_time=now'     // ← 加这个
+        '&alternatives=false'     // ← 加这个
         '&key=$_apiKey',
       );
 
@@ -181,16 +223,13 @@ class _GuidePageState extends State<GuidePage> {
       if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
 
       final data = json.decode(resp.body);
-      print('🗺️ Steps: ${json.encode(data['routes'][0]['legs'][0]['steps'])}');
       if (data['status'] != 'OK') throw Exception('${data['status']}');
 
       final route = data['routes'][0];
       final leg   = (route['legs'] as List).first;
 
-      // Polyline
       final points = _decodePolyline(route['overview_polyline']['points'] as String);
 
-      // Bounds
       final b  = route['bounds'];
       final ne = b['northeast'];
       final sw = b['southwest'];
@@ -199,20 +238,19 @@ class _GuidePageState extends State<GuidePage> {
         northeast: LatLng(ne['lat'], ne['lng']),
       );
 
-      // Steps
+      // ── 修改 2：解析 steps 时加上 durationSeconds ──
       final steps = (leg['steps'] as List).map((s) {
-      final rawHtml  = (s['html_instructions'] as String?) ?? '';
-      final maneuver = (s['maneuver'] as String?) ?? _guessManeuver(rawHtml); // ← 改这行
-      return NavStep(
-        instruction:    _stripHtml(rawHtml),
-        maneuver:       maneuver,
-        distanceMeters: (s['distance']['value'] as num).toDouble(),
-        startLocation:  LatLng(s['start_location']['lat'], s['start_location']['lng']),
-        endLocation:    LatLng(s['end_location']['lat'],   s['end_location']['lng']),
-      );
-    }).toList();
-
-    
+        final rawHtml  = (s['html_instructions'] as String?) ?? '';
+        final maneuver = (s['maneuver']          as String?) ?? _guessManeuver(rawHtml);
+        return NavStep(
+          instruction:     _stripHtml(rawHtml),
+          maneuver:        maneuver,
+          distanceMeters:  (s['distance']['value'] as num).toDouble(),
+          durationSeconds: (s['duration']['value'] as num).toInt(), // ← 新增
+          startLocation:   LatLng(s['start_location']['lat'], s['start_location']['lng']),
+          endLocation:     LatLng(s['end_location']['lat'],   s['end_location']['lng']),
+        );
+      }).toList();
 
       final totalDist = (leg['distance']['value'] as num).toDouble();
       final totalDur  = (leg['duration']['value']  as num).toInt();
@@ -220,16 +258,16 @@ class _GuidePageState extends State<GuidePage> {
       if (!mounted) return;
 
       setState(() {
-        _polylinePoints      = points;
-        _routeBounds         = bounds;
-        _totalDistanceMeters = totalDist;
-        _totalDurationSeconds= totalDur;
-        _remainingMeters     = totalDist;
-        _remainingSeconds    = totalDur;
-        _steps               = steps;
-        _currentStepIndex    = 0;
-        _distToNextTurn      = steps.isNotEmpty ? steps[0].distanceMeters : 0;
-        _loading             = false;
+        _polylinePoints       = points;
+        _routeBounds          = bounds;
+        _totalDistanceMeters  = totalDist;
+        _totalDurationSeconds = totalDur;
+        _remainingMeters      = totalDist;
+        _remainingSeconds     = totalDur;
+        _steps                = steps;
+        _currentStepIndex     = 0;
+        _distToNextTurn       = steps.isNotEmpty ? steps[0].distanceMeters : 0;
+        _loading              = false;
       });
 
       _drawRoute(points, fromLat, fromLng);
@@ -290,13 +328,13 @@ class _GuidePageState extends State<GuidePage> {
   // Camera
   // ─────────────────────────────────────────────
 
-  void _moveCameraToUser(double lat, double lng, double heading) {
+  void _moveCameraToUser(double lat, double lng, [double? heading]) {
     _mapController?.animateCamera(
       CameraUpdate.newCameraPosition(CameraPosition(
         target:  LatLng(lat, lng),
-        zoom:    20.5,
+        zoom:    17.0,
         tilt:    0,
-        bearing: heading,
+        bearing: _currentHeading, // ← 永远用磁力计 heading，静止也准确
       )),
     );
   }
@@ -325,18 +363,66 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
+  // GPS smoothing
+  // ─────────────────────────────────────────────
+
+  Position _smoothPosition(Position newPos) {
+    _positionBuffer.add(newPos);
+    if (_positionBuffer.length > _bufferSize) _positionBuffer.removeAt(0);
+    if (_positionBuffer.length < 2) return newPos;
+
+    final avgLat = _positionBuffer.map((p) => p.latitude).reduce((a, b) => a + b)
+        / _positionBuffer.length;
+    final avgLng = _positionBuffer.map((p) => p.longitude).reduce((a, b) => a + b)
+        / _positionBuffer.length;
+    final avgHeading = _positionBuffer.map((p) => p.heading).reduce((a, b) => a + b)
+        / _positionBuffer.length;
+
+    return Position(
+      latitude:         avgLat,
+      longitude:        avgLng,
+      heading:          avgHeading,
+      speed:            newPos.speed,
+      accuracy:         newPos.accuracy,
+      altitude:         newPos.altitude,
+      timestamp:        newPos.timestamp,
+      speedAccuracy:    newPos.speedAccuracy,
+      altitudeAccuracy: newPos.altitudeAccuracy,
+      headingAccuracy:  newPos.headingAccuracy,
+    );
+  }
+
+  // ─────────────────────────────────────────────
   // GPS tracking
   // ─────────────────────────────────────────────
 
   void _startTracking() {
     _positionStream?.cancel();
+
+    // GPS 暖机：进来先等 3 秒，让 GPS 稳定后才开始处理
+    bool warmedUp = false;
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) warmedUp = true;
+    });
+
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy:       LocationAccuracy.high,
-        distanceFilter: 2,
+        distanceFilter: 8,
       ),
-    ).listen((pos) {
+    ).listen((rawPos) {
       if (!mounted) return;
+
+      // 暖机期间丢弃所有读数，避免一进来就乱跳
+      if (!warmedUp) return;
+
+      // 精度过滤：GPS 信号差（误差 > 20m）直接跳过这次读数
+      if (rawPos.accuracy > 20) return;
+
+      // 速度判断：< 0.5 m/s 认为用户静止
+      final isMoving = rawPos.speed > 0.5;
+
+      final pos = _smoothPosition(rawPos);
 
       // 1. 到达检测
       final distToDest = Geolocator.distanceBetween(
@@ -349,18 +435,24 @@ class _GuidePageState extends State<GuidePage> {
         return;
       }
 
-      // 2. 偏离检测
-      if (!_isRerouting && _polylinePoints.isNotEmpty) {
+      // 2. 偏离检测（只在移动时判断，防止静止时 GPS 漂移误触发 reroute）
+      if (isMoving && !_isRerouting && _polylinePoints.isNotEmpty) {
         final minDist = _minDistToPolyline(LatLng(pos.latitude, pos.longitude));
         if (minDist > _offRouteThreshold) {
-          _isRerouting = true;
-          _loadRoute(pos.latitude, pos.longitude);
-          return;
+          _offRouteConfirmCount++;
+          if (_offRouteConfirmCount >= _offRouteConfirmThreshold) {
+            _offRouteConfirmCount = 0;
+            _isRerouting = true;
+            _loadRoute(pos.latitude, pos.longitude);
+            return;
+          }
+        } else {
+          _offRouteConfirmCount = 0;
         }
       }
 
-      // 3. Step 切换 — 看用户有没有过了当前 step 的 endLocation
-      if (_steps.isNotEmpty && _currentStepIndex < _steps.length - 1) {
+      // 3. Step 切换（只在移动时判断，防止静止时抖动误切 step）
+      if (isMoving && _steps.isNotEmpty && _currentStepIndex < _steps.length - 1) {
         final currentStep = _steps[_currentStepIndex];
         final distToStepEnd = Geolocator.distanceBetween(
           pos.latitude, pos.longitude,
@@ -368,14 +460,19 @@ class _GuidePageState extends State<GuidePage> {
           currentStep.endLocation.longitude,
         );
         if (distToStepEnd < 20) {
-          // 切换到下一步
-          setState(() => _currentStepIndex = _currentStepIndex + 1);
+          _stepEndConfirmCount++;
+          if (_stepEndConfirmCount >= _stepConfirmThreshold) {
+            _stepEndConfirmCount = 0;
+            setState(() => _currentStepIndex = _currentStepIndex + 1);
+          }
+        } else {
+          _stepEndConfirmCount = 0;
         }
       }
 
-      // 4. 计算到下一个转弯的距离
-      if (_steps.isNotEmpty) {
-        final nextIdx = min(_currentStepIndex + 1, _steps.length - 1);
+      // 4. 到下一个转弯的距离（只在移动时更新，静止时保持上一次的值）
+      if (isMoving && _steps.isNotEmpty) {
+        final nextIdx = (_currentStepIndex + 1).clamp(0, _steps.length - 1);
         _distToNextTurn = Geolocator.distanceBetween(
           pos.latitude, pos.longitude,
           _steps[nextIdx].startLocation.latitude,
@@ -383,13 +480,12 @@ class _GuidePageState extends State<GuidePage> {
         );
       }
 
-      // 5. 更新剩余时间/距离
+      // 5. 更新剩余时间/距离（只在移动时更新，静止时冻结显示）
       setState(() {
         _currentPosition = pos;
-        _remainingMeters = distToDest;
-        if (_totalDistanceMeters > 0) {
-          _remainingSeconds = (_totalDurationSeconds *
-              (distToDest / _totalDistanceMeters)).round();
+        if (isMoving) {
+          _remainingMeters  = _calcRemainingMeters(pos);
+          _remainingSeconds = _calcRemainingSeconds(pos);
         }
         _updateMyMarker(pos.latitude, pos.longitude, pos.heading);
       });
@@ -399,6 +495,51 @@ class _GuidePageState extends State<GuidePage> {
         _moveCameraToUser(pos.latitude, pos.longitude, pos.heading);
       }
     });
+  }
+
+  // ─────────────────────────────────────────────
+  // Remaining calculations (基于 API steps，不靠 hardcode 速度)
+  // ─────────────────────────────────────────────
+
+  // ── 修改 3：_calcRemainingSeconds 用 steps 的 durationSeconds 累加 ──
+  int _calcRemainingSeconds(Position pos) {
+    if (_steps.isEmpty) return 0;
+
+    int futureSeconds = 0;
+    for (int i = _currentStepIndex + 1; i < _steps.length; i++) {
+      futureSeconds += _steps[i].durationSeconds;
+    }
+
+    final currentStep   = _steps[_currentStepIndex];
+    final distToStepEnd = Geolocator.distanceBetween(
+      pos.latitude, pos.longitude,
+      currentStep.endLocation.latitude,
+      currentStep.endLocation.longitude,
+    );
+    final stepRatio = currentStep.distanceMeters > 0
+        ? (distToStepEnd / currentStep.distanceMeters).clamp(0.0, 1.0)
+        : 0.0;
+
+    final currentStepRemaining = (currentStep.durationSeconds * stepRatio).toInt();
+    return currentStepRemaining + futureSeconds;
+  }
+
+  double _calcRemainingMeters(Position pos) {
+    if (_steps.isEmpty) return 0;
+
+    double futureMeters = 0;
+    for (int i = _currentStepIndex + 1; i < _steps.length; i++) {
+      futureMeters += _steps[i].distanceMeters;
+    }
+
+    final currentStep   = _steps[_currentStepIndex];
+    final distToStepEnd = Geolocator.distanceBetween(
+      pos.latitude, pos.longitude,
+      currentStep.endLocation.latitude,
+      currentStep.endLocation.longitude,
+    );
+
+    return distToStepEnd.clamp(0.0, currentStep.distanceMeters) + futureMeters;
   }
 
   // ─────────────────────────────────────────────
@@ -437,13 +578,47 @@ class _GuidePageState extends State<GuidePage> {
   // ─────────────────────────────────────────────
 
   double _minDistToPolyline(LatLng point) {
-    double min = double.infinity;
-    for (final p in _polylinePoints) {
+    if (_polylinePoints.isEmpty) return double.infinity;
+
+    int    nearestIdx  = 0;
+    double nearestDist = double.infinity;
+    for (int i = 0; i < _polylinePoints.length; i++) {
       final d = Geolocator.distanceBetween(
-          point.latitude, point.longitude, p.latitude, p.longitude);
-      if (d < min) min = d;
+        point.latitude, point.longitude,
+        _polylinePoints[i].latitude, _polylinePoints[i].longitude,
+      );
+      if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
     }
-    return min;
+
+    final start  = (nearestIdx - 15).clamp(0, _polylinePoints.length - 1);
+    final end    = (nearestIdx + 15).clamp(0, _polylinePoints.length - 1);
+    double minDist = double.infinity;
+
+    for (int i = start; i < end; i++) {
+      final segDist = _distToSegment(
+        point,
+        _polylinePoints[i],
+        _polylinePoints[(i + 1).clamp(0, _polylinePoints.length - 1)],
+      );
+      if (segDist < minDist) minDist = segDist;
+    }
+
+    return minDist;
+  }
+
+  double _distToSegment(LatLng p, LatLng a, LatLng b) {
+    final double ax = a.longitude, ay = a.latitude;
+    final double bx = b.longitude, by = b.latitude;
+    final double px = p.longitude,  py = p.latitude;
+    final double dx = bx - ax,      dy = by - ay;
+
+    if (dx == 0 && dy == 0) {
+      return Geolocator.distanceBetween(py, px, ay, ax);
+    }
+
+    final double t        = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
+    final double clamped  = t.clamp(0.0, 1.0);
+    return Geolocator.distanceBetween(py, px, ay + clamped * dy, ax + clamped * dx);
   }
 
   List<LatLng> _decodePolyline(String encoded) {
@@ -479,12 +654,12 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   IconData _maneuverIcon(String maneuver) {
-    if (maneuver.contains('right'))       return Icons.turn_right_rounded;
-    if (maneuver.contains('left'))        return Icons.turn_left_rounded;
-    if (maneuver.contains('uturn'))       return Icons.u_turn_left_rounded;
-    if (maneuver.contains('roundabout'))  return Icons.roundabout_left_rounded;
-    if (maneuver.contains('merge'))       return Icons.merge_rounded;
-    if (maneuver.contains('ramp'))        return Icons.turn_slight_right_rounded;
+    if (maneuver.contains('right'))      return Icons.turn_right_rounded;
+    if (maneuver.contains('left'))       return Icons.turn_left_rounded;
+    if (maneuver.contains('uturn'))      return Icons.u_turn_left_rounded;
+    if (maneuver.contains('roundabout')) return Icons.roundabout_left_rounded;
+    if (maneuver.contains('merge'))      return Icons.merge_rounded;
+    if (maneuver.contains('ramp'))       return Icons.turn_slight_right_rounded;
     return Icons.straight_rounded;
   }
 
@@ -536,7 +711,10 @@ class _GuidePageState extends State<GuidePage> {
             Text(_error!, textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 15, color: Colors.black54)),
             const SizedBox(height: 24),
-            ElevatedButton(onPressed: () => Navigator.pop(context), child: const Text('Go back')),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Go back'),
+            ),
           ],
         )),
       );
@@ -548,11 +726,11 @@ class _GuidePageState extends State<GuidePage> {
       extendBodyBehindAppBar: true,
       body: Stack(children: [
 
-        // ── 地图 ──
+        // ── Map ──
         GoogleMap(
           initialCameraPosition: CameraPosition(
             target: LatLng(widget.startLat, widget.startLng),
-            zoom: 20.5, tilt: 0,
+            zoom: 17.0, tilt: 0, // ← 从 20.5 降到 17，让用户看到前方路线
           ),
           markers:                 _markers,
           polylines:               _polylines,
@@ -564,16 +742,20 @@ class _GuidePageState extends State<GuidePage> {
             _mapController = c;
             c.animateCamera(CameraUpdate.newCameraPosition(CameraPosition(
               target: LatLng(widget.startLat, widget.startLng),
-              zoom: 20.5, tilt: 0,
+              zoom: 17.0, tilt: 0,
             )));
           },
           onCameraMoveStarted: () {
             if (_isFollowing) setState(() => _isFollowing = false);
           },
-          padding: const EdgeInsets.only(bottom: 160),
+          // top padding = 方向 bar 高度（约 100）+ status bar，让地图内容不被遮挡
+          padding: EdgeInsets.only(
+            top:    MediaQuery.of(context).padding.top + 100,
+            bottom: 160,
+          ),
         ),
 
-        // ── 顶部 turn-by-turn banner ──
+        // ── Turn-by-turn banner ──
         if (step != null)
           Positioned(
             top: 0, left: 0, right: 0,
@@ -590,7 +772,7 @@ class _GuidePageState extends State<GuidePage> {
                     Text(
                       _formatDistance(_distToNextTurn),
                       style: const TextStyle(
-                        color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
+                          color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
                     ),
                     Text(
                       step.instruction,
@@ -603,7 +785,7 @@ class _GuidePageState extends State<GuidePage> {
             ),
           ),
 
-        // ── 右侧按钮 ──
+        // ── Right buttons ──
         Positioned(
           right: 16, bottom: 180,
           child: Column(children: [
@@ -625,7 +807,7 @@ class _GuidePageState extends State<GuidePage> {
           ]),
         ),
 
-        // ── 底部面板 ──
+        // ── Bottom panel ──
         Positioned(
           left: 0, right: 0, bottom: 0,
           child: Container(
@@ -650,7 +832,8 @@ class _GuidePageState extends State<GuidePage> {
                     children: [
                       Text(_formatDuration(_remainingSeconds),
                           style: const TextStyle(
-                              fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87)),
+                              fontSize: 24, fontWeight: FontWeight.bold,
+                              color: Colors.black87)),
                       const SizedBox(width: 8),
                       Text(_formatDistance(_remainingMeters),
                           style: TextStyle(fontSize: 15, color: Colors.grey[600])),
@@ -681,7 +864,7 @@ class _GuidePageState extends State<GuidePage> {
           ),
         ),
 
-        // ── 偏离 banner ──
+        // ── Off-route banner ──
         if (_isRerouting)
           Positioned(
             top: 130, left: 20, right: 20,
@@ -704,9 +887,9 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   Widget _circleBtn({
-    required IconData icon,
-    required Color color,
-    required Color iconColor,
+    required IconData  icon,
+    required Color     color,
+    required Color     iconColor,
     required VoidCallback onTap,
   }) {
     return GestureDetector(

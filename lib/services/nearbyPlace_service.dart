@@ -103,6 +103,55 @@ class NearbyPlacesService {
     return _allPlacesCache;
   }
 
+
+  /// 📍 以指定坐标搜索附近（不用 cache，用于 search 功能）
+  Future<List<PlaceModel>> loadNearbyPlacesAt({
+    required double lat,
+    required double lng,
+    required List<Map<String, dynamic>> categories,
+    required BuildContext context,
+  }) async {
+    final types = categories
+        .where((c) => c['type'] != 'all')
+        .map((c) => c['type'] as String)
+        .toList();
+ 
+    print('🔍 loadNearbyPlacesAt: ($lat, $lng), ${types.length} types...');
+ 
+    final allResults = await Future.wait(
+      types.map((type) async {
+        final apiResults = await PlacesApiService.searchNearby(
+          lat: lat,
+          lng: lng,
+          type: type,
+          radius: 5000,
+          maxResultCount: 20,
+        );
+        return MapEntry(type, apiResults);
+      }),
+    );
+ 
+    // 临时 list，不覆盖原来的 cache
+    final List<PlaceModel> results = [];
+    for (final entry in allResults) {
+      for (final p in entry.value) {
+        try {
+          final place = PlaceModel.fromGoogle(p, primary: entry.key);
+          if (place.lat == null || place.lng == null) continue;
+          if (!results.any((e) => e.id == place.id)) {
+            results.add(place);
+          }
+        } catch (_) {}
+      }
+    }
+ 
+    print('✅ loadNearbyPlacesAt: ${results.length} places found');
+    _precacheImages(context); // 预载图片
+    return results;
+  }
+ 
+
+  
   // ─────────────────────────────────────────────
   // 预先下载图片进 Flutter 缓存
   // 用户滚动到卡片时图片已经ready，几乎秒出

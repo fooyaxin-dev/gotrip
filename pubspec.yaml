@@ -44,6 +44,7 @@ dependencies:
   google_mlkit_commons: ^0.11.0
 
   google_maps_flutter: ^2.4.0 
+  compassx: ^1.0.1
 
 
 

@@ -1,3 +1,5 @@
+//它只管列表估算，不管导航精度
+
 // services/route_service.dart
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -12,7 +14,7 @@ class RouteResult {
   final List<dynamic> polylinePoints;
   final dynamic bounds;
 
-  RouteResult({
+  RouteResult({ 
     required this.distanceMeters,
     required this.durationSeconds,
     this.polylinePoints = const [],

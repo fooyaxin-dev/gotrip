@@ -12,7 +12,8 @@ import '../../services/placeModal.dart';
 import '../../services/nearbyPlace_service.dart';
 import '../../modules/itinerary/itineraryModel.dart';
 import '../../modules/itinerary/itineraryDetail.dart';
-import 'guidePage.dart';
+import 'routePreviewPage.dart';
+import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
 
 enum SortMode { distance, rating }
@@ -51,8 +52,19 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   CameraPosition? _initialCameraPosition;
 
+  // Search
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  List<Map<String, dynamic>> _autocompleteSuggestions = [];
+  bool _isSearchMode = false;       // true = 正在 search / 显示 suggestions
+  bool _isSearchLoading = false;
+  String? _searchLocationName;      // 当前 search 的地点名字（显示在顶部）
+  Timer? _debounce;                 // 防抖，避免每个字都打 API
+
   // ✅ 用户自选的地点
   final Set<String> _selectedPlaceIds = {};
+  List<PlaceModel> _searchPlaces = []; // search mode 的地点，独立存放
+  
 
   final List<Map<String, dynamic>> categories = [
     {'name': 'All',           'icon': Icons.all_inclusive,           'type': 'all',               'color': Colors.black},
@@ -116,10 +128,13 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     _bootstrap();
   }
 
-  @override
-  void dispose() {
-    super.dispose();
-  }
+    @override
+    void dispose() {
+      _searchController.dispose();
+      _searchFocus.dispose();
+      _debounce?.cancel();
+      super.dispose();
+    }
 
   // ─────────────────────────────────────────────
   // Bootstrap
@@ -171,44 +186,187 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     _applyFilter();
   }
 
+  // ═══════════════════════════════════════════════════════════════
+// 3. 新增 search 相关方法
+// ═══════════════════════════════════════════════════════════════
+ 
+  // 用户输入时触发，防抖 400ms
+  void _onSearchChanged(String value) {
+    _debounce?.cancel();
+    if (value.trim().isEmpty) {
+      setState(() => _autocompleteSuggestions = []);
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 400), () async {
+      final suggestions = await PlacesApiService.autocomplete(
+        input: value,
+        lat: _currentPosition?.latitude,
+        lng: _currentPosition?.longitude,
+      );
+      if (mounted) setState(() => _autocompleteSuggestions = suggestions);
+    });
+  }
+ 
+  // 用户选了一个 suggestion
+  Future<void> _onSuggestionSelected(Map<String, dynamic> suggestion) async {
+    _searchFocus.unfocus();
+    setState(() {
+      _isSearchMode    = false;
+      _isSearchLoading = true;
+      _autocompleteSuggestions = [];
+      _searchController.text = suggestion['mainText'] ?? '';
+    });
+ 
+    // 拿坐标
+    final detail = await PlacesApiService.getPlaceLatLng(suggestion['placeId']);
+    if (detail == null || detail['lat'] == null) {
+      setState(() => _isSearchLoading = false);
+      return;
+    }
+ 
+    final lat  = detail['lat'] as double;
+    final lng  = detail['lng'] as double;
+    final name = detail['name'] as String;
+
+    _currentPosition = Position(
+      latitude: lat, longitude: lng,
+      timestamp: DateTime.now(), accuracy: 1, altitude: 0,
+      heading: 0, speed: 0, speedAccuracy: 0,
+      altitudeAccuracy: 0.0, headingAccuracy: 0.0,
+    );
+ 
+    // 地图移到搜索的地点
+    _mapController?.animateCamera(CameraUpdate.newLatLngZoom(LatLng(lat, lng), 14));
+ 
+    try {
+      final places = await NearbyPlacesService.instance.loadNearbyPlacesAt(
+        lat: lat,
+        lng: lng,
+        categories: categories,
+        context: context,
+      );
+ 
+      if (!mounted) return;
+ 
+      setState(() {
+        _isSearchLoading    = false;
+        _searchLocationName = name;  // ← 切换到 search mode
+        _searchPlaces       = places; // ← 存进 search places
+ 
+        // 加一个 pin 在搜索的地点
+        _markers.removeWhere((m) => m.markerId.value == 'search_location');
+        _markers.add(Marker(
+          markerId: const MarkerId('search_location'),
+          position: LatLng(lat, lng),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+          infoWindow: InfoWindow(title: name),
+        ));
+      });
+ 
+      // _applyFilter 会自动用 _searchPlaces（因为 _searchLocationName != null）
+      _applyFilter();
+ 
+    } catch (e) {
+      setState(() => _isSearchLoading = false);
+    }
+  }
+ 
+  // 清除 search，回到用户当前位置
+  void _clearSearch() {
+    final realPos = LocationService.instance.currentPosition;
+    _searchController.clear();
+    _searchFocus.unfocus();
+    setState(() {
+      if (realPos != null) _currentPosition = realPos;
+      _isSearchMode        = false;
+      _isSearchLoading     = false;
+      _searchLocationName  = null;  // ← 回到 realtime mode
+      _searchPlaces        = [];    // ← 清空 search places
+      _autocompleteSuggestions = [];
+    });
+ 
+    // _applyFilter 会自动用 NearbyPlacesService cache（因为 _searchLocationName == null）
+    _applyFilter();
+ 
+    // 地图回到用户位置
+    if (_currentPosition != null) {
+      _mapController?.animateCamera(CameraUpdate.newLatLngZoom(
+        LatLng(_currentPosition!.latitude, _currentPosition!.longitude), 14,
+      ));
+    }
+  
+  }
+ 
+
   // ─────────────────────────────────────────────
   // Filter
   // ─────────────────────────────────────────────
 
-  void _applyFilter() {
+   void _applyFilter() {
+    // ── 决定数据来源 ──
+    // search mode 用 _searchPlaces，realtime 用 NearbyPlacesService cache
+    final List<PlaceModel> sourcePlaces = _searchLocationName != null
+        ? _searchPlaces
+        : _getRealtimePlaces();
+ 
+    // ── secondary filter（category）──
     List<PlaceModel> places;
-
-    if (_selectedPrimary == null) {
-      places = NearbyPlacesService.instance.getByPrimary(null);
+    if (_selectedPrimary == null || _selectedSecondary == 'all' && _selectedPrimary == null) {
+      places = sourcePlaces;
     } else if (_selectedSecondary == 'all') {
-      places = NearbyPlacesService.instance.getByPrimary(_selectedPrimary);
+      places = sourcePlaces
+          .where((p) => p.primaryType == _selectedPrimary)
+          .toList();
     } else {
       final subs = subCategories[_selectedPrimary] ?? [];
       final cfg = subs.firstWhere(
         (e) => e['key'] == _selectedSecondary,
         orElse: () => {'allowTypes': <String>[], 'nameKeywords': <String>[]},
       );
-      places = NearbyPlacesService.instance.getBySecondary(
+      final allowTypes   = (cfg['allowTypes']   as List?)?.cast<String>() ?? [];
+      final nameKeywords = (cfg['nameKeywords'] as List?)?.cast<String>() ?? [];
+ 
+      places = sourcePlaces.where((place) {
+        if (_selectedPrimary != null && place.primaryType != _selectedPrimary) return false;
+        if (allowTypes.isEmpty && nameKeywords.isEmpty) return true;
+        final name      = place.name.toLowerCase();
+        final typeMatch = allowTypes.isNotEmpty && place.allTypes.any((t) => allowTypes.contains(t));
+        final nameMatch = nameKeywords.isNotEmpty && nameKeywords.any((k) => name.contains(k.toLowerCase()));
+        return typeMatch || nameMatch;
+      }).toList();
+    }
+ 
+    setState(() {
+      _isLoading = false;
+      _displayedPlaces.clear();
+      _markers.removeWhere((m) =>
+          m.markerId.value != 'me' && m.markerId.value != 'search_location');
+      _routeResults.clear();
+      for (final place in places) {
+        _addMarkerAndPlace(place);
+      }
+    });
+ 
+    _animateToFitMarkers(keepZoom: true);
+  }
+ 
+  // realtime 模式从 NearbyPlacesService 拿
+  List<PlaceModel> _getRealtimePlaces() {
+  if (_selectedPrimary == null) {
+      return NearbyPlacesService.instance.getByPrimary(null);
+    } else if (_selectedSecondary == 'all') {
+      return NearbyPlacesService.instance.getByPrimary(_selectedPrimary);
+    } else {
+      final subs = subCategories[_selectedPrimary] ?? [];
+      final cfg = subs.firstWhere(
+        (e) => e['key'] == _selectedSecondary,
+        orElse: () => {'allowTypes': <String>[], 'nameKeywords': <String>[]},
+      );
+      return NearbyPlacesService.instance.getBySecondary(
         primary: _selectedPrimary!,
         secondary: _selectedSecondary,
         allowTypes: (cfg['allowTypes'] as List?)?.cast<String>() ?? [],
         nameKeywords: (cfg['nameKeywords'] as List?)?.cast<String>() ?? [],
-      );
-    }
-
-    setState(() {
-      _isLoading = false;
-      _displayedPlaces.clear();
-      _markers.removeWhere((m) => m.markerId.value != 'me');
-      _routeResults.clear();
-      for (final place in places) { _addMarkerAndPlace(place); }
-    });
-
-    _animateToFitMarkers(keepZoom: true);
-
-    if (places.isEmpty && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No nearby places found'), duration: Duration(seconds: 2)),
       );
     }
   }
@@ -401,7 +559,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   Future<void> _navigateTo(PlaceModel place) async {
     if (_currentPosition == null) return;
     await Navigator.push(context, MaterialPageRoute(
-      builder: (_) => GuidePage(
+      builder: (_) => RoutePreviewPage(
         startLat: _currentPosition!.latitude, startLng: _currentPosition!.longitude,
         endLat: place.lat!, endLng: place.lng!, destinationName: place.name,
       ),
@@ -578,29 +736,150 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             },
           ),
 
-          // ── Back button ──
+                // ── Search bar + Back button ──
           Positioned(
-            top: 50, left: 20,
-            child: SafeArea(child: Material(
-              elevation: 4, shape: const CircleBorder(), clipBehavior: Clip.antiAlias, color: Colors.white,
-              child: IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new, size: 20, color: Colors.black87),
-                onPressed: widget.onBack,
+            top: 0, left: 0, right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                child: Column(
+                  children: [
+                    // Search row
+                    Row(children: [
+                      // Back button
+                      Material(
+                        elevation: 4, shape: const CircleBorder(),
+                        clipBehavior: Clip.antiAlias, color: Colors.white,
+                        child: IconButton(
+                          icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: Colors.black87),
+                          onPressed: _isSearchMode ? () {
+                            setState(() { _isSearchMode = false; _autocompleteSuggestions = []; });
+                            _searchFocus.unfocus();
+                          } : widget.onBack,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+ 
+                      // Search field
+                      Expanded(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(28),
+                          child: TextField(
+                            controller: _searchController,
+                            focusNode: _searchFocus,
+                            onChanged: _onSearchChanged,
+                            onTap: () => setState(() => _isSearchMode = true),
+                            style: const TextStyle(fontSize: 14),
+                            decoration: InputDecoration(
+                              hintText: _searchLocationName != null
+                                  ? 'Near: $_searchLocationName'
+                                  : 'Search a place...',
+                              hintStyle: TextStyle(
+                                color: _searchLocationName != null
+                                    ? const Color(0xFF1A73E8)
+                                    : Colors.grey[400],
+                                fontSize: 14,
+                              ),
+                              prefixIcon: const Icon(Icons.search_rounded, color: Colors.grey, size: 20),
+                              suffixIcon: _searchController.text.isNotEmpty || _searchLocationName != null
+                                  ? IconButton(
+                                      icon: const Icon(Icons.close_rounded, size: 18, color: Colors.grey),
+                                      onPressed: _clearSearch,
+                                    )
+                                  : null,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(28),
+                                borderSide: BorderSide.none,
+                              ),
+                              filled: true,
+                              fillColor: Colors.white,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            ),
+                          ),
+                        ),
+                      ),
+ 
+                      // Refresh button
+                      const SizedBox(width: 8),
+                      Material(
+                        elevation: 4, shape: const CircleBorder(),
+                        clipBehavior: Clip.antiAlias, color: Colors.white,
+                        child: IconButton(
+                          icon: const Icon(Icons.refresh_rounded, size: 18, color: Colors.black87),
+                          onPressed: _isLoading ? null : _onRefresh,
+                        ),
+                      ),
+                    ]),
+ 
+                    // Autocomplete dropdown
+                    if (_isSearchMode && _autocompleteSuggestions.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(top: 4, left: 44, right: 44),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 12, offset: const Offset(0, 4),
+                          )],
+                        ),
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: _autocompleteSuggestions.length.clamp(0, 5),
+                          separatorBuilder: (_, __) => const Divider(height: 1, indent: 16, endIndent: 16),
+                          itemBuilder: (context, index) {
+                            final s = _autocompleteSuggestions[index];
+                            return ListTile(
+                              dense: true,
+                              leading: const Icon(Icons.location_on_outlined, color: Color(0xFF1A73E8), size: 20),
+                              title: Text(s['mainText'] ?? '',
+                                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                              subtitle: Text(s['secondaryText'] ?? '',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                                  maxLines: 1, overflow: TextOverflow.ellipsis),
+                              onTap: () => _onSuggestionSelected(s),
+                            );
+                          },
+                        ),
+                      ),
+ 
+                    // Loading indicator
+                    if (_isSearchLoading)
+                      Container(
+                        margin: const EdgeInsets.only(top: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 8)],
+                        ),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          SizedBox(width: 16, height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF1A73E8))),
+                          SizedBox(width: 10),
+                          Text('Searching nearby...', style: TextStyle(fontSize: 13, color: Colors.black54)),
+                        ]),
+                      ),
+                  ],
+                ),
               ),
-            )),
+            ),
           ),
 
-          // ── Refresh button ──
-          Positioned(
-            top: 50, right: 20,
-            child: SafeArea(child: Material(
-              elevation: 4, shape: const CircleBorder(), clipBehavior: Clip.antiAlias, color: Colors.white,
-              child: IconButton(
-                icon: const Icon(Icons.refresh_rounded, size: 20, color: Colors.black87),
-                onPressed: _isLoading ? null : _onRefresh,
-              ),
-            )),
-          ),
+          // // ── Refresh button ──
+          // Positioned(
+          //   top: 50, right: 20,
+          //   child: SafeArea(child: Material(
+          //     elevation: 4, shape: const CircleBorder(), clipBehavior: Clip.antiAlias, color: Colors.white,
+          //     child: IconButton(
+          //       icon: const Icon(Icons.refresh_rounded, size: 20, color: Colors.black87),
+          //       onPressed: _isLoading ? null : _onRefresh,
+          //     ),
+          //   )),
+          // ),
 
           // ── Bottom sheet ──
           NotificationListener<DraggableScrollableNotification>(
