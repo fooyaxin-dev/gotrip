@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
-
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'placeDetailPage.dart';
 import '../../services/route_service.dart';
 import '../../services/location_service.dart';
@@ -141,6 +141,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // ─────────────────────────────────────────────
 
   Future<void> _bootstrap() async {
+    if (!await _checkConnectivity()) return;
     setState(() => _isLoading = true);
 
     if (widget.landmarkLat != null && widget.landmarkLng != null) {
@@ -209,35 +210,34 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
  
   // 用户选了一个 suggestion
   Future<void> _onSuggestionSelected(Map<String, dynamic> suggestion) async {
+    if (!await _checkConnectivity()) return;
     _searchFocus.unfocus();
     setState(() {
-      _isSearchMode    = false;
-      _isSearchLoading = true;
+      _isSearchMode        = false;
+      _isSearchLoading     = true;
       _autocompleteSuggestions = [];
       _searchController.text = suggestion['mainText'] ?? '';
     });
- 
+
     // 拿坐标
     final detail = await PlacesApiService.getPlaceLatLng(suggestion['placeId']);
     if (detail == null || detail['lat'] == null) {
       setState(() => _isSearchLoading = false);
       return;
     }
- 
+
     final lat  = detail['lat'] as double;
     final lng  = detail['lng'] as double;
     final name = detail['name'] as String;
 
+    // 把 current position 换成搜索的地点（用于算距离）
     _currentPosition = Position(
       latitude: lat, longitude: lng,
       timestamp: DateTime.now(), accuracy: 1, altitude: 0,
       heading: 0, speed: 0, speedAccuracy: 0,
       altitudeAccuracy: 0.0, headingAccuracy: 0.0,
     );
- 
-    // 地图移到搜索的地点
-    _mapController?.animateCamera(CameraUpdate.newLatLngZoom(LatLng(lat, lng), 14));
- 
+
     try {
       final places = await NearbyPlacesService.instance.loadNearbyPlacesAt(
         lat: lat,
@@ -245,14 +245,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         categories: categories,
         context: context,
       );
- 
+
       if (!mounted) return;
- 
+
       setState(() {
         _isSearchLoading    = false;
-        _searchLocationName = name;  // ← 切换到 search mode
-        _searchPlaces       = places; // ← 存进 search places
- 
+        _searchLocationName = name;
+        _searchPlaces       = places;
+        _selectedPlaceIds.clear();
+
         // 加一个 pin 在搜索的地点
         _markers.removeWhere((m) => m.markerId.value == 'search_location');
         _markers.add(Marker(
@@ -262,10 +263,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           infoWindow: InfoWindow(title: name),
         ));
       });
- 
-      // _applyFilter 会自动用 _searchPlaces（因为 _searchLocationName != null）
+
+      // 先 apply filter（把 places markers 加进去）
       _applyFilter();
- 
+
+      // filter 完了才移动 camera，这时候所有 markers 都在了
+      // 用 _animateToFitMarkers 会自动忽略 'me' marker（search mode）
+      _animateToFitMarkers(keepZoom: false);
+
     } catch (e) {
       setState(() => _isSearchLoading = false);
     }
@@ -273,28 +278,40 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
  
   // 清除 search，回到用户当前位置
   void _clearSearch() {
-    final realPos = LocationService.instance.currentPosition;
     _searchController.clear();
     _searchFocus.unfocus();
+
+    final realPos = LocationService.instance.currentPosition;
+
     setState(() {
       if (realPos != null) _currentPosition = realPos;
       _isSearchMode        = false;
       _isSearchLoading     = false;
-      _searchLocationName  = null;  // ← 回到 realtime mode
-      _searchPlaces        = [];    // ← 清空 search places
+      _searchLocationName  = null;
+      _searchPlaces        = [];
       _autocompleteSuggestions = [];
+      _selectedPlaceIds.clear(); // ← 清空选中的地点
+
+      // 更新 me marker 回真实位置
+      if (realPos != null) {
+        _markers.removeWhere((m) => m.markerId.value == 'me');
+        _markers.removeWhere((m) => m.markerId.value == 'search_location');
+        _markers.add(Marker(
+          markerId: const MarkerId('me'),
+          position: LatLng(realPos.latitude, realPos.longitude),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          infoWindow: const InfoWindow(title: 'My Location'),
+        ));
+      }
     });
- 
-    // _applyFilter 会自动用 NearbyPlacesService cache（因为 _searchLocationName == null）
+
     _applyFilter();
- 
-    // 地图回到用户位置
+
     if (_currentPosition != null) {
       _mapController?.animateCamera(CameraUpdate.newLatLngZoom(
         LatLng(_currentPosition!.latitude, _currentPosition!.longitude), 14,
       ));
     }
-  
   }
  
 
@@ -385,8 +402,18 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   }
 
   Future<void> _onRefresh() async {
+    if (!await _checkConnectivity()) return;
+    if (_searchLocationName != null) {
+      _clearSearch();
+      return;
+    }
+
     NearbyPlacesService.instance.clearCache();
-    setState(() { _selectedPrimary = null; _selectedSecondary = 'all'; _isLoading = true; });
+    setState(() {
+      _selectedPrimary   = null;
+      _selectedSecondary = 'all';
+      _isLoading         = true;
+    });
     try {
       await NearbyPlacesService.instance.loadNearbyPlacesOnce(categories, context);
     } catch (e) {
@@ -531,12 +558,21 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   void _animateToFitMarkers({bool keepZoom = false}) {
     if (_mapController == null || _markers.isEmpty) return;
-    if (_markers.length == 1) {
-      _mapController!.animateCamera(CameraUpdate.newLatLngZoom(_markers.first.position, 15));
+
+    // search mode 时只 fit search_location 附近的 markers，忽略 'me'
+    final relevantMarkers = _searchLocationName != null
+        ? _markers.where((m) => m.markerId.value != 'me').toSet()
+        : _markers;
+
+    if (relevantMarkers.isEmpty) return;
+    if (relevantMarkers.length == 1) {
+      _mapController!.animateCamera(
+        CameraUpdate.newLatLngZoom(relevantMarkers.first.position, 15));
       return;
     }
+
     double minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
-    for (final m in _markers) {
+    for (final m in relevantMarkers) {
       if (m.position.latitude  < minLat) minLat = m.position.latitude;
       if (m.position.latitude  > maxLat) maxLat = m.position.latitude;
       if (m.position.longitude < minLng) minLng = m.position.longitude;
@@ -547,7 +583,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       _mapController!.animateCamera(CameraUpdate.newLatLng(center));
     } else {
       _mapController!.animateCamera(CameraUpdate.newLatLngBounds(
-        LatLngBounds(southwest: LatLng(minLat, minLng), northeast: LatLng(maxLat, maxLng)), 80,
+        LatLngBounds(
+          southwest: LatLng(minLat, minLng),
+          northeast: LatLng(maxLat, maxLng),
+        ), 80,
       ));
     }
   }
@@ -558,13 +597,44 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   Future<void> _navigateTo(PlaceModel place) async {
     if (_currentPosition == null) return;
+
     await Navigator.push(context, MaterialPageRoute(
       builder: (_) => RoutePreviewPage(
-        startLat: _currentPosition!.latitude, startLng: _currentPosition!.longitude,
-        endLat: place.lat!, endLng: place.lng!, destinationName: place.name,
+        startLat:          _currentPosition!.latitude,
+        startLng:          _currentPosition!.longitude,
+        endLat:            place.lat!,
+        endLng:            place.lng!,
+        destinationName:   place.name,
+        startLocationName: _searchLocationName,
       ),
     ));
   }
+
+  // ─────────────────────────────────────────────
+  // offline
+  // ─────────────────────────────────────────────
+
+  Future<bool> _checkConnectivity() async {
+  final result = await Connectivity().checkConnectivity();
+  if (result == ConnectivityResult.none) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Row(children: [
+            Icon(Icons.wifi_off_rounded, color: Colors.white, size: 18),
+            SizedBox(width: 8),
+            Text('No internet connection'),
+          ]),
+          backgroundColor: Colors.red[700],
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    }
+    return false;
+  }
+  return true;
+}
 
   // ─────────────────────────────────────────────
   // UI Helpers
@@ -885,7 +955,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           NotificationListener<DraggableScrollableNotification>(
             onNotification: (n) { _bottomPaddingNotifier.value = n.extent; return false; },
             child: DraggableScrollableSheet(
-              key: const PageStorageKey('gotrip_sheet_unique'),
+              key: ValueKey(_searchLocationName), // ← 改这个，mode 变了 key 变了，sheet 自动 reset
               initialChildSize: 0.4, minChildSize: 0.2, maxChildSize: 0.85,
               snap: true,
               builder: (context, scrollController) {
@@ -962,6 +1032,28 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           const SizedBox(height: 4),
         ])),
 
+        if (_searchLocationName != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Row(children: [
+              const Icon(Icons.location_on_rounded, size: 14, color: Color(0xFF1A73E8)),
+              const SizedBox(width: 4),
+              Text(
+                'Showing results near: $_searchLocationName',
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: Color(0xFF1A73E8),
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: _clearSearch,
+                child: const Icon(Icons.close_rounded, size: 16, color: Color(0xFF1A73E8)),
+              ),
+            ]),
+          ),
+          
         // Primary categories
         SizedBox(
           height: 95,
@@ -1163,6 +1255,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                         Text('${routeInfo.durationSeconds ~/ 60} min',
                             style: TextStyle(fontSize: 12, color: Colors.grey[700])),
                       ],
+                      
                     ]),
                   ],
                 ),

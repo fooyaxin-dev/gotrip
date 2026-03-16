@@ -120,6 +120,7 @@ class _GuidePageState extends State<GuidePage> {
     _positionStream?.cancel();
     _compassStream?.cancel(); // ← 新增
     _mapController?.dispose();
+    _positionBuffer.clear();
     super.dispose();
   }
 
@@ -200,63 +201,106 @@ class _GuidePageState extends State<GuidePage> {
     }
   }
 
-  Future<void> _loadRoute(double fromLat, double fromLng) async {
+Future<void> _loadRoute(double fromLat, double fromLng) async {
     setState(() {
       _loading     = true;
       _error       = null;
       _isRerouting = false;
       _polylines.clear();
     });
-
+ 
     try {
-      final url = Uri.parse(
-        'https://maps.googleapis.com/maps/api/directions/json'
-        '?origin=$fromLat,$fromLng'
-        '&destination=${widget.endLat},${widget.endLng}'
-        '&mode=$_apiMode'
-        '&departure_time=now'     // ← 加这个
-        '&alternatives=false'     // ← 加这个
-        '&key=$_apiKey',
+      // Routes API 是 POST
+      final url = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
+ 
+      final body = jsonEncode({
+        "origin": {
+          "location": {
+            "latLng": {"latitude": fromLat, "longitude": fromLng}
+          }
+        },
+        "destination": {
+          "location": {
+            "latLng": {"latitude": widget.endLat, "longitude": widget.endLng}
+          }
+        },
+        "travelMode": _routesApiMode,         // DRIVE / WALK / TWO_WHEELER
+        "routingPreference": widget.travelMode == TravelMode.walk
+            ? "ROUTING_PREFERENCE_UNSPECIFIED"
+            : "TRAFFIC_AWARE",                // ← 考虑实时路况
+        "computeAlternativeRoutes": false,
+        "routeModifiers": {
+          "avoidTolls": false,
+          "avoidHighways": false,
+        },
+        "languageCode": "en-US",
+        "units": "METRIC",
+      });
+ 
+      final resp = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': _apiKey,
+          // FieldMask：只要需要的字段，省 quota
+          'X-Goog-FieldMask':
+              'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs.steps.navigationInstruction,routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration,routes.legs.steps.startLocation,routes.legs.steps.endLocation,routes.legs.steps.maneuver,routes.viewport',
+        },
+        body: body,
       );
-
-      final resp = await http.get(url);
-      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
-
+ 
+      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
+ 
       final data = json.decode(resp.body);
-      if (data['status'] != 'OK') throw Exception('${data['status']}');
-
-      final route = data['routes'][0];
-      final leg   = (route['legs'] as List).first;
-
-      final points = _decodePolyline(route['overview_polyline']['points'] as String);
-
-      final b  = route['bounds'];
-      final ne = b['northeast'];
-      final sw = b['southwest'];
+      final routes = data['routes'] as List?;
+      if (routes == null || routes.isEmpty) throw Exception('No routes found');
+ 
+      final route = routes[0];
+      final legs  = (route['legs'] as List);
+ 
+      // Polyline
+      final points = _decodePolyline(route['polyline']['encodedPolyline'] as String);
+ 
+      // Bounds (viewport)
+      final vp = route['viewport'];
+      final ne = vp['high'];
+      final sw = vp['low'];
       final bounds = LatLngBounds(
-        southwest: LatLng(sw['lat'], sw['lng']),
-        northeast: LatLng(ne['lat'], ne['lng']),
+        southwest: LatLng(sw['latitude'], sw['longitude']),
+        northeast: LatLng(ne['latitude'], ne['longitude']),
       );
-
-      // ── 修改 2：解析 steps 时加上 durationSeconds ──
-      final steps = (leg['steps'] as List).map((s) {
-        final rawHtml  = (s['html_instructions'] as String?) ?? '';
-        final maneuver = (s['maneuver']          as String?) ?? _guessManeuver(rawHtml);
-        return NavStep(
-          instruction:     _stripHtml(rawHtml),
-          maneuver:        maneuver,
-          distanceMeters:  (s['distance']['value'] as num).toDouble(),
-          durationSeconds: (s['duration']['value'] as num).toInt(), // ← 新增
-          startLocation:   LatLng(s['start_location']['lat'], s['start_location']['lng']),
-          endLocation:     LatLng(s['end_location']['lat'],   s['end_location']['lng']),
-        );
-      }).toList();
-
-      final totalDist = (leg['distance']['value'] as num).toDouble();
-      final totalDur  = (leg['duration']['value']  as num).toInt();
-
+ 
+      // Steps — 从所有 legs 合并
+      final steps = <NavStep>[];
+      for (final leg in legs) {
+        for (final s in (leg['steps'] as List)) {
+          final nav      = s['navigationInstruction'] as Map<String, dynamic>? ?? {};
+          final maneuver = (nav['maneuver'] as String? ?? '').toLowerCase();
+          final instr    = (nav['instructions'] as String? ?? '');
+          steps.add(NavStep(
+            instruction:     instr,
+            maneuver:        maneuver,
+            distanceMeters:  (s['distanceMeters'] as num? ?? 0).toDouble(),
+            durationSeconds: _parseDuration(s['staticDuration'] as String? ?? '0s'),
+            startLocation:   LatLng(
+              s['startLocation']['latLng']['latitude'],
+              s['startLocation']['latLng']['longitude'],
+            ),
+            endLocation: LatLng(
+              s['endLocation']['latLng']['latitude'],
+              s['endLocation']['latLng']['longitude'],
+            ),
+          ));
+        }
+      }
+ 
+      // 总距离和时间
+      // duration 已经是考虑路况的（因为用了 TRAFFIC_AWARE）
+      final totalDist = (route['distanceMeters'] as num).toDouble();
+      final totalDur  = _parseDuration(route['duration'] as String);
+ 
       if (!mounted) return;
-
+ 
       setState(() {
         _polylinePoints       = points;
         _routeBounds          = bounds;
@@ -269,7 +313,7 @@ class _GuidePageState extends State<GuidePage> {
         _distToNextTurn       = steps.isNotEmpty ? steps[0].distanceMeters : 0;
         _loading              = false;
       });
-
+ 
       _drawRoute(points, fromLat, fromLng);
       _startTracking();
     } catch (e) {
@@ -277,7 +321,24 @@ class _GuidePageState extends State<GuidePage> {
       setState(() { _error = e.toString(); _loading = false; });
     }
   }
-
+ 
+  // Routes API travelMode string
+  String get _routesApiMode {
+    switch (widget.travelMode) {
+      case TravelMode.walk:  return 'WALK';
+      case TravelMode.drive: return 'DRIVE';
+      case TravelMode.motor: return 'TWO_WHEELER'; // ← Routes API 原生支持摩托！
+    }
+  }
+ 
+  // Routes API 的 duration 格式是 "123s"，需要解析
+  int _parseDuration(String duration) {
+    final s = duration.replaceAll('s', '').trim();
+    return int.tryParse(s) ?? 0;
+  }
+  
+  
+  
   // ─────────────────────────────────────────────
   // Map drawing
   // ─────────────────────────────────────────────
@@ -400,9 +461,9 @@ class _GuidePageState extends State<GuidePage> {
     _positionStream?.cancel();
 
     // GPS 暖机：进来先等 3 秒，让 GPS 稳定后才开始处理
-    bool warmedUp = false;
+    bool _gpsWarmedUp = false;
     Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) warmedUp = true;
+      if (mounted) setState(() => _gpsWarmedUp = true);
     });
 
     _positionStream = Geolocator.getPositionStream(
@@ -414,7 +475,7 @@ class _GuidePageState extends State<GuidePage> {
       if (!mounted) return;
 
       // 暖机期间丢弃所有读数，避免一进来就乱跳
-      if (!warmedUp) return;
+      if (!_gpsWarmedUp) return;
 
       // 精度过滤：GPS 信号差（误差 > 20m）直接跳过这次读数
       if (rawPos.accuracy > 20) return;

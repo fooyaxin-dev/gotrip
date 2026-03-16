@@ -35,6 +35,7 @@ class RoutePreviewPage extends StatefulWidget {
   final double  endLat;
   final double  endLng;
   final String? destinationName;
+  final String? startLocationName;
 
   const RoutePreviewPage({
     super.key,
@@ -43,6 +44,7 @@ class RoutePreviewPage extends StatefulWidget {
     required this.endLat,
     required this.endLng,
     this.destinationName,
+    this.startLocationName, 
   });
 
   @override
@@ -68,6 +70,8 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   // 当前选中 mode 对应的 polyline 点
   List<LatLng> _currentPolyline = [];
   LatLngBounds? _currentBounds;
+
+  bool _trafficEnabled = false;
 
   @override
   void initState() {
@@ -114,38 +118,76 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   }
 
   Future<void> _fetchMode(TravelMode mode) async {
+    // motor 复用 drive，不打 API
+    if (mode == TravelMode.motor) return;
+ 
     try {
-      final url = Uri.parse(
-        'https://maps.googleapis.com/maps/api/directions/json'
-        '?origin=${widget.startLat},${widget.startLng}'
-        '&destination=${widget.endLat},${widget.endLng}'
-        '&mode=${_apiModeString(mode)}'
-        '&departure_time=now'     // ← 加这个
-        '&alternatives=false'     // ← 加这个
-        '&key=$_apiKey',
+      final url = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
+ 
+      String routesMode;
+      switch (mode) {
+        case TravelMode.walk:  routesMode = 'WALK'; break;
+        case TravelMode.drive: routesMode = 'DRIVE'; break;
+        case TravelMode.motor: routesMode = 'DRIVE'; break;
+      }
+ 
+      final body = jsonEncode({
+        "origin": {
+          "location": {
+            "latLng": {
+              "latitude":  widget.startLat,
+              "longitude": widget.startLng,
+            }
+          }
+        },
+        "destination": {
+          "location": {
+            "latLng": {
+              "latitude":  widget.endLat,
+              "longitude": widget.endLng,
+            }
+          }
+        },
+        "travelMode": routesMode,
+        "routingPreference": mode == TravelMode.walk
+            ? "ROUTING_PREFERENCE_UNSPECIFIED"
+            : "TRAFFIC_AWARE",   // ← 实时路况
+        "computeAlternativeRoutes": false,
+        "languageCode": "en-US",
+        "units": "METRIC",
+      });
+ 
+      final resp = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': _apiKey,
+          'X-Goog-FieldMask':
+              'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.viewport',
+        },
+        body: body,
       );
-      final resp = await http.get(url);
+ 
       if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
-      final data = json.decode(resp.body);
-      if (data['status'] != 'OK') throw Exception(data['status']);
-
-      final route = data['routes'][0];
-      final leg   = (route['legs'] as List).first;
-      final dist  = (leg['distance']['value'] as num).toDouble();
-      final dur   = (leg['duration']['value']  as num).toInt();
-
-      // decode polyline
-      final points = _decodePolyline(route['overview_polyline']['points'] as String);
-
-      // bounds
-      final b  = route['bounds'];
-      final ne = b['northeast'];
-      final sw = b['southwest'];
+ 
+      final data   = json.decode(resp.body);
+      final routes = data['routes'] as List?;
+      if (routes == null || routes.isEmpty) throw Exception('No routes');
+ 
+      final route = routes[0];
+      final dist  = (route['distanceMeters'] as num).toDouble();
+      final dur   = _parseDurationPreview(route['duration'] as String);
+ 
+      final points = _decodePolyline(route['polyline']['encodedPolyline'] as String);
+ 
+      final vp = route['viewport'];
+      final ne = vp['high'];
+      final sw = vp['low'];
       final bounds = LatLngBounds(
-        southwest: LatLng(sw['lat'], sw['lng']),
-        northeast: LatLng(ne['lat'], ne['lng']),
+        southwest: LatLng(sw['latitude'], sw['longitude']),
+        northeast: LatLng(ne['latitude'], ne['longitude']),
       );
-
+ 
       if (!mounted) return;
       setState(() {
         _summaries[mode]!
@@ -153,11 +195,11 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
           ..distanceMeters  = dist
           ..loading         = false;
       });
-
-      // 存 polyline（只保存，不一定绘制）
-      _modePolylines[mode]  = points;
-      _modeBounds[mode]     = bounds;
-
+ 
+      _modePolylines[mode] = points;
+      _modeBounds[mode]    = bounds;
+ 
+      // drive 结果出来，motor 直接复用
       if (mode == TravelMode.drive) {
         _modePolylines[TravelMode.motor] = points;
         _modeBounds[TravelMode.motor]    = bounds;
@@ -168,11 +210,9 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
             ..loading         = false;
         });
       }
-
-      // 如果是当前选中 mode，立即渲染
-      if (mode == _selectedMode) {
-        _renderPolyline(mode);
-      }
+ 
+      if (mode == _selectedMode) _renderPolyline(mode);
+ 
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -182,6 +222,13 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
       });
     }
   }
+ 
+  // RoutePreviewPage 里的 duration 解析
+  int _parseDurationPreview(String duration) {
+    final s = duration.replaceAll('s', '').trim();
+    return int.tryParse(s) ?? 0;
+  }
+ 
 
   // 存各 mode 的路线数据
   final Map<TravelMode, List<LatLng>>   _modePolylines = {};
@@ -288,6 +335,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
           myLocationButtonEnabled: false,
           zoomControlsEnabled:     false,
           compassEnabled:          true,
+          trafficEnabled: _trafficEnabled, 
           onMapCreated: (c) {
             _mapController = c;
             // 等 polyline 拉完再 fit
@@ -319,9 +367,14 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    const Text('Your location',
-                        style: TextStyle(fontSize: 16, color: Color(0xFF1A73E8),
-                            fontWeight: FontWeight.w500)),
+                    Text(
+                      widget.startLocationName ?? 'Your location',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        color: Color(0xFF1A73E8),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ]),
                   const Padding(
                     padding: EdgeInsets.only(left: 4),
@@ -342,7 +395,17 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                 ],
               )),
               const SizedBox(width: 8),
-              const Icon(Icons.swap_vert_rounded, color: Colors.grey),
+              
+              if (_summaries[_selectedMode]?.loading == false &&
+                  _summaries[_selectedMode]?.error == null)
+                Text(
+                  'Arrive ${_arrivalTime(_summaries[_selectedMode]!.durationSeconds)}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[500],
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
             ]),
           ),
         ),
@@ -405,10 +468,50 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                         Text(_fmtDist(selected.distanceMeters),
                             style: TextStyle(
                                 fontSize: 15, color: Colors.grey[600])),
-                        const Spacer(),
+            
                         Text(
-                          'Arrive ${_arrivalTime(selected.durationSeconds)} · Fastest route',
+                          '· Fastest route   |',
                           style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                        ),
+                        const SizedBox(width: 8),
+                        GestureDetector(
+                          onTap: () => setState(() => _trafficEnabled = !_trafficEnabled),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: _trafficEnabled
+                                  ? const Color(0xFF1A73E8).withOpacity(0.1)
+                                  : Colors.grey[100],
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: _trafficEnabled
+                                    ? const Color(0xFF1A73E8)
+                                    : Colors.grey[300]!,
+                              ),
+                            ),
+
+                            child: Row(mainAxisSize: MainAxisSize.min, children: [
+                              Icon(
+                                Icons.traffic_rounded,
+                                size: 14,
+                                color: _trafficEnabled
+                                    ? const Color(0xFF1A73E8)
+                                    : Colors.grey[600],
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Traffic',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: _trafficEnabled
+                                      ? const Color(0xFF1A73E8)
+                                      : Colors.grey[600],
+                                ),
+                              ),
+                            ]),
+                          ),
                         ),
                       ],
                     ],

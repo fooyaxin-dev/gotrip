@@ -7,6 +7,7 @@ class NearbyPlacesService {
   static final NearbyPlacesService instance = NearbyPlacesService._();
   NearbyPlacesService._();
   List<PlaceModel> get cachedPlaces => _allPlacesCache; // 你现有的缓存列表
+  final Map<String, List<PlaceModel>> _searchCache = {};
 
   bool _isLoading = false;
   bool _hasLoadedOnce = false;
@@ -111,27 +112,39 @@ class NearbyPlacesService {
     required List<Map<String, dynamic>> categories,
     required BuildContext context,
   }) async {
+    // 检查缓存（坐标精确到小数点后3位，约100m精度）
+    final cacheKey = '${lat.toStringAsFixed(3)},${lng.toStringAsFixed(3)}';
+    if (_searchCache.containsKey(cacheKey)) {
+      print('🧠 loadNearbyPlacesAt: cache hit for $cacheKey');
+      return _searchCache[cacheKey]!;
+    }
+
     final types = categories
         .where((c) => c['type'] != 'all')
         .map((c) => c['type'] as String)
         .toList();
- 
+
     print('🔍 loadNearbyPlacesAt: ($lat, $lng), ${types.length} types...');
- 
+
+    // 每个 type 单独 try catch，一个失败不影响其他
     final allResults = await Future.wait(
       types.map((type) async {
-        final apiResults = await PlacesApiService.searchNearby(
-          lat: lat,
-          lng: lng,
-          type: type,
-          radius: 5000,
-          maxResultCount: 20,
-        );
-        return MapEntry(type, apiResults);
+        try {
+          final apiResults = await PlacesApiService.searchNearby(
+            lat: lat,
+            lng: lng,
+            type: type,
+            radius: 5000,
+            maxResultCount: 20,
+          );
+          return MapEntry(type, apiResults);
+        } catch (e) {
+          print('⚠️ loadNearbyPlacesAt: $type failed - $e');
+          return MapEntry(type, <Map<String, dynamic>>[]);
+        }
       }),
     );
- 
-    // 临时 list，不覆盖原来的 cache
+
     final List<PlaceModel> results = [];
     for (final entry in allResults) {
       for (final p in entry.value) {
@@ -144,9 +157,15 @@ class NearbyPlacesService {
         } catch (_) {}
       }
     }
- 
+
     print('✅ loadNearbyPlacesAt: ${results.length} places found');
-    _precacheImages(context); // 预载图片
+
+    // 存进缓存
+    _searchCache[cacheKey] = results;
+
+    // 预载图片
+    if (context.mounted) _precacheImages(context);
+
     return results;
   }
  
