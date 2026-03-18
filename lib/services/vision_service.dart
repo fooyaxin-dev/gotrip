@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class VisionService {
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
+  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; // String.fromEnvironment('GOOGLE_API_KEY');
 
   /// 返回 Map: { 'landmark': 'Eiffel Tower', 'rawJson': '...', 'lat': 48.85, 'lng': 2.29 }
   static Future<Map<String, dynamic>> detectLandmarkWithJson(

@@ -7,7 +7,9 @@ class FavouriteService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
+ 
+
+  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; // String.fromEnvironment('GOOGLE_API_KEY');
   static const String _baseUrl = 'https://places.googleapis.com/v1';
 
   static String? get _userId => _auth.currentUser?.uid;

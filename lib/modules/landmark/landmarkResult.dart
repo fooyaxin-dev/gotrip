@@ -342,13 +342,15 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                         ? const Center(child: CircularProgressIndicator())
                         : GestureDetector(
                             onTap: () {
-                              final landmarkLocation = placeDetails?['location'];
-                              final lat = (landmarkLocation?['latitude'] as num?)
-                                      ?.toDouble() ??
-                                  pos.latitude;
-                              final lng = (landmarkLocation?['longitude'] as num?)
-                                      ?.toDouble() ??
-                                  pos.longitude;
+
+                                final landmarkLocation = placeDetails?['location'];
+                                print('🔍 placeDetails location: $landmarkLocation');
+                                print('🔍 full placeDetails keys: ${placeDetails?.keys.toList()}');
+                                
+                                final lat = (landmarkLocation?['latitude'] as num?)?.toDouble() ?? pos.latitude;
+                                final lng = (landmarkLocation?['longitude'] as num?)?.toDouble() ?? pos.longitude;
+                                print('🗺️ passing to RealTimeDetectPage: $lat, $lng');
+
                               Navigator.push(
                                 context,
                                 MaterialPageRoute(
@@ -381,7 +383,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                                       children: [
                                         // TODO: Move API key to secure config
                                         Image.network(
-                                          'https://maps.googleapis.com/maps/api/staticmap?center=$mapLat,$mapLng&zoom=15&size=600x300&&markers=color:red%7Clabel:L%7C$mapLat,$mapLng&markers=color:blue%7Clabel:U%7C${pos.latitude},${pos.longitude}&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc',
+                                          'https://maps.googleapis.com/maps/api/staticmap?center=$mapLat,$mapLng&zoom=15&size=600x300&&markers=color:red%7Clabel:L%7C$mapLat,$mapLng&markers=color:blue%7Clabel:U%7C${pos.latitude},${pos.longitude}&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc', //=${const String.fromEnvironment('GOOGLE_API_KEY')}',
                                           fit: BoxFit.cover,
                                           width: double.infinity,
                                           height: double.infinity,

@@ -411,7 +411,7 @@ Each place: placeId, suggestedTime, durationMinutes, notes (1 practical sentence
 
   Future<String?> _callGemini(String prompt) async {
     try {
-      const apiKey = "AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc";
+      const String apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; // String.fromEnvironment('GOOGLE_API_KEY');
 
       final response = await http.post(
         Uri.parse(

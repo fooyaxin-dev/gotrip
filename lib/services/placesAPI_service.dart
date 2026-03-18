@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class PlacesApiService {
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; 
+  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; // String.fromEnvironment('GOOGLE_API_KEY');
   static const String _baseUrl = 'https://places.googleapis.com/v1';
 
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -235,7 +235,6 @@ class PlacesApiService {
     print('📄 getPlaceDetails: $placeId');
 
     try {
-      // 🔍 Step 1: 查询 Firebase 缓存
       print('💾 Checking Firebase cache...');
       final docSnapshot = await _firestore
           .collection(_collectionName)
@@ -245,23 +244,20 @@ class PlacesApiService {
       if (docSnapshot.exists) {
         final cachedData = docSnapshot.data()!;
 
-        // ✅ 检查缓存是否有 types 字段
-        // 如果没有（旧缓存），强制重新 fetch
         final hasTypes = cachedData.containsKey('types') &&
             (cachedData['types'] as List?)?.isNotEmpty == true;
+        final hasLocation = cachedData.containsKey('location');
 
-        if (hasTypes) {
+        if (hasTypes && hasLocation) {
           _cacheHits++;
           print('✅ CACHE HIT (${DateTime.now().difference(startTime).inMilliseconds}ms)');
           return cachedData;
         } else {
-          // ⚠️ 旧缓存没有 types，删掉重新 fetch
-          print('⚠️ Cache outdated (missing types), re-fetching...');
+          print('⚠️ Cache outdated (missing types or location), re-fetching...');
           await _firestore.collection(_collectionName).doc(placeId).delete();
         }
       }
 
-      // ❌ 缓存未命中 或 旧缓存被删除，调用 API
       _cacheMisses++;
       _totalApiCalls++;
       _placeDetailsCallCount++;
@@ -271,7 +267,7 @@ class PlacesApiService {
       final response = await http.get(
         url,
         headers: _headers(
-          'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types'
+          'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,location',
         ),
       );
 
@@ -281,7 +277,6 @@ class PlacesApiService {
 
       final data = json.decode(response.body);
 
-      // 💾 Step 3: 存入 Firebase 缓存
       await _firestore.collection(_collectionName).doc(placeId).set({
         ...data,
         'cachedAt': FieldValue.serverTimestamp(),
@@ -295,7 +290,7 @@ class PlacesApiService {
       rethrow;
     }
   }
-
+    
   /// 🗑️ 清除指定地点缓存
   static Future<void> clearPlaceCache(String placeId) async {
     try {

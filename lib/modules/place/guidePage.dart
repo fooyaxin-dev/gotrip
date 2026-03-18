@@ -96,7 +96,8 @@ class _GuidePageState extends State<GuidePage> {
   StreamSubscription<CompassXEvent>? _compassStream;
   double _currentHeading = 0; // 来自磁力计，静止也准确
 
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
+  
+  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; // String.fromEnvironment('GOOGLE_API_KEY');
 
   // ─────────────────────────────────────────────
   // Lifecycle

@@ -52,7 +52,8 @@ class RoutePreviewPage extends StatefulWidget {
 }
 
 class _RoutePreviewPageState extends State<RoutePreviewPage> {
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; 
+  
+  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; // String.fromEnvironment('GOOGLE_API_KEY');
 
   GoogleMapController? _mapController;
   final Set<Polyline>  _polylines = {};
