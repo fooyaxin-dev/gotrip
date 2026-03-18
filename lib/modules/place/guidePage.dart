@@ -201,126 +201,127 @@ class _GuidePageState extends State<GuidePage> {
     }
   }
 
-Future<void> _loadRoute(double fromLat, double fromLng) async {
-    setState(() {
-      _loading     = true;
-      _error       = null;
-      _isRerouting = false;
-      _polylines.clear();
-    });
- 
-    try {
-      // Routes API 是 POST
-      final url = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
- 
-      final body = jsonEncode({
-        "origin": {
-          "location": {
-            "latLng": {"latitude": fromLat, "longitude": fromLng}
-          }
-        },
-        "destination": {
-          "location": {
-            "latLng": {"latitude": widget.endLat, "longitude": widget.endLng}
-          }
-        },
-        "travelMode": _routesApiMode,         // DRIVE / WALK / TWO_WHEELER
-        "routingPreference": widget.travelMode == TravelMode.walk
-            ? "ROUTING_PREFERENCE_UNSPECIFIED"
-            : "TRAFFIC_AWARE",                // ← 考虑实时路况
-        "computeAlternativeRoutes": false,
-        "routeModifiers": {
-          "avoidTolls": false,
-          "avoidHighways": false,
-        },
-        "languageCode": "en-US",
-        "units": "METRIC",
-      });
- 
-      final resp = await http.post(
-        url,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': _apiKey,
-          // FieldMask：只要需要的字段，省 quota
-          'X-Goog-FieldMask':
-              'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs.steps.navigationInstruction,routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration,routes.legs.steps.startLocation,routes.legs.steps.endLocation,routes.legs.steps.maneuver,routes.viewport',
-        },
-        body: body,
-      );
- 
-      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
- 
-      final data = json.decode(resp.body);
-      final routes = data['routes'] as List?;
-      if (routes == null || routes.isEmpty) throw Exception('No routes found');
- 
-      final route = routes[0];
-      final legs  = (route['legs'] as List);
- 
-      // Polyline
-      final points = _decodePolyline(route['polyline']['encodedPolyline'] as String);
- 
-      // Bounds (viewport)
-      final vp = route['viewport'];
-      final ne = vp['high'];
-      final sw = vp['low'];
-      final bounds = LatLngBounds(
-        southwest: LatLng(sw['latitude'], sw['longitude']),
-        northeast: LatLng(ne['latitude'], ne['longitude']),
-      );
- 
-      // Steps — 从所有 legs 合并
-      final steps = <NavStep>[];
-      for (final leg in legs) {
-        for (final s in (leg['steps'] as List)) {
-          final nav      = s['navigationInstruction'] as Map<String, dynamic>? ?? {};
-          final maneuver = (nav['maneuver'] as String? ?? '').toLowerCase();
-          final instr    = (nav['instructions'] as String? ?? '');
-          steps.add(NavStep(
-            instruction:     instr,
-            maneuver:        maneuver,
-            distanceMeters:  (s['distanceMeters'] as num? ?? 0).toDouble(),
-            durationSeconds: _parseDuration(s['staticDuration'] as String? ?? '0s'),
-            startLocation:   LatLng(
-              s['startLocation']['latLng']['latitude'],
-              s['startLocation']['latLng']['longitude'],
-            ),
-            endLocation: LatLng(
-              s['endLocation']['latLng']['latitude'],
-              s['endLocation']['latLng']['longitude'],
-            ),
-          ));
-        }
-      }
- 
-      // 总距离和时间
-      // duration 已经是考虑路况的（因为用了 TRAFFIC_AWARE）
-      final totalDist = (route['distanceMeters'] as num).toDouble();
-      final totalDur  = _parseDuration(route['duration'] as String);
- 
-      if (!mounted) return;
- 
+  Future<void> _loadRoute(double fromLat, double fromLng) async {
       setState(() {
-        _polylinePoints       = points;
-        _routeBounds          = bounds;
-        _totalDistanceMeters  = totalDist;
-        _totalDurationSeconds = totalDur;
-        _remainingMeters      = totalDist;
-        _remainingSeconds     = totalDur;
-        _steps                = steps;
-        _currentStepIndex     = 0;
-        _distToNextTurn       = steps.isNotEmpty ? steps[0].distanceMeters : 0;
-        _loading              = false;
+        _loading     = true;
+        _error       = null;
+        _isRerouting = false;
+        _polylines.clear();
       });
- 
-      _drawRoute(points, fromLat, fromLng);
-      _startTracking();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _error = e.toString(); _loading = false; });
+  
+      try {
+        // Routes API 是 POST
+        final url = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
+  
+        final body = jsonEncode({
+          "origin": {
+            "location": {
+              "latLng": {"latitude": fromLat, "longitude": fromLng}
+            }
+          },
+          "destination": {
+            "location": {
+              "latLng": {"latitude": widget.endLat, "longitude": widget.endLng}
+            }
+          },
+          "travelMode": _routesApiMode,
+          "routingPreference": widget.travelMode == TravelMode.walk
+              ? "ROUTING_PREFERENCE_UNSPECIFIED"
+              : "TRAFFIC_AWARE",
+          "computeAlternativeRoutes": false,
+          if (widget.travelMode != TravelMode.walk)  // ← 只有 drive/motor 才加
+            "routeModifiers": {
+              "avoidTolls": false,
+              "avoidHighways": false,
+            },
+          "languageCode": "en-US",
+          "units": "METRIC",
+        });
+  
+        final resp = await http.post(
+          url,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': _apiKey,
+            // FieldMask：只要需要的字段，省 quota
+            'X-Goog-FieldMask':
+                'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs.steps.navigationInstruction,routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration,routes.legs.steps.startLocation,routes.legs.steps.endLocation,,routes.viewport',
+          },
+          body: body,
+        );
+  
+        if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
+  
+        final data = json.decode(resp.body);
+        final routes = data['routes'] as List?;
+        if (routes == null || routes.isEmpty) throw Exception('No routes found');
+  
+        final route = routes[0];
+        final legs  = (route['legs'] as List);
+  
+        // Polyline
+        final points = _decodePolyline(route['polyline']['encodedPolyline'] as String);
+  
+        // Bounds (viewport)
+        final vp = route['viewport'];
+        final ne = vp['high'];
+        final sw = vp['low'];
+        final bounds = LatLngBounds(
+          southwest: LatLng(sw['latitude'], sw['longitude']),
+          northeast: LatLng(ne['latitude'], ne['longitude']),
+        );
+  
+        // Steps — 从所有 legs 合并
+        final steps = <NavStep>[];
+        for (final leg in legs) {
+          for (final s in (leg['steps'] as List)) {
+            final nav      = s['navigationInstruction'] as Map<String, dynamic>? ?? {};
+            final maneuver = (nav['maneuver'] as String? ?? '').toLowerCase();
+            final instr    = (nav['instructions'] as String? ?? '');
+            steps.add(NavStep(
+              instruction:     instr,
+              maneuver:        maneuver,
+              distanceMeters:  (s['distanceMeters'] as num? ?? 0).toDouble(),
+              durationSeconds: _parseDuration(s['staticDuration'] as String? ?? '0s'),
+              startLocation:   LatLng(
+                s['startLocation']['latLng']['latitude'],
+                s['startLocation']['latLng']['longitude'],
+              ),
+              endLocation: LatLng(
+                s['endLocation']['latLng']['latitude'],
+                s['endLocation']['latLng']['longitude'],
+              ),
+            ));
+          }
+        }
+  
+        // 总距离和时间
+        // duration 已经是考虑路况的（因为用了 TRAFFIC_AWARE）
+        final totalDist = (route['distanceMeters'] as num).toDouble();
+        final totalDur  = _parseDuration(route['duration'] as String);
+  
+        if (!mounted) return;
+  
+        setState(() {
+          _polylinePoints       = points;
+          _routeBounds          = bounds;
+          _totalDistanceMeters  = totalDist;
+          _totalDurationSeconds = totalDur;
+          _remainingMeters      = totalDist;
+          _remainingSeconds     = totalDur;
+          _steps                = steps;
+          _currentStepIndex     = 0;
+          _distToNextTurn       = steps.isNotEmpty ? steps[0].distanceMeters : 0;
+          _loading              = false;
+        });
+  
+        _drawRoute(points, fromLat, fromLng);
+        _startTracking();
+      } catch (e) {
+        if (!mounted) return;
+        setState(() { _error = e.toString(); _loading = false; });
+      }
     }
-  }
  
   // Routes API travelMode string
   String get _routesApiMode {

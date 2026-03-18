@@ -27,8 +27,10 @@ class NearbyPlacesService {
 
   Future<List<PlaceModel>> loadNearbyPlacesOnce(
     List<Map<String, dynamic>> categories,
-    BuildContext context, // 用于 precacheImage
-  ) async {
+    BuildContext context, {
+    double? lat,
+    double? lng,
+  }) async {
     if (_hasLoadedOnce) {
       print('🧠 NearbyPlacesService: using cache, no API call');
       return _allPlacesCache;
@@ -40,8 +42,13 @@ class NearbyPlacesService {
     }
 
     final pos = LocationService.instance.currentPosition;
-    if (pos == null) throw Exception('No location');
+    if (pos == null && lat == null) throw Exception('No location');
 
+    // 优先用传进来的坐标，fallback 才用 GPS
+    final searchLat = lat ?? pos?.latitude ?? 0;
+    final searchLng = lng ?? pos?.longitude ?? 0;
+    print('🔍 SEARCHING AT: $searchLat, $searchLng');
+    
     _isLoading = true;
     _allPlacesCache.clear();
     _placesByTypeCache.clear();
@@ -58,8 +65,8 @@ class NearbyPlacesService {
     final allResults = await Future.wait(
       types.map((type) async {
         final apiResults = await PlacesApiService.searchNearby(
-          lat: pos.latitude,
-          lng: pos.longitude,
+          lat: searchLat,
+          lng: searchLng,
           type: type,
           radius: 5000,
           maxResultCount: 20,

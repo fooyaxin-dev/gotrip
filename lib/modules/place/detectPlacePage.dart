@@ -145,6 +145,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     setState(() => _isLoading = true);
 
     if (widget.landmarkLat != null && widget.landmarkLng != null) {
+      print('🏛️ FROM LANDMARK: ${widget.landmarkLat}, ${widget.landmarkLng}');
+      NearbyPlacesService.instance.clearCache(); 
       _currentPosition = Position(
         latitude: widget.landmarkLat!, longitude: widget.landmarkLng!,
         timestamp: DateTime.now(), accuracy: 1, altitude: 0,
@@ -152,9 +154,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         altitudeAccuracy: 0.0, headingAccuracy: 0.0,
       );
     } else {
+      print('📍 FROM GPS');
       try {
-        await LocationService.instance.initLocation();
-        final pos = LocationService.instance.currentPosition;
+      await NearbyPlacesService.instance.loadNearbyPlacesOnce(
+        categories,
+        context,
+        lat: widget.landmarkLat,
+        lng: widget.landmarkLng,
+      );
+     final pos = LocationService.instance.currentPosition;
         if (pos == null) { _showErrorDialog('Error', 'Cannot get location'); return; }
         _currentPosition = pos;
       } catch (e) {
@@ -177,7 +185,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     setState(() {});
 
     try {
-      await NearbyPlacesService.instance.loadNearbyPlacesOnce(categories, context);
+      await NearbyPlacesService.instance.loadNearbyPlacesOnce(
+        categories,
+        context,
+        lat: widget.landmarkLat,
+        lng: widget.landmarkLng,
+      );
     } catch (e) {
       setState(() => _isLoading = false);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Load failed: $e')));
@@ -185,6 +198,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
 
     _applyFilter();
+
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -415,7 +429,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       _isLoading         = true;
     });
     try {
-      await NearbyPlacesService.instance.loadNearbyPlacesOnce(categories, context);
+      await NearbyPlacesService.instance.loadNearbyPlacesOnce(
+        categories,
+        context,
+        lat: widget.landmarkLat,  // 👈 加这两行
+        lng: widget.landmarkLng,
+      );
     } catch (e) {
       setState(() => _isLoading = false);
       return;

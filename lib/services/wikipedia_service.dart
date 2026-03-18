@@ -38,6 +38,45 @@ class WikipediaService {
   }
 
   // ============================================================
+  // 🎫 ADMISSION INFO (from Wikipedia Infobox)
+  // Returns admission string if found, null otherwise.
+  // Examples: "Free", "£25", "€18 adults / €9 children"
+  // ============================================================
+  static Future<String?> fetchAdmissionInfo(String landmarkName) async {
+    try {
+      final title = Uri.encodeComponent(landmarkName.replaceAll(' ', '_'));
+
+      // Fetch raw wikitext — the infobox lives here
+      final url = Uri.parse(
+        'https://en.wikipedia.org/w/api.php'
+        '?action=query'
+        '&titles=$title'
+        '&prop=revisions'
+        '&rvprop=content'
+        '&rvslots=main'
+        '&format=json'
+        '&formatversion=2',
+      );
+
+      final response = await http.get(url, headers: _headers);
+      if (response.statusCode != 200) return null;
+
+      final data = jsonDecode(response.body);
+      final pages = data['query']?['pages'] as List?;
+      if (pages == null || pages.isEmpty) return null;
+
+      final content =
+          pages[0]['revisions']?[0]?['slots']?['main']?['content'] as String?;
+      if (content == null) return null;
+
+      return _extractInfoboxField(content, 'admission');
+    } catch (e) {
+      debugPrint('⚠️ fetchAdmissionInfo error: $e');
+      return null;
+    }
+  }
+
+  // ============================================================
   // 🔒 ORIGINAL LOGIC (UNTOUCHED)
   // ============================================================
   static Future<Map<String, dynamic>> _fetchFromWikipedia(
@@ -234,6 +273,32 @@ class WikipediaService {
   // ============================================================
   // 🧹 HELPERS
   // ============================================================
+
+  /// Extracts a named field from a Wikipedia infobox wikitext string.
+  /// e.g. _extractInfoboxField(content, 'admission') → "Free" or "£25"
+  static String? _extractInfoboxField(String wikitext, String fieldName) {
+    // Match "| fieldName = value" — handles spaces and optional newlines
+    final pattern = RegExp(
+      r'\|\s*' + RegExp.escape(fieldName) + r'\s*=\s*([^\|\}]+)',
+      caseSensitive: false,
+    );
+
+    final match = pattern.firstMatch(wikitext);
+    if (match == null) return null;
+
+    // Strip wikitext markup: [[links]], {{templates}}, <ref>...</ref>, etc.
+    var value = match.group(1) ?? '';
+    value = value
+        .replaceAll(RegExp(r'\[\[(?:[^\]]*\|)?([^\]]*)\]\]'), r'$1') // [[link|text]] → text
+        .replaceAll(RegExp(r'\{\{[^\}]*\}\}'), '')                    // {{template}} → ''
+        .replaceAll(RegExp(r'<ref[^>]*>.*?<\/ref>', dotAll: true), '') // <ref>...</ref> → ''
+        .replaceAll(RegExp(r'<[^>]+>'), '')                           // any remaining HTML tags
+        .replaceAll(RegExp(r"'{2,}"), '')                             // bold/italic ''
+        .trim();
+
+    return value.isEmpty ? null : value;
+  }
+
   static String _normalizeImageUrl(String url) {
     try {
       final uri = Uri.parse(url);
@@ -251,4 +316,6 @@ class WikipediaService {
       'wikiUrl': '',
     };
   }
+
+  
 }
