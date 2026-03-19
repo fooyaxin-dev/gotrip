@@ -128,19 +128,27 @@ class ItineraryService {
   // ✅ 每个 category 取适合旅游的，按 rating 排序
   // ─────────────────────────────────────────────
 
-  List<PlaceModel> _buildBalancedPlaces(int totalDays) {
-    final svc = NearbyPlacesService.instance;
-
+    List<PlaceModel> _buildBalancedPlaces(int totalDays) {
+    final svc   = NearbyPlacesService.instance;
+    final prefs = UserPreferenceService.instance;
+ 
     final perCategory     = (totalDays + 1).clamp(2, 5);
     final restaurantCount = (totalDays * 2 + 1).clamp(3, 8);
-
+ 
+    double score(PlaceModel p) => prefs.recommendationScore(
+      primaryType:    p.primaryType,
+      allTypes:       p.allTypes,
+      rating:         p.rating,
+      distanceMeters: null,         // distance not used for itinerary sorting
+      priceLevel:     p.priceLevel, // ← ensure PlaceModel has this field (int?)
+    ).total;
+ 
     List<PlaceModel> topByType(String type, int count) {
       final list = svc.getByPrimary(type)
           .where(_isSuitableForTravel)
           .toList()
-        ..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
-
-      // ✅ fallback: 如果过滤后太少，放宽 rating 5.0 限制
+        ..sort((a, b) => score(b).compareTo(score(a)));
+ 
       if (list.length < count) {
         final fallback = svc.getByPrimary(type)
             .where((p) =>
@@ -149,49 +157,49 @@ class ItineraryService {
                 !_isBlocked(p) &&
                 (p.rating == null || p.rating! >= 3.5))
             .toList()
-          ..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
+          ..sort((a, b) => score(b).compareTo(score(a)));
         return fallback.take(count).toList();
       }
-
       return list.take(count).toList();
     }
-
+ 
     final restaurants   = topByType('restaurant',         restaurantCount);
     final attractions   = topByType('tourist_attraction', perCategory);
     final malls         = topByType('shopping_mall',      perCategory);
     final entertainment = topByType('amusement_park',     perCategory);
     final parks         = topByType('park',               perCategory);
-
-    print('📋 Per category (travel-suitable):');
+ 
+    print('📋 Per category (recommendation score):');
     print('  🍽️  Restaurants: ${restaurants.length}');
     print('  🏛️  Attractions: ${attractions.length}');
     print('  🛍️  Malls: ${malls.length}');
     print('  🎭  Entertainment: ${entertainment.length}');
     print('  🌿  Parks: ${parks.length}');
-
+ 
     final seen   = <String>{};
     final result = <PlaceModel>[];
-
     void addAll(List<PlaceModel> list) {
-      for (final p in list) {
-        if (seen.add(p.id)) result.add(p);
-      }
+      for (final p in list) if (seen.add(p.id)) result.add(p);
     }
-
     addAll(restaurants);
     addAll(attractions);
     addAll(malls);
     addAll(entertainment);
     addAll(parks);
-
+ 
     print('📍 Total places sent to Gemini: ${result.length}');
     for (final p in result) {
-      print('  ${p.name} | ${p.primaryType} | ⭐${p.rating ?? "?"}');
+      final s = prefs.recommendationScore(
+        primaryType: p.primaryType, allTypes: p.allTypes,
+        rating: p.rating, distanceMeters: null, priceLevel: p.priceLevel,
+      );
+      print('  ${p.name} | ${p.primaryType} | priceLevel=${p.priceLevel ?? "null"} | $s');
     }
-
+    
     return result;
   }
-
+ 
+  
   // ─────────────────────────────────────────────
   // Generate via Gemini API
   // ─────────────────────────────────────────────
@@ -260,6 +268,7 @@ Traveler profile:
 - Interests: $categoryText
 - Favourite cuisines: $cuisineText
 - Travel mode: ${prefs.travelMode}
+- Budget: ${prefs.budgetTier.label}
 
 Trip: $tripTitle
 Days: $totalDays | Dates: $dayDatesList
@@ -293,6 +302,7 @@ Each day MUST have exactly $placesPerDay places:
 ${placesPerDay > 4 ? '5. Evening (21:00+): Any non-restaurant place' : ''}
 
 RULES:
+- Prefer places that match the traveler's budget: ${prefs.budgetTier.label}
 - NEVER use the same placeId twice across all days
 - Each day must cover at least 2 different non-restaurant categories
 - Prefer higher rated places

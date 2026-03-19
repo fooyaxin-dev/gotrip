@@ -8,7 +8,7 @@ class PlacesApiService {
 
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static const String _collectionName = 'place_details';
-
+ 
   static int _totalApiCalls = 0;
   static int _searchNearbyCallCount = 0;
   static int _searchTextCallCount = 0;
@@ -92,7 +92,7 @@ class PlacesApiService {
     final response = await http.post(
       url,
       headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos',
+        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos,places.priceLevel',
       ),
       body: body,
     );
@@ -138,7 +138,7 @@ class PlacesApiService {
     final response = await http.post(
       url,
       headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos',
+        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos,places.priceLevel',
       ),
       body: body,
     );
@@ -358,7 +358,9 @@ class PlacesApiService {
       'types': (p['types'] as List?) ?? [],
       'rating': (p['rating'] as num?)?.toDouble(),
       'photos': photoList,
+      'priceLevel': p['priceLevel'],  // ← 新加这行
       'source': 'google',
     };
   }
-} 
+
+}

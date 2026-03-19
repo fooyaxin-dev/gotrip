@@ -26,14 +26,15 @@ class _OnboardingPageState extends State<OnboardingPage>
 
   final Set<String> _selectedCategories = {};
   final Set<String> _selectedCuisines   = {};
-  String _selectedTravelMode            = 'walk';
+  String     _selectedTravelMode        = 'walk';
+  BudgetTier _selectedBudget            = BudgetTier.budget; // ← new
 
   late final AnimationController _fadeCtrl;
   late final Animation<double>    _fadeAnim;
 
-  // ✅ 只有选了 Food 才显示菜系页
   bool get _showCuisinePage => _selectedCategories.contains('restaurant');
-  int  get _totalPages      => _showCuisinePage ? 3 : 2;
+  // Pages: category → (cuisine) → budget → travel mode
+  int  get _totalPages      => _showCuisinePage ? 4 : 3;
 
   @override
   void initState() {
@@ -48,6 +49,7 @@ class _OnboardingPageState extends State<OnboardingPage>
       _selectedCategories.addAll(prefs.categories);
       _selectedCuisines.addAll(prefs.cuisines);
       _selectedTravelMode = prefs.travelMode;
+      _selectedBudget     = prefs.budgetTier;
     }
   }
 
@@ -85,6 +87,31 @@ class _OnboardingPageState extends State<OnboardingPage>
     {'key': 'walk',  'label': 'Walking', 'icon': Icons.directions_walk, 'desc': 'Prefer nearby places'},
     {'key': 'drive', 'label': 'Driving', 'icon': Icons.directions_car,  'desc': 'Can go further'},
     {'key': 'both',  'label': 'Both',    'icon': Icons.swap_horiz,      'desc': 'Flexible'},
+  ];
+
+  // Budget tiers with icon, label, desc, color
+  final List<Map<String, dynamic>> _budgets = [
+    {
+      'tier':  BudgetTier.budget,
+      'icon':  '💰',
+      'label': 'Budget',
+      'desc':  'Affordable spots & local eats',
+      'color': const Color(0xFF2ECC71),
+    },
+    {
+      'tier':  BudgetTier.midRange,
+      'icon':  '💳',
+      'label': 'Mid-range',
+      'desc':  'A balance of comfort & value',
+      'color': const Color(0xFF3498DB),
+    },
+    {
+      'tier':  BudgetTier.premium,
+      'icon':  '✨',
+      'label': 'Premium',
+      'desc':  'Top-rated & high-end experiences',
+      'color': const Color(0xFF9B59B6),
+    },
   ];
 
   // ─────────────────────────────────────────────
@@ -125,6 +152,7 @@ class _OnboardingPageState extends State<OnboardingPage>
       categories:     _selectedCategories.toList(),
       cuisines:       _selectedCuisines.toList(),
       travelMode:     _selectedTravelMode,
+      budgetTier:     _selectedBudget,       // ← now included
       onboardingDone: true,
     );
 
@@ -185,10 +213,10 @@ class _OnboardingPageState extends State<OnboardingPage>
                   controller: _pageController,
                   physics: const NeverScrollableScrollPhysics(),
                   onPageChanged: (i) => setState(() => _currentPage = i),
-                  // ✅ 动态 pages — 没选 Food 就没有菜系页
                   children: [
                     _buildCategoryPage(),
                     if (_showCuisinePage) _buildCuisinePage(),
+                    _buildBudgetPage(),      // ← new
                     _buildTravelModePage(),
                   ],
                 ),
@@ -202,7 +230,7 @@ class _OnboardingPageState extends State<OnboardingPage>
   }
 
   // ─────────────────────────────────────────────
-  // Progress bar — 跟着 _totalPages 变
+  // Progress bar
   // ─────────────────────────────────────────────
 
   Widget _buildProgressBar() {
@@ -273,7 +301,9 @@ class _OnboardingPageState extends State<OnboardingPage>
                           : Colors.white,
                       borderRadius: BorderRadius.circular(18),
                       border: Border.all(
-                        color: isSelected ? cat['color'] as Color : Colors.grey[200]!,
+                        color: isSelected
+                            ? cat['color'] as Color
+                            : Colors.grey[200]!,
                         width: isSelected ? 2 : 1,
                       ),
                       boxShadow: isSelected
@@ -310,7 +340,7 @@ class _OnboardingPageState extends State<OnboardingPage>
   }
 
   // ─────────────────────────────────────────────
-  // Page 2: Cuisines（只在选了 Food 时出现）
+  // Page 2: Cuisines (只在选了 Food 时出现)
   // ─────────────────────────────────────────────
 
   Widget _buildCuisinePage() {
@@ -386,7 +416,113 @@ class _OnboardingPageState extends State<OnboardingPage>
   }
 
   // ─────────────────────────────────────────────
-  // Page 3: Travel Mode
+  // Page 3: Budget  ← NEW
+  // ─────────────────────────────────────────────
+
+  Widget _buildBudgetPage() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 32, 24, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            widget.isEditing ? '✏️ Update budget' : '💸 Your Budget',
+            style: const TextStyle(fontSize: 14, color: Color(0xFF7C4DFF),
+                fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          const Text('What\'s your travel\nspending style?',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold,
+                  color: Color(0xFF1A1A2E), height: 1.2)),
+          const SizedBox(height: 8),
+          Text('We\'ll recommend places that fit your budget',
+              style: TextStyle(fontSize: 14, color: Colors.grey[500])),
+          const SizedBox(height: 32),
+
+          ..._budgets.map((b) {
+            final tier       = b['tier'] as BudgetTier;
+            final isSelected = _selectedBudget == tier;
+            final color      = b['color'] as Color;
+
+            return GestureDetector(
+              onTap: () => setState(() => _selectedBudget = tier),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                margin: const EdgeInsets.only(bottom: 14),
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: isSelected ? color.withOpacity(0.08) : Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isSelected ? color : Colors.grey[200]!,
+                    width: isSelected ? 2 : 1,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: isSelected
+                          ? color.withOpacity(0.15)
+                          : Colors.black.withOpacity(0.04),
+                      blurRadius: isSelected ? 12 : 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    // Icon container
+                    Container(
+                      width: 52, height: 52,
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? color.withOpacity(0.15)
+                            : Colors.grey[100],
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Center(
+                        child: Text(b['icon'] as String,
+                            style: const TextStyle(fontSize: 24)),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+
+                    // Label + desc
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(b['label'] as String,
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: isSelected ? color : Colors.black87,
+                              )),
+                          const SizedBox(height: 2),
+                          Text(b['desc'] as String,
+                              style: TextStyle(
+                                  fontSize: 13, color: Colors.grey[500])),
+                        ],
+                      ),
+                    ),
+
+                    // Check mark
+                    AnimatedOpacity(
+                      opacity: isSelected ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 200),
+                      child: Icon(Icons.check_circle_rounded,
+                          color: color, size: 24),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // Page 4: Travel Mode
   // ─────────────────────────────────────────────
 
   Widget _buildTravelModePage() {
