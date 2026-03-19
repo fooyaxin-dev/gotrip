@@ -5,7 +5,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import '../modules/itinerary/itineraryModel.dart';
 import '../services/placeModal.dart';
-import '../services/nearbyPlace_service.dart';
+import '../services/placesAPI_service.dart';
+import '../services/location_service.dart';
 import '../services/userPreference_service.dart';
 
 class ItineraryService {
@@ -33,10 +34,6 @@ class ItineraryService {
     'electrician', 'plumber', 'roofing_contractor',
   };
 
-  // ─────────────────────────────────────────────
-  // Blocked name keywords — 明显是公司/服务，不是旅游地点
-  // ─────────────────────────────────────────────
-
   static const _blockedNameKeywords = [
     'sdn bhd', 'sdn. bhd', 'sdnbhd',
     'network', 'solution', 'solutions',
@@ -50,26 +47,18 @@ class ItineraryService {
   ];
 
   bool _isBlocked(PlaceModel p) {
-    // 1. blocked by type
     if (p.allTypes.any((t) => _blockedTypes.contains(t))) return true;
-
-    // 2. blocked by name keyword
     final nameLower = p.name.toLowerCase();
     if (_blockedNameKeywords.any((k) => nameLower.contains(k))) return true;
-
     return false;
   }
 
   bool _isSuitableForTravel(PlaceModel p) {
-    // Must have photo
     if (p.photoUrl == null || p.photoUrl!.isEmpty) return false;
-    // Must not be blocked
     if (_isBlocked(p)) return false;
-    // Rating must be between 3.5 and 4.9 — 5.0 usually means too few reviews
-    // Accept null rating (we don't know) but reject obvious outliers
     final r = p.rating;
-    if (r != null && r > 4.95) return false; // likely fake/few reviews
-    if (r != null && r < 3.5)  return false; // too low
+    if (r != null && r > 4.95) return false;
+    if (r != null && r < 3.5)  return false;
     return true;
   }
 
@@ -125,32 +114,95 @@ class ItineraryService {
   }
 
   // ─────────────────────────────────────────────
-  // ✅ 每个 category 取适合旅游的，按 rating 排序
+  // Dedicated fetch for itinerary generation
+  // 10km radius, 50 per type, NOT cached
   // ─────────────────────────────────────────────
 
-    List<PlaceModel> _buildBalancedPlaces(int totalDays) {
-    final svc   = NearbyPlacesService.instance;
+  Future<Map<String, List<PlaceModel>>> _fetchPlacesForItinerary({
+    required double lat,
+    required double lng,
+  }) async {
+    const types = [
+      'restaurant',
+      'tourist_attraction',
+      'shopping_mall',
+      'amusement_park',
+      'park',
+    ];
+
+    print('🗺️ Fetching itinerary candidates (10km radius, 50 per type)...');
+    final stopwatch = Stopwatch()..start();
+
+    final entries = await Future.wait(
+      types.map((type) async {
+        try {
+          final raw = await PlacesApiService.searchNearby(
+            lat:            lat,
+            lng:            lng,
+            type:           type,
+            radius:         10000, // 10km — wider than nearby places (5km)
+            maxResultCount: 20,    // Google API hard limit is 20
+          );
+
+          final places = raw
+              .map((p) {
+                try {
+                  final place = PlaceModel.fromGoogle(p, primary: type);
+                  if (place.lat == null || place.lng == null) return null;
+                  return place;
+                } catch (_) {
+                  return null;
+                }
+              })
+              .whereType<PlaceModel>()
+              .toList();
+
+          print('  ✅ $type: ${places.length} fetched');
+          return MapEntry(type, places);
+        } catch (e) {
+          print('  ⚠️ $type failed: $e');
+          return MapEntry(type, <PlaceModel>[]);
+        }
+      }),
+    );
+
+    stopwatch.stop();
+    print('🗺️ Done in ${stopwatch.elapsedMilliseconds}ms');
+    return Map.fromEntries(entries);
+  }
+
+  // ─────────────────────────────────────────────
+  // Build balanced places with recommendation score
+  // ─────────────────────────────────────────────
+
+  Future<List<PlaceModel>> _buildBalancedPlaces(
+    int totalDays, {
+    required double lat,
+    required double lng,
+  }) async {
     final prefs = UserPreferenceService.instance;
- 
-    final perCategory     = (totalDays + 1).clamp(2, 5);
-    final restaurantCount = (totalDays * 2 + 1).clamp(3, 8);
- 
+
+    final perCategory     = (totalDays + 1).clamp(2, 6);
+    final restaurantCount = (totalDays * 2 + 1).clamp(3, 10);
+
+    final byType = await _fetchPlacesForItinerary(lat: lat, lng: lng);
+
     double score(PlaceModel p) => prefs.recommendationScore(
       primaryType:    p.primaryType,
       allTypes:       p.allTypes,
       rating:         p.rating,
-      distanceMeters: null,         // distance not used for itinerary sorting
-      priceLevel:     p.priceLevel, // ← ensure PlaceModel has this field (int?)
+      distanceMeters: null,
+      priceLevel:     p.priceLevel,
     ).total;
- 
+
     List<PlaceModel> topByType(String type, int count) {
-      final list = svc.getByPrimary(type)
+      final list = (byType[type] ?? [])
           .where(_isSuitableForTravel)
           .toList()
         ..sort((a, b) => score(b).compareTo(score(a)));
- 
+
       if (list.length < count) {
-        final fallback = svc.getByPrimary(type)
+        final fallback = (byType[type] ?? [])
             .where((p) =>
                 p.photoUrl != null &&
                 p.photoUrl!.isNotEmpty &&
@@ -160,22 +212,23 @@ class ItineraryService {
           ..sort((a, b) => score(b).compareTo(score(a)));
         return fallback.take(count).toList();
       }
+
       return list.take(count).toList();
     }
- 
+
     final restaurants   = topByType('restaurant',         restaurantCount);
     final attractions   = topByType('tourist_attraction', perCategory);
     final malls         = topByType('shopping_mall',      perCategory);
     final entertainment = topByType('amusement_park',     perCategory);
     final parks         = topByType('park',               perCategory);
- 
+
     print('📋 Per category (recommendation score):');
     print('  🍽️  Restaurants: ${restaurants.length}');
     print('  🏛️  Attractions: ${attractions.length}');
     print('  🛍️  Malls: ${malls.length}');
     print('  🎭  Entertainment: ${entertainment.length}');
     print('  🌿  Parks: ${parks.length}');
- 
+
     final seen   = <String>{};
     final result = <PlaceModel>[];
     void addAll(List<PlaceModel> list) {
@@ -186,34 +239,52 @@ class ItineraryService {
     addAll(malls);
     addAll(entertainment);
     addAll(parks);
- 
-    print('📍 Total places sent to Gemini: ${result.length}');
+
+    print('📍 Total sent to Gemini: ${result.length}');
     for (final p in result) {
       final s = prefs.recommendationScore(
-        primaryType: p.primaryType, allTypes: p.allTypes,
-        rating: p.rating, distanceMeters: null, priceLevel: p.priceLevel,
+        primaryType:    p.primaryType,
+        allTypes:       p.allTypes,
+        rating:         p.rating,
+        distanceMeters: null,
+        priceLevel:     p.priceLevel,
       );
       print('  ${p.name} | ${p.primaryType} | priceLevel=${p.priceLevel ?? "null"} | $s');
     }
-    
+
     return result;
   }
- 
-  
+
   // ─────────────────────────────────────────────
   // Generate via Gemini API
   // ─────────────────────────────────────────────
 
   Future<ItineraryModel?> generate({
-    required List<PlaceModel> nearbyPlaces,
     required String startDate,
-    required int totalDays,
-    required int placesPerDay,
+    required int    totalDays,
+    required int    placesPerDay,
     required String tripTitle,
+    List<String>?   overrideCategories, // ← user's temp selection for this trip
+    List<String>?   overrideCuisines,   // ← user's temp selection for this trip
   }) async {
     try {
-      final prefs       = UserPreferenceService.instance.current;
-      final validPlaces = _buildBalancedPlaces(totalDays);
+      final prefs = UserPreferenceService.instance.current;
+
+      // Use override if provided, else fall back to saved preferences
+      final categories = overrideCategories ?? prefs.categories;
+      final cuisines   = overrideCuisines   ?? prefs.cuisines;
+
+      final pos = LocationService.instance.currentPosition;
+      if (pos == null) {
+        print('❌ generate: no location available');
+        return null;
+      }
+
+      final validPlaces = await _buildBalancedPlaces(
+        totalDays,
+        lat: pos.latitude,
+        lng: pos.longitude,
+      );
 
       if (validPlaces.isEmpty) {
         print('❌ No valid places');
@@ -242,15 +313,15 @@ class ItineraryService {
           .map((e) => 'Day ${e.key + 1} = ${e.value}')
           .join(', ');
 
-      final cuisineText = prefs.cuisines.isEmpty
+      final cuisineText = cuisines.isEmpty
           ? 'any cuisine'
-          : prefs.cuisines
+          : cuisines
               .map((c) => '${c[0].toUpperCase()}${c.substring(1)}')
               .join(', ');
 
-      final categoryText = prefs.categories.isEmpty
+      final categoryText = categories.isEmpty
           ? 'general sightseeing'
-          : prefs.categories.map((c) {
+          : categories.map((c) {
               const labels = {
                 'restaurant':         'Food & Dining',
                 'park':               'Nature & Outdoors',
@@ -302,7 +373,7 @@ Each day MUST have exactly $placesPerDay places:
 ${placesPerDay > 4 ? '5. Evening (21:00+): Any non-restaurant place' : ''}
 
 RULES:
-- Prefer places that match the traveler's budget: ${prefs.budgetTier.label}
+- Prefer places that match the traveler\'s budget: ${prefs.budgetTier.label}
 - NEVER use the same placeId twice across all days
 - Each day must cover at least 2 different non-restaurant categories
 - Prefer higher rated places
@@ -421,7 +492,7 @@ Each place: placeId, suggestedTime, durationMinutes, notes (1 practical sentence
 
   Future<String?> _callGemini(String prompt) async {
     try {
-      const String apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; // String.fromEnvironment('GOOGLE_API_KEY');
+      const String apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
 
       final response = await http.post(
         Uri.parse(

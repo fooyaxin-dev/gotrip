@@ -313,7 +313,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => GenerateItineraryPage(nearbyPlaces: places),
+        builder: (_) => GenerateItineraryPage(),
       ),
     ).then((_) => _load());
   }
