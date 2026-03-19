@@ -493,7 +493,7 @@ class PostService {
       
       WriteBatch batch = _firestore.batch();
       
-      for (var doc in snapshot.docs) {
+      for (var doc in snapshot.docs) { 
         Post post = Post.fromFirestore(doc);
         
         // 删除本地图片

@@ -64,7 +64,7 @@ class _postWidgetState extends State<postWidget> {
                     style: TextStyle(color: Colors.grey[600], fontSize: 14),
                   ),
                 ],
-              ),
+              ), 
             );
           }
 

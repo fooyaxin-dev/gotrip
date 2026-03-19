@@ -33,7 +33,7 @@ class HistoryEntry {
       );
 
   Map<String, dynamic> toMap() => {
-    'placeName':      placeName,
+    'placeName':      placeName, 
     'address':        address,
     'photoUrl':       photoUrl,
     'visitedAt':      Timestamp.fromDate(visitedAt),

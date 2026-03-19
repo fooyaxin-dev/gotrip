@@ -22,7 +22,7 @@ class PlacesApiService {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': _apiKey,
       'X-Goog-FieldMask': fieldMask,
-    };
+    }; 
   }
 
   static void printStats() {

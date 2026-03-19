@@ -1,30 +1,24 @@
 import 'package:flutter/material.dart';
 
-class BarSwap extends StatefulWidget {
-  final Function(int)? onTabChanged; // 可选的回调函数，返回选中的索引
-  
-  const BarSwap({super.key, this.onTabChanged});
+class BarSwap extends StatelessWidget {
+  // ✅ 改成 StatelessWidget，内部不需要任何状态
+  final Function(int)? onTabChanged;
+  final int selectedIndex;
 
-  @override
-  State<BarSwap> createState() => _BarSwapState();
-}
-
-class _BarSwapState extends State<BarSwap> {
-  int _selectedIndex = 0; // 0 = Post, 1 = History
+  const BarSwap({
+    super.key,
+    this.onTabChanged,
+    this.selectedIndex = 0,
+  });
 
   void _switchTab(int index) {
-    if (_selectedIndex != index) {
-      setState(() {
-        _selectedIndex = index;
-      });
-      widget.onTabChanged?.call(index); // 触发回调
-    }
+    onTabChanged?.call(index);
   }
 
   @override
   Widget build(BuildContext context) {
     var width = MediaQuery.of(context).size.width;
-    var tabWidth = (width - 90) / 2; // 减去左右padding和间距
+    var tabWidth = (width - 90) / 2;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 25),
@@ -38,8 +32,8 @@ class _BarSwapState extends State<BarSwap> {
           children: [
             // 动画滑块
             AnimatedAlign(
-              alignment: _selectedIndex == 0 
-                  ? Alignment.centerLeft 
+              alignment: selectedIndex == 0
+                  ? Alignment.centerLeft
                   : Alignment.centerRight,
               duration: const Duration(milliseconds: 250),
               curve: Curves.easeInOut,
@@ -61,7 +55,7 @@ class _BarSwapState extends State<BarSwap> {
               ),
             ),
 
-            // 可点击的文字区域
+            // 可点击文字区域
             Row(
               children: [
                 Expanded(
@@ -74,11 +68,11 @@ class _BarSwapState extends State<BarSwap> {
                         'Post',
                         style: TextStyle(
                           fontSize: 17,
-                          fontWeight: _selectedIndex == 0 
-                              ? FontWeight.w600 
+                          fontWeight: selectedIndex == 0
+                              ? FontWeight.w600
                               : FontWeight.normal,
-                          color: _selectedIndex == 0 
-                              ? Colors.black 
+                          color: selectedIndex == 0
+                              ? Colors.black
                               : Colors.grey.shade600,
                         ),
                       ),
@@ -95,11 +89,11 @@ class _BarSwapState extends State<BarSwap> {
                         'History',
                         style: TextStyle(
                           fontSize: 17,
-                          fontWeight: _selectedIndex == 1 
-                              ? FontWeight.w600 
+                          fontWeight: selectedIndex == 1
+                              ? FontWeight.w600
                               : FontWeight.normal,
-                          color: _selectedIndex == 1 
-                              ? Colors.black 
+                          color: selectedIndex == 1
+                              ? Colors.black
                               : Colors.grey.shade600,
                         ),
                       ),

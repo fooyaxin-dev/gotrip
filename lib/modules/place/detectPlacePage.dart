@@ -145,8 +145,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     setState(() => _isLoading = true);
 
     if (widget.landmarkLat != null && widget.landmarkLng != null) {
+      // ── Landmark mode: 强制清 cache，用 landmark 坐标 ──
       print('🏛️ FROM LANDMARK: ${widget.landmarkLat}, ${widget.landmarkLng}');
-      NearbyPlacesService.instance.clearCache(); 
+      NearbyPlacesService.instance.clearCache();
       _currentPosition = Position(
         latitude: widget.landmarkLat!, longitude: widget.landmarkLng!,
         timestamp: DateTime.now(), accuracy: 1, altitude: 0,
@@ -154,22 +155,17 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         altitudeAccuracy: 0.0, headingAccuracy: 0.0,
       );
     } else {
+      // ── GPS mode: 只拿坐标，不 load ──
       print('📍 FROM GPS');
-      try {
-      await NearbyPlacesService.instance.loadNearbyPlacesOnce(
-        categories,
-        context,
-        lat: widget.landmarkLat,
-        lng: widget.landmarkLng,
-      );
-     final pos = LocationService.instance.currentPosition;
-        if (pos == null) { _showErrorDialog('Error', 'Cannot get location'); return; }
-        _currentPosition = pos;
-      } catch (e) {
-        _showErrorDialog('Location Error', e.toString()); return;
+      final pos = LocationService.instance.currentPosition;
+      if (pos == null) {
+        _showErrorDialog('Error', 'Cannot get location');
+        return;
       }
+      _currentPosition = pos;
     }
 
+    // ── 设置地图初始位置 ──
     _initialCameraPosition = CameraPosition(
       target: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
       zoom: 14,
@@ -182,8 +178,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       infoWindow: const InfoWindow(title: 'My Location'),
     ));
 
-    setState(() {});
+    setState(() {}); // 先让地图显示出来
 
+    // ── ✅ 只调用一次，有 cache 就直接用，不重复请求 ──
     try {
       await NearbyPlacesService.instance.loadNearbyPlacesOnce(
         categories,
@@ -193,15 +190,19 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       );
     } catch (e) {
       setState(() => _isLoading = false);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Load failed: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Load failed: $e')),
+        );
+      }
       return;
     }
 
     _applyFilter();
-
   }
 
-  // ═══════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════
 // 3. 新增 search 相关方法
 // ═══════════════════════════════════════════════════════════════
  

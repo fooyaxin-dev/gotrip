@@ -5,7 +5,7 @@ import '../../services/history_service.dart';
 
 class HistoryWidget extends StatefulWidget {
   const HistoryWidget({super.key});
-
+ 
   @override
   State<HistoryWidget> createState() => _HistoryWidgetState();
 }

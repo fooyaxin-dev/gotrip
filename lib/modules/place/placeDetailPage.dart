@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:geolocator/geolocator.dart'; 
 import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
@@ -8,10 +10,10 @@ import 'routePreviewPage.dart';
 
 class PlaceDetailPage extends StatefulWidget {
   final String placeId;
-  final double? lat;   // 目的地纬度
-  final double? lng;   // 目的地经度
-  final double? userLat; // 用户当前位置纬度
-  final double? userLng; // 用户当前位置经度
+  final double? lat;   // destination latitude
+  final double? lng;   // destination longitude
+  final double? userLat; // user current latitude
+  final double? userLng; // user current longitude
 
   const PlaceDetailPage({
     super.key,
@@ -89,11 +91,9 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     );
   }
 
-  // ✅ 直接跳转到 GuidePage
   void _navigateToGuide(String name) async {
     if (widget.lat == null || widget.lng == null) return;
 
-    // 优先用传入的位置，否则现场获取
     double? startLat = widget.userLat;
     double? startLng = widget.userLng;
 
@@ -107,7 +107,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('无法获取当前位置，请检查定位权限')),
+            const SnackBar(content: Text('Unable to get current location. Please check location permissions.')),
           );
         }
         return;
@@ -182,7 +182,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 标题 + 收藏按钮 + 评分
+                // Title + Favourite button + Rating
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -241,7 +241,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
-                      isOpen ? "● 正在营业" : "○ 已打烊",
+                      isOpen ? "● Open Now" : "○ Closed",
                       style: TextStyle(
                         color: isOpen ? Colors.green[700] : Colors.red[700],
                         fontWeight: FontWeight.w600,
@@ -258,35 +258,38 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
-                      _buildActionButton(Icons.phone, "电话", phone != null),
-                      _buildActionButton(Icons.public, "网站", website != null),
-
-                      // ✅ 路线按钮：直接 push 到 GuidePage
+                      _buildActionButton(Icons.phone, "Call", phone != null,
+                        onTap: phone != null ? () => _launchPhone(phone) : null,
+                      ),
+                      _buildActionButton(Icons.public, "Website", website != null,
+                        onTap: website != null ? () => _launchWebsite(website) : null,
+                      ),
                       _buildActionButton(
                         Icons.directions,
-                        "路线",
+                        "Directions",
                         widget.lat != null && widget.lng != null,
                         onTap: () => _navigateToGuide(name),
                       ),
-
-                      _buildActionButton(Icons.share, "分享", true),
+                      _buildActionButton(Icons.share, "Share", true,
+                        onTap: () => _sharePlace(name, address, website),
+                      ),
                     ],
                   ),
                 ),
                 const Divider(),
                 const SizedBox(height: 20),
 
-                _buildInfoSection(Icons.location_on, "地址", address),
+                _buildInfoSection(Icons.location_on, "Address", address),
                 if (placeDetail?['regularOpeningHours']?['weekdayDescriptions'] != null)
                   _buildOpeningHours(
                       placeDetail!['regularOpeningHours']['weekdayDescriptions']),
-                if (phone != null) _buildInfoSection(Icons.call, "联系电话", phone),
-                if (website != null) _buildInfoSection(Icons.language, "官方网站", website),
+                if (phone != null) _buildInfoSection(Icons.call, "Phone", phone),
+                if (website != null) _buildInfoSection(Icons.language, "Website", website),
 
                 const Divider(),
                 const SizedBox(height: 10),
                 const Text(
-                  "用户评价",
+                  "Reviews",
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 16),
@@ -296,7 +299,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                 else
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 20),
-                    child: Text("暂无评价", style: TextStyle(color: Colors.grey)),
+                    child: Text("No reviews yet", style: TextStyle(color: Colors.grey)),
                   ),
               ],
             ),
@@ -490,7 +493,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   }
 
   Widget _buildReviewItem(Map<String, dynamic> review) {
-    final authorName = review['authorAttribution']?['displayName'] ?? '匿名用户';
+    final authorName = review['authorAttribution']?['displayName'] ?? 'Anonymous';
     final photoUrl = review['authorAttribution']?['photoUri'];
     final rating = review['rating'] ?? 0;
     final text = review['text']?['text'] ?? '';
@@ -547,5 +550,38 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
         ],
       ),
     );
+  }
+
+  Future<void> _launchPhone(String phone) async {
+    final uri = Uri(scheme: 'tel', path: phone);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to make a call')),
+        );
+      }
+    }
+  }
+
+  Future<void> _launchWebsite(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to open website')),
+        );
+      }
+    }
+  }
+
+  void _sharePlace(String name, String address, String? website) {
+    final text = website != null
+        ? 'Check out this place: $name\nAddress: $address\n$website'
+        : 'Check out this place: $name\nAddress: $address';
+    Share.share(text);
   }
 }

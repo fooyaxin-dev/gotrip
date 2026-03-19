@@ -9,6 +9,8 @@ import 'historyWidget.dart';
 import 'userModel.dart';
 import '../../services/user_service.dart';
 import 'editProfile.dart';
+import 'profileInfo.dart';
+import 'profileBackground.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -19,345 +21,163 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePageState extends State<ProfilePage> {
   final UserService _userService = UserService();
+  late final Stream<UserProfile?> _stream;
 
   bool showProfile = true;
   int _currentIndex = 0;
 
-  void zoomProfile() {
-    setState(() {
-      showProfile = !showProfile;
-    });
+  // ✅ 只创建一次
+  final List<Widget> _tabs = const [
+    postWidget(),
+    HistoryWidget(),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    // ✅ stream 缓存在这里，整个生命周期只订阅一次
+    _stream = _userService.getCurrentUserProfileStream();
   }
 
-  Future<void> _navigateToEditProfile(UserProfile userProfile) async {
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => EditProfilePage(userProfile: userProfile),
-      ),
-    );
-    // Stream 会自动更新，不需要手动 reload
+  void zoomProfile() {
+    setState(() => showProfile = !showProfile);
   }
 
   ImageProvider _getImageProvider(String imageUrl, String defaultAsset) {
     if (imageUrl.isEmpty) return AssetImage(defaultAsset);
-
     if (imageUrl.startsWith('data:image')) {
       String base64String = imageUrl.split(',')[1];
       Uint8List bytes = base64Decode(base64String);
       return MemoryImage(bytes);
     }
-
     if (imageUrl.startsWith('http')) return NetworkImage(imageUrl);
-
     return AssetImage(defaultAsset);
   }
 
   @override
   Widget build(BuildContext context) {
-    var height = MediaQuery.of(context).size.height;
+    final height = MediaQuery.of(context).size.height;
 
-    // ✅ 用 StreamBuilder 实时监听，favouriteCount 变化自动更新
-    return StreamBuilder<UserProfile?>(
-      stream: _userService.getCurrentUserProfileStream(),
-      builder: (context, snapshot) {
-        // 加载中
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
+    return SafeArea(
+      child: Scaffold(
+        body: showProfile
+            ? _buildProfileView(height)
+            : _buildZoomView(height),
+      ),
+    );
+  }
 
-        // 出错或没有数据
-        final userProfile = snapshot.data;
-        if (userProfile == null) {
-          return Scaffold(
-            body: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Text('无法加载用户资料'),
-                  const SizedBox(height: 20),
-                  ElevatedButton(
-                    onPressed: () => setState(() {}),
-                    child: const Text('重试'),
-                  ),
-                ],
-              ),
+  // ── 正常视图 ──────────────────────────────────────────────────────────────
+  Widget _buildProfileView(double height) {
+    return Stack(
+      children: [
+        // 背景图片
+        const ProfileBackgroundWidget(),
+
+        // 渐变遮罩
+        Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Colors.transparent, Colors.white],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              stops: [0, .2],
             ),
-          );
-        }
+          ),
+        ),
 
-        return SafeArea(
-          child: Scaffold(
-            body: showProfile
-                ? Stack(
-                    children: [
-                      // 背景图片
-                      Container(
-                        height: 200,
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          image: DecorationImage(
-                            image: _getImageProvider(
-                              userProfile.backgroundImageUrl,
-                              'assets/images/longbg1.jpg',
-                            ),
-                            fit: BoxFit.cover,
-                          ),
-                        ),
+        // 主内容
+        Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.only(
+                bottom: kBottomNavigationBarHeight + 16),
+            child: Column(
+              children: [
+                SizedBox(height: height * 0.13),
+
+                // ✅ 独立 widget，ProfilePage 的 setState 完全不影响它
+                ProfileInfoWidget(onZoom: zoomProfile),
+
+                SizedBox(height: height * 0.03),
+
+                // ✅ tab 切换只重建这部分
+                BarSwap(
+                  key: const ValueKey('barswap'),
+                  selectedIndex: _currentIndex,
+                  onTabChanged: (index) {
+                    setState(() => _currentIndex = index);
+                  },
+                ),
+
+                SizedBox(height: height * 0.02),
+
+                IndexedStack(
+                  index: _currentIndex,
+                  children: _tabs,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── 放大头像视图 ──────────────────────────────────────────────────────────
+  Widget _buildZoomView(double height) {
+    return InkWell(
+      onTap: zoomProfile,
+      child: StreamBuilder<UserProfile?>(
+        stream: _stream, // ✅ 用缓存的 stream
+        builder: (context, snapshot) {
+          final userProfile = snapshot.data;
+          if (userProfile == null) return const SizedBox();
+
+          return Stack(
+            children: [
+              Container(
+                height: 200,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  image: DecorationImage(
+                    image: _getImageProvider(
+                      userProfile.profileImageUrl,
+                      'assets/images/profile.jpg',
+                    ),
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+              Container(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.transparent, Colors.white],
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    stops: [0, .2],
+                  ),
+                ),
+              ),
+              BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: Container(
+                  height: height,
+                  color: Colors.white.withOpacity(0.3),
+                  child: Center(
+                    child: CircleAvatar(
+                      radius: 120,
+                      backgroundImage: _getImageProvider(
+                        userProfile.profileImageUrl,
+                        'assets/images/profile.jpg',
                       ),
-                      Container(
-                        decoration: const BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [Colors.transparent, Colors.white],
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            stops: [0, .2],
-                          ),
-                        ),
-                      ),
-
-                      // 主要内容
-                      Center(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.only(
-                              bottom: kBottomNavigationBarHeight + 16),
-                          child: Column(
-                            children: [
-                              SizedBox(height: height * 0.13),
-
-                              // 头像
-                              CircleAvatar(
-                                backgroundColor: Colors.orange,
-                                radius: 47,
-                                child: CircleAvatar(
-                                  backgroundColor: Colors.white,
-                                  radius: 45,
-                                  child: InkWell(
-                                    onTap: zoomProfile,
-                                    child: CircleAvatar(
-                                      radius: 43,
-                                      backgroundImage: _getImageProvider(
-                                        userProfile.profileImageUrl,
-                                        'assets/images/profile.jpg',
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-
-                              SizedBox(height: height * 0.02),
-
-                              // 用户名
-                              Text(
-                                userProfile.username.isNotEmpty
-                                    ? '@${userProfile.username}'
-                                    : '@YAxin',
-                                style: const TextStyle(
-                                    fontSize: 16, color: Colors.grey),
-                              ),
-
-                              // 个人简介
-                              Padding(
-                                padding: const EdgeInsets.only(
-                                    left: 30.0, right: 30.0, top: 10),
-                                child: Text(
-                                  userProfile.bio.isNotEmpty
-                                      ? userProfile.bio
-                                      : 'Bio',
-                                  style: TextStyle(
-                                      fontSize: 15,
-                                      color: Colors.grey.shade400),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-
-                              SizedBox(height: height * 0.02),
-
-                              // 编辑按钮
-                              ElevatedButton.icon(
-                                onPressed: () =>
-                                    _navigateToEditProfile(userProfile),
-                                icon: const Icon(Icons.edit, size: 18),
-                                label: const Text('编辑资料'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.orange,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 20, vertical: 10),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(20)),
-                                ),
-                              ),
-
-                              SizedBox(height: height * 0.02),
-
-                              _totalPostwithHistory(userProfile),
-
-                              SizedBox(height: height * 0.03),
-
-                              BarSwap(
-                                onTabChanged: (index) {
-                                  setState(() => _currentIndex = index);
-                                },
-                              ),
-
-                              SizedBox(height: height * 0.02),
-
-                              _currentIndex == 0
-                                  ? const postWidget()
-                                  : const HistoryWidget(),
-                            ],
-                          ),
-                        ),
-                      )
-                    ],
-                  )
-
-                // 放大头像视图
-                : InkWell(
-                    onTap: zoomProfile,
-                    child: Stack(
-                      children: [
-                        Container(
-                          height: 200,
-                          width: double.infinity,
-                          decoration: BoxDecoration(
-                            image: DecorationImage(
-                              image: _getImageProvider(
-                                userProfile.profileImageUrl,
-                                'assets/images/profile.jpg',
-                              ),
-                              fit: BoxFit.cover,
-                            ),
-                          ),
-                        ),
-                        Container(
-                          decoration: const BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [Colors.transparent, Colors.white],
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              stops: [0, .2],
-                            ),
-                          ),
-                        ),
-
-                        Center(
-                          child: SingleChildScrollView(
-                            child: Column(
-                              children: [
-                                SizedBox(height: height * 0.13),
-                                CircleAvatar(
-                                  backgroundColor: Colors.orange,
-                                  radius: 47,
-                                  child: CircleAvatar(
-                                    backgroundColor: Colors.white,
-                                    radius: 45,
-                                    child: CircleAvatar(
-                                      radius: 43,
-                                      backgroundImage: _getImageProvider(
-                                        userProfile.profileImageUrl,
-                                        'assets/images/profile.jpg',
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(height: height * 0.02),
-                                Text(
-                                  userProfile.username.isNotEmpty
-                                      ? '@${userProfile.username}'
-                                      : '@YAxin',
-                                  style: const TextStyle(
-                                      fontSize: 16, color: Colors.grey),
-                                ),
-                                Padding(
-                                  padding: const EdgeInsets.only(
-                                      left: 30.0, right: 30.0, top: 10),
-                                  child: Text(
-                                    userProfile.bio.isNotEmpty
-                                        ? userProfile.bio
-                                        : 'Bio',
-                                    style: TextStyle(
-                                        fontSize: 15,
-                                        color: Colors.grey.shade400),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ),
-                                SizedBox(height: height * 0.05),
-                                _totalPostwithHistory(userProfile),
-                                SizedBox(height: height * 0.03),
-                                BarSwap(
-                                  onTabChanged: (index) {
-                                    setState(() => _currentIndex = index);
-                                  },
-                                ),
-                                SizedBox(height: height * 0.02),
-                                _currentIndex == 0
-                                    ? const postWidget()
-                                    : const HistoryWidget(),
-                              ],
-                            ),
-                          ),
-                        ),
-
-                        BackdropFilter(
-                          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                          child: Container(
-                            height: height,
-                            color: Colors.white.withOpacity(0.3),
-                            child: Center(
-                              child: CircleAvatar(
-                                radius: 120,
-                                backgroundImage: _getImageProvider(
-                                  userProfile.profileImageUrl,
-                                  'assets/images/profile.jpg',
-                                ),
-                              ),
-                            ),
-                          ),
-                        )
-                      ],
                     ),
                   ),
-          ),
-        );
-      },
-    );
-  }
-
-  // ✅ userProfile 作为参数传入，不再依赖 _userProfile 状态
-  Widget _totalPostwithHistory(UserProfile userProfile) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-      children: [
-        _statColumn('Post', '${userProfile.postCount}'),
-        _statColumn('Favourite', '${userProfile.favouriteCount}'),
-        _statColumn('Route', '${userProfile.routeCount}'),
-      ],
-    );
-  }
-
-  Widget _statColumn(String label, String value) {
-    return Column(
-      children: [
-        Text(
-          label,
-          style: const TextStyle(fontSize: 15, color: Colors.grey),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(top: 6.0),
-          child: Text(
-            value,
-            style: const TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: Colors.black87,
-            ),
-          ),
-        ),
-      ],
+                ),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 }

@@ -46,6 +46,7 @@ dependencies:
   google_maps_flutter: ^2.4.0 
   compassx: ^1.0.1
   connectivity_plus: ^6.0.0
+  share_plus: ^10.0.0
 
 
 

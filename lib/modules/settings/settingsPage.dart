@@ -64,18 +64,6 @@ class _SettingsPageState extends State<SettingsPage> {
             subtitle: 'Start fresh with new recommendations',
             onTap: () => _showResetDialog(),
           ),
-          _buildTile(
-            icon: Icons.tune_rounded,
-            iconColor: const Color(0xFF7C4DFF),
-            iconBg: const Color(0xFFF0EBFF),
-            title: 'Edit Preferences',
-            subtitle: 'Update your interests & travel style',
-            onTap: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) => const ItineraryPage(),
-            )),
-          ),
-
-
 
           const SizedBox(height: 20),
 
