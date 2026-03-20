@@ -63,7 +63,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   // ✅ 用户自选的地点
   final Set<String> _selectedPlaceIds = {};
-  List<PlaceModel> _searchPlaces = []; // search mode 的地点，独立存放
+  final Map<String, PlaceModel> _selectedPlacesMap = {}; // ← 新增
+  List<PlaceModel> _searchPlaces = [];
   
 
   final List<Map<String, dynamic>> categories = [
@@ -294,6 +295,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // 清除 search，回到用户当前位置
   void _clearSearch() {
     _searchController.clear();
+    _selectedPlacesMap.clear();
     _searchFocus.unfocus();
 
     final realPos = LocationService.instance.currentPosition;
@@ -451,8 +453,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     setState(() {
       if (_selectedPlaceIds.contains(place.id)) {
         _selectedPlaceIds.remove(place.id);
+        _selectedPlacesMap.remove(place.id); // ← 新增
       } else {
         _selectedPlaceIds.add(place.id);
+        _selectedPlacesMap[place.id] = place; // ← 新增
       }
     });
   }
@@ -465,9 +469,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     if (_selectedPlaceIds.isEmpty) return;
 
     // 按距离排序
-    final selectedPlaces = _displayedPlaces
-        .where((p) => _selectedPlaceIds.contains(p.id))
-        .toList()
+    final selectedPlaces = _selectedPlacesMap.values.toList() // ← 从 Map 取
       ..sort((a, b) {
         final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
         final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;

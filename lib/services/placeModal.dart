@@ -79,56 +79,5 @@ class PlaceModel {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // Foursquare Places API v3
-  // ─────────────────────────────────────────────
-
-  factory PlaceModel.fromFoursquare(Map<String, dynamic> f) {
-    final geocodes = f['geocodes']?['main'];
-    final lat = (geocodes?['latitude']  as num?)?.toDouble();
-    final lng = (geocodes?['longitude'] as num?)?.toDouble();
-
-    final location = f['location'];
-    final address  = location?['formatted_address'] ??
-        [
-          location?['address'],
-          location?['locality'],
-          location?['country'],
-        ].where((e) => e != null).join(', ');
-
-    String? photoUrl;
-    final photos = f['photos'] as List?;
-    if (photos != null && photos.isNotEmpty) {
-      final photo = photos.first;
-      photoUrl = '${photo['prefix']}300x300${photo['suffix']}';
-    }
-
-    // Foursquare rating 0–10 → 0–5
-    final rawRating = (f['rating'] as num?)?.toDouble();
-    final rating    = rawRating != null
-        ? double.parse((rawRating / 2).toStringAsFixed(1))
-        : null;
-
-    // Foursquare price is 1–4 ($ to $$$$), same scale as our system
-    final fsqPrice = (f['price'] as num?)?.toInt(); // 1–4 or null
-
-    final categories = (f['categories'] as List?)
-            ?.map((c) => c['name']?.toString() ?? '')
-            .where((s) => s.isNotEmpty)
-            .toList() ??
-        [];
-
-    return PlaceModel(
-      id:         'fsq_${f['fsq_id']}',
-      name:       f['name'] ?? '未知地点',
-      address:    address,
-      lat:        lat,
-      lng:        lng,
-      rating:     rating,
-      photoUrl:   photoUrl,
-      source:     'foursquare',
-      allTypes:   categories,
-      priceLevel: fsqPrice, // ← populated from Foursquare 'price' field
-    );
-  }
+  
 }

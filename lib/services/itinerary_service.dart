@@ -264,26 +264,35 @@ class ItineraryService {
     required int    totalDays,
     required int    placesPerDay,
     required String tripTitle,
-    List<String>?   overrideCategories, // ← user's temp selection for this trip
-    List<String>?   overrideCuisines,   // ← user's temp selection for this trip
+    List<String>?   overrideCategories,
+    List<String>?   overrideCuisines,
+    double?         overrideLat,  // ← custom location from user
+    double?         overrideLng,
   }) async {
     try {
       final prefs = UserPreferenceService.instance.current;
 
-      // Use override if provided, else fall back to saved preferences
       final categories = overrideCategories ?? prefs.categories;
       final cuisines   = overrideCuisines   ?? prefs.cuisines;
 
-      final pos = LocationService.instance.currentPosition;
-      if (pos == null) {
-        print('❌ generate: no location available');
-        return null;
+      // Use override coords if provided, else fall back to GPS
+      double? lat = overrideLat;
+      double? lng = overrideLng;
+
+      if (lat == null || lng == null) {
+        final pos = LocationService.instance.currentPosition;
+        if (pos == null) {
+          print('❌ generate: no location available');
+          return null;
+        }
+        lat = pos.latitude;
+        lng = pos.longitude;
       }
 
       final validPlaces = await _buildBalancedPlaces(
         totalDays,
-        lat: pos.latitude,
-        lng: pos.longitude,
+        lat: lat,
+        lng: lng,
       );
 
       if (validPlaces.isEmpty) {
