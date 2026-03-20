@@ -31,6 +31,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   List<String> wikiImages = [];
   String wikiUrl = '';
   bool wikiLoading = true;
+  bool _isTranslated = false; // true = came from Google Translate, not Wikipedia
 
   // Google Places info
   Map<String, dynamic>? placeDetails;
@@ -53,6 +54,24 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // Shimmer animation
   late AnimationController _shimmerController;
   late Animation<double> _shimmerAnimation;
+
+  // ── Translation state ──────────────────────────────────────
+  String? _translatedExtract;
+  String? _translatedTitle;
+  String _selectedLangCode = 'en';
+  bool _translating = false;
+
+  static const _languages = [
+    {'code': 'en',    'label': '🇬🇧 English'},
+    {'code': 'zh',    'label': '🇨🇳 中文（简体）'},
+    {'code': 'zh-tw', 'label': '🇹🇼 中文（繁體）'},
+    {'code': 'ms',    'label': '🇲🇾 Bahasa Melayu'},
+    {'code': 'ja',    'label': '🇯🇵 日本語'},
+    {'code': 'ko',    'label': '🇰🇷 한국어'},
+    {'code': 'fr',    'label': '🇫🇷 Français'},
+    {'code': 'ar',    'label': '🇸🇦 العربية'},
+  ];
+  // ──────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -102,10 +121,10 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             .toList();
         wikiUrl = wikiResult['wikiUrl'] ?? '';
         if (wikiUrl.isEmpty) {
-          wikiUrl = 'https://en.wikipedia.org/wiki/${landmarkName.replaceAll(' ', '_')}';
+          wikiUrl =
+              'https://en.wikipedia.org/wiki/${landmarkName.replaceAll(' ', '_')}';
         }
         wikiLoading = false;
-        // Only use Wikipedia images if Places hasn't provided any yet
         if (displayImages.isEmpty) {
           displayImages = wikiImages;
         }
@@ -145,7 +164,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
       final details = await PlacesApiService.getPlaceDetails(placeId);
 
-      // Extract Google Places photo URLs
       final photosRaw = details['photos'] as List?;
       final placePhotoUrls = photosRaw
               ?.map((p) => (p as Map<String, dynamic>)['photoUri'] as String?)
@@ -156,7 +174,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       setState(() {
         placeDetails = details;
         placeLoading = false;
-        // Use Places photos if available, otherwise keep Wikipedia images
         if (placePhotoUrls.isNotEmpty) {
           displayImages = placePhotoUrls;
         }
@@ -173,6 +190,56 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       admissionInfo = admission;
       admissionLoading = false;
     });
+  }
+
+  // ============================================================
+  // Translation
+  // ============================================================
+
+  Future<void> _translateTo(String langCode) async {
+    // Reset to English — restore original text
+    if (langCode == 'en') {
+      setState(() {
+        _selectedLangCode = 'en';
+        _translatedExtract = null;
+        _translatedTitle = null;
+        _isTranslated = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _translating = true;
+      _selectedLangCode = langCode;
+    });
+
+    try {
+      final landmarkName = widget.landmark.split(' (Confidence')[0];
+      final result = await WikipediaService.fetchSummaryInLanguage(
+        landmarkName,
+        langCode,
+        wikiExtract,
+      );
+      setState(() {
+        _translatedTitle   = result['title']   as String?;
+        _translatedExtract = result['extract'] as String?;
+        _isTranslated      = result['source']  == 'translated';
+        _translating = false;
+      });
+    } catch (e) {
+      setState(() => _translating = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Translation failed for this landmark.',
+          ),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.all(16),
+        ),
+      );
+    }
   }
 
   // ============================================================
@@ -194,7 +261,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           child: CircleAvatar(
             backgroundColor: Colors.white.withAlpha(200),
             child: IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 18),
+              icon: const Icon(Icons.arrow_back_ios_new,
+                  color: Colors.black, size: 18),
               onPressed: () => Navigator.pop(context, true),
             ),
           ),
@@ -208,14 +276,19 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             child: Image.memory(widget.imageBytes, fit: BoxFit.cover),
           ),
           Positioned(
-            top: 0, left: 0, right: 0,
+            top: 0,
+            left: 0,
+            right: 0,
             child: Container(
               height: 100,
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [Colors.black.withOpacity(0.3), Colors.transparent],
+                  colors: [
+                    Colors.black.withOpacity(0.3),
+                    Colors.transparent,
+                  ],
                 ),
               ),
             ),
@@ -230,7 +303,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               return Container(
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(30)),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withOpacity(0.05),
@@ -319,7 +393,9 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               ),
             )
           else ...[
-            wikiLoading ? _buildLoadingPlaceholder() : _buildProSummaryContent(),
+            wikiLoading
+                ? _buildLoadingPlaceholder()
+                : _buildProSummaryContent(),
             const SizedBox(height: 24),
             if (!wikiLoading)
               Row(
@@ -342,14 +418,16 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                         ? const Center(child: CircularProgressIndicator())
                         : GestureDetector(
                             onTap: () {
-
-                                final landmarkLocation = placeDetails?['location'];
-                                print('🔍 placeDetails location: $landmarkLocation');
-                                print('🔍 full placeDetails keys: ${placeDetails?.keys.toList()}');
-                                
-                                final lat = (landmarkLocation?['latitude'] as num?)?.toDouble() ?? pos.latitude;
-                                final lng = (landmarkLocation?['longitude'] as num?)?.toDouble() ?? pos.longitude;
-                                print('🗺️ passing to RealTimeDetectPage: $lat, $lng');
+                              final landmarkLocation =
+                                  placeDetails?['location'];
+                              final lat =
+                                  (landmarkLocation?['latitude'] as num?)
+                                          ?.toDouble() ??
+                                      pos.latitude;
+                              final lng =
+                                  (landmarkLocation?['longitude'] as num?)
+                                          ?.toDouble() ??
+                                      pos.longitude;
 
                               Navigator.push(
                                 context,
@@ -364,13 +442,16 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                             },
                             child: Builder(
                               builder: (context) {
-                                final landmarkLocation = placeDetails?['location'];
-                                final mapLat = (landmarkLocation?['latitude'] as num?)
-                                        ?.toDouble() ??
-                                    pos.latitude;
-                                final mapLng = (landmarkLocation?['longitude'] as num?)
-                                        ?.toDouble() ??
-                                    pos.longitude;
+                                final landmarkLocation =
+                                    placeDetails?['location'];
+                                final mapLat =
+                                    (landmarkLocation?['latitude'] as num?)
+                                            ?.toDouble() ??
+                                        pos.latitude;
+                                final mapLng =
+                                    (landmarkLocation?['longitude'] as num?)
+                                            ?.toDouble() ??
+                                        pos.longitude;
 
                                 return Container(
                                   height: 120,
@@ -383,11 +464,12 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                                       children: [
                                         // TODO: Move API key to secure config
                                         Image.network(
-                                          'https://maps.googleapis.com/maps/api/staticmap?center=$mapLat,$mapLng&zoom=15&size=600x300&&markers=color:red%7Clabel:L%7C$mapLat,$mapLng&markers=color:blue%7Clabel:U%7C${pos.latitude},${pos.longitude}&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc', //=${const String.fromEnvironment('GOOGLE_API_KEY')}',
+                                          'https://maps.googleapis.com/maps/api/staticmap?center=$mapLat,$mapLng&zoom=15&size=600x300&&markers=color:red%7Clabel:L%7C$mapLat,$mapLng&markers=color:blue%7Clabel:U%7C${pos.latitude},${pos.longitude}&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc',
                                           fit: BoxFit.cover,
                                           width: double.infinity,
                                           height: double.infinity,
-                                          errorBuilder: (context, error, stackTrace) {
+                                          errorBuilder:
+                                              (context, error, stackTrace) {
                                             return Container(
                                               color: Colors.grey[200],
                                               child: const Center(
@@ -416,17 +498,22 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                                           right: 10,
                                           child: Container(
                                             decoration: BoxDecoration(
-                                              color: Colors.black.withOpacity(0.5),
-                                              borderRadius: BorderRadius.circular(8),
+                                              color:
+                                                  Colors.black.withOpacity(0.5),
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
                                             ),
                                             child: IconButton(
-                                              icon: const Icon(Icons.open_in_new,
-                                                  color: Colors.white, size: 20),
+                                              icon: const Icon(
+                                                  Icons.open_in_new,
+                                                  color: Colors.white,
+                                                  size: 20),
                                               onPressed: () {
                                                 final mapUrl =
                                                     'https://www.google.com/maps/search/?api=1&query=$mapLat,$mapLng';
                                                 launchUrl(Uri.parse(mapUrl),
-                                                    mode: LaunchMode.externalApplication);
+                                                    mode: LaunchMode
+                                                        .externalApplication);
                                               },
                                             ),
                                           ),
@@ -459,8 +546,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     );
   }
 
-  // FIX: Removed inner SingleChildScrollView from _buildReviewsTab,
-  // scrolling is handled here by the wrapper
   Widget _buildReviewsTabWrapper(ScrollController scrollController) {
     return SingleChildScrollView(
       controller: scrollController,
@@ -543,7 +628,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         if (openNow != null)
           Container(
             margin: const EdgeInsets.only(bottom: 20),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
               color: openNow ? Colors.green[50] : Colors.red[50],
               borderRadius: BorderRadius.circular(12),
@@ -552,9 +638,12 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  openNow ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                  openNow
+                      ? Icons.check_circle_rounded
+                      : Icons.cancel_rounded,
                   size: 16,
-                  color: openNow ? Colors.green[700] : Colors.red[700],
+                  color:
+                      openNow ? Colors.green[700] : Colors.red[700],
                 ),
                 const SizedBox(width: 6),
                 Text(
@@ -562,7 +651,9 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
-                    color: openNow ? Colors.green[700] : Colors.red[700],
+                    color: openNow
+                        ? Colors.green[700]
+                        : Colors.red[700],
                   ),
                 ),
               ],
@@ -575,14 +666,18 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           const SizedBox(height: 10),
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 14),
             decoration: BoxDecoration(
               color: Colors.grey[50],
               borderRadius: BorderRadius.circular(16),
             ),
             child: Text(
               address,
-              style: TextStyle(fontSize: 14, color: Colors.grey[700], height: 1.5),
+              style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey[700],
+                  height: 1.5),
             ),
           ),
           const SizedBox(height: 24),
@@ -593,7 +688,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           _buildSectionHeader(Icons.star_rounded, 'Rating'),
           const SizedBox(height: 10),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 14),
             decoration: BoxDecoration(
               color: Colors.grey[50],
               borderRadius: BorderRadius.circular(16),
@@ -604,19 +700,26 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                   final filled = i < rating.floor();
                   final half = !filled && (i < rating);
                   return Icon(
-                    half ? Icons.star_half_rounded : Icons.star_rounded,
+                    half
+                        ? Icons.star_half_rounded
+                        : Icons.star_rounded,
                     size: 20,
-                    color: filled || half ? Colors.amber[600] : Colors.grey[300],
+                    color: filled || half
+                        ? Colors.amber[600]
+                        : Colors.grey[300],
                   );
                 }),
                 const SizedBox(width: 10),
                 Text(
                   rating.toStringAsFixed(1),
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                  style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700),
                 ),
                 Text(
                   ' / 5.0',
-                  style: TextStyle(fontSize: 13, color: Colors.grey[500]),
+                  style: TextStyle(
+                      fontSize: 13, color: Colors.grey[500]),
                 ),
               ],
             ),
@@ -630,19 +733,22 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           const SizedBox(height: 10),
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 14),
             decoration: BoxDecoration(
               color: Colors.grey[50],
               borderRadius: BorderRadius.circular(16),
             ),
             child: Row(
               children: [
-                Icon(Icons.monetization_on_outlined, size: 18, color: Colors.grey[600]),
+                Icon(Icons.monetization_on_outlined,
+                    size: 18, color: Colors.grey[600]),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
                     admissionInfo!,
-                    style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+                    style: TextStyle(
+                        fontSize: 14, color: Colors.grey[700]),
                   ),
                 ),
               ],
@@ -653,7 +759,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
         // Opening Hours
         if (weekdays.isNotEmpty) ...[
-          _buildSectionHeader(Icons.access_time_rounded, 'Opening Hours'),
+          _buildSectionHeader(
+              Icons.access_time_rounded, 'Opening Hours'),
           const SizedBox(height: 10),
           Container(
             decoration: BoxDecoration(
@@ -666,9 +773,11 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                 return Column(
                   children: [
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
                       child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        mainAxisAlignment:
+                            MainAxisAlignment.spaceBetween,
                         children: [
                           Text(
                             entry.value.day,
@@ -680,7 +789,9 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                           ),
                           Text(
                             entry.value.hours,
-                            style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                            style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey[600]),
                           ),
                         ],
                       ),
@@ -701,7 +812,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
         // Contact
         if (phoneNumber != null || website != null) ...[
-          _buildSectionHeader(Icons.contact_page_rounded, 'Contact'),
+          _buildSectionHeader(
+              Icons.contact_page_rounded, 'Contact'),
           const SizedBox(height: 10),
           Container(
             decoration: BoxDecoration(
@@ -769,7 +881,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // Reviews Tab
   // ============================================================
 
-  // FIX: Removed inner SingleChildScrollView — wrapper handles scrolling
   Widget _buildReviewsTab() {
     if (placeDetails == null ||
         (placeDetails!['reviews'] as List?)?.isEmpty == true) {
@@ -817,7 +928,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                   const SizedBox(height: 8),
                   Text(
                     '${_formatCount(userRatingCount)} reviews',
-                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                    style: TextStyle(
+                        fontSize: 12, color: Colors.grey[500]),
                   ),
                 ],
               ),
@@ -827,7 +939,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                 child: Column(
                   children: [5, 4, 3, 2, 1].map((star) {
                     return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      padding:
+                          const EdgeInsets.symmetric(vertical: 2),
                       child: Row(
                         children: [
                           Text('$star',
@@ -838,7 +951,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                               borderRadius: BorderRadius.circular(4),
                               child: LinearProgressIndicator(
                                 // TODO: Replace with actual distribution
-                                // calculated from reviews data
                                 value: star == 5
                                     ? 0.8
                                     : (star == 4 ? 0.4 : 0.1),
@@ -859,10 +971,10 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         ),
 
         const SizedBox(height: 32),
-        _buildSectionHeader(Icons.chat_bubble_outline_rounded, 'Community Voice'),
+        _buildSectionHeader(
+            Icons.chat_bubble_outline_rounded, 'Community Voice'),
         const SizedBox(height: 16),
 
-        // Individual review cards
         ...reviewsRaw.map((r) => _buildReviewCard(r)).toList(),
         const SizedBox(height: 20),
       ],
@@ -872,7 +984,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   Widget _buildReviewCard(dynamic r) {
     final review = r as Map<String, dynamic>;
     final authorName =
-        review['authorAttribution']?['displayName'] as String? ?? 'Traveler';
+        review['authorAttribution']?['displayName'] as String? ??
+            'Traveler';
     final authorPhoto =
         review['authorAttribution']?['photoUri'] as String?;
     final reviewRating = (review['rating'] as num?)?.toInt() ?? 0;
@@ -899,9 +1012,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                       ? NetworkImage(authorPhoto)
                       : null,
                   backgroundColor: Colors.blue[50],
-                  child: authorPhoto == null
-                      ? Text(authorName[0])
-                      : null,
+                  child:
+                      authorPhoto == null ? Text(authorName[0]) : null,
                 ),
               ),
               const SizedBox(width: 12),
@@ -911,7 +1023,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                   children: [
                     Text(authorName,
                         style: const TextStyle(
-                            fontWeight: FontWeight.bold, fontSize: 15)),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15)),
                     Text(relativeTime,
                         style: TextStyle(
                             color: Colors.grey[500], fontSize: 12)),
@@ -927,7 +1040,9 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               child: Text(
                 text,
                 style: TextStyle(
-                    color: Colors.grey[800], height: 1.6, fontSize: 14),
+                    color: Colors.grey[800],
+                    height: 1.6,
+                    fontSize: 14),
                 maxLines: 5,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -967,9 +1082,12 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       mainAxisSize: MainAxisSize.min,
       children: List.generate(5, (i) {
         return Icon(
-          i < rating.floor() ? Icons.star_rounded : Icons.star_half_rounded,
+          i < rating.floor()
+              ? Icons.star_rounded
+              : Icons.star_half_rounded,
           size: 20,
-          color: i < rating ? Colors.amber[600] : Colors.grey[300],
+          color:
+              i < rating ? Colors.amber[600] : Colors.grey[300],
         );
       }),
     );
@@ -1049,12 +1167,13 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // ── Title row with language picker ──────────────────
         Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Expanded(
               child: Text(
-                wikiTitle,
+                _translatedTitle ?? wikiTitle,
                 style: const TextStyle(
                   fontSize: 28,
                   fontWeight: FontWeight.w900,
@@ -1062,8 +1181,68 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                 ),
               ),
             ),
+            const SizedBox(width: 8),
+
+            // 🌐 Language picker button
+            PopupMenuButton<String>(
+              initialValue: _selectedLangCode,
+              onSelected: _translateTo,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              itemBuilder: (_) => _languages
+                  .map(
+                    (lang) => PopupMenuItem<String>(
+                      value: lang['code'],
+                      child: Text(
+                        lang['label']!,
+                        style: TextStyle(
+                          fontWeight: lang['code'] == _selectedLangCode
+                              ? FontWeight.bold
+                              : FontWeight.normal,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+              child: _translating
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.blue[50],
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.translate,
+                              size: 14, color: Colors.blue[700]),
+                          const SizedBox(width: 4),
+                          Text(
+                            _selectedLangCode.toUpperCase(),
+                            style: TextStyle(
+                              color: Colors.blue[700],
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+            ),
+
+            const SizedBox(width: 8),
+
+            // Landmark badge
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
                 color: Colors.blue[50],
                 borderRadius: BorderRadius.circular(8),
@@ -1078,7 +1257,11 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             ),
           ],
         ),
+        // ────────────────────────────────────────────────────
+
         const SizedBox(height: 16),
+
+        // Image carousel
         if (displayImages.isNotEmpty)
           Builder(
             builder: (context) {
@@ -1119,12 +1302,14 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                               imageUrl,
                               fit: BoxFit.cover,
                               errorBuilder: (context, error, stackTrace) {
-                                WidgetsBinding.instance.addPostFrameCallback((_) {
+                                WidgetsBinding.instance
+                                    .addPostFrameCallback((_) {
                                   if (mounted) {
                                     setState(() {
                                       _failedImageUrls.add(imageUrl);
                                       final newLength = displayImages
-                                          .where((u) => !_failedImageUrls.contains(u))
+                                          .where((u) =>
+                                              !_failedImageUrls.contains(u))
                                           .length;
                                       if (_currentImageIndex >= newLength) {
                                         _currentImageIndex =
@@ -1153,7 +1338,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                       children: List.generate(
                         visibleImages.length,
                         (index) => Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          margin:
+                              const EdgeInsets.symmetric(horizontal: 4),
                           width: _currentImageIndex == index ? 24 : 8,
                           height: 8,
                           decoration: BoxDecoration(
@@ -1170,6 +1356,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               );
             },
           ),
+
+        // Extract / summary text
         Container(
           padding: const EdgeInsets.only(left: 16),
           decoration: BoxDecoration(
@@ -1177,7 +1365,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                 left: BorderSide(color: Colors.grey[300]!, width: 3)),
           ),
           child: Text(
-            wikiExtract,
+            _translatedExtract ?? wikiExtract,
             textAlign: TextAlign.justify,
             style: TextStyle(
               fontSize: 15,
@@ -1187,7 +1375,10 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             ),
           ),
         ),
+
         const SizedBox(height: 16),
+
+        // Read more + Wikipedia link
         if (wikiUrl.isNotEmpty)
           Align(
             alignment: Alignment.centerRight,
@@ -1197,7 +1388,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               label: const Text('Read More on Wikipedia'),
               style: TextButton.styleFrom(
                 foregroundColor: Colors.blue[800],
-                textStyle: const TextStyle(fontWeight: FontWeight.bold),
+                textStyle:
+                    const TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
           ),
@@ -1291,7 +1483,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           onTap: onTap,
           borderRadius: BorderRadius.circular(16),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 14),
             child: Row(
               children: [
                 Icon(icon, size: 18, color: Colors.grey[600]),
@@ -1328,7 +1521,9 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // ============================================================
 
   String _formatCount(int count) {
-    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+    if (count >= 1000000) {
+      return '${(count / 1000000).toStringAsFixed(1)}M';
+    }
     if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
     return count.toString();
   }
