@@ -6,7 +6,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import '../../services/userPost_service.dart';
-import '../../services/placesAPI_service.dart'; // ✅ 新增
+import '../../services/placesAPI_service.dart'; 
 
 class PostingPage extends StatefulWidget {
   const PostingPage({super.key});
@@ -28,25 +28,25 @@ class _PostingPageState extends State<PostingPage> {
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _contentController = TextEditingController();
 
-  String? selectedCity;      // ✅ 新增：从 address 解析的城市
-  String? selectedLocation;  // 具体地点名称
+  String? selectedCity;   
+  String? selectedLocation; 
   List<String> selectedTags = [];
   List<String> mentionedFriends = [];
   String? selectedTopic;
-  String selectedVisibility = "公开";
+  String selectedVisibility = "public";
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final UserStatsService _statsService = UserStatsService();
 
   final List<String> availableTags = [
-    '美食', '旅行', '摄影', '日常', 'Vlog',
-    '穿搭', '健身', '美妆', '学习', '工作'
+    'food', 'travel', 'photography', 'daily', 'vlog',
+    'fashion', 'fitness', 'beauty', 'study', 'work'
   ];
 
   final List<String> hotTopics = [
-    '#马来西亚旅行', '#KLCC打卡', '#槟城美食',
-    '#吉隆坡生活', '#周末去哪儿'
+    '#malaysia', '#KLCC', '#penang', '#cameratips', '#foodie', '#travelvlog', '#transport', '#journey', '#niceView', '#happyTravel',
+  
   ];
 
   // ===== 从 formattedAddress 解析城市 =====
@@ -78,7 +78,7 @@ class _PostingPageState extends State<PostingPage> {
       }
       return imagePaths;
     } catch (e) {
-      throw Exception('保存图片失败: $e');
+      throw Exception('Save Images Failed: $e');
     }
   }
 
@@ -92,7 +92,7 @@ class _PostingPageState extends State<PostingPage> {
       }
       return base64Images;
     } catch (e) {
-      throw Exception('图片转换失败: $e');
+      throw Exception('Convert Images to Base64 Failed: $e');
     }
   }
 
@@ -100,7 +100,7 @@ class _PostingPageState extends State<PostingPage> {
   Future<void> _savePostToFirestore(List<String> imagePaths) async {
     try {
       User? currentUser = _auth.currentUser;
-      if (currentUser == null) throw Exception('用户未登录');
+      if (currentUser == null) throw Exception('User not logged in');
 
       String userId = currentUser.uid;
       DocumentSnapshot userDoc = await _firestore.collection('users').doc(userId).get();
@@ -143,7 +143,7 @@ class _PostingPageState extends State<PostingPage> {
 
       await _firestore.collection('posts').add(postData);
     } catch (e) {
-      throw Exception('保存帖子失败: $e');
+      throw Exception('Save Post Failed: $e');
     }
   }
 
@@ -159,7 +159,7 @@ class _PostingPageState extends State<PostingPage> {
         });
       }
     } catch (e) {
-      _showErrorDialog('选择图片失败: $e');
+      _showErrorDialog('Select Images Failed: $e');
     }
   }
 
@@ -168,16 +168,16 @@ class _PostingPageState extends State<PostingPage> {
       final XFile? photo = await _picker.pickImage(source: ImageSource.camera, imageQuality: 80);
       if (photo != null) setState(() => selectedImages.add(File(photo.path)));
     } catch (e) {
-      _showErrorDialog('拍照失败: $e');
+      _showErrorDialog('Take Photo Failed: $e');
     }
   }
 
   Future<void> _pickVideo() async {
     try {
       final XFile? video = await _picker.pickVideo(source: ImageSource.gallery, maxDuration: const Duration(minutes: 5));
-      if (video != null) _showSuccessDialog('视频已选择');
+      if (video != null) _showSuccessDialog('Video Selected Successfully');
     } catch (e) {
-      _showErrorDialog('选择视频失败: $e');
+      _showErrorDialog('Select Video Failed: $e');
     }
   }
 
@@ -198,22 +198,22 @@ class _PostingPageState extends State<PostingPage> {
               const SizedBox(height: 20),
               ListTile(
                 leading: const Icon(Icons.camera_alt, color: Color(0xFFD35D3E)),
-                title: const Text('拍照'),
+                title: const Text('Take Photo'),
                 onTap: () { Navigator.pop(context); _takePhoto(); },
               ),
               ListTile(
                 leading: const Icon(Icons.photo_library, color: Color(0xFFD35D3E)),
-                title: const Text('从相册选择'),
+                title: const Text('Choose from Gallery'),
                 onTap: () { Navigator.pop(context); _pickImageFromGallery(); },
               ),
               ListTile(
                 leading: const Icon(Icons.videocam, color: Color(0xFFD35D3E)),
-                title: const Text('选择视频'),
+                title: const Text('Select Video'),
                 onTap: () { Navigator.pop(context); _pickVideo(); },
               ),
               const SizedBox(height: 10),
               ListTile(
-                title: const Center(child: Text('取消', style: TextStyle(color: Colors.grey))),
+                title: const Center(child: Text('Cancel', style: TextStyle(color: Colors.grey))),
                 onTap: () => Navigator.pop(context),
               ),
               const SizedBox(height: 10),
@@ -240,7 +240,7 @@ class _PostingPageState extends State<PostingPage> {
             selectedCity = city;
           });
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('已选择: $placeName${city.isNotEmpty ? ' · $city' : ''}'),
+            content: Text('Location Selected: $placeName${city.isNotEmpty ? ' · $city' : ''}'),
             backgroundColor: Colors.green,
             duration: const Duration(seconds: 1),
           ));
@@ -266,8 +266,8 @@ class _PostingPageState extends State<PostingPage> {
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  const Text('添加标签', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  TextButton(onPressed: () => Navigator.pop(context), child: const Text('完成')),
+                  const Text('Add Tags', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  TextButton(onPressed: () => Navigator.pop(context), child: const Text('Done')),
                 ]),
               ),
               Expanded(
@@ -325,7 +325,7 @@ class _PostingPageState extends State<PostingPage> {
             Padding(
               padding: const EdgeInsets.all(16),
               child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                const Text('选择话题', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const Text('Select Topic', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
               ]),
             ),
@@ -338,7 +338,7 @@ class _PostingPageState extends State<PostingPage> {
                   onTap: () {
                     setState(() => selectedTopic = topic);
                     Navigator.pop(context);
-                    _showSuccessDialog('已添加话题');
+                    _showSuccessDialog('Topic Added Successfully');
                   },
                 );
               }).toList()),
@@ -349,47 +349,47 @@ class _PostingPageState extends State<PostingPage> {
     );
   }
 
-  // ===== @好友 =====
-  void _showMentionFriends() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) {
-        return Container(
-          height: MediaQuery.of(context).size.height * 0.7,
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
-          ),
-          child: Column(children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                const Text('@ 好友', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
-              ]),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: TextField(
-                decoration: InputDecoration(hintText: '搜索好友', prefixIcon: const Icon(Icons.search), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Expanded(
-              child: ListView(children: [
-                _buildFriendItem('小明', '@xiaoming'),
-                _buildFriendItem('小红', '@xiaohong'),
-                _buildFriendItem('Traveler01', '@traveler01'),
-                _buildFriendItem('GoTrip User', '@gotripuser'),
-              ]),
-            ),
-          ]),
-        );
-      },
-    );
-  }
+  // // ===== @好友 =====
+  // void _showMentionFriends() {
+  //   showModalBottomSheet(
+  //     context: context,
+  //     backgroundColor: Colors.transparent,
+  //     isScrollControlled: true,
+  //     builder: (context) {
+  //       return Container(
+  //         height: MediaQuery.of(context).size.height * 0.7,
+  //         decoration: const BoxDecoration(
+  //           color: Colors.white,
+  //           borderRadius: BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
+  //         ),
+  //         child: Column(children: [
+  //           Padding(
+  //             padding: const EdgeInsets.all(16),
+  //             child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+  //               const Text('@ Friends', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+  //               IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+  //             ]),
+  //           ),
+  //           Padding(
+  //             padding: const EdgeInsets.symmetric(horizontal: 16),
+  //             child: TextField(
+  //               decoration: InputDecoration(hintText: 'Search Friends', prefixIcon: const Icon(Icons.search), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
+  //             ),
+  //           ),
+  //           const SizedBox(height: 10),
+  //           Expanded(
+  //             child: ListView(children: [
+  //               _buildFriendItem('小明', '@xiaoming'),
+  //               _buildFriendItem('小红', '@xiaohong'),
+  //               _buildFriendItem('Traveler01', '@traveler01'),
+  //               _buildFriendItem('GoTrip User', '@gotripuser'),
+  //             ]),
+  //           ),
+  //         ]),
+  //       );
+  //     },
+  //   );
+  // }
 
   Widget _buildFriendItem(String name, String username) {
     bool isSelected = mentionedFriends.contains(username);
@@ -429,9 +429,9 @@ class _PostingPageState extends State<PostingPage> {
               const SizedBox(height: 20),
               const Text('谁可以看', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 20),
-              _buildVisibilityOption('公开', '所有人可见', Icons.public),
-              _buildVisibilityOption('仅好友', '只有好友可见', Icons.people),
-              _buildVisibilityOption('私密', '仅自己可见', Icons.lock),
+              _buildVisibilityOption('public', 'visible by everyone', Icons.public),
+              _buildVisibilityOption('friends', 'only friends can see', Icons.people),
+              _buildVisibilityOption('private', 'only me can see', Icons.lock),
               const SizedBox(height: 20),
             ]),
           ),
@@ -457,11 +457,11 @@ class _PostingPageState extends State<PostingPage> {
   // ===== 发布 =====
   Future<void> _publishPost() async {
     if (_titleController.text.isEmpty || _contentController.text.isEmpty) {
-      _showErrorDialog('请填写标题和内容');
+      _showErrorDialog('Please fill in the title and content');
       return;
     }
     if (selectedImages.isEmpty) {
-      _showErrorDialog('请至少上传一张图片');
+      _showErrorDialog('Please upload at least one image');
       return;
     }
 
@@ -479,12 +479,12 @@ class _PostingPageState extends State<PostingPage> {
       await _statsService.incrementPostCount();
 
       Navigator.pop(context);
-      _showSuccessDialog('发布成功!');
+      _showSuccessDialog('Post published successfully!');
       await Future.delayed(const Duration(seconds: 1));
       Navigator.pop(context);
     } catch (e) {
       Navigator.pop(context);
-      _showErrorDialog('发布失败: $e');
+      _showErrorDialog('Failed to publish post: $e');
     } finally {
       setState(() => isUploading = false);
     }
@@ -494,9 +494,9 @@ class _PostingPageState extends State<PostingPage> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('提示'),
+        title: const Text('Error'),
         content: Text(message),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('确定'))],
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
       ),
     );
   }
@@ -514,24 +514,18 @@ class _PostingPageState extends State<PostingPage> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
-        leadingWidth: 70,
+        leadingWidth: 80,
         leading: TextButton(
           onPressed: isUploading ? null : () => Navigator.pop(context),
-          child: Text("取消", style: TextStyle(color: isUploading ? Colors.grey : Colors.black54, fontSize: 16)),
+          child: Text("Cancel", style: TextStyle(color: isUploading ? Colors.grey : Colors.black54, fontSize: 16)),
         ),
         title: Row(mainAxisSize: MainAxisSize.min, children: [
-          const Text("发笔记", style: TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.bold)),
+          const Text("Post", style: TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.bold)),
           const SizedBox(width: 4),
-          Icon(Icons.help_outline, size: 16, color: Colors.grey[600]),
         ]),
         centerTitle: true,
         actions: [
-          Center(
-            child: GestureDetector(
-              onTap: isUploading ? null : () => _showSuccessDialog('草稿已保存'),
-              child: Text("保存", style: TextStyle(color: isUploading ? Colors.grey : Colors.grey[700], fontSize: 15)),
-            ),
-          ),
+          
           const SizedBox(width: 12),
           Center(
             child: GestureDetector(
@@ -542,7 +536,7 @@ class _PostingPageState extends State<PostingPage> {
                   color: isUploading ? Colors.grey : const Color(0xFFD35D3E),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: const Text("发布", style: TextStyle(color: Colors.white, fontSize: 14)),
+                child: const Text("Post", style: TextStyle(color: Colors.white, fontSize: 14)),
               ),
             ),
           ),
@@ -594,7 +588,7 @@ class _PostingPageState extends State<PostingPage> {
                         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                           Icon(Icons.camera_alt_outlined, color: Colors.grey[700], size: 30),
                           const SizedBox(height: 4),
-                          Text("上传视频/照片", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
+                          Text("Upload Video/Photo", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
                         ]),
                       ),
                     ),
@@ -608,7 +602,7 @@ class _PostingPageState extends State<PostingPage> {
               controller: _titleController,
               enabled: !isUploading,
               decoration: const InputDecoration(
-                hintText: "填写标题更容易上首页哦~",
+                hintText: "Enter title~",
                 hintStyle: TextStyle(color: Colors.grey, fontSize: 16),
                 border: InputBorder.none,
               ),
@@ -620,7 +614,7 @@ class _PostingPageState extends State<PostingPage> {
               enabled: !isUploading,
               maxLines: 8,
               decoration: const InputDecoration(
-                hintText: "今天也是元气满满的一天，我要赶紧用笔记记录下来",
+                hintText: " What's on your mind? Share your travel experience, tips, or stories with the community!",
                 hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
                 border: InputBorder.none,
               ),
@@ -637,35 +631,35 @@ class _PostingPageState extends State<PostingPage> {
                   icon: Icons.location_on_outlined,
                   label: selectedLocation != null
                       ? '$selectedLocation${selectedCity != null && selectedCity!.isNotEmpty ? ' · $selectedCity' : ''}'
-                      : '添加地点',
+                      : 'Add Location',
                   onTap: _showLocationPicker,
                   hasValue: selectedLocation != null,
                 ),
                 const Divider(height: 20),
                 _buildFeatureButton(
                   icon: Icons.tag,
-                  label: selectedTopic ?? '添加话题',
+                  label: selectedTopic ?? 'Add Topic',
                   onTap: _showTopicPicker,
                   hasValue: selectedTopic != null,
                 ),
                 const Divider(height: 20),
                 _buildFeatureButton(
                   icon: Icons.sell_outlined,
-                  label: selectedTags.isEmpty ? '添加标签' : selectedTags.join(', '),
+                  label: selectedTags.isEmpty ? 'Add Tags' : selectedTags.join(', '),
                   onTap: _showTagPicker,
                   hasValue: selectedTags.isNotEmpty,
                 ),
                 const Divider(height: 20),
-                _buildFeatureButton(
-                  icon: Icons.alternate_email,
-                  label: mentionedFriends.isEmpty ? '@ 好友' : '已选择 ${mentionedFriends.length} 位好友',
-                  onTap: _showMentionFriends,
-                  hasValue: mentionedFriends.isNotEmpty,
-                ),
+                // _buildFeatureButton(
+                //   icon: Icons.alternate_email,
+                //   label: mentionedFriends.isEmpty ? '@ 好友' : '已选择 ${mentionedFriends.length} 位好友',
+                //   onTap: _showMentionFriends,
+                //   hasValue: mentionedFriends.isNotEmpty,
+                // ),
                 const Divider(height: 20),
                 _buildFeatureButton(
                   icon: Icons.visibility_outlined,
-                  label: '可见范围: $selectedVisibility',
+                  label: 'Visibility: $selectedVisibility',
                   onTap: _showVisibilitySettings,
                   hasValue: true,
                 ),
@@ -676,7 +670,7 @@ class _PostingPageState extends State<PostingPage> {
 
             // ── 评分 ──
             Row(children: [
-              const Text("描述相符", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              const Text("Rating", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(width: 15),
               ...List.generate(5, (index) => GestureDetector(
                 onTap: isUploading ? null : () => setState(() => rating = index + 1),
@@ -689,11 +683,11 @@ class _PostingPageState extends State<PostingPage> {
 
             const SizedBox(height: 25),
 
-            _buildSwitchOption('匿名', '匿名会隐藏头像和昵称', isAnonymous, (v) => setState(() => isAnonymous = v)),
+            _buildSwitchOption('Anonymous', 'Anonymous will hide your avatar and nickname', isAnonymous, (v) => setState(() => isAnonymous = v)),
             const SizedBox(height: 15),
-            _buildSwitchOption('允许评论', '其他用户可以在你的帖子下评论', allowComments, (v) => setState(() => allowComments = v)),
+            _buildSwitchOption('Allow Comments', 'Other users can comment on your post', allowComments, (v) => setState(() => allowComments = v)),
             const SizedBox(height: 15),
-            _buildSwitchOption('允许转发', '其他用户可以转发你的帖子', allowShare, (v) => setState(() => allowShare = v)),
+            _buildSwitchOption('Allow Sharing', 'Other users can share your post', allowShare, (v) => setState(() => allowShare = v)),
 
             const SizedBox(height: 150),
           ]),
@@ -718,7 +712,7 @@ class _PostingPageState extends State<PostingPage> {
                   child: const Row(children: [
                     Icon(Icons.send_rounded, color: Colors.white, size: 20),
                     SizedBox(width: 10),
-                    Text("发布", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                    Text("Post", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
                   ]),
                 ),
               ),
@@ -835,7 +829,7 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 8, 0),
             child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              const Text('选择地点', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const Text('Select Location', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
             ]),
           ),
@@ -848,7 +842,7 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
               autofocus: true,
               onChanged: _onChanged,
               decoration: InputDecoration(
-                hintText: '搜索景点、餐厅、地标...',
+                hintText: 'Search for attractions, restaurants, landmarks...',
                 prefixIcon: _loading
                     ? const Padding(
                         padding: EdgeInsets.all(12),
@@ -880,7 +874,7 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
                     Icon(Icons.travel_explore, size: 64, color: Colors.grey[300]),
                     const SizedBox(height: 12),
                     Text(
-                      _ctrl.text.isEmpty ? '输入地点名称开始搜索' : '没有找到相关地点',
+                      _ctrl.text.isEmpty ? 'Enter a location name to start searching' : 'No relevant locations found',
                       style: TextStyle(color: Colors.grey[400], fontSize: 14),
                     ),
                   ]))

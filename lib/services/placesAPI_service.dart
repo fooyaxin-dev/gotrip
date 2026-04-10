@@ -63,42 +63,46 @@ class PlacesApiService {
   }
 
   /// 🟡 searchNearby
-  static Future<List<Map<String, dynamic>>> searchNearby({
+ static Future<List<Map<String, dynamic>>> searchNearby({
     required double lat,
     required double lng,
-    required String type,
+    List<String>? types,          // ← 可选，不传 = 不限类型
     int radius = 5000,
     int maxResultCount = 20,
   }) async {
     final startTime = DateTime.now();
     _totalApiCalls++;
     _searchNearbyCallCount++;
-    _callsByType[type] = (_callsByType[type] ?? 0) + 1;
 
-    print('🟡 API Call #$_totalApiCalls: searchNearby | Type: $type');
+    final label = types == null ? 'ALL' : types.first;
+    print('🟡 API Call #$_totalApiCalls: searchNearby | $label');
 
     final url = Uri.parse('$_baseUrl/places:searchNearby');
-    final body = jsonEncode({
+
+    final Map<String, dynamic> bodyMap = {
       "locationRestriction": {
         "circle": {
           "center": {"latitude": lat, "longitude": lng},
           "radius": radius.toDouble()
         }
       },
-      "includedTypes": [type],
       "maxResultCount": maxResultCount,
-    });
+    };
+
+    // 只在有传 types 时才加这个字段
+    if (types != null && types.isNotEmpty) {
+      bodyMap["includedTypes"] = types;
+    }
 
     final response = await http.post(
-      url,
+      Uri.parse('$_baseUrl/places:searchNearby'),
       headers: _headers(
         'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos,places.priceLevel',
       ),
-      body: body,
+      body: jsonEncode(bodyMap),
     );
 
     final duration = DateTime.now().difference(startTime);
-
     if (response.statusCode != 200) {
       throw Exception('searchNearby failed: ${response.body}');
     }
@@ -240,7 +244,7 @@ class PlacesApiService {
           .collection(_collectionName)
           .doc(placeId)
           .get();
-
+ 
       if (docSnapshot.exists) {
         final cachedData = docSnapshot.data()!;
 
@@ -291,7 +295,6 @@ class PlacesApiService {
     }
   }
     
-  /// 🗑️ 清除指定地点缓存
   static Future<void> clearPlaceCache(String placeId) async {
     try {
       await _firestore.collection(_collectionName).doc(placeId).delete();
@@ -301,7 +304,6 @@ class PlacesApiService {
     }
   }
 
-  /// 🗑️ 清除所有缓存
   static Future<void> clearAllCache() async {
     try {
       final batch = _firestore.batch();
@@ -316,7 +318,6 @@ class PlacesApiService {
     }
   }
 
-  /// 📊 获取缓存统计
   static Future<Map<String, dynamic>> getCacheStats() async {
     try {
       final snapshot = await _firestore.collection(_collectionName).get();
@@ -333,12 +334,10 @@ class PlacesApiService {
     }
   }
 
-  /// 🖼️ 生成照片 URL
   static String buildPhotoUrl(String photoName, {int maxWidth = 800}) {
     return '$_baseUrl/$photoName/media?key=$_apiKey&maxWidthPx=$maxWidth';
   }
 
-  /// 🔧 统一整理格式
   static Map<String, dynamic> _normalizePlace(dynamic p) {
     List<Map<String, String>> photoList = [];
     if (p['photos'] != null && (p['photos'] as List).isNotEmpty) {
@@ -358,7 +357,7 @@ class PlacesApiService {
       'types': (p['types'] as List?) ?? [],
       'rating': (p['rating'] as num?)?.toDouble(),
       'photos': photoList,
-      'priceLevel': p['priceLevel'],  // ← 新加这行
+      'priceLevel': p['priceLevel'],  
       'source': 'google',
     };
   }

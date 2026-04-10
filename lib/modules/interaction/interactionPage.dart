@@ -50,7 +50,7 @@ class _InteractionPageState extends State<InteractionPage> {
     try {
       final snapshot = await _firestore
           .collection('posts')
-          .where('visibility', isEqualTo: '公开')
+          .where('visibility', isEqualTo: 'public')
           .get();
 
       final citySet = <String>{};
@@ -118,8 +118,7 @@ class _InteractionPageState extends State<InteractionPage> {
           title: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text("Followed",
-                  style: TextStyle(color: Colors.grey, fontSize: 15)),
+              
               const SizedBox(width: 20),
               Column(children: [
                 const Text("Post",
@@ -136,8 +135,7 @@ class _InteractionPageState extends State<InteractionPage> {
                         borderRadius: BorderRadius.circular(2))),
               ]),
               const SizedBox(width: 20),
-              const Text("Nearby",
-                  style: TextStyle(color: Colors.grey, fontSize: 15)),
+              
             ],
           ),
           centerTitle: true,
@@ -175,12 +173,12 @@ class _InteractionPageState extends State<InteractionPage> {
                         const Icon(Icons.error_outline,
                             size: 64, color: Colors.red),
                         const SizedBox(height: 16),
-                        Text('加载失败: ${snapshot.error}',
+                        Text('Failed to load: ${snapshot.error}',
                             style: const TextStyle(color: Colors.red)),
                         const SizedBox(height: 16),
                         ElevatedButton(
                             onPressed: () => setState(() {}),
-                            child: const Text('重试')),
+                            child: const Text('Retry')),
                       ]));
                 }
                 if (!snapshot.hasData || snapshot.data!.isEmpty) {
@@ -232,10 +230,10 @@ class _InteractionPageState extends State<InteractionPage> {
         },
         decoration: InputDecoration(
           hintText: _loadingCities
-              ? '正在加载...'
+              ? 'Loading...'
               : _selectedCity != null
                   ? _selectedCity!
-                  : '搜索你想去的城市',
+                  : 'Search for cities you want to visit',
           hintStyle: TextStyle(
             color: _selectedCity != null ? Colors.black87 : Colors.grey[400],
             fontSize: 13,
@@ -287,7 +285,7 @@ class _InteractionPageState extends State<InteractionPage> {
               child: Row(children: [
                 Icon(Icons.search_off, color: Colors.grey),
                 SizedBox(width: 12),
-                Text('没有找到相关城市',
+                Text('No relevant cities found',
                     style: TextStyle(color: Colors.grey)),
               ]),
             )
@@ -348,7 +346,7 @@ class _InteractionPageState extends State<InteractionPage> {
           ),
           const SizedBox(height: 16),
           Text(
-            _selectedCity != null ? '$_selectedCity 暂无帖子' : '还没有帖子',
+            _selectedCity != null ? '$_selectedCity No posts yet' : 'No posts yet',
             style: TextStyle(
                 color: Colors.grey[600],
                 fontSize: 18,
@@ -357,8 +355,8 @@ class _InteractionPageState extends State<InteractionPage> {
           const SizedBox(height: 8),
           Text(
             _selectedCity != null
-                ? '成为第一个分享 $_selectedCity 旅行体验的人！'
-                : '点击右上角 + 发布第一个帖子吧！',
+                ? 'Become the first to share your $_selectedCity travel experience!'
+                : 'Click the + in the top right to post your first story!',
             style: TextStyle(color: Colors.grey[500], fontSize: 13),
             textAlign: TextAlign.center,
           ),
@@ -367,7 +365,7 @@ class _InteractionPageState extends State<InteractionPage> {
             onPressed: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const PostingPage())),
             icon: const Icon(Icons.add),
-            label: const Text('发布帖子'),
+            label: const Text('Post Story'),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFD35D3E),
               padding:
@@ -459,14 +457,14 @@ class _InteractionPageState extends State<InteractionPage> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildSocialBtn(
-                  Icons.share_outlined,
-                  post.shares > 0 ? '${post.shares}' : '转发',
-                  () => _handleShare(post),
-                  false),
+              // _buildSocialBtn(
+              //     Icons.share_outlined,
+              //     post.shares > 0 ? '${post.shares}' : '转发',
+              //     () => _handleShare(post),
+              //     false),
               _buildSocialBtn(
                   Icons.chat_bubble_outline,
-                  post.comments > 0 ? '${post.comments}' : '评论',
+                  post.comments > 0 ? '${post.comments}' : 'Comments',
                   () => _handleComment(post),
                   false),
               StreamBuilder<bool>(
@@ -508,11 +506,11 @@ class _InteractionPageState extends State<InteractionPage> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                Text(post.isAnonymous ? '匿名用户' : userName,
+                Text(post.isAnonymous ? 'Anonymous User' : userName,
                     style: const TextStyle(
                         fontWeight: FontWeight.bold, fontSize: 15)),
                 const SizedBox(height: 2),
-                Text("${_formatTime(post.createdAt)} · GoTrip 极速版",
+                Text("${_formatTime(post.createdAt)} · GoTrip ",
                     style:
                         TextStyle(color: Colors.grey[500], fontSize: 11)),
               ])),
@@ -524,7 +522,7 @@ class _InteractionPageState extends State<InteractionPage> {
                   child: Row(children: [
                     Icon(Icons.flag_outlined, size: 20),
                     SizedBox(width: 12),
-                    Text('举报')
+                    Text('Report')
                   ]))
             ],
           ),
@@ -599,7 +597,7 @@ class _InteractionPageState extends State<InteractionPage> {
                   color:
                       isLiked ? const Color(0xFFD35D3E) : Colors.grey[700]),
               const SizedBox(width: 6),
-              Text(likeCount > 0 ? '$likeCount' : '赞',
+              Text(likeCount > 0 ? '$likeCount' : 'Like',
                   style: TextStyle(
                       color: isLiked
                           ? const Color(0xFFD35D3E)
@@ -637,29 +635,29 @@ class _InteractionPageState extends State<InteractionPage> {
     try {
       bool isLiked = await _likeService.toggleLike(post.id!);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(isLiked ? '已点赞' : '已取消点赞'),
+          content: Text(isLiked ? 'Liked' : 'Unliked'),
           duration: const Duration(milliseconds: 500),
           backgroundColor:
               isLiked ? const Color(0xFFD35D3E) : Colors.grey));
     } catch (e) {
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('操作失败: $e')));
+          .showSnackBar(SnackBar(content: Text('Operation failed: $e')));
     }
   }
 
   void _handleComment(Post post) => ScaffoldMessenger.of(context)
-      .showSnackBar(const SnackBar(content: Text('评论功能开发中...')));
+      .showSnackBar(const SnackBar(content: Text('Comment feature under development...')));
 
   void _handleShare(Post post) async {
     try {
       await _postService.incrementShareCount(post.id!);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('已转发'),
+          content: Text('Shared'),
           duration: Duration(seconds: 1),
           backgroundColor: Color(0xFFD35D3E)));
     } catch (e) {
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('转发失败: $e')));
+          .showSnackBar(SnackBar(content: Text('Operation failed: $e')));
     }
   }
 
@@ -699,9 +697,9 @@ class _InteractionPageState extends State<InteractionPage> {
   }
 
   String _formatTime(DateTime? dateTime) {
-    if (dateTime == null) return '刚刚';
+    if (dateTime == null) return 'Just now';
     final diff = DateTime.now().difference(dateTime);
-    if (diff.inMinutes < 1) return '刚刚';
+    if (diff.inMinutes < 1) return 'Just now';
     if (diff.inMinutes < 60) return '${diff.inMinutes} mins ago';
     if (diff.inHours < 24)
       return '${diff.inHours} hour${diff.inHours > 1 ? 's' : ''} ago';

@@ -43,7 +43,7 @@ class UserPreferences {
   final List<String> categories;
   final List<String> cuisines;
   final String       travelMode;
-  final BudgetTier   budgetTier;   // ← new
+  final BudgetTier   budgetTier; 
   final bool         onboardingDone;
 
   UserPreferences({
@@ -441,7 +441,7 @@ class UserPreferenceService {
   // 2.0 → 0.0 | 3.5 → 0.50 | 4.5 → 0.83 | 5.0 → 1.0
   // ─────────────────────────────────────────────
 
-  double _ratingScore(double? rating) {
+  double _ratingScore(double? rating) { 
     if (rating == null) return 0.5;
     return ((rating - 2.0) / 3.0).clamp(0.0, 1.0);
   }

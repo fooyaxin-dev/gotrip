@@ -12,23 +12,21 @@ class WikipediaService {
   static const int _maxImages = 10;
 
   // ============================================================
-  // 🌟 PUBLIC ENTRY (WITH FIREBASE CACHE)
+  // 🌟 PUBLIC ENTRY (WITH FIREBASE CACHE)_getImageThumbUrl
   // ============================================================
   static Future<Map<String, dynamic>> fetchLandmarkHistory(
     String landmarkName,
   ) async {
-    // 1️⃣ 查 Firebase cache
+
     final cached = await WikiCacheService.get(landmarkName);
     if (cached != null) {
       debugPrint('📦 Wikipedia loaded from Firebase cache');
       return cached;
     }
 
-    // 2️⃣ 没有 cache → 调 Wikipedia API
     debugPrint('🌐 Fetching Wikipedia from API');
     final result = await _fetchFromWikipedia(landmarkName);
 
-    // 3️⃣ 成功才写 cache
     if (result['summary'] != null &&
         result['summary'].toString().isNotEmpty) {
       await WikiCacheService.save(landmarkName, result);
@@ -274,9 +272,7 @@ class WikipediaService {
     }
   }
 
-  // ============================================================
-  // 🔒 ORIGINAL LOGIC (UNTOUCHED)
-  // ============================================================
+
   static Future<Map<String, dynamic>> _fetchFromWikipedia(
     String landmarkName,
   ) async {
@@ -368,14 +364,17 @@ class WikipediaService {
     }
   }
 
-  // ============================================================
-  // 🖼️ PAGE IMAGES
-  // ============================================================
+
+// 🖼️ PAGE IMAGES — 批量版本
+// 原来：每张图单独一个请求（最多 20 个串行请求）
+// 现在：先拿图片列表，再一次性批量拿所有 URL（共 2 个请求）
+// ============================================================
   static Future<List<String>> fetchPageImages(String landmarkName) async {
     try {
       final title = Uri.encodeComponent(landmarkName.replaceAll(' ', '_'));
 
-      final url = Uri.parse(
+      // 第 1 个请求：拿图片 title 列表
+      final listUrl = Uri.parse(
         'https://en.wikipedia.org/w/api.php'
         '?action=query'
         '&titles=$title'
@@ -384,63 +383,62 @@ class WikipediaService {
         '&format=json',
       );
 
-      final response = await http.get(url, headers: _headers);
+      final listResponse = await http.get(listUrl, headers: _headers);
+      if (listResponse.statusCode != 200) return [];
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final pages = data['query']['pages'] as Map<String, dynamic>;
+      final listData = jsonDecode(listResponse.body);
+      final pages = listData['query']['pages'] as Map<String, dynamic>;
+      if (pages.isEmpty) return [];
 
-        if (pages.isNotEmpty) {
-          final pageData = pages.values.first;
-          final imagesList = pageData['images'] as List<dynamic>?;
+      final imagesList =
+          pages.values.first['images'] as List<dynamic>? ?? [];
+      if (imagesList.isEmpty) return [];
 
-          if (imagesList == null || imagesList.isEmpty) return [];
+      // 过滤掉不需要的文件类型
+      final filteredTitles = imagesList
+          .map((img) => img['title'] as String)
+          .where((t) => !_shouldSkipImage(t))
+          .take(20) // 最多取 20 个候选，批量请求不能太长
+          .toList();
 
-          final List<String> results = [];
+      if (filteredTitles.isEmpty) return [];
 
-          for (final img in imagesList) {
-            if (results.length >= 20) break;
-
-            final String imgTitle = img['title'];
-            final lower = imgTitle.toLowerCase();
-
-            if (lower.endsWith('.svg') ||
-                lower.endsWith('.pdf') ||
-                lower.endsWith('.tif') ||
-                lower.endsWith('.ogg') ||
-                lower.endsWith('.webm') ||
-                lower.contains('logo') ||
-                lower.contains('icon') ||
-                lower.contains('map') ||
-                lower.contains('flag') ||
-                lower.contains('symbol')) {
-              continue;
-            }
-
-            final thumbUrl = await _getImageThumbUrl(imgTitle);
-            if (thumbUrl.isNotEmpty) {
-              results.add(thumbUrl);
-            }
-          }
-
-          return results;
-        }
-      }
-      return [];
+      // 第 2 个请求：一次性批量拿所有图片 URL
+      return await _getBatchImageUrls(filteredTitles);
     } catch (e) {
+      debugPrint('⚠️ fetchPageImages error: $e');
       return [];
     }
   }
 
-  // ============================================================
-  // 🔍 IMAGE THUMB
-  // ============================================================
-  static Future<String> _getImageThumbUrl(String imageTitle) async {
+  // 过滤逻辑抽出来，复用性更好
+  static bool _shouldSkipImage(String title) {
+    final lower = title.toLowerCase();
+    return lower.endsWith('.svg') ||
+        lower.endsWith('.pdf') ||
+        lower.endsWith('.tif') ||
+        lower.endsWith('.ogg') ||
+        lower.endsWith('.webm') ||
+        lower.contains('logo') ||
+        lower.contains('icon') ||
+        lower.contains('map') ||
+        lower.contains('flag') ||
+        lower.contains('symbol');
+  }
+
+  // 批量请求：用 | 拼接所有 title，一次拿回所有 URL
+  static Future<List<String>> _getBatchImageUrls(
+    List<String> imageTitles,
+  ) async {
     try {
+      // Wikipedia API 支持用 | 分隔多个 title
+      final joined =
+          imageTitles.map(Uri.encodeComponent).join('%7C'); // %7C = |
+
       final url = Uri.parse(
         'https://en.wikipedia.org/w/api.php'
         '?action=query'
-        '&titles=${Uri.encodeComponent(imageTitle)}'
+        '&titles=$joined'
         '&prop=imageinfo'
         '&iiprop=url'
         '&iiurlwidth=800'
@@ -448,25 +446,37 @@ class WikipediaService {
       );
 
       final response = await http.get(url, headers: _headers);
+      if (response.statusCode != 200) return [];
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final pages = data['query']['pages'] as Map<String, dynamic>;
+      final data = jsonDecode(response.body);
+      final pages = data['query']['pages'] as Map<String, dynamic>;
 
-        if (pages.isNotEmpty) {
-          final pageData = pages.values.first;
-          final imageInfo = pageData['imageinfo'] as List<dynamic>?;
+      final List<String> results = [];
+      final Set<String> seen = {};
 
-          if (imageInfo != null && imageInfo.isNotEmpty) {
-            return imageInfo.first['thumburl'] ?? '';
-          }
-        }
+      for (final page in pages.values) {
+        if (results.length >= _maxImages) break;
+
+        final imageInfo = page['imageinfo'] as List<dynamic>?;
+        if (imageInfo == null || imageInfo.isEmpty) continue;
+
+        final thumbUrl = imageInfo.first['thumburl'] as String? ?? '';
+        if (thumbUrl.isEmpty) continue;
+
+        final normalized = _normalizeImageUrl(thumbUrl);
+        if (seen.contains(normalized)) continue;
+
+        seen.add(normalized);
+        results.add(thumbUrl);
       }
-      return '';
+
+      return results;
     } catch (e) {
-      return '';
+      debugPrint('⚠️ _getBatchImageUrls error: $e');
+      return [];
     }
   }
+
 
   // ============================================================
   // 🧹 HELPERS

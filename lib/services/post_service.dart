@@ -27,7 +27,7 @@ class PostService {
       }
       return imagePaths;
     } catch (e) {
-      throw Exception('保存图片失败: $e');
+      throw Exception('Failed to save images: $e');
     }
   }
 
@@ -37,7 +37,7 @@ class PostService {
           await _firestore.collection('posts').add(post.toMap());
       return docRef.id;
     } catch (e) {
-      throw Exception('创建帖子失败: $e');
+      throw Exception('Failed to create post: $e');
     }
   }
 
@@ -59,7 +59,7 @@ class PostService {
       if (doc.exists) return Post.fromFirestore(doc);
       return null;
     } catch (e) {
-      throw Exception('获取帖子失败: $e');
+      throw Exception('Failed to fetch post: $e');
     }
   }
 
@@ -117,7 +117,7 @@ class PostService {
         .snapshots()
         .map((snapshot) => snapshot.docs
             .map((doc) => Post.fromFirestore(doc))
-            .where((post) => post.visibility == '公开')
+            .where((post) => post.visibility == 'public')
             .toList());
   }
 
@@ -127,7 +127,7 @@ class PostService {
     return _firestore
         .collection('posts')
         .where('city', isEqualTo: city)
-        .where('visibility', isEqualTo: '公开')
+        .where('visibility', isEqualTo: 'public')
         .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) =>
@@ -147,7 +147,7 @@ class PostService {
     return _firestore
         .collection('posts')
         .where('city', whereIn: limitedCities)
-        .where('visibility', isEqualTo: '公开')
+        .where('visibility', isEqualTo: 'public')
         .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) =>
@@ -160,7 +160,7 @@ class PostService {
     try {
       await _firestore.collection('posts').doc(postId).update(updates);
     } catch (e) {
-      throw Exception('更新帖子失败: $e');
+      throw Exception('Failed to update post: $e');
     }
   }
 
@@ -170,7 +170,7 @@ class PostService {
         'likes': FieldValue.increment(isLiked ? 1 : -1),
       });
     } catch (e) {
-      throw Exception('点赞失败: $e');
+      throw Exception('Failed to toggle like: $e');
     }
   }
 
@@ -180,7 +180,7 @@ class PostService {
         'comments': FieldValue.increment(1),
       });
     } catch (e) {
-      throw Exception('更新评论数失败: $e');
+      throw Exception('Failed to increment comment count: $e');
     }
   }
 
@@ -190,7 +190,7 @@ class PostService {
         'shares': FieldValue.increment(1),
       });
     } catch (e) {
-      throw Exception('更新转发数失败: $e');
+      throw Exception('Failed to increment share count: $e');
     }
   }
 
@@ -207,14 +207,14 @@ class PostService {
             File imageFile = File(imagePath);
             if (await imageFile.exists()) await imageFile.delete();
           } catch (e) {
-            print('删除本地图片失败: $e');
+            print('Failed to delete local image: $e');
           }
         }
         await _firestore.collection('posts').doc(postId).delete();
         await _statsService.decrementPostCount();
       }
     } catch (e) {
-      throw Exception('删除帖子失败: $e');
+      throw Exception('Failed to delete post: $e');
     }
   }
 
@@ -241,7 +241,7 @@ class PostService {
       final postsDir = Directory('${directory.path}/posts');
       if (await postsDir.exists()) await postsDir.delete(recursive: true);
     } catch (e) {
-      throw Exception('清理本地图片失败: $e');
+      throw Exception('Failed to clear local images: $e');
     }
   }
 
@@ -260,11 +260,11 @@ class PostService {
       await for (var entity in postsDir.list()) {
         if (entity is File && !usedImages.contains(entity.path)) {
           await entity.delete();
-          print('删除孤立图片: ${entity.path}');
+          print('Failed to delete local image: ${entity.path}');
         }
       }
     } catch (e) {
-      throw Exception('清理孤立图片失败: $e');
+      throw Exception('Failed to clean orphaned images: $e');
     }
   }
 
@@ -289,7 +289,7 @@ class PostService {
           .get();
       return snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
     } catch (e) {
-      throw Exception('搜索失败: $e');
+      throw Exception('Failed to search posts: $e');
     }
   }
 
@@ -308,7 +308,7 @@ class PostService {
       QuerySnapshot snapshot = await query.get();
       return snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
     } catch (e) {
-      throw Exception('获取帖子失败: $e');
+      throw Exception('Failed to fetch posts: $e');
     }
   }
 
@@ -400,7 +400,7 @@ class PostService {
       }
       return fixedCount;
     } catch (e) {
-      throw Exception('修复失败: $e');
+      throw Exception('Failed to fix broken posts: $e');
     }
   }
 
@@ -420,14 +420,14 @@ class PostService {
             File imageFile = File(imagePath);
             if (await imageFile.exists()) await imageFile.delete();
           } catch (e) {
-            print('删除图片失败: $e');
+            print('Failed to delete local image: $e');
           }
         }
         batch.delete(doc.reference);
       }
       await batch.commit();
     } catch (e) {
-      throw Exception('批量删除失败: $e');
+      throw Exception('Failed to delete user posts: $e');
     }
   }
 
@@ -449,7 +449,7 @@ class PostService {
         'exportDate': DateTime.now().toIso8601String(),
       };
     } catch (e) {
-      throw Exception('导出失败: $e');
+      throw Exception('Failed to export user data: $e');
     }
   }
 }

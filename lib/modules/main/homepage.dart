@@ -15,6 +15,8 @@ import '../settings/settingsPage.dart';
 import 'mainpage.dart';
 import 'favourite.dart';
 import '../itinerary/itineraryPage.dart';
+import '../itinerary/itineraryGeneratePage.dart';
+import '../../services/userPreference_service.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -28,32 +30,30 @@ class _HomePageState extends State<HomePage> {
   String _username = "UserName";
   String _email = "user@email.com";
   String _profileImageUrl = "";
-  StreamSubscription? _userSubscription; // ⭐ 实时监听订阅
+  StreamSubscription? _userSubscription;
 
   @override
   void initState() {
     super.initState();
-    _loadCachedData();   // 先加载缓存，加快首屏显示
-    _listenToUserData(); // 再监听 Firestore 实时更新
+    _loadCachedData();
+    _listenToUserData();
   }
 
   @override
   void dispose() {
-    _userSubscription?.cancel(); // ⭐ 页面销毁时取消监听，防止内存泄漏
+    _userSubscription?.cancel();
     super.dispose();
   }
 
-  // 先从本地缓存加载，加快首屏速度
   Future<void> _loadCachedData() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _username = prefs.getString('username') ?? "UserName";
-      _email = prefs.getString('email') ?? "user@email.com";
+      _username        = prefs.getString('username')        ?? "UserName";
+      _email           = prefs.getString('email')           ?? "user@email.com";
       _profileImageUrl = prefs.getString('profileImageUrl') ?? "";
     });
   }
 
-  // ⭐ 实时监听 Firestore，数据库一有变化，UI 立即自动更新
   void _listenToUserData() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -61,55 +61,62 @@ class _HomePageState extends State<HomePage> {
     _userSubscription = FirebaseFirestore.instance
         .collection('users')
         .doc(uid)
-        .snapshots() // 用 snapshots() 实时监听，替代 get()
+        .snapshots()
         .listen((doc) async {
       if (doc.exists) {
-        final data = doc.data()!;
-        final latestUsername = data['username'] ?? _username;
-        final latestEmail = data['email'] ?? _email;
-        final latestProfileImage = data['profileImageUrl'] ?? "";
+        final data             = doc.data()!;
+        final latestUsername   = data['username']       ?? _username;
+        final latestEmail      = data['email']          ?? _email;
+        final latestProfileImg = data['profileImageUrl']?? "";
 
         setState(() {
-          _username = latestUsername;
-          _email = latestEmail;
-          _profileImageUrl = latestProfileImage;
+          _username        = latestUsername;
+          _email           = latestEmail;
+          _profileImageUrl = latestProfileImg;
         });
 
-        // 同步更新本地缓存
         final prefs = await SharedPreferences.getInstance();
-        prefs.setString('username', latestUsername);
-        prefs.setString('email', latestEmail);
-        prefs.setString('profileImageUrl', latestProfileImage);
+        prefs.setString('username',        latestUsername);
+        prefs.setString('email',           latestEmail);
+        prefs.setString('profileImageUrl', latestProfileImg);
       }
     });
   }
 
-  // 从 Base64 或 URL 获取 ImageProvider
   ImageProvider _getProfileImageProvider() {
     if (_profileImageUrl.isEmpty) {
       return const AssetImage('assets/images/profile.jpg');
     }
-
-    // 检查是否是 Base64 图片
     if (_profileImageUrl.startsWith('data:image')) {
       try {
-        String base64String = _profileImageUrl.split(',')[1];
-        Uint8List bytes = base64Decode(base64String);
-        return MemoryImage(bytes);
-      } catch (e) {
-        print('❌ Base64 解码失败: $e');
+        final base64String = _profileImageUrl.split(',')[1];
+        return MemoryImage(base64Decode(base64String));
+      } catch (_) {
         return const AssetImage('assets/images/profile.jpg');
       }
     }
-
-    // 如果是 URL
     if (_profileImageUrl.startsWith('http')) {
       return NetworkImage(_profileImageUrl);
     }
-
-    // 默认
     return const AssetImage('assets/images/profile.jpg');
   }
+
+  // ─────────────────────────────────────────────
+  // Navigate to generate itinerary
+  // ─────────────────────────────────────────────
+
+  Future<void> _goGenerateItinerary() async {
+    await UserPreferenceService.instance.load();
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const GenerateItineraryPage()),
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // Build
+  // ─────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -118,29 +125,49 @@ class _HomePageState extends State<HomePage> {
       RealTimeDetectPage(onBack: () {
         setState(() => _currentIndex = 0);
       }),
-      const SizedBox(),
-      const InteractionPage(),
+      const SizedBox(), // center placeholder for FAB notch
+      ItineraryPage(
+        onBack: () => setState(() => _currentIndex = 0),
+        onPlanTrip: _goGenerateItinerary,
+      ),
       const ProfilePage(),
     ];
+
+    final bool isItineraryTab = _currentIndex == 3;
 
     return Scaffold(
       extendBody: true,
       drawer: _buildAppDrawer(context),
       body: pages[_currentIndex],
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => const LandmarkFAB(),
+
+      // ── Dynamic FAB based on current tab ──
+      floatingActionButton: isItineraryTab
+          // Itinerary tab → New Trip button (bottom right)
+          ? FloatingActionButton.extended(
+              onPressed: _goGenerateItinerary,
+              backgroundColor: const Color(0xFF7C4DFF),
+              foregroundColor: Colors.white,
+              icon: const Icon(Icons.auto_awesome_rounded),
+              label: const Text('New Trip',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+            )
+          // Other tabs → Camera button (center docked)
+          : FloatingActionButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const LandmarkFAB()),
+              ),
+              backgroundColor: const Color(0xFF6366F1),
+              shape: const CircleBorder(),
+              elevation: 6,
+              child: const Icon(Icons.camera_alt_rounded,
+                  color: Colors.white, size: 28),
             ),
-          );
-        },
-        backgroundColor: const Color(0xFF6366F1),
-        shape: const CircleBorder(),
-        elevation: 6,
-        child: const Icon(Icons.camera_alt_rounded, color: Colors.white, size: 28),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+
+      // ── FAB position changes with tab ──
+      floatingActionButtonLocation: isItineraryTab
+          ? FloatingActionButtonLocation.endFloat    // New Trip → bottom right
+          : FloatingActionButtonLocation.centerDocked, // Camera → center notch
+
       bottomNavigationBar: BottomAppBar(
         padding: const EdgeInsets.symmetric(horizontal: 10),
         height: 65,
@@ -150,11 +177,11 @@ class _HomePageState extends State<HomePage> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            _buildNavItem(Icons.home_rounded, "Home", 0),
-            _buildNavItem(Icons.explore_rounded, "Guide", 1),
-            const SizedBox(width: 40),
-            _buildNavItem(Icons.forum_rounded, "Hub", 3),
-            _buildNavItem(Icons.person_rounded, "Profile", 4),
+            _buildNavItem(Icons.home_rounded,    "Home",      0),
+            _buildNavItem(Icons.explore_rounded, "Nearby",    1),
+            const SizedBox(width: 40), // notch spacer
+            _buildNavItem(Icons.book_rounded,    "Itinerary", 3),
+            _buildNavItem(Icons.person_rounded,  "Profile",   4),
           ],
         ),
       ),
@@ -162,21 +189,25 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildNavItem(IconData icon, String label, int index) {
-    bool isSelected = _currentIndex == index;
+    final isSelected = _currentIndex == index;
     return InkWell(
       onTap: () => setState(() => _currentIndex = index),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: isSelected ? const Color(0xFF6366F1) : Colors.blueGrey.shade300),
-          Text(
-            label,
-            style: TextStyle(
-              color: isSelected ? const Color(0xFF6366F1) : Colors.blueGrey.shade300,
-              fontSize: 10,
-              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
+          Icon(icon,
+              color: isSelected
+                  ? const Color(0xFF6366F1)
+                  : Colors.blueGrey.shade300),
+          Text(label,
+              style: TextStyle(
+                color: isSelected
+                    ? const Color(0xFF6366F1)
+                    : Colors.blueGrey.shade300,
+                fontSize: 10,
+                fontWeight:
+                    isSelected ? FontWeight.bold : FontWeight.normal,
+              )),
         ],
       ),
     );
@@ -201,11 +232,11 @@ class _HomePageState extends State<HomePage> {
                   child: CircleAvatar(
                     radius: 26,
                     backgroundImage: _getProfileImageProvider(),
-                    onBackgroundImageError: (exception, stackTrace) {
-                      print('❌ 头像加载失败: $exception');
-                    },
+                    onBackgroundImageError: (e, _) =>
+                        print('❌ 头像加载失败: $e'),
                     child: _profileImageUrl.isEmpty
-                        ? const Icon(Icons.person, size: 32, color: Color(0xFF6366F1))
+                        ? const Icon(Icons.person,
+                            size: 32, color: Color(0xFF6366F1))
                         : null,
                   ),
                 ),
@@ -213,22 +244,15 @@ class _HomePageState extends State<HomePage> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      _username,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                    Text(_username,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold)),
                     const SizedBox(height: 4),
-                    Text(
-                      _email,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                      ),
-                    ),
+                    Text(_email,
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12)),
                   ],
                 ),
               ],
@@ -242,71 +266,51 @@ class _HomePageState extends State<HomePage> {
             title: const Text("Landmark Recognition"),
             onTap: () {
               Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const LandmarkFAB(),
-                ),
-              );
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const LandmarkFAB()));
             },
           ),
-
           ListTile(
             leading: const Icon(Icons.dashboard_rounded),
             title: const Text("Dashboard"),
             onTap: () {
               Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const DashboardPage(),
-                ),
-              );
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const DashboardPage()));
             },
           ),
-
           ListTile(
             leading: const Icon(Icons.favorite_outline_outlined),
             title: const Text("Favourite"),
             onTap: () {
               Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const FavouritePage(),
-                ),
-              );
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const FavouritePage()));
             },
           ),
-
           ListTile(
-            leading: const Icon(Icons.book_rounded),
-            title: const Text("Itinerary"),
+            leading: const Icon(Icons.forum_rounded),
+            title: const Text("Hub"),
             onTap: () {
               Navigator.pop(context);
-              Navigator.push(context, MaterialPageRoute(
-              builder: (_) => const ItineraryPage(),
-            ));
+              Navigator.push(context,
+                  MaterialPageRoute(
+                      builder: (_) => const InteractionPage()));
             },
           ),
-
           ListTile(
             leading: const Icon(Icons.settings_rounded),
             title: const Text("Settings"),
             onTap: () {
               Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const SettingsPage(),
-                ),
-              );
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const SettingsPage()));
             },
           ),
 
           const Spacer(),
-
           const Divider(),
+
           ListTile(
             leading: const Icon(Icons.logout_rounded),
             title: const Text("Logout"),

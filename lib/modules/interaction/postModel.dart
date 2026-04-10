@@ -1,6 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// 帖子数据模型 - 本地存储版本
 class Post {
   final String? id;
   final String title;
@@ -11,7 +10,7 @@ class Post {
   final bool allowComments;
   final bool allowShare;
   final String? location;
-  final String? city;        // ✅ 新增
+  final String? city;
   final List<String> tags;
   final List<String> mentionedFriends;
   final String? topic;
@@ -35,11 +34,11 @@ class Post {
     this.allowComments = true,
     this.allowShare = true,
     this.location,
-    this.city,             // ✅ 新增
+    this.city,
     this.tags = const [],
     this.mentionedFriends = const [],
     this.topic,
-    this.visibility = '公开',
+    this.visibility = 'public',
     this.createdAt,
     required this.userId,
     required this.userName,
@@ -51,7 +50,7 @@ class Post {
   });
 
   factory Post.fromFirestore(DocumentSnapshot doc) {
-    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+    final data = doc.data() as Map<String, dynamic>;
 
     String userName = 'Unknown User';
     if (data['userName'] != null && data['userName'].toString().isNotEmpty) {
@@ -62,21 +61,24 @@ class Post {
       userName = 'User_${data['userId'].toString().substring(0, 8)}';
     }
 
+    // 兼容旧字段 imagePaths 和新字段 images（Firebase Storage URL）
+    final rawImages = data['images'] ?? data['imagePaths'] ?? [];
+
     return Post(
       id: doc.id,
       title: data['title'] ?? '',
       content: data['content'] ?? '',
-      images: List<String>.from(data['imagePaths'] ?? data['images'] ?? []),
+      images: List<String>.from(rawImages),
       rating: data['rating'] ?? 0,
       isAnonymous: data['isAnonymous'] ?? false,
       allowComments: data['allowComments'] ?? true,
       allowShare: data['allowShare'] ?? true,
       location: data['location'],
-      city: data['city'],    // ✅ 新增
+      city: data['city'],
       tags: List<String>.from(data['tags'] ?? []),
       mentionedFriends: List<String>.from(data['mentionedFriends'] ?? []),
       topic: data['topic'],
-      visibility: data['visibility'] ?? '公开',
+      visibility: data['visibility'] ?? 'public',
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       userId: data['userId'] ?? '',
       userName: userName,
@@ -92,13 +94,13 @@ class Post {
     return {
       'title': title,
       'content': content,
-      'imagePaths': images,
+      'images': images,
       'rating': rating,
       'isAnonymous': isAnonymous,
       'allowComments': allowComments,
       'allowShare': allowShare,
       'location': location,
-      'city': city,          // ✅ 新增
+      'city': city,
       'tags': tags,
       'mentionedFriends': mentionedFriends,
       'topic': topic,
@@ -126,7 +128,7 @@ class Post {
     bool? allowComments,
     bool? allowShare,
     String? location,
-    String? city,          // ✅ 新增
+    String? city,
     List<String>? tags,
     List<String>? mentionedFriends,
     String? topic,
@@ -150,7 +152,7 @@ class Post {
       allowComments: allowComments ?? this.allowComments,
       allowShare: allowShare ?? this.allowShare,
       location: location ?? this.location,
-      city: city ?? this.city,  // ✅ 新增
+      city: city ?? this.city,
       tags: tags ?? this.tags,
       mentionedFriends: mentionedFriends ?? this.mentionedFriends,
       topic: topic ?? this.topic,
@@ -166,10 +168,13 @@ class Post {
     );
   }
 
+  /// 判断图片是否为网络 URL（Firebase Storage）
+  bool get hasNetworkImages =>
+      images.isNotEmpty && images.first.startsWith('http');
+
   @override
-  String toString() {
-    return 'Post{id: $id, title: $title, userName: $userName, city: $city, images: ${images.length}, likes: $likes}';
-  }
+  String toString() =>
+      'Post{id: $id, title: $title, userName: $userName, city: $city, images: ${images.length}, likes: $likes}';
 
   @override
   bool operator ==(Object other) {

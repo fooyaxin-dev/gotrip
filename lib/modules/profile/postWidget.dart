@@ -24,14 +24,12 @@ class _postWidgetState extends State<postWidget> {
       return const SizedBox(
         height: 300,
         child: Center(
-          child: Text('请先登录'),
+          child: Text('Please log in first'),
         ),
       );
     }
 
-    return SizedBox(
-      height: 300,
-      child: StreamBuilder<List<Post>>(
+    return StreamBuilder<List<Post>>(
         // 获取当前用户的所有帖子 (包括私密的!)
         stream: _postService.getUserPosts(currentUserId),
         builder: (context, snapshot) {
@@ -47,7 +45,7 @@ class _postWidgetState extends State<postWidget> {
           // 错误
           if (snapshot.hasError) {
             return Center(
-              child: Text('加载失败: ${snapshot.error}'),
+              child: Text('Load failed: ${snapshot.error}'),
             );
           }
 
@@ -60,7 +58,7 @@ class _postWidgetState extends State<postWidget> {
                   Icon(Icons.post_add, size: 60, color: Colors.grey[400]),
                   const SizedBox(height: 12),
                   Text(
-                    '还没有发布帖子',
+                    'No posts yet!',
                     style: TextStyle(color: Colors.grey[600], fontSize: 14),
                   ),
                 ],
@@ -72,6 +70,8 @@ class _postWidgetState extends State<postWidget> {
           List<Post> myPosts = snapshot.data!;
 
           return GridView.builder(
+            shrinkWrap: true,                          
+            physics: const NeverScrollableScrollPhysics(), 
             padding: const EdgeInsets.all(8),
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 2,
@@ -183,7 +183,7 @@ class _postWidgetState extends State<postWidget> {
                       ),
 
                       // 可见性标签
-                      if (post.visibility != '公开')
+                      if (post.visibility != 'public')
                         Positioned(
                           top: 8,
                           right: 8,
@@ -193,7 +193,7 @@ class _postWidgetState extends State<postWidget> {
                               vertical: 4,
                             ),
                             decoration: BoxDecoration(
-                              color: post.visibility == '私密' 
+                              color: post.visibility == 'private' 
                                 ? Colors.red.withOpacity(0.8)
                                 : Colors.orange.withOpacity(0.8),
                               borderRadius: BorderRadius.circular(12),
@@ -202,7 +202,7 @@ class _postWidgetState extends State<postWidget> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Icon(
-                                  post.visibility == '私密' 
+                                  post.visibility == 'private' 
                                     ? Icons.lock 
                                     : Icons.people,
                                   color: Colors.white,
@@ -261,8 +261,8 @@ class _postWidgetState extends State<postWidget> {
             },
           );
         },
-      ),
-    );
+      );
+  
   }
 
   // 显示帖子详情
@@ -315,9 +315,9 @@ class _postWidgetState extends State<postWidget> {
                       Row(
                         children: [
                           Icon(
-                            post.visibility == '公开' 
+                            post.visibility == 'public' 
                               ? Icons.public 
-                              : post.visibility == '仅好友'
+                              : post.visibility == 'friends'
                                 ? Icons.people
                                 : Icons.lock,
                             size: 16,
@@ -371,11 +371,11 @@ class _postWidgetState extends State<postWidget> {
                       // 统计
                       Row(
                         children: [
-                          _buildStatItem(Icons.favorite, '${post.likes}', '点赞'),
+                          _buildStatItem(Icons.favorite, '${post.likes}', 'Likes'),
                           const SizedBox(width: 24),
-                          _buildStatItem(Icons.comment, '${post.comments}', '评论'),
+                          _buildStatItem(Icons.comment, '${post.comments}', 'Comments'),
                           const SizedBox(width: 24),
-                          _buildStatItem(Icons.share, '${post.shares}', '转发'),
+                          _buildStatItem(Icons.share, '${post.shares}', 'Shares'),
                         ],
                       ),
                     ],
@@ -404,11 +404,11 @@ class _postWidgetState extends State<postWidget> {
                           // TODO: 编辑帖子
                           Navigator.pop(context);
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('编辑功能开发中...')),
+                            const SnackBar(content: Text('Edit feature under development...')),
                           );
                         },
                         icon: const Icon(Icons.edit),
-                        label: const Text('编辑'),
+                        label: const Text('Edit'),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -418,7 +418,7 @@ class _postWidgetState extends State<postWidget> {
                           _confirmDelete(post);
                         },
                         icon: const Icon(Icons.delete),
-                        label: const Text('删除'),
+                        label: const Text('Delete'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.red,
                           foregroundColor: Colors.white,
@@ -468,12 +468,12 @@ class _postWidgetState extends State<postWidget> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除帖子'),
-        content: const Text('确定要删除这个帖子吗?'),
+        title: const Text('Delete Post'),
+        content: const Text('Are you sure you want to delete this post?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
+            child: const Text('Cancel'),
           ),
           TextButton(
             onPressed: () async {
@@ -483,17 +483,17 @@ class _postWidgetState extends State<postWidget> {
                 Navigator.pop(context); // 关闭详情页
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content: Text('已删除'),
+                    content: Text('Post deleted successfully'),
                     backgroundColor: Colors.green,
                   ),
                 );
               } catch (e) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('删除失败: $e')),
+                  SnackBar(content: Text('Failed to delete post: $e')),
                 );
               }
             },
-            child: const Text('删除', style: TextStyle(color: Colors.red)),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),

@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class WikiCacheService {
+  
   static final _db = FirebaseFirestore.instance;
 
   static String _docId(String name) =>

@@ -6,25 +6,152 @@ import 'location_service.dart';
 class NearbyPlacesService {
   static final NearbyPlacesService instance = NearbyPlacesService._();
   NearbyPlacesService._();
-  List<PlaceModel> get cachedPlaces => _allPlacesCache; // 你现有的缓存列表
+
+  final List<PlaceModel> _allPlacesCache = [];
+  final Map<String, List<PlaceModel>> _placesByTypeCache = {};
   final Map<String, List<PlaceModel>> _searchCache = {};
 
   bool _isLoading = false;
   bool _hasLoadedOnce = false;
 
-  final List<PlaceModel> _allPlacesCache = [];
-  final Map<String, List<PlaceModel>> _placesByTypeCache = {};
-
+  List<PlaceModel> get cachedPlaces => _allPlacesCache;
   List<PlaceModel> get allPlaces => List.unmodifiable(_allPlacesCache);
   Map<String, List<PlaceModel>> get placesByType => Map.unmodifiable(_placesByTypeCache);
   bool get hasLoaded => _hasLoadedOnce;
 
   // ─────────────────────────────────────────────
-  // 进页面时调用一次
-  // 所有 type 同时 call（parallel），速度快 5x
-  // load 完之后预先下载所有图片
+  // 本地分类：把 Google types 映射到你的主分类
   // ─────────────────────────────────────────────
+  static String _mapToPrimaryType(List<String> googleTypes) {
+    if (googleTypes.any((t) => [
+      'restaurant', 'cafe', 'coffee_shop', 'bakery', 'bar',
+      'fast_food_restaurant', 'food_court', 'dessert_shop',
+      'meal_takeaway', 'meal_delivery',
+    ].contains(t))) return 'restaurant';
 
+    if (googleTypes.any((t) => [
+      'subway_station', 'bus_station', 'bus_stop', 'transit_station',
+      'light_rail_station', 'taxi_stand', 'train_station',
+    ].contains(t))) return 'transit';
+
+    if (googleTypes.any((t) => [
+      'hospital', 'doctor', 'medical_clinic', 'bank', 'atm', 'post_office',
+    ].contains(t))) return 'service';
+
+    if (googleTypes.any((t) => [
+      'shopping_mall', 'supermarket', 'grocery_store', 'department_store',
+      'clothing_store', 'electronics_store', 'pharmacy', 'book_store',
+      'convenience_store', 'market',
+    ].contains(t))) return 'shopping_mall';
+
+    if (googleTypes.any((t) => [
+      'movie_theater', 'amusement_park', 'bowling_alley', 'karaoke',
+      'video_arcade', 'night_club', 'amusement_center', 'concert_hall',
+      'gym', 'fitness_center', 'spa',
+    ].contains(t))) return 'entertainment';
+
+    if (googleTypes.any((t) => [
+      'park', 'national_park', 'botanical_garden', 'garden', 'hiking_area',
+      'beach', 'museum', 'art_gallery', 'tourist_attraction',
+      'historical_landmark', 'monument',
+    ].contains(t))) return 'park';
+
+    return 'other';
+  }
+
+  // ─────────────────────────────────────────────
+  // 核心：2 calls，本地分类
+  // ─────────────────────────────────────────────
+  Future<void> _fetchAndStore({
+    required double lat,
+    required double lng,
+    required List<PlaceModel> targetList,
+    required Map<String, List<PlaceModel>> targetByType,
+  }) async {
+    print('🌍 NearbyPlacesService: firing 4 API calls...');
+
+    final results = await Future.wait([
+      // Call 1: Food
+      PlacesApiService.searchNearby(
+        lat: lat, lng: lng,
+        types: [
+          'restaurant', 'cafe', 'coffee_shop', 'bakery', 'bar',
+          'fast_food_restaurant', 'food_court', 'dessert_shop',
+        ],
+        maxResultCount: 20,
+      ),
+      // Call 2: Entertainment
+      PlacesApiService.searchNearby(
+        lat: lat, lng: lng,
+        types: [
+          'movie_theater', 'amusement_park', 'bowling_alley', 'karaoke',
+          'video_arcade', 'night_club', 'amusement_center', 'concert_hall',
+          'gym', 'fitness_center', 'spa',
+        ],
+        maxResultCount: 20,
+      ),
+      // Call 3: Transit + Service
+      PlacesApiService.searchNearby(
+        lat: lat, lng: lng,
+        types: [
+          'subway_station', 'bus_station', 'bus_stop', 'transit_station',
+          'light_rail_station', 'taxi_stand', 'train_station',
+          'hospital', 'doctor', 'medical_clinic', 'bank', 'atm', 'post_office',
+        ],
+        maxResultCount: 20,
+      ),
+      // Call 4: Nature + Shopping
+      PlacesApiService.searchNearby(
+        lat: lat, lng: lng,
+        types: [
+          'park', 'national_park', 'botanical_garden', 'hiking_area',
+          'beach', 'museum', 'art_gallery', 'tourist_attraction',
+          'historical_landmark', 'monument',
+          'shopping_mall', 'supermarket', 'grocery_store', 'department_store',
+          'clothing_store', 'electronics_store', 'pharmacy', 'book_store',
+          'convenience_store', 'market',
+        ],
+        maxResultCount: 20,
+      ),
+    ]);
+
+    final allRaw = [
+      ...results[0],
+      ...results[1],
+      ...results[2],
+      ...results[3],
+    ];
+
+    print('📦 Raw results: ${allRaw.length} (before dedup)');
+
+    final seen = <String>{};
+
+    for (final p in allRaw) {
+      final id = p['id'] as String? ?? '';
+      if (id.isEmpty || seen.contains(id)) continue;
+      seen.add(id);
+
+      final googleTypes = (p['types'] as List?)?.cast<String>() ?? [];
+      final primaryType = _mapToPrimaryType(googleTypes);
+      if (primaryType == 'other') continue;
+
+      try {
+        final place = PlaceModel.fromGoogle(p, primary: primaryType);
+        if (place.lat == null || place.lng == null) continue;
+
+        targetList.add(place);
+        targetByType.putIfAbsent(primaryType, () => []);
+        targetByType[primaryType]!.add(place);
+      } catch (_) {}
+    }
+
+    print('✅ After dedup & classify: ${targetList.length} places');
+    targetByType.forEach((type, places) => print('   $type: ${places.length}'));
+  }
+  
+  // ─────────────────────────────────────────────
+  // GPS 模式：singleton cache
+  // ─────────────────────────────────────────────
   Future<List<PlaceModel>> loadNearbyPlacesOnce(
     List<Map<String, dynamic>> categories,
     BuildContext context, {
@@ -32,10 +159,9 @@ class NearbyPlacesService {
     double? lng,
   }) async {
     if (_hasLoadedOnce) {
-      print('🧠 NearbyPlacesService: using cache, no API call');
+      print('🧠 NearbyPlacesService: using cache');
       return _allPlacesCache;
     }
-
     if (_isLoading) {
       print('⏳ NearbyPlacesService: already loading');
       return _allPlacesCache;
@@ -44,164 +170,69 @@ class NearbyPlacesService {
     final pos = LocationService.instance.currentPosition;
     if (pos == null && lat == null) throw Exception('No location');
 
-    // 优先用传进来的坐标，fallback 才用 GPS
-    final searchLat = lat ?? pos?.latitude ?? 0;
-    final searchLng = lng ?? pos?.longitude ?? 0;
-    print('🔍 SEARCHING AT: $searchLat, $searchLng');
-    
+    final searchLat = lat ?? pos!.latitude;
+    final searchLng = lng ?? pos!.longitude;
+
     _isLoading = true;
     _allPlacesCache.clear();
     _placesByTypeCache.clear();
 
-    final types = categories
-        .where((c) => c['type'] != 'all')
-        .map((c) => c['type'] as String)
-        .toList();
-
-    print('🌍 NearbyPlacesService: loading ${types.length} types in parallel...');
     final stopwatch = Stopwatch()..start();
 
-    // 所有 type 同时 call
-    final allResults = await Future.wait(
-      types.map((type) async {
-        final apiResults = await PlacesApiService.searchNearby(
-          lat: searchLat,
-          lng: searchLng,
-          type: type,
-          radius: 5000,
-          maxResultCount: 20,
-        );
-        return MapEntry(type, apiResults);
-      }),
+    await _fetchAndStore(
+      lat: searchLat,
+      lng: searchLng,
+      targetList: _allPlacesCache,
+      targetByType: _placesByTypeCache,
     );
-
-    // 处理结果，存进 cache
-    for (final entry in allResults) {
-      final type = entry.key;
-      final apiResults = entry.value;
-
-      final results = apiResults.map((p) {
-        try {
-          final place = PlaceModel.fromGoogle(p, primary: type);
-          if (place.lat == null || place.lng == null) return null;
-          return place;
-        } catch (_) {
-          return null;
-        }
-      }).whereType<PlaceModel>().toList();
-
-      _placesByTypeCache[type] = results;
-
-      for (final p in results) {
-        if (!_allPlacesCache.any((e) => e.id == p.id)) {
-          _allPlacesCache.add(p);
-        }
-      }
-    }
 
     stopwatch.stop();
     _hasLoadedOnce = true;
     _isLoading = false;
 
-    print('✅ NearbyPlacesService: loaded ${_allPlacesCache.length} places in ${stopwatch.elapsedMilliseconds}ms');
+    print('🏁 Total: ${_allPlacesCache.length} places in ${stopwatch.elapsedMilliseconds}ms');
 
-    // ✅ data load 完之后，背景预先下载所有图片
     _precacheImages(context);
-
     return _allPlacesCache;
   }
 
-
-  /// 📍 以指定坐标搜索附近（不用 cache，用于 search 功能）
+  // ─────────────────────────────────────────────
+  // Search / Landmark 模式：独立 cache
+  // ─────────────────────────────────────────────
   Future<List<PlaceModel>> loadNearbyPlacesAt({
     required double lat,
     required double lng,
     required List<Map<String, dynamic>> categories,
     required BuildContext context,
   }) async {
-    // 检查缓存（坐标精确到小数点后3位，约100m精度）
     final cacheKey = '${lat.toStringAsFixed(3)},${lng.toStringAsFixed(3)}';
     if (_searchCache.containsKey(cacheKey)) {
       print('🧠 loadNearbyPlacesAt: cache hit for $cacheKey');
       return _searchCache[cacheKey]!;
     }
 
-    final types = categories
-        .where((c) => c['type'] != 'all')
-        .map((c) => c['type'] as String)
-        .toList();
-
-    print('🔍 loadNearbyPlacesAt: ($lat, $lng), ${types.length} types...');
-
-    // 每个 type 单独 try catch，一个失败不影响其他
-    final allResults = await Future.wait(
-      types.map((type) async {
-        try {
-          final apiResults = await PlacesApiService.searchNearby(
-            lat: lat,
-            lng: lng,
-            type: type,
-            radius: 5000,
-            maxResultCount: 20,
-          );
-          return MapEntry(type, apiResults);
-        } catch (e) {
-          print('⚠️ loadNearbyPlacesAt: $type failed - $e');
-          return MapEntry(type, <Map<String, dynamic>>[]);
-        }
-      }),
-    );
+    print('🔍 loadNearbyPlacesAt: ($lat, $lng)');
 
     final List<PlaceModel> results = [];
-    for (final entry in allResults) {
-      for (final p in entry.value) {
-        try {
-          final place = PlaceModel.fromGoogle(p, primary: entry.key);
-          if (place.lat == null || place.lng == null) continue;
-          if (!results.any((e) => e.id == place.id)) {
-            results.add(place);
-          }
-        } catch (_) {}
-      }
-    }
+    final Map<String, List<PlaceModel>> byType = {};
 
-    print('✅ loadNearbyPlacesAt: ${results.length} places found');
+    await _fetchAndStore(
+      lat: lat,
+      lng: lng,
+      targetList: results,
+      targetByType: byType,
+    );
 
-    // 存进缓存
+    print('✅ loadNearbyPlacesAt: ${results.length} places');
     _searchCache[cacheKey] = results;
 
-    // 预载图片
     if (context.mounted) _precacheImages(context);
-
     return results;
   }
- 
-
-  
-  // ─────────────────────────────────────────────
-  // 预先下载图片进 Flutter 缓存
-  // 用户滚动到卡片时图片已经ready，几乎秒出
-  // ─────────────────────────────────────────────
-
-  void _precacheImages(BuildContext context) {
-    final placesWithPhoto = _allPlacesCache
-        .where((p) => p.photoUrl != null)
-        .toList();
-
-    print('🖼️ Precaching ${placesWithPhoto.length} images in background...');
-
-    for (final place in placesWithPhoto) {
-      precacheImage(
-        NetworkImage(place.photoUrl!),
-        context,
-      );
-    }
-  }
 
   // ─────────────────────────────────────────────
-  // 一级 filter → 从 cache 拿，0 API call
+  // Getters
   // ─────────────────────────────────────────────
-
   List<PlaceModel> getByPrimary(String? primary) {
     if (primary == null || primary == 'all') {
       return List.unmodifiable(_allPlacesCache);
@@ -209,41 +240,38 @@ class NearbyPlacesService {
     return List.unmodifiable(_placesByTypeCache[primary] ?? []);
   }
 
-  // ─────────────────────────────────────────────
-  // 二级 filter → type + 名字关键词双重匹配，0 API call
-  // ─────────────────────────────────────────────
-
   List<PlaceModel> getBySecondary({
     required String primary,
     required String secondary,
     required List<String> allowTypes,
     required List<String> nameKeywords,
   }) {
-    if (secondary == 'all') {
-      return getByPrimary(primary);
-    }
+    if (secondary == 'all') return getByPrimary(primary);
 
     final base = getByPrimary(primary);
-
     final results = base.where((place) {
-      final name = place.name.toLowerCase();
-
+      final name      = place.name.toLowerCase();
       final typeMatch = allowTypes.isNotEmpty &&
           place.allTypes.any((t) => allowTypes.contains(t));
-
       final nameMatch = nameKeywords.isNotEmpty &&
           nameKeywords.any((k) => name.contains(k.toLowerCase()));
-
       return typeMatch || nameMatch;
     }).toList();
 
-    print('🔍 getBySecondary[$secondary]: ${base.length} → ${results.length} places');
+    print('🔍 getBySecondary[$secondary]: ${base.length} → ${results.length}');
     return results;
   }
 
   // ─────────────────────────────────────────────
-  // 手动刷新才清 cache，重新 call API
+  // Utils
   // ─────────────────────────────────────────────
+  void _precacheImages(BuildContext context) {
+    final withPhoto = _allPlacesCache.where((p) => p.photoUrl != null).toList();
+    print('🖼️ Precaching ${withPhoto.length} images...');
+    for (final place in withPhoto) {
+      precacheImage(NetworkImage(place.photoUrl!), context);
+    }
+  }
 
   void clearCache() {
     print('♻️ NearbyPlacesService: cache cleared');
@@ -251,5 +279,10 @@ class NearbyPlacesService {
     _isLoading = false;
     _allPlacesCache.clear();
     _placesByTypeCache.clear();
+  }
+
+  void clearSearchCache() {
+    print('♻️ NearbyPlacesService: search cache cleared');
+    _searchCache.clear();
   }
 }

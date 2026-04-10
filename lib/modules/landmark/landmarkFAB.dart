@@ -38,6 +38,7 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
     if (!kIsWeb) {
       _initCamera();
     }
+
   }
 
   Future<void> _initCamera() async {
@@ -71,7 +72,6 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
     if (kIsWeb) return;
     if (!_isCameraReady || _cameraController == null) return;
 
-    // 1️⃣ 开始新一次扫描：先清空旧照片
     setState(() {
       _previewBytes = null;
       _loading = true;
@@ -84,7 +84,7 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
       _previewBytes = bytes; // 显示当前拍的照片
     });
 
-    // 2️⃣ Vision API
+    // Vision API
     final base64Image = base64Encode(bytes);
     final response = await VisionService.detectLandmarkWithJson(base64Image);
 
@@ -94,7 +94,6 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
 
     if (!mounted) return;
 
-    // 3️⃣ 进入 ResultPage，并等待返回结果
     final shouldClear = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
@@ -106,7 +105,6 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
       ),
     );
 
-    // 4️⃣ 从 ResultPage 返回 → 清空照片（关键）
     if (shouldClear == true && mounted) {
       setState(() {
         _previewBytes = null;
@@ -259,7 +257,7 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
-                    _loading ? "Analyzing landmark..." : "Align landmark within frame",
+                    _loading ? "Analyzing landmark..." : "Position the landmark in the middle",
                     style: const TextStyle(color: Colors.white, fontSize: 13),
                   ),
                 ),

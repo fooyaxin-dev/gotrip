@@ -37,6 +37,7 @@ class _ProfilePageState extends State<ProfilePage> {
     super.initState();
     // ✅ stream 缓存在这里，整个生命周期只订阅一次
     _stream = _userService.getCurrentUserProfileStream();
+    
   }
 
   void zoomProfile() {

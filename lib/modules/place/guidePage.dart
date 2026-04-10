@@ -3,18 +3,17 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:compassx/compassx.dart'; 
+import 'package:compassx/compassx.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import '../../services/route_service.dart';
 
-// ── 修改 1：NavStep 加上 durationSeconds ──
 class NavStep {
   final String instruction;
   final String maneuver;
   final double distanceMeters;
-  final int    durationSeconds; // ← 新增
+  final int durationSeconds;
   final LatLng startLocation;
   final LatLng endLocation;
 
@@ -22,7 +21,7 @@ class NavStep {
     required this.instruction,
     required this.maneuver,
     required this.distanceMeters,
-    required this.durationSeconds, // ← 新增
+    required this.durationSeconds,
     required this.startLocation,
     required this.endLocation,
   });
@@ -58,20 +57,26 @@ class _GuidePageState extends State<GuidePage> {
   bool    _loading = true;
   String? _error;
 
-  List<LatLng>  _polylinePoints       = [];
-  LatLngBounds? _routeBounds;
-  double        _totalDistanceMeters  = 0;
-  int           _totalDurationSeconds = 0;
+  // Full polyline for off-route detection
+  List<LatLng> _polylinePoints = [];
 
+  // Two-tone polyline split
+  List<LatLng> _walkedPoints    = [];
+  List<LatLng> _remainingPoints = [];
+
+  // Monotone nearest polyline index — only ever increases
+  int _nearestPolylineIdx = 0;
+
+  LatLngBounds? _routeBounds;
   double _remainingMeters  = 0;
   int    _remainingSeconds = 0;
 
   List<NavStep> _steps            = [];
   int           _currentStepIndex = 0;
-  double        _distToNextTurn   = 0;
+  double        _distToCurrentTurnEnd = 0;
 
   int _stepEndConfirmCount = 0;
-  static const int _stepConfirmThreshold = 3;
+  static const int _stepConfirmThreshold = 2;
 
   StreamSubscription<Position>? _positionStream;
   Position? _currentPosition;
@@ -79,25 +84,32 @@ class _GuidePageState extends State<GuidePage> {
   final List<Position> _positionBuffer = [];
   static const int     _bufferSize     = 3;
 
-  bool _isFollowing = true;
-  bool _isOverview  = false;
+  // Flag to distinguish programmatic vs user camera moves
+  bool _isFollowing        = true;
+  bool _isProgrammaticMove = false;
+  bool _isOverview         = false;
 
   bool   _isRerouting = false;
-  static const double _offRouteThreshold = 50.0;
-  static const double _arrivedThreshold  = 30.0;
+  static const double _offRouteThreshold  = 50.0;
+  static const double _arrivedThreshold   = 30.0;
   bool   _hasArrived  = false;
 
   int _offRouteConfirmCount = 0;
-  static const int _offRouteConfirmThreshold = 5;
+  static const int _offRouteConfirmThreshold = 4;
 
   BitmapDescriptor? _arrowIcon;
 
-  // 指南针
+  // Compass throttle — only rebuild when heading changes > 2°
+  double _currentHeading      = 0;
+  double _lastRenderedHeading = -999;
+  static const double _headingThresholdDeg = 2.0;
   StreamSubscription<CompassXEvent>? _compassStream;
-  double _currentHeading = 0; // 来自磁力计，静止也准确
 
-  
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; // String.fromEnvironment('GOOGLE_API_KEY');
+  // Camera throttle
+  DateTime _lastCameraUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _cameraThrottle = Duration(milliseconds: 250);
+
+  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
 
   // ─────────────────────────────────────────────
   // Lifecycle
@@ -113,13 +125,13 @@ class _GuidePageState extends State<GuidePage> {
       altitudeAccuracy: 0.0, headingAccuracy: 0.0,
     );
     _createArrowIcon().then((_) => _loadRoute(widget.startLat, widget.startLng));
-    _startCompass(); // ← 新增
+    _startCompass();
   }
 
   @override
   void dispose() {
     _positionStream?.cancel();
-    _compassStream?.cancel(); // ← 新增
+    _compassStream?.cancel();
     _mapController?.dispose();
     _positionBuffer.clear();
     super.dispose();
@@ -134,14 +146,10 @@ class _GuidePageState extends State<GuidePage> {
     final canvas   = Canvas(recorder);
     const size     = 64.0;
 
-    canvas.drawCircle(
-      const Offset(size / 2, size / 2), size / 2,
-      Paint()..color = Colors.white,
-    );
-    canvas.drawCircle(
-      const Offset(size / 2, size / 2), size / 2 - 4,
-      Paint()..color = const Color(0xFF1A73E8),
-    );
+    canvas.drawCircle(const Offset(size / 2, size / 2), size / 2,
+        Paint()..color = Colors.white);
+    canvas.drawCircle(const Offset(size / 2, size / 2), size / 2 - 4,
+        Paint()..color = const Color(0xFF1A73E8));
     final path = Path()
       ..moveTo(size / 2, 10)
       ..lineTo(size / 2 + 14, size - 12)
@@ -158,7 +166,7 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // Compass
+  // Compass — throttled, marker only
   // ─────────────────────────────────────────────
 
   void _startCompass() {
@@ -169,7 +177,10 @@ class _GuidePageState extends State<GuidePage> {
 
       _currentHeading = heading;
 
-      // 更新箭头 marker 朝向
+      final delta = (_currentHeading - _lastRenderedHeading).abs();
+      if (delta < _headingThresholdDeg && _lastRenderedHeading != -999) return;
+      _lastRenderedHeading = _currentHeading;
+
       if (_currentPosition != null) {
         setState(() {
           _updateMyMarker(
@@ -179,186 +190,149 @@ class _GuidePageState extends State<GuidePage> {
           );
         });
       }
-
-      // 如果正在跟随模式，地图 bearing 跟着转
-      if (_isFollowing && _currentPosition != null) {
-        _mapController?.animateCamera(
-          CameraUpdate.newCameraPosition(CameraPosition(
-            target:  LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-            zoom:    17.0,
-            tilt:    0,
-            bearing: _currentHeading, // ← 用磁力计的 heading，静止也准
-          )),
-        );
-      }
     });
   }
 
-  String get _apiMode {
-    switch (widget.travelMode) {
-      case TravelMode.walk:  return 'walking';
-      case TravelMode.drive: return 'driving';
-      case TravelMode.motor: return 'driving';
-    }
-  }
+  // ─────────────────────────────────────────────
+  // Route loading
+  // ─────────────────────────────────────────────
 
-  Future<void> _loadRoute(double fromLat, double fromLng) async {
-      setState(() {
-        _loading     = true;
-        _error       = null;
-        _isRerouting = false;
-        _polylines.clear();
-      });
-  
-      try {
-        // Routes API 是 POST
-        final url = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
-  
-        final body = jsonEncode({
-          "origin": {
-            "location": {
-              "latLng": {"latitude": fromLat, "longitude": fromLng}
-            }
-          },
-          "destination": {
-            "location": {
-              "latLng": {"latitude": widget.endLat, "longitude": widget.endLng}
-            }
-          },
-          "travelMode": _routesApiMode,
-          "routingPreference": widget.travelMode == TravelMode.walk
-              ? "ROUTING_PREFERENCE_UNSPECIFIED"
-              : "TRAFFIC_AWARE",
-          "computeAlternativeRoutes": false,
-          if (widget.travelMode != TravelMode.walk)  // ← 只有 drive/motor 才加
-            "routeModifiers": {
-              "avoidTolls": false,
-              "avoidHighways": false,
-            },
-          "languageCode": "en-US",
-          "units": "METRIC",
-        });
-  
-        final resp = await http.post(
-          url,
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Goog-Api-Key': _apiKey,
-            // FieldMask：只要需要的字段，省 quota
-            'X-Goog-FieldMask':
-                'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs.steps.navigationInstruction,routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration,routes.legs.steps.startLocation,routes.legs.steps.endLocation,,routes.viewport',
-          },
-          body: body,
-        );
-  
-        if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
-  
-        final data = json.decode(resp.body);
-        final routes = data['routes'] as List?;
-        if (routes == null || routes.isEmpty) throw Exception('No routes found');
-  
-        final route = routes[0];
-        final legs  = (route['legs'] as List);
-  
-        // Polyline
-        final points = _decodePolyline(route['polyline']['encodedPolyline'] as String);
-  
-        // Bounds (viewport)
-        final vp = route['viewport'];
-        final ne = vp['high'];
-        final sw = vp['low'];
-        final bounds = LatLngBounds(
-          southwest: LatLng(sw['latitude'], sw['longitude']),
-          northeast: LatLng(ne['latitude'], ne['longitude']),
-        );
-  
-        // Steps — 从所有 legs 合并
-        final steps = <NavStep>[];
-        for (final leg in legs) {
-          for (final s in (leg['steps'] as List)) {
-            final nav      = s['navigationInstruction'] as Map<String, dynamic>? ?? {};
-            final maneuver = (nav['maneuver'] as String? ?? '').toLowerCase();
-            final instr    = (nav['instructions'] as String? ?? '');
-            steps.add(NavStep(
-              instruction:     instr,
-              maneuver:        maneuver,
-              distanceMeters:  (s['distanceMeters'] as num? ?? 0).toDouble(),
-              durationSeconds: _parseDuration(s['staticDuration'] as String? ?? '0s'),
-              startLocation:   LatLng(
-                s['startLocation']['latLng']['latitude'],
-                s['startLocation']['latLng']['longitude'],
-              ),
-              endLocation: LatLng(
-                s['endLocation']['latLng']['latitude'],
-                s['endLocation']['latLng']['longitude'],
-              ),
-            ));
-          }
-        }
-  
-        // 总距离和时间
-        // duration 已经是考虑路况的（因为用了 TRAFFIC_AWARE）
-        final totalDist = (route['distanceMeters'] as num).toDouble();
-        final totalDur  = _parseDuration(route['duration'] as String);
-  
-        if (!mounted) return;
-  
-        setState(() {
-          _polylinePoints       = points;
-          _routeBounds          = bounds;
-          _totalDistanceMeters  = totalDist;
-          _totalDurationSeconds = totalDur;
-          _remainingMeters      = totalDist;
-          _remainingSeconds     = totalDur;
-          _steps                = steps;
-          _currentStepIndex     = 0;
-          _distToNextTurn       = steps.isNotEmpty ? steps[0].distanceMeters : 0;
-          _loading              = false;
-        });
-  
-        _drawRoute(points, fromLat, fromLng);
-        _startTracking();
-      } catch (e) {
-        if (!mounted) return;
-        setState(() { _error = e.toString(); _loading = false; });
-      }
-    }
- 
-  // Routes API travelMode string
   String get _routesApiMode {
     switch (widget.travelMode) {
       case TravelMode.walk:  return 'WALK';
       case TravelMode.drive: return 'DRIVE';
-      case TravelMode.motor: return 'TWO_WHEELER'; // ← Routes API 原生支持摩托！
+      case TravelMode.motor: return 'TWO_WHEELER';
     }
   }
- 
-  // Routes API 的 duration 格式是 "123s"，需要解析
+
   int _parseDuration(String duration) {
     final s = duration.replaceAll('s', '').trim();
     return int.tryParse(s) ?? 0;
   }
-  
-  
-  
+
+  Future<void> _loadRoute(double fromLat, double fromLng) async {
+    setState(() {
+      _loading     = true;
+      _error       = null;
+      _isRerouting = false;
+      _polylines.clear();
+      _walkedPoints.clear();
+      _remainingPoints.clear();
+      _stepEndConfirmCount  = 0;
+      _offRouteConfirmCount = 0;
+      _nearestPolylineIdx   = 0;
+    });
+
+    try {
+      final url  = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
+      final body = jsonEncode({
+        "origin": {
+          "location": {"latLng": {"latitude": fromLat, "longitude": fromLng}}
+        },
+        "destination": {
+          "location": {"latLng": {"latitude": widget.endLat, "longitude": widget.endLng}}
+        },
+        "travelMode": _routesApiMode,
+        "routingPreference": widget.travelMode == TravelMode.walk
+            ? "ROUTING_PREFERENCE_UNSPECIFIED"
+            : "TRAFFIC_AWARE",
+        "computeAlternativeRoutes": false,
+        if (widget.travelMode != TravelMode.walk)
+          "routeModifiers": {"avoidTolls": false, "avoidHighways": false},
+        "languageCode": "en-US",
+        "units": "METRIC",
+      });
+
+      final resp = await http.post(url, headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': _apiKey,
+        'X-Goog-FieldMask':
+            'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,'
+            'routes.legs.steps.navigationInstruction,'
+            'routes.legs.steps.distanceMeters,'
+            'routes.legs.steps.staticDuration,'
+            'routes.legs.steps.startLocation,'
+            'routes.legs.steps.endLocation,'
+            'routes.viewport',
+      }, body: body);
+
+      if (resp.statusCode != 200) {
+        throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
+      }
+
+      final data   = json.decode(resp.body);
+      final routes = data['routes'] as List?;
+      if (routes == null || routes.isEmpty) throw Exception('No routes found');
+
+      final route  = routes[0];
+      final legs   = (route['legs'] as List);
+      final points = _decodePolyline(route['polyline']['encodedPolyline'] as String);
+
+      final vp  = route['viewport'];
+      final ne  = vp['high'];
+      final sw  = vp['low'];
+      final bounds = LatLngBounds(
+        southwest: LatLng(sw['latitude'],  sw['longitude']),
+        northeast: LatLng(ne['latitude'],  ne['longitude']),
+      );
+
+      final steps = <NavStep>[];
+      for (final leg in legs) {
+        for (final s in (leg['steps'] as List)) {
+          final nav      = s['navigationInstruction'] as Map<String, dynamic>? ?? {};
+          final maneuver = (nav['maneuver'] as String? ?? '').toLowerCase();
+          final instr    = (nav['instructions'] as String? ?? 'Continue');
+          steps.add(NavStep(
+            instruction:     instr,
+            maneuver:        maneuver,
+            distanceMeters:  (s['distanceMeters'] as num? ?? 0).toDouble(),
+            durationSeconds: _parseDuration(s['staticDuration'] as String? ?? '0s'),
+            startLocation:   LatLng(
+              s['startLocation']['latLng']['latitude'],
+              s['startLocation']['latLng']['longitude'],
+            ),
+            endLocation: LatLng(
+              s['endLocation']['latLng']['latitude'],
+              s['endLocation']['latLng']['longitude'],
+            ),
+          ));
+        }
+      }
+
+      final totalDist = (route['distanceMeters'] as num).toDouble();
+      final totalDur  = _parseDuration(route['duration'] as String);
+
+      if (!mounted) return;
+
+      setState(() {
+        _polylinePoints       = points;
+        _remainingPoints      = List.from(points);
+        _walkedPoints         = [];
+        _routeBounds          = bounds;
+        _remainingMeters      = totalDist;
+        _remainingSeconds     = totalDur;
+        _steps                = steps;
+        _currentStepIndex     = 0;
+        _distToCurrentTurnEnd = steps.isNotEmpty ? steps[0].distanceMeters : 0;
+        _loading              = false;
+      });
+
+      _drawRoute(fromLat, fromLng);
+      _startTracking();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _error = e.toString(); _loading = false; });
+    }
+  }
+
   // ─────────────────────────────────────────────
   // Map drawing
   // ─────────────────────────────────────────────
 
-  void _drawRoute(List<LatLng> points, double fromLat, double fromLng) {
+  void _drawRoute(double fromLat, double fromLng) {
     setState(() {
-      _polylines.add(Polyline(
-        polylineId: const PolylineId('route'),
-        points:    points,
-        color:     const Color(0xFF4A90D9),
-        width:     8,
-        startCap:  Cap.roundCap,
-        endCap:    Cap.roundCap,
-        jointType: JointType.round,
-      ));
-
-      _updateMyMarker(fromLat, fromLng, _currentPosition?.heading ?? 0);
-
+      _rebuildPolylines();
+      _updateMyMarker(fromLat, fromLng, _currentHeading);
       _markers
         ..removeWhere((m) => m.markerId.value == 'destination')
         ..add(Marker(
@@ -369,9 +343,73 @@ class _GuidePageState extends State<GuidePage> {
         ));
     });
 
-    Future.delayed(const Duration(milliseconds: 300), () {
-      _moveCameraToUser(fromLat, fromLng, _currentPosition?.heading ?? 0);
+    Future.delayed(const Duration(milliseconds: 400), () {
+      _animateCameraToUser(fromLat, fromLng);
     });
+  }
+
+  // Rebuild two-tone polylines (grey = walked, blue = remaining)
+  void _rebuildPolylines() {
+    _polylines.clear();
+
+    if (_walkedPoints.length >= 2) {
+      _polylines.add(Polyline(
+        polylineId: const PolylineId('walked'),
+        points:     _walkedPoints,
+        color:      Colors.grey.shade400,
+        width:      8,
+        startCap:   Cap.roundCap,
+        endCap:     Cap.buttCap,
+        jointType:  JointType.round,
+      ));
+    }
+
+    if (_remainingPoints.length >= 2) {
+      _polylines.add(Polyline(
+        polylineId: const PolylineId('remaining'),
+        points:     _remainingPoints,
+        color:      const Color(0xFF4A90D9),
+        width:      8,
+        startCap:   Cap.roundCap,
+        endCap:     Cap.roundCap,
+        jointType:  JointType.round,
+      ));
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // FIX: Monotone polyline split — index only ever advances
+  // ─────────────────────────────────────────────
+
+  void _updatePolylineSplit(LatLng userPos) {
+    if (_polylinePoints.isEmpty) return;
+
+    // Only search forward from current index — never go backwards.
+    // This prevents GPS jitter from suddenly graying out large ahead segments.
+    final searchEnd = (_nearestPolylineIdx + 60).clamp(0, _polylinePoints.length - 1);
+
+    int    bestIdx  = _nearestPolylineIdx;
+    double bestDist = double.infinity;
+
+    for (int i = _nearestPolylineIdx; i <= searchEnd; i++) {
+      final d = Geolocator.distanceBetween(
+        userPos.latitude, userPos.longitude,
+        _polylinePoints[i].latitude, _polylinePoints[i].longitude,
+      );
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx  = i;
+      }
+    }
+
+    // Only advance the index, never retreat
+    if (bestIdx <= _nearestPolylineIdx) return;
+
+    _nearestPolylineIdx = bestIdx;
+    _walkedPoints    = _polylinePoints.sublist(0, bestIdx + 1);
+    _remainingPoints = _polylinePoints.sublist(bestIdx);
+
+    _rebuildPolylines();
   }
 
   void _updateMyMarker(double lat, double lng, double heading) {
@@ -384,6 +422,7 @@ class _GuidePageState extends State<GuidePage> {
         rotation: heading,
         anchor:   const Offset(0.5, 0.5),
         flat:     true,
+        zIndex:   10,
       ));
   }
 
@@ -391,35 +430,49 @@ class _GuidePageState extends State<GuidePage> {
   // Camera
   // ─────────────────────────────────────────────
 
-  void _moveCameraToUser(double lat, double lng, [double? heading]) {
-    _mapController?.animateCamera(
-      CameraUpdate.newCameraPosition(CameraPosition(
-        target:  LatLng(lat, lng),
-        zoom:    17.0,
-        tilt:    0,
-        bearing: _currentHeading, // ← 永远用磁力计 heading，静止也准确
-      )),
-    );
+  Future<void> _animateCameraToUser(double lat, double lng) async {
+    if (_mapController == null) return;
+
+    final now = DateTime.now();
+    if (now.difference(_lastCameraUpdate) < _cameraThrottle) return;
+    _lastCameraUpdate = now;
+
+    _isProgrammaticMove = true;
+    try {
+      await _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(CameraPosition(
+          target:  LatLng(lat, lng),
+          zoom:    19,           // ← changed from 17.5
+          tilt:    0,
+          bearing: _currentHeading,
+        )),
+      );
+    } finally {
+      _isProgrammaticMove = false;
+    }
   }
 
   void _recenter() {
     if (_currentPosition == null) return;
     setState(() { _isFollowing = true; _isOverview = false; });
-    _moveCameraToUser(
-      _currentPosition!.latitude,
-      _currentPosition!.longitude,
-      _currentPosition!.heading,
-    );
+    _animateCameraToUser(_currentPosition!.latitude, _currentPosition!.longitude);
   }
 
-  void _toggleOverview() {
+  Future<void> _toggleOverview() async {
     if (_routeBounds == null) return;
     setState(() {
       _isOverview  = !_isOverview;
       _isFollowing = !_isOverview;
     });
     if (_isOverview) {
-      _mapController?.animateCamera(CameraUpdate.newLatLngBounds(_routeBounds!, 80));
+      _isProgrammaticMove = true;
+      try {
+        await _mapController?.animateCamera(
+          CameraUpdate.newLatLngBounds(_routeBounds!, 80),
+        );
+      } finally {
+        _isProgrammaticMove = false;
+      }
     } else {
       _recenter();
     }
@@ -438,13 +491,11 @@ class _GuidePageState extends State<GuidePage> {
         / _positionBuffer.length;
     final avgLng = _positionBuffer.map((p) => p.longitude).reduce((a, b) => a + b)
         / _positionBuffer.length;
-    final avgHeading = _positionBuffer.map((p) => p.heading).reduce((a, b) => a + b)
-        / _positionBuffer.length;
 
     return Position(
       latitude:         avgLat,
       longitude:        avgLng,
-      heading:          avgHeading,
+      heading:          newPos.heading,
       speed:            newPos.speed,
       accuracy:         newPos.accuracy,
       altitude:         newPos.altitude,
@@ -462,32 +513,26 @@ class _GuidePageState extends State<GuidePage> {
   void _startTracking() {
     _positionStream?.cancel();
 
-    // GPS 暖机：进来先等 3 秒，让 GPS 稳定后才开始处理
-    bool _gpsWarmedUp = false;
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _gpsWarmedUp = true);
-    });
-
     _positionStream = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy:       LocationAccuracy.high,
-        distanceFilter: 8,
+      locationSettings: AndroidSettings(
+        accuracy:         LocationAccuracy.bestForNavigation,
+        distanceFilter:   0,
+        intervalDuration: const Duration(milliseconds: 500),
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationText:  "Navigation is active",
+          notificationTitle: "Turn-by-turn Navigation",
+          enableWakeLock:    true,
+        ),
       ),
     ).listen((rawPos) {
       if (!mounted) return;
+      if (rawPos.accuracy > 25) return;
 
-      // 暖机期间丢弃所有读数，避免一进来就乱跳
-      if (!_gpsWarmedUp) return;
+      final pos        = _smoothPosition(rawPos);
+      final isMoving   = rawPos.speed > 0.3;
+      final userLatLng = LatLng(pos.latitude, pos.longitude);
 
-      // 精度过滤：GPS 信号差（误差 > 20m）直接跳过这次读数
-      if (rawPos.accuracy > 20) return;
-
-      // 速度判断：< 0.5 m/s 认为用户静止
-      final isMoving = rawPos.speed > 0.5;
-
-      final pos = _smoothPosition(rawPos);
-
-      // 1. 到达检测
+      // 1. Arrived
       final distToDest = Geolocator.distanceBetween(
         pos.latitude, pos.longitude, widget.endLat, widget.endLng,
       );
@@ -498,13 +543,12 @@ class _GuidePageState extends State<GuidePage> {
         return;
       }
 
-      // 2. 偏离检测（只在移动时判断，防止静止时 GPS 漂移误触发 reroute）
+      // 2. Off-route (only while moving)
       if (isMoving && !_isRerouting && _polylinePoints.isNotEmpty) {
-        final minDist = _minDistToPolyline(LatLng(pos.latitude, pos.longitude));
+        final minDist = _minDistToPolylineFast(userLatLng);
         if (minDist > _offRouteThreshold) {
           _offRouteConfirmCount++;
           if (_offRouteConfirmCount >= _offRouteConfirmThreshold) {
-            _offRouteConfirmCount = 0;
             _isRerouting = true;
             _loadRoute(pos.latitude, pos.longitude);
             return;
@@ -514,99 +558,191 @@ class _GuidePageState extends State<GuidePage> {
         }
       }
 
-      // 3. Step 切换（只在移动时判断，防止静止时抖动误切 step）
-      if (isMoving && _steps.isNotEmpty && _currentStepIndex < _steps.length - 1) {
+      // 3. Step switching
+      if (_steps.isNotEmpty && _currentStepIndex < _steps.length - 1) {
         final currentStep = _steps[_currentStepIndex];
         final distToStepEnd = Geolocator.distanceBetween(
           pos.latitude, pos.longitude,
           currentStep.endLocation.latitude,
           currentStep.endLocation.longitude,
         );
-        if (distToStepEnd < 20) {
+
+        if (distToStepEnd < 15 && _isHeadingTowardNextStep(pos)) {
           _stepEndConfirmCount++;
           if (_stepEndConfirmCount >= _stepConfirmThreshold) {
             _stepEndConfirmCount = 0;
-            setState(() => _currentStepIndex = _currentStepIndex + 1);
+            if (mounted) {
+              setState(() {
+                _currentStepIndex++;
+                _distToCurrentTurnEnd = _steps[_currentStepIndex].distanceMeters;
+              });
+            }
           }
         } else {
           _stepEndConfirmCount = 0;
         }
       }
 
-      // 4. 到下一个转弯的距离（只在移动时更新，静止时保持上一次的值）
-      if (isMoving && _steps.isNotEmpty) {
-        final nextIdx = (_currentStepIndex + 1).clamp(0, _steps.length - 1);
-        _distToNextTurn = Geolocator.distanceBetween(
+      // 4. Update distance to current turn end
+      if (_steps.isNotEmpty) {
+        final step    = _steps[_currentStepIndex];
+        final distEnd = Geolocator.distanceBetween(
           pos.latitude, pos.longitude,
-          _steps[nextIdx].startLocation.latitude,
-          _steps[nextIdx].startLocation.longitude,
+          step.endLocation.latitude,
+          step.endLocation.longitude,
         );
+        _distToCurrentTurnEnd = distEnd.clamp(0.0, step.distanceMeters);
       }
 
-      // 5. 更新剩余时间/距离（只在移动时更新，静止时冻结显示）
+      // 5. State update + polyline split
       setState(() {
         _currentPosition = pos;
         if (isMoving) {
+          // Update polyline split first so _nearestPolylineIdx is current
+          _updatePolylineSplit(userLatLng);
+          // Then calculate remaining based on updated index
           _remainingMeters  = _calcRemainingMeters(pos);
           _remainingSeconds = _calcRemainingSeconds(pos);
         }
-        _updateMyMarker(pos.latitude, pos.longitude, pos.heading);
+        _updateMyMarker(pos.latitude, pos.longitude, _currentHeading);
       });
 
-      // 6. 相机跟随
-      if (_isFollowing) {
-        _moveCameraToUser(pos.latitude, pos.longitude, pos.heading);
+      // 6. Camera follow
+      if (_isFollowing && !_isOverview) {
+        _animateCameraToUser(pos.latitude, pos.longitude);
       }
     });
   }
 
   // ─────────────────────────────────────────────
-  // Remaining calculations (基于 API steps，不靠 hardcode 速度)
+  // Heading validation toward next step
   // ─────────────────────────────────────────────
 
-  // ── 修改 3：_calcRemainingSeconds 用 steps 的 durationSeconds 累加 ──
+  bool _isHeadingTowardNextStep(Position pos) {
+    if (_currentStepIndex + 1 >= _steps.length) return true;
+    final next = _steps[_currentStepIndex + 1];
+    final targetBearing = _bearingBetween(
+      pos.latitude, pos.longitude,
+      next.startLocation.latitude, next.startLocation.longitude,
+    );
+    final diff = (((_currentHeading - targetBearing) % 360) + 360) % 360;
+    return (diff > 180 ? 360 - diff : diff) < 60;
+  }
+
+  double _bearingBetween(double lat1, double lng1, double lat2, double lng2) {
+    final dLng = (lng2 - lng1) * pi / 180;
+    final phi1 = lat1 * pi / 180;
+    final phi2 = lat2 * pi / 180;
+    final y = sin(dLng) * cos(phi2);
+    final x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLng);
+    return (atan2(y, x) * 180 / pi + 360) % 360;
+  }
+
+  // ─────────────────────────────────────────────
+  // Fast min-dist with cached nearest index (for off-route check)
+  // ─────────────────────────────────────────────
+
+  double _minDistToPolylineFast(LatLng point) {
+    if (_polylinePoints.isEmpty) return double.infinity;
+
+    final searchStart = (_nearestPolylineIdx - 20).clamp(0, _polylinePoints.length - 1);
+    final searchEnd   = (_nearestPolylineIdx + 40).clamp(0, _polylinePoints.length - 1);
+
+    int    bestIdx  = _nearestPolylineIdx;
+    double bestDist = double.infinity;
+
+    for (int i = searchStart; i <= searchEnd; i++) {
+      final d = Geolocator.distanceBetween(
+        point.latitude, point.longitude,
+        _polylinePoints[i].latitude, _polylinePoints[i].longitude,
+      );
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+
+    final segStart = (bestIdx - 5).clamp(0, _polylinePoints.length - 1);
+    final segEnd   = (bestIdx + 5).clamp(0, _polylinePoints.length - 1);
+    double minDist = double.infinity;
+    for (int i = segStart; i < segEnd; i++) {
+      final d = _distToSegment(
+        point,
+        _polylinePoints[i],
+        _polylinePoints[(i + 1).clamp(0, _polylinePoints.length - 1)],
+      );
+      if (d < minDist) minDist = d;
+    }
+    return minDist;
+  }
+
+  double _distToSegment(LatLng p, LatLng a, LatLng b) {
+    final double ax = a.longitude, ay = a.latitude;
+    final double bx = b.longitude, by = b.latitude;
+    final double px = p.longitude,  py = p.latitude;
+    final double dx = bx - ax,      dy = by - ay;
+
+    if (dx == 0 && dy == 0) {
+      return Geolocator.distanceBetween(py, px, ay, ax);
+    }
+    final double t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
+    final double c = t.clamp(0.0, 1.0);
+    return Geolocator.distanceBetween(py, px, ay + c * dy, ax + c * dx);
+  }
+
+  // ─────────────────────────────────────────────
+  // FIX: Remaining distance — sum polyline segments ahead of user
+  // ─────────────────────────────────────────────
+
+  double _calcRemainingMeters(Position pos) {
+    if (_polylinePoints.isEmpty) return 0;
+
+    final idx = _nearestPolylineIdx;
+
+    // Distance from user to the nearest polyline point
+    double total = Geolocator.distanceBetween(
+      pos.latitude, pos.longitude,
+      _polylinePoints[idx].latitude,
+      _polylinePoints[idx].longitude,
+    );
+
+    // Sum all remaining polyline segments from nearest point to destination
+    for (int i = idx; i < _polylinePoints.length - 1; i++) {
+      total += Geolocator.distanceBetween(
+        _polylinePoints[i].latitude,   _polylinePoints[i].longitude,
+        _polylinePoints[i+1].latitude, _polylinePoints[i+1].longitude,
+      );
+    }
+
+    return total;
+  }
+
+  // ─────────────────────────────────────────────
+  // FIX: Remaining seconds — steps-based with current step ratio
+  // ─────────────────────────────────────────────
+
   int _calcRemainingSeconds(Position pos) {
     if (_steps.isEmpty) return 0;
 
-    int futureSeconds = 0;
+    // Sum duration of all future steps (after current)
+    int future = 0;
     for (int i = _currentStepIndex + 1; i < _steps.length; i++) {
-      futureSeconds += _steps[i].durationSeconds;
+      future += _steps[i].durationSeconds;
     }
 
-    final currentStep   = _steps[_currentStepIndex];
+    // For current step, pro-rate by remaining distance ratio
+    final step = _steps[_currentStepIndex];
     final distToStepEnd = Geolocator.distanceBetween(
       pos.latitude, pos.longitude,
-      currentStep.endLocation.latitude,
-      currentStep.endLocation.longitude,
+      step.endLocation.latitude,
+      step.endLocation.longitude,
     );
-    final stepRatio = currentStep.distanceMeters > 0
-        ? (distToStepEnd / currentStep.distanceMeters).clamp(0.0, 1.0)
+    final ratio = step.distanceMeters > 0
+        ? (distToStepEnd / step.distanceMeters).clamp(0.0, 1.0)
         : 0.0;
 
-    final currentStepRemaining = (currentStep.durationSeconds * stepRatio).toInt();
-    return currentStepRemaining + futureSeconds;
-  }
-
-  double _calcRemainingMeters(Position pos) {
-    if (_steps.isEmpty) return 0;
-
-    double futureMeters = 0;
-    for (int i = _currentStepIndex + 1; i < _steps.length; i++) {
-      futureMeters += _steps[i].distanceMeters;
-    }
-
-    final currentStep   = _steps[_currentStepIndex];
-    final distToStepEnd = Geolocator.distanceBetween(
-      pos.latitude, pos.longitude,
-      currentStep.endLocation.latitude,
-      currentStep.endLocation.longitude,
-    );
-
-    return distToStepEnd.clamp(0.0, currentStep.distanceMeters) + futureMeters;
+    return (step.durationSeconds * ratio).round() + future;
   }
 
   // ─────────────────────────────────────────────
-  // Arrived
+  // Arrived dialog
   // ─────────────────────────────────────────────
 
   void _showArrivedDialog() {
@@ -640,50 +776,6 @@ class _GuidePageState extends State<GuidePage> {
   // Helpers
   // ─────────────────────────────────────────────
 
-  double _minDistToPolyline(LatLng point) {
-    if (_polylinePoints.isEmpty) return double.infinity;
-
-    int    nearestIdx  = 0;
-    double nearestDist = double.infinity;
-    for (int i = 0; i < _polylinePoints.length; i++) {
-      final d = Geolocator.distanceBetween(
-        point.latitude, point.longitude,
-        _polylinePoints[i].latitude, _polylinePoints[i].longitude,
-      );
-      if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
-    }
-
-    final start  = (nearestIdx - 15).clamp(0, _polylinePoints.length - 1);
-    final end    = (nearestIdx + 15).clamp(0, _polylinePoints.length - 1);
-    double minDist = double.infinity;
-
-    for (int i = start; i < end; i++) {
-      final segDist = _distToSegment(
-        point,
-        _polylinePoints[i],
-        _polylinePoints[(i + 1).clamp(0, _polylinePoints.length - 1)],
-      );
-      if (segDist < minDist) minDist = segDist;
-    }
-
-    return minDist;
-  }
-
-  double _distToSegment(LatLng p, LatLng a, LatLng b) {
-    final double ax = a.longitude, ay = a.latitude;
-    final double bx = b.longitude, by = b.latitude;
-    final double px = p.longitude,  py = p.latitude;
-    final double dx = bx - ax,      dy = by - ay;
-
-    if (dx == 0 && dy == 0) {
-      return Geolocator.distanceBetween(py, px, ay, ax);
-    }
-
-    final double t        = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
-    final double clamped  = t.clamp(0.0, 1.0);
-    return Geolocator.distanceBetween(py, px, ay + clamped * dy, ax + clamped * dx);
-  }
-
   List<LatLng> _decodePolyline(String encoded) {
     List<LatLng> pts = [];
     int i = 0, len = encoded.length, lat = 0, lng = 0;
@@ -699,30 +791,17 @@ class _GuidePageState extends State<GuidePage> {
     return pts;
   }
 
-  String _stripHtml(String html) =>
-      html.replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
-
-  String _guessManeuver(String html) {
-    final lower = html.toLowerCase();
-    if (lower.contains('turn right'))   return 'turn-right';
-    if (lower.contains('turn left'))    return 'turn-left';
-    if (lower.contains('u-turn'))       return 'uturn';
-    if (lower.contains('roundabout'))   return 'roundabout';
-    if (lower.contains('merge'))        return 'merge';
-    if (lower.contains('slight right')) return 'turn-slight-right';
-    if (lower.contains('slight left'))  return 'turn-slight-left';
-    if (lower.contains('keep right'))   return 'keep-right';
-    if (lower.contains('keep left'))    return 'keep-left';
-    return 'straight';
-  }
-
   IconData _maneuverIcon(String maneuver) {
-    if (maneuver.contains('right'))      return Icons.turn_right_rounded;
-    if (maneuver.contains('left'))       return Icons.turn_left_rounded;
-    if (maneuver.contains('uturn'))      return Icons.u_turn_left_rounded;
-    if (maneuver.contains('roundabout')) return Icons.roundabout_left_rounded;
-    if (maneuver.contains('merge'))      return Icons.merge_rounded;
-    if (maneuver.contains('ramp'))       return Icons.turn_slight_right_rounded;
+    final m = maneuver.toLowerCase();
+    if (m.contains('uturn') || m.contains('u_turn'))     return Icons.u_turn_left_rounded;
+    if (m.contains('slight_right'))                       return Icons.turn_slight_right_rounded;
+    if (m.contains('slight_left'))                        return Icons.turn_slight_left_rounded;
+    if (m.contains('turn_right') || m.contains('right')) return Icons.turn_right_rounded;
+    if (m.contains('turn_left')  || m.contains('left'))  return Icons.turn_left_rounded;
+    if (m.contains('roundabout'))                         return Icons.roundabout_left_rounded;
+    if (m.contains('merge'))                              return Icons.merge_rounded;
+    if (m.contains('ramp'))                               return Icons.turn_slight_right_rounded;
+    if (m.contains('destination'))                        return Icons.location_on_rounded;
     return Icons.straight_rounded;
   }
 
@@ -785,6 +864,13 @@ class _GuidePageState extends State<GuidePage> {
 
     final step = _steps.isNotEmpty ? _steps[_currentStepIndex] : null;
 
+    NavStep? nextStep;
+    if (_steps.isNotEmpty &&
+        _currentStepIndex < _steps.length - 1 &&
+        _distToCurrentTurnEnd < 100) {
+      nextStep = _steps[_currentStepIndex + 1];
+    }
+
     return Scaffold(
       extendBodyBehindAppBar: true,
       body: Stack(children: [
@@ -792,28 +878,30 @@ class _GuidePageState extends State<GuidePage> {
         // ── Map ──
         GoogleMap(
           initialCameraPosition: CameraPosition(
-            target: LatLng(widget.startLat, widget.startLng),
-            zoom: 17.0, tilt: 0, // ← 从 20.5 降到 17，让用户看到前方路线
+            target:  LatLng(widget.startLat, widget.startLng),
+            zoom:    19,         // ← changed from 17.5
+            tilt:    0,
+            bearing: _currentHeading,
           ),
           markers:                 _markers,
           polylines:               _polylines,
           myLocationEnabled:       false,
           myLocationButtonEnabled: false,
           zoomControlsEnabled:     false,
-          compassEnabled:          true,
+          compassEnabled:          false,
           onMapCreated: (c) {
             _mapController = c;
-            c.animateCamera(CameraUpdate.newCameraPosition(CameraPosition(
-              target: LatLng(widget.startLat, widget.startLng),
-              zoom: 17.0, tilt: 0,
-            )));
+            Future.delayed(const Duration(milliseconds: 200), () {
+              _animateCameraToUser(widget.startLat, widget.startLng);
+            });
           },
           onCameraMoveStarted: () {
-            if (_isFollowing) setState(() => _isFollowing = false);
+            if (!_isProgrammaticMove && _isFollowing) {
+              setState(() => _isFollowing = false);
+            }
           },
-          // top padding = 方向 bar 高度（约 100）+ status bar，让地图内容不被遮挡
           padding: EdgeInsets.only(
-            top:    MediaQuery.of(context).padding.top + 100,
+            top:    MediaQuery.of(context).padding.top + 110,
             bottom: 160,
           ),
         ),
@@ -822,30 +910,51 @@ class _GuidePageState extends State<GuidePage> {
         if (step != null)
           Positioned(
             top: 0, left: 0, right: 0,
-            child: Container(
-              color: Colors.black87,
-              padding: EdgeInsets.fromLTRB(
-                  20, MediaQuery.of(context).padding.top + 12, 20, 16),
-              child: Row(children: [
-                Icon(_maneuverIcon(step.maneuver), color: Colors.white, size: 44),
-                const SizedBox(width: 16),
-                Expanded(child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _formatDistance(_distToNextTurn),
-                      style: const TextStyle(
-                          color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
-                    ),
-                    Text(
-                      step.instruction,
-                      style: TextStyle(color: Colors.grey[300], fontSize: 13),
-                      maxLines: 2, overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                )),
-              ]),
-            ),
+            child: Column(children: [
+              Container(
+                color: Colors.black87,
+                padding: EdgeInsets.fromLTRB(
+                    20, MediaQuery.of(context).padding.top + 12, 20,
+                    nextStep != null ? 10 : 16),
+                child: Row(children: [
+                  Icon(_maneuverIcon(step.maneuver), color: Colors.white, size: 44),
+                  const SizedBox(width: 16),
+                  Expanded(child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _formatDistance(_distToCurrentTurnEnd),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 28,
+                            fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        step.instruction,
+                        style: TextStyle(color: Colors.grey[300], fontSize: 13),
+                        maxLines: 2, overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  )),
+                ]),
+              ),
+              if (nextStep != null)
+                Container(
+                  color: Colors.black.withOpacity(0.75),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: Row(children: [
+                    const Text('Then  ',
+                        style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    Icon(_maneuverIcon(nextStep.maneuver),
+                        color: Colors.grey[400], size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(
+                      nextStep.instruction,
+                      style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                    )),
+                  ]),
+                ),
+            ]),
           ),
 
         // ── Right buttons ──
@@ -862,10 +971,10 @@ class _GuidePageState extends State<GuidePage> {
               const SizedBox(height: 12),
             ],
             _circleBtn(
-              icon: _isOverview ? Icons.navigation_rounded : Icons.map_rounded,
-              color: _isOverview ? const Color(0xFF1A73E8) : Colors.white,
+              icon:      _isOverview ? Icons.navigation_rounded : Icons.map_rounded,
+              color:     _isOverview ? const Color(0xFF1A73E8) : Colors.white,
               iconColor: _isOverview ? Colors.white : Colors.black87,
-              onTap: _toggleOverview,
+              onTap:     _toggleOverview,
             ),
           ]),
         ),
@@ -950,9 +1059,9 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   Widget _circleBtn({
-    required IconData  icon,
-    required Color     color,
-    required Color     iconColor,
+    required IconData icon,
+    required Color color,
+    required Color iconColor,
     required VoidCallback onTap,
   }) {
     return GestureDetector(

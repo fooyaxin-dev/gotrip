@@ -43,6 +43,7 @@ class PlaceModel {
     String? primary,
     String? secondary,
   }) {
+
     final rawTypes = (g['types'] as List?)?.map((e) => e.toString()).toList() ?? [];
 
     // Google returns priceLevel as a string enum:
@@ -57,8 +58,8 @@ class PlaceModel {
       case 'PRICE_LEVEL_INEXPENSIVE':    priceLevel = 1; break;
       case 'PRICE_LEVEL_MODERATE':       priceLevel = 2; break;
       case 'PRICE_LEVEL_EXPENSIVE':      priceLevel = 3; break;
-      case 'PRICE_LEVEL_VERY_EXPENSIVE': priceLevel = 4; break;
-      default: priceLevel = null; // FREE or unspecified → don't penalize
+      case 'PRICE_LEVEL_VERY_EXPENSIVE': priceLevel = 4; break; 
+      default: priceLevel = null; // FREE or unspecified 
     }
 
     return PlaceModel(
@@ -75,7 +76,7 @@ class PlaceModel {
       primaryType:   primary,
       secondaryType: secondary,
       allTypes:      rawTypes,
-      priceLevel:    priceLevel, // ← now populated
+      priceLevel:    priceLevel,
     );
   }
 

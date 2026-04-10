@@ -5,29 +5,32 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+
 import 'placeDetailPage.dart';
 import '../../services/route_service.dart';
 import '../../services/location_service.dart';
 import '../../services/placeModal.dart';
-import '../../services/nearbyPlace_service.dart';
+import '../../services/nearbyPlace_service.dart'; 
 import '../../modules/itinerary/itineraryModel.dart';
 import '../../modules/itinerary/itineraryDetail.dart';
 import 'routePreviewPage.dart';
 import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
 
-enum SortMode { distance, rating }
+enum SortMode { distance, rating } 
 
 class RealTimeDetectPage extends StatefulWidget {
   final double? landmarkLat;
   final double? landmarkLng;
   final VoidCallback onBack;
+  final bool autoFocusSearch; 
 
   const RealTimeDetectPage({
     super.key,
     this.landmarkLat,
     this.landmarkLng,
     required this.onBack,
+    this.autoFocusSearch = false,
   });
 
   @override
@@ -35,6 +38,7 @@ class RealTimeDetectPage extends StatefulWidget {
 }
 
 class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+
   GoogleMapController? _mapController;
   Position? _currentPosition;
 
@@ -44,6 +48,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   bool _isTravelModeExpanded = false;
 
   final List<PlaceModel> _displayedPlaces = [];
+  List<PlaceModel> _landmarkPlaces = [];
   Map<String, RouteResult> _routeResults = {};
   bool _isLoading = false;
 
@@ -56,66 +61,92 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
   List<Map<String, dynamic>> _autocompleteSuggestions = [];
-  bool _isSearchMode = false;       // true = 正在 search / 显示 suggestions
+  bool _isSearchMode = false;     
   bool _isSearchLoading = false;
-  String? _searchLocationName;      // 当前 search 的地点名字（显示在顶部）
-  Timer? _debounce;                 // 防抖，避免每个字都打 API
+  String? _searchLocationName;      
+  Timer? _debounce;                 
 
-  // ✅ 用户自选的地点
   final Set<String> _selectedPlaceIds = {};
-  final Map<String, PlaceModel> _selectedPlacesMap = {}; // ← 新增
+  final Map<String, PlaceModel> _selectedPlacesMap = {}; 
   List<PlaceModel> _searchPlaces = [];
   
 
   final List<Map<String, dynamic>> categories = [
-    {'name': 'All',           'icon': Icons.all_inclusive,           'type': 'all',               'color': Colors.black},
-    {'name': 'Food',          'icon': Icons.restaurant,              'type': 'restaurant',         'color': Colors.orange},
-    {'name': 'Nature',        'icon': Icons.park,                    'type': 'park',               'color': Colors.blue},
-    {'name': 'Historical',    'icon': Icons.place,                   'type': 'tourist_attraction', 'color': Colors.green},
-    {'name': 'Shopping',      'icon': Icons.shopping_bag,            'type': 'shopping_mall',      'color': Colors.purple},
-    {'name': 'Entertainment', 'icon': Icons.local_activity_rounded,  'type': 'amusement_park',     'color': Colors.purple},
+    {'name': 'All',        'icon': Icons.all_inclusive,          'type': 'all',           'color': Colors.black},
+    {'name': 'Food',       'icon': Icons.restaurant,             'type': 'restaurant',    'color': Colors.orange},
+    {'name': 'Nature',     'icon': Icons.park,                   'type': 'park',          'color': Colors.green},
+    {'name': 'Entertain',  'icon': Icons.local_activity_rounded, 'type': 'entertainment', 'color': Colors.deepPurple},
+    {'name': 'Shopping',   'icon': Icons.shopping_bag,           'type': 'shopping_mall', 'color': Colors.pink},
+    {'name': 'Transport',  'icon': Icons.directions_transit,     'type': 'transit',       'color': Colors.blue},
+    {'name': 'Service',    'icon': Icons.miscellaneous_services, 'type': 'service',       'color': Colors.teal},
   ];
 
   final Map<String, List<Map<String, dynamic>>> subCategories = {
+
+    // ── Food ──────────────────────────────────────────────────────────────────
     'restaurant': [
-      {'key': 'all',      'label': 'All',      'allowTypes': <String>[],                                                          'nameKeywords': <String>[]},
-      {'key': 'korean',   'label': 'Korean',   'allowTypes': <String>['korean_restaurant'],                                       'nameKeywords': <String>['korea', 'korean', '한국', 'kimchi', 'bbq korean']},
-      {'key': 'chinese',  'label': 'Chinese',  'allowTypes': <String>['chinese_restaurant'],                                      'nameKeywords': <String>['chinese', 'canton', 'dim sum', 'claypot', 'clay pot', '中', '华', '粤', '龙', '金', '福', '记', 'kopitiam', 'restoran yee', 'restaurant yee', 'seafood', 'wonton', 'bak kut']},
-      {'key': 'japanese', 'label': 'Japanese', 'allowTypes': <String>['japanese_restaurant'],                                     'nameKeywords': <String>['japanese', 'japan', 'sushi', 'ramen', 'mentai', 'yakitori', 'tempura', 'udon', 'tonkatsu', 'izakaya']},
-      {'key': 'malay',    'label': 'Malay',    'allowTypes': <String>['malaysian_restaurant'],                                    'nameKeywords': <String>['nasi', 'mee', 'laksa', 'satay', 'rendang', 'malay', 'restoran', 'warung', 'lemak', 'kampung', 'sup', 'ayam', 'ikan bakar']},
-      {'key': 'indian',   'label': 'Indian',   'allowTypes': <String>['indian_restaurant'],                                       'nameKeywords': <String>['indian', 'india', 'naan', 'curry', 'briyani', 'biryani', 'tandoor', 'mamak', 'kandar', 'roti canai', 'chapati', 'banana leaf', 'thali']},
-      {'key': 'western',  'label': 'Western',  'allowTypes': <String>['western_restaurant', 'american_restaurant', 'steak_house'],'nameKeywords': <String>['western', 'steak', 'burger', 'pizza', 'pasta', 'grill', 'bbq', 'cafe', 'bistro', 'secret recipe', 'mcdonalds', 'kfc', 'subway']},
-      {'key': 'dessert',  'label': 'Dessert',  'allowTypes': <String>['dessert_shop', 'ice_cream_shop', 'bakery'],                'nameKeywords': <String>['dessert', 'ice cream', 'gelato', 'cake', 'bakery', 'pastry', 'sweet', 'bubble tea', 'boba', 'cendol', 'waffle', 'crepe']},
-      {'key': 'cafe',     'label': 'Cafe',     'allowTypes': <String>['cafe', 'coffee_shop'],                                     'nameKeywords': <String>['cafe', 'coffee', 'kopitiam', 'kopi', 'espresso', 'latte', 'brew', 'roast']},
+      {'key': 'all',      'label': 'All',      'allowTypes': <String>[],                                                            'nameKeywords': <String>[]},
+      {'key': 'korean',   'label': 'Korean',   'allowTypes': <String>['korean_restaurant'],                                         'nameKeywords': <String>['korea', 'korean', '한국', 'kimchi', 'bbq korean']},
+      {'key': 'chinese',  'label': 'Chinese',  'allowTypes': <String>['chinese_restaurant'],                                        'nameKeywords': <String>['chinese', 'canton', 'dim sum', 'claypot', 'clay pot', '中', '华', '粤', '龙', '金', '福', '记', 'seafood', 'wonton', 'bak kut']},
+      {'key': 'japanese', 'label': 'Japanese', 'allowTypes': <String>['japanese_restaurant'],                                       'nameKeywords': <String>['japanese', 'japan', 'sushi', 'ramen', 'mentai', 'yakitori', 'tempura', 'udon', 'tonkatsu', 'izakaya']},
+      {'key': 'malay',    'label': 'Malay',    'allowTypes': <String>['malaysian_restaurant'],                                      'nameKeywords': <String>['nasi', 'mee', 'laksa', 'satay', 'rendang', 'malay', 'restoran', 'warung', 'lemak', 'kampung', 'sup', 'ayam', 'ikan bakar']},
+      {'key': 'indian',   'label': 'Indian',   'allowTypes': <String>['indian_restaurant'],                                         'nameKeywords': <String>['indian', 'india', 'naan', 'curry', 'briyani', 'biryani', 'tandoor', 'mamak', 'kandar', 'roti canai', 'banana leaf', 'thali']},
+      {'key': 'western',  'label': 'Western',  'allowTypes': <String>['western_restaurant', 'american_restaurant', 'steak_house'],  'nameKeywords': <String>['western', 'steak', 'burger', 'pizza', 'pasta', 'grill', 'bistro', 'secret recipe', 'mcdonalds', 'kfc', 'subway']},
+      {'key': 'dessert',  'label': 'Dessert',  'allowTypes': <String>['dessert_shop', 'ice_cream_shop', 'bakery'],                  'nameKeywords': <String>['dessert', 'ice cream', 'gelato', 'cake', 'bakery', 'pastry', 'sweet', 'bubble tea', 'boba', 'cendol', 'waffle', 'crepe']},
+      {'key': 'cafe',     'label': 'Cafe',     'allowTypes': <String>['cafe', 'coffee_shop'],                                       'nameKeywords': <String>['cafe', 'coffee', 'kopitiam', 'kopi', 'espresso', 'latte', 'brew', 'roast']},
     ],
-    'tourist_attraction': [
-      {'key': 'all',      'label': 'All',      'allowTypes': <String>[],                                                    'nameKeywords': <String>[]},
-      {'key': 'museum',   'label': 'Museum',   'allowTypes': <String>['museum', 'art_gallery'],                             'nameKeywords': <String>['museum', 'gallery', 'muzium']},
-      {'key': 'park',     'label': 'Park',     'allowTypes': <String>['park', 'national_park', 'botanical_garden'],         'nameKeywords': <String>['park', 'taman', 'garden', 'hutan']},
-      {'key': 'historic', 'label': 'Historic', 'allowTypes': <String>['historical_landmark', 'cultural_landmark', 'monument'], 'nameKeywords': <String>['heritage', 'historic', 'monument', 'memorial', 'fort', 'old']},
-      {'key': 'temple',   'label': 'Temple',   'allowTypes': <String>['hindu_temple', 'buddhist_temple', 'shrine'],         'nameKeywords': <String>['temple', 'tokong', 'kuil', 'shrine', '庙', '寺']},
-      {'key': 'mosque',   'label': 'Mosque',   'allowTypes': <String>['mosque'],                                            'nameKeywords': <String>['mosque', 'masjid', 'surau']},
-      {'key': 'church',   'label': 'Church',   'allowTypes': <String>['church'],                                            'nameKeywords': <String>['church', 'gereja', 'cathedral', 'chapel']},
-    ],
-    'shopping_mall': [
-      {'key': 'all',         'label': 'All',         'allowTypes': <String>[],                                           'nameKeywords': <String>[]},
-      {'key': 'mall',        'label': 'Mall',        'allowTypes': <String>['shopping_mall'],                            'nameKeywords': <String>['mall', 'plaza', 'square', 'kompleks']},
-      {'key': 'fashion',     'label': 'Clothing',    'allowTypes': <String>['clothing_store', 'shoe_store'],             'nameKeywords': <String>['fashion', 'clothing', 'apparel', 'boutique', 'shoe']},
-      {'key': 'electronics', 'label': 'Electronics', 'allowTypes': <String>['electronics_store', 'cell_phone_store'],    'nameKeywords': <String>['electronics', 'electrical', 'phone', 'computer', 'digital']},
-      {'key': 'supermarket', 'label': 'Supermarket', 'allowTypes': <String>['supermarket', 'grocery_store'],             'nameKeywords': <String>['supermarket', 'grocery', 'mydin', 'aeon', 'tesco', 'giant', 'econsave']},
-    ],
-    'amusement_park': [
-      {'key': 'all',     'label': 'All',     'allowTypes': <String>[],                'nameKeywords': <String>[]},
-      {'key': 'karaoke', 'label': 'Karaoke', 'allowTypes': <String>['karaoke'],       'nameKeywords': <String>['karaoke', 'neway', 'redsun', 'red box']},
-      {'key': 'bowling', 'label': 'Bowling', 'allowTypes': <String>['bowling_alley'], 'nameKeywords': <String>['bowling']},
-      {'key': 'cinema',  'label': 'Cinema',  'allowTypes': <String>['movie_theater'], 'nameKeywords': <String>['cinema', 'gsc', 'tgv', 'mbo', 'movie', 'theatre']},
-    ],
+
+    // ── Nature ────────────────────────────────────────────────────────────────
     'park': [
-      {'key': 'all',    'label': 'All',          'allowTypes': <String>[],                                 'nameKeywords': <String>[]},
-      {'key': 'park',   'label': 'Park',          'allowTypes': <String>['park'],                          'nameKeywords': <String>['park', 'taman']},
-      {'key': 'garden', 'label': 'Garden',        'allowTypes': <String>['botanical_garden'],              'nameKeywords': <String>['garden', 'botanical', 'taman bunga']},
-      {'key': 'beach',  'label': 'Beach',         'allowTypes': <String>['beach'],                         'nameKeywords': <String>['beach', 'pantai']},
-      {'key': 'trail',  'label': 'Trail/Hiking',  'allowTypes': <String>['hiking_area', 'national_park'],  'nameKeywords': <String>['trail', 'hiking', 'bukit', 'hill', 'forest', 'hutan']},
+      {'key': 'all',      'label': 'All',       'allowTypes': <String>[],                                                                               'nameKeywords': <String>[]},
+      {'key': 'park',     'label': 'Park',       'allowTypes': <String>['park', 'national_park'],                                                        'nameKeywords': <String>['park', 'taman', 'recreational']},
+      {'key': 'garden',   'label': 'Garden',     'allowTypes': <String>['botanical_garden'],                                                             'nameKeywords': <String>['garden', 'botanical', 'bunga']},
+      {'key': 'beach',    'label': 'Beach',      'allowTypes': <String>['beach'],                                                                        'nameKeywords': <String>['beach', 'pantai']},
+      {'key': 'trail',    'label': 'Hiking',     'allowTypes': <String>['hiking_area'],                                                                  'nameKeywords': <String>['trail', 'hiking', 'bukit', 'hill', 'forest', 'hutan']},
+      {'key': 'landmark', 'label': 'Landmark',   'allowTypes': <String>['tourist_attraction', 'historical_landmark', 'cultural_landmark', 'monument'],   'nameKeywords': <String>['heritage', 'historic', 'monument', 'memorial', 'fort', 'landmark']},
+      {'key': 'museum',   'label': 'Museum',     'allowTypes': <String>['museum', 'art_gallery'],                                                        'nameKeywords': <String>['museum', 'gallery', 'muzium']},
+      {'key': 'temple',   'label': 'Temple',     'allowTypes': <String>['hindu_temple', 'buddhist_temple', 'shrine'],                                    'nameKeywords': <String>['temple', 'tokong', 'kuil', 'shrine', '庙', '寺']},
+      {'key': 'mosque',   'label': 'Mosque',     'allowTypes': <String>['mosque'],                                                                       'nameKeywords': <String>['mosque', 'masjid', 'surau']},
+      {'key': 'church',   'label': 'Church',     'allowTypes': <String>['church'],                                                                       'nameKeywords': <String>['church', 'gereja', 'cathedral', 'chapel']},
+    ],
+
+    // ── Entertainment ─────────────────────────────────────────────────────────
+    'entertainment': [
+      {'key': 'all',     'label': 'All',        'allowTypes': <String>[],                                                              'nameKeywords': <String>[]},
+      {'key': 'cinema',  'label': 'Cinema',     'allowTypes': <String>['movie_theater'],                                               'nameKeywords': <String>['cinema', 'gsc', 'tgv', 'mbo', 'movie', 'theatre']},
+      {'key': 'karaoke', 'label': 'Karaoke',    'allowTypes': <String>['karaoke'],                                                     'nameKeywords': <String>['karaoke', 'neway', 'redsun', 'red box']},
+      {'key': 'bowling', 'label': 'Bowling',    'allowTypes': <String>['bowling_alley'],                                               'nameKeywords': <String>['bowling']},
+      {'key': 'gaming',  'label': 'Gaming',     'allowTypes': <String>['amusement_center', 'video_arcade'],                            'nameKeywords': <String>['arcade', 'esport', 'gaming', 'lan', 'timezone']},
+      {'key': 'theme',   'label': 'Theme Park', 'allowTypes': <String>['amusement_park', 'theme_park'],                               'nameKeywords': <String>['theme park', 'sunway', 'genting', 'waterpark', 'legoland']},
+      {'key': 'sport',   'label': 'Sports',     'allowTypes': <String>['sports_complex', 'stadium', 'gym', 'fitness_center'],          'nameKeywords': <String>['stadium', 'sport', 'badminton', 'futsal', 'swimming', 'gym', 'fitness']},
+      {'key': 'spa',     'label': 'Spa',        'allowTypes': <String>['spa', 'beauty_salon'],                                         'nameKeywords': <String>['spa', 'massage', 'wellness', 'relax', 'beauty']},
+    ],
+
+    // ── Shopping ──────────────────────────────────────────────────────────────
+    'shopping_mall': [
+      {'key': 'all',         'label': 'All',         'allowTypes': <String>[],                                                  'nameKeywords': <String>[]},
+      {'key': 'mall',        'label': 'Mall',         'allowTypes': <String>['shopping_mall'],                                   'nameKeywords': <String>['mall', 'plaza', 'square', 'kompleks', 'pavilion', 'mid valley']},
+      {'key': 'supermarket', 'label': 'Supermarket',  'allowTypes': <String>['supermarket', 'grocery_store'],                   'nameKeywords': <String>['supermarket', 'grocery', 'mydin', 'aeon', 'tesco', 'giant', 'econsave', 'jaya grocer']},
+      {'key': 'fashion',     'label': 'Fashion',      'allowTypes': <String>['clothing_store', 'shoe_store'],                   'nameKeywords': <String>['fashion', 'clothing', 'apparel', 'boutique', 'shoe', 'zara', 'h&m', 'uniqlo']},
+      {'key': 'electronics', 'label': 'Electronics',  'allowTypes': <String>['electronics_store', 'cell_phone_store'],          'nameKeywords': <String>['electronics', 'phone', 'computer', 'digital', 'harvey', 'senheng', 'courts']},
+      {'key': 'pharmacy',    'label': 'Pharmacy',     'allowTypes': <String>['pharmacy', 'drugstore'],                          'nameKeywords': <String>['pharmacy', 'farmasi', 'guardian', 'watsons', 'caring', 'alpro']},
+      {'key': 'market',      'label': 'Market',       'allowTypes': <String>['market', 'flea_market'],                          'nameKeywords': <String>['market', 'bazaar', 'pasar', 'night market', 'ramadan', 'flea']},
+    ],
+
+    // ── Transport (公共交通 only) ──────────────────────────────────────────────
+    'transit': [
+      {'key': 'all',     'label': 'All',       'allowTypes': <String>[],                                                                          'nameKeywords': <String>[]},
+      {'key': 'lrt_mrt', 'label': 'LRT / MRT', 'allowTypes': <String>['subway_station', 'light_rail_station', 'transit_station'],                 'nameKeywords': <String>['lrt', 'mrt', 'ktm', 'monorail', 'rapidkl', 'station', 'stesen']},
+      {'key': 'bus',     'label': 'Bus',        'allowTypes': <String>['bus_station', 'bus_stop'],                                                 'nameKeywords': <String>['bus', 'rapid', 'terminal', 'hentian', 'express']},
+      {'key': 'taxi',    'label': 'Taxi / Grab','allowTypes': <String>['taxi_stand'],                                                              'nameKeywords': <String>['taxi', 'grab', 'cab', 'teksi']},
+    ],
+
+    // ── Service (医院 / 银行 / 邮局) ───────────────────────────────────────────
+    'service': [
+      {'key': 'all',      'label': 'All',        'allowTypes': <String>[],                                                         'nameKeywords': <String>[]},
+      {'key': 'hospital', 'label': 'Hospital',   'allowTypes': <String>['hospital', 'medical_clinic', 'doctor'],                  'nameKeywords': <String>['hospital', 'clinic', 'klinik', 'medical', 'health', 'healthcare']},
+      {'key': 'bank',     'label': 'Bank / ATM', 'allowTypes': <String>['bank', 'atm'],                                           'nameKeywords': <String>['bank', 'maybank', 'cimb', 'public bank', 'rhb', 'hong leong', 'ambank', 'atm']},
+      {'key': 'post',     'label': 'Post Office','allowTypes': <String>['post_office'],                                            'nameKeywords': <String>['post office', 'pos malaysia', 'poslaju', 'pos laju']},
     ],
   };
 
@@ -127,6 +158,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   void initState() {
     super.initState();
     _bootstrap();
+    
+    if (widget.autoFocusSearch) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted) _searchFocus.requestFocus();
+        });
+      });
+    }
   }
 
     @override
@@ -137,77 +176,84 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       super.dispose();
     }
 
-  // ─────────────────────────────────────────────
   // Bootstrap
   // ─────────────────────────────────────────────
-
   Future<void> _bootstrap() async {
     if (!await _checkConnectivity()) return;
     setState(() => _isLoading = true);
 
     if (widget.landmarkLat != null && widget.landmarkLng != null) {
-      // ── Landmark mode: 强制清 cache，用 landmark 坐标 ──
-      print('🏛️ FROM LANDMARK: ${widget.landmarkLat}, ${widget.landmarkLng}');
-      NearbyPlacesService.instance.clearCache();
+      // ✅ Landmark 模式：不碰 singleton，独立拉数据
       _currentPosition = Position(
-        latitude: widget.landmarkLat!, longitude: widget.landmarkLng!,
+        latitude: widget.landmarkLat!,
+        longitude: widget.landmarkLng!,
         timestamp: DateTime.now(), accuracy: 1, altitude: 0,
         heading: 0, speed: 0, speedAccuracy: 0,
         altitudeAccuracy: 0.0, headingAccuracy: 0.0,
       );
-    } else {
-      // ── GPS mode: 只拿坐标，不 load ──
-      print('📍 FROM GPS');
-      final pos = LocationService.instance.currentPosition;
-      if (pos == null) {
-        _showErrorDialog('Error', 'Cannot get location');
+
+      _initialCameraPosition = CameraPosition(
+        target: LatLng(widget.landmarkLat!, widget.landmarkLng!),
+        zoom: 14,
+      );
+
+      _markers.add(Marker(
+        markerId: const MarkerId('me'),
+        position: LatLng(widget.landmarkLat!, widget.landmarkLng!),
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        infoWindow: const InfoWindow(title: 'Landmark Location'),
+      ));
+
+      setState(() {});
+
+      try {
+        // ✅ 用独立方法拉，结果存在本地 _landmarkPlaces，不影响 singleton
+        _landmarkPlaces = await NearbyPlacesService.instance.loadNearbyPlacesAt(
+          lat: widget.landmarkLat!,
+          lng: widget.landmarkLng!,
+          categories: categories,
+          context: context,
+        );
+      } catch (e) {
+        setState(() => _isLoading = false);
         return;
       }
+
+    } else {
+      // ✅ GPS 模式：照常用 singleton
+      final pos = LocationService.instance.currentPosition;
+      if (pos == null) { _showErrorDialog('Error', 'Cannot get location'); return; }
       _currentPosition = pos;
-    }
 
-    // ── 设置地图初始位置 ──
-    _initialCameraPosition = CameraPosition(
-      target: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-      zoom: 14,
-    );
-
-    _markers.add(Marker(
-      markerId: const MarkerId('me'),
-      position: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-      infoWindow: const InfoWindow(title: 'My Location'),
-    ));
-
-    setState(() {}); // 先让地图显示出来
-
-    // ── ✅ 只调用一次，有 cache 就直接用，不重复请求 ──
-    try {
-      await NearbyPlacesService.instance.loadNearbyPlacesOnce(
-        categories,
-        context,
-        lat: widget.landmarkLat,
-        lng: widget.landmarkLng,
+      _initialCameraPosition = CameraPosition(
+        target: LatLng(pos.latitude, pos.longitude),
+        zoom: 14,
       );
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Load failed: $e')),
+
+      _markers.add(Marker(
+        markerId: const MarkerId('me'),
+        position: LatLng(pos.latitude, pos.longitude),
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        infoWindow: const InfoWindow(title: 'My Location'),
+      ));
+
+      setState(() {});
+
+      try {
+        await NearbyPlacesService.instance.loadNearbyPlacesOnce(
+          categories, context,
         );
+      } catch (e) {
+        setState(() => _isLoading = false);
+        return;
       }
-      return;
     }
 
     _applyFilter();
   }
+  
 
-
-// ═══════════════════════════════════════════════════════════════
-// 3. 新增 search 相关方法
-// ═══════════════════════════════════════════════════════════════
- 
-  // 用户输入时触发，防抖 400ms
+  // for search & refresh
   void _onSearchChanged(String value) {
     _debounce?.cancel();
     if (value.trim().isEmpty) {
@@ -224,7 +270,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     });
   }
  
-  // 用户选了一个 suggestion
   Future<void> _onSuggestionSelected(Map<String, dynamic> suggestion) async {
     if (!await _checkConnectivity()) return;
     _searchFocus.unfocus();
@@ -246,7 +291,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     final lng  = detail['lng'] as double;
     final name = detail['name'] as String;
 
-    // 把 current position 换成搜索的地点（用于算距离）
     _currentPosition = Position(
       latitude: lat, longitude: lng,
       timestamp: DateTime.now(), accuracy: 1, altitude: 0,
@@ -331,13 +375,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
  
-
-  // ─────────────────────────────────────────────
   // Filter
-  // ─────────────────────────────────────────────
-
    void _applyFilter() {
-    // ── 决定数据来源 ──
     // search mode 用 _searchPlaces，realtime 用 NearbyPlacesService cache
     final List<PlaceModel> sourcePlaces = _searchLocationName != null
         ? _searchPlaces
@@ -386,29 +425,19 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
  
   // realtime 模式从 NearbyPlacesService 拿
   List<PlaceModel> _getRealtimePlaces() {
-  if (_selectedPrimary == null) {
-      return NearbyPlacesService.instance.getByPrimary(null);
-    } else if (_selectedSecondary == 'all') {
-      return NearbyPlacesService.instance.getByPrimary(_selectedPrimary);
-    } else {
-      final subs = subCategories[_selectedPrimary] ?? [];
-      final cfg = subs.firstWhere(
-        (e) => e['key'] == _selectedSecondary,
-        orElse: () => {'allowTypes': <String>[], 'nameKeywords': <String>[]},
-      );
-      return NearbyPlacesService.instance.getBySecondary(
-        primary: _selectedPrimary!,
-        secondary: _selectedSecondary,
-        allowTypes: (cfg['allowTypes'] as List?)?.cast<String>() ?? [],
-        nameKeywords: (cfg['nameKeywords'] as List?)?.cast<String>() ?? [],
-      );
-    }
-  }
+  final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
+  final source = isLandmarkMode
+      ? _landmarkPlaces
+      : NearbyPlacesService.instance.getByPrimary(null);
+
+  if (_selectedPrimary == null) return source;
+  return source.where((p) => p.primaryType == _selectedPrimary).toList();
+}
 
   void _onPrimaryTap(String type) {
     setState(() {
       _selectedPrimary   = type == 'all' ? null : type;
-      _selectedSecondary = 'all';
+      _selectedSecondary = 'all'; 
     });
     _applyFilter();
   }
@@ -420,28 +449,34 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   Future<void> _onRefresh() async {
     if (!await _checkConnectivity()) return;
-    if (_searchLocationName != null) {
-      _clearSearch();
-      return;
-    }
+    if (_searchLocationName != null) { _clearSearch(); return; }
 
-    NearbyPlacesService.instance.clearCache();
+    final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
+
     setState(() {
       _selectedPrimary   = null;
       _selectedSecondary = 'all';
       _isLoading         = true;
     });
+
     try {
-      await NearbyPlacesService.instance.loadNearbyPlacesOnce(
-        categories,
-        context,
-        lat: widget.landmarkLat,  // 👈 加这两行
-        lng: widget.landmarkLng,
-      );
+      if (isLandmarkMode) {
+        // ✅ landmark 模式只刷新本地 list
+        _landmarkPlaces = await NearbyPlacesService.instance.loadNearbyPlacesAt(
+          lat: widget.landmarkLat!,
+          lng: widget.landmarkLng!,
+          categories: categories,
+          context: context,
+        );
+      } else {
+        NearbyPlacesService.instance.clearCache(); // GPS 模式才清 singleton
+        await NearbyPlacesService.instance.loadNearbyPlacesOnce(categories, context);
+      }
     } catch (e) {
       setState(() => _isLoading = false);
       return;
     }
+
     _applyFilter();
   }
 
@@ -1338,8 +1373,38 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
 
-  Widget _buildSecondaryBar() {
+  List<Map<String, dynamic>> _getAvailableSubCategories() {
+    if (_selectedPrimary == null) return [];
+
     final subs = subCategories[_selectedPrimary] ?? [];
+    if (subs.isEmpty) return [];
+
+    // 当前主分类的所有地点
+    final sourcePlaces = (_searchLocationName != null ? _searchPlaces : _getRealtimePlaces())
+        .where((p) => p.primaryType == _selectedPrimary)
+        .toList();
+
+    return subs.where((sub) {
+      // 'all' 永远显示
+      if (sub['key'] == 'all') return true;
+
+      final allowTypes   = (sub['allowTypes']   as List?)?.cast<String>() ?? [];
+      final nameKeywords = (sub['nameKeywords'] as List?)?.cast<String>() ?? [];
+
+      return sourcePlaces.any((place) {
+        final name      = place.name.toLowerCase();
+        final typeMatch = allowTypes.isNotEmpty &&
+            place.allTypes.any((t) => allowTypes.contains(t));
+        final nameMatch = nameKeywords.isNotEmpty &&
+            nameKeywords.any((k) => name.contains(k.toLowerCase()));
+        return typeMatch || nameMatch;
+      });
+    }).toList();
+  }
+
+
+  Widget _buildSecondaryBar() {
+    final subs = _getAvailableSubCategories();
     return Container(
       height: 40,
       margin: const EdgeInsets.only(top: 4, bottom: 12),

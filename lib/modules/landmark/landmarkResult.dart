@@ -14,7 +14,7 @@ class ResultPage extends StatefulWidget {
   const ResultPage({
     super.key,
     required this.imageBytes,
-    required this.landmark,
+    required this.landmark, 
     required this.rawJson,
   });
 
@@ -44,7 +44,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   String? admissionInfo;
   bool admissionLoading = true;
 
-  // PageController
+  // PageController， UI
   final PageController _pageController = PageController(initialPage: 0);
   int _currentImageIndex = 0;
 
@@ -397,143 +397,103 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                 ? _buildLoadingPlaceholder()
                 : _buildProSummaryContent(),
             const SizedBox(height: 24),
+
             if (!wikiLoading)
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: 120,
-                    child: _buildInfoCard(
-                      // TODO: Replace with real weather API data
-                      label: 'Weather',
-                      value: '28°C Sunny',
-                      icon: Icons.wb_sunny_rounded,
-                      color: const Color(0xFFFFF3E0),
-                      height: 120,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: pos == null
-                        ? const Center(child: CircularProgressIndicator())
-                        : GestureDetector(
-                            onTap: () {
-                              final landmarkLocation =
-                                  placeDetails?['location'];
-                              final lat =
-                                  (landmarkLocation?['latitude'] as num?)
-                                          ?.toDouble() ??
-                                      pos.latitude;
-                              final lng =
-                                  (landmarkLocation?['longitude'] as num?)
-                                          ?.toDouble() ??
-                                      pos.longitude;
+              pos == null
+                  ? const Center(child: CircularProgressIndicator())
+                  : GestureDetector(
+                      onTap: () {
+                        final landmarkLocation = placeDetails?['location'];
+                        final lat =
+                            (landmarkLocation?['latitude'] as num?)
+                                    ?.toDouble() ??
+                                pos.latitude;
+                        final lng =
+                            (landmarkLocation?['longitude'] as num?)
+                                    ?.toDouble() ??
+                                pos.longitude;
 
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => RealTimeDetectPage(
-                                    landmarkLat: lat,
-                                    landmarkLng: lng,
-                                    onBack: () => Navigator.pop(context),
-                                  ),
-                                ),
-                              );
-                            },
-                            child: Builder(
-                              builder: (context) {
-                                final landmarkLocation =
-                                    placeDetails?['location'];
-                                final mapLat =
-                                    (landmarkLocation?['latitude'] as num?)
-                                            ?.toDouble() ??
-                                        pos.latitude;
-                                final mapLng =
-                                    (landmarkLocation?['longitude'] as num?)
-                                            ?.toDouble() ??
-                                        pos.longitude;
-
-                                return Container(
-                                  height: 120,
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(20),
-                                    child: Stack(
-                                      children: [
-                                        // TODO: Move API key to secure config
-                                        Image.network(
-                                          'https://maps.googleapis.com/maps/api/staticmap?center=$mapLat,$mapLng&zoom=15&size=600x300&&markers=color:red%7Clabel:L%7C$mapLat,$mapLng&markers=color:blue%7Clabel:U%7C${pos.latitude},${pos.longitude}&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc',
-                                          fit: BoxFit.cover,
-                                          width: double.infinity,
-                                          height: double.infinity,
-                                          errorBuilder:
-                                              (context, error, stackTrace) {
-                                            return Container(
-                                              color: Colors.grey[200],
-                                              child: const Center(
-                                                child: Column(
-                                                  mainAxisAlignment:
-                                                      MainAxisAlignment.center,
-                                                  children: [
-                                                    Icon(Icons.map_outlined,
-                                                        size: 32,
-                                                        color: Colors.grey),
-                                                    SizedBox(height: 6),
-                                                    Text(
-                                                      'Map unavailable',
-                                                      style: TextStyle(
-                                                          fontSize: 11,
-                                                          color: Colors.grey),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                        Positioned(
-                                          top: 10,
-                                          right: 10,
-                                          child: Container(
-                                            decoration: BoxDecoration(
-                                              color:
-                                                  Colors.black.withOpacity(0.5),
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                            ),
-                                            child: IconButton(
-                                              icon: const Icon(
-                                                  Icons.open_in_new,
-                                                  color: Colors.white,
-                                                  size: 20),
-                                              onPressed: () {
-                                                final mapUrl =
-                                                    'https://www.google.com/maps/search/?api=1&query=$mapLat,$mapLng';
-                                                launchUrl(Uri.parse(mapUrl),
-                                                    mode: LaunchMode
-                                                        .externalApplication);
-                                              },
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              },
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => RealTimeDetectPage(
+                              landmarkLat: lat,
+                              landmarkLng: lng,
+                              onBack: () => Navigator.pop(context),
                             ),
                           ),
+                        );
+                      },
+                      child: Builder(
+                        builder: (context) {
+                          final landmarkLocation =
+                              placeDetails?['location'];
+                          final mapLat =
+                              (landmarkLocation?['latitude'] as num?)
+                                      ?.toDouble() ??
+                                  pos.latitude;
+                          final mapLng =
+                              (landmarkLocation?['longitude'] as num?)
+                                      ?.toDouble() ??
+                                  pos.longitude;
+
+                          return Container(
+                            height: 180,
+                            width: double.infinity,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(20),
+                              child: Stack(
+                                children: [
+                                  Image.network(
+                                    'https://maps.googleapis.com/maps/api/staticmap?center=$mapLat,$mapLng&zoom=15&size=600x300&&markers=color:red%7Clabel:L%7C$mapLat,$mapLng&markers=color:blue%7Clabel:U%7C${pos.latitude},${pos.longitude}&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc',
+                                    fit: BoxFit.cover,
+                                    width: double.infinity,
+                                    height: double.infinity,
+                                    errorBuilder:
+                                        (context, error, stackTrace) {
+                                      return Container(
+                                        color: Colors.grey[200],
+                                        child: const Center(
+                                          child: Column(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            children: [
+                                              Icon(Icons.map_outlined,
+                                                  size: 32,
+                                                  color: Colors.grey),
+                                              SizedBox(height: 6),
+                                              Text(
+                                                'Map unavailable',
+                                                style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: Colors.grey),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                  const SizedBox(height: 16),
+
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
                   ),
-                ],
-              ),
           ],
         ],
-      ),
+      ),  
     );
+
   }
 
+  
   Widget _buildInfoTabWrapper(ScrollController scrollController) {
     return SingleChildScrollView(
       controller: scrollController,
@@ -877,6 +837,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     );
   }
 
+  
   // ============================================================
   // Reviews Tab
   // ============================================================

@@ -3,13 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../itinerary/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
-import '../../services/nearbyPlace_service.dart';
 import '../../services/userPreference_service.dart';
 import '../itinerary/itineraryGeneratePage.dart';
 import 'itineraryDetail.dart';
 
 class ItineraryPage extends StatefulWidget {
-  const ItineraryPage({super.key});
+  final VoidCallback? onBack;
+  final VoidCallback? onPlanTrip; // ← triggers New Trip from HomePage FAB
+  const ItineraryPage({super.key, this.onBack, this.onPlanTrip});
 
   @override
   State<ItineraryPage> createState() => _ItineraryPageState();
@@ -56,7 +57,13 @@ class _ItineraryPageState extends State<ItineraryPage> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new,
               color: Colors.black87, size: 20),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () {
+            if (widget.onBack != null) {
+              widget.onBack!();
+            } else {
+              Navigator.pop(context);
+            }
+          },
         ),
         title: const Text('My Itineraries',
             style: TextStyle(color: Colors.black87, fontSize: 18,
@@ -74,14 +81,6 @@ class _ItineraryPageState extends State<ItineraryPage> {
           : _itineraries.isEmpty
               ? _buildEmpty()
               : _buildList(),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _goGenerate,
-        backgroundColor: const Color(0xFF7C4DFF),
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.auto_awesome_rounded),
-        label: const Text('New Trip',
-            style: TextStyle(fontWeight: FontWeight.bold)),
-      ),
     );
   }
 
@@ -112,7 +111,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
               style: TextStyle(fontSize: 14, color: Colors.grey[500])),
           const SizedBox(height: 28),
           ElevatedButton.icon(
-            onPressed: _goGenerate,
+            onPressed: () => widget.onPlanTrip?.call(),
             icon: const Icon(Icons.auto_awesome_rounded),
             label: const Text('Plan a Trip'),
             style: ElevatedButton.styleFrom(
@@ -144,7 +143,6 @@ class _ItineraryPageState extends State<ItineraryPage> {
     final totalPlaces = item.days.fold<int>(
         0, (sum, d) => sum + d.places.length);
 
-    // First photo from itinerary
     String? firstPhoto;
     for (final day in item.days) {
       for (final place in day.places) {
@@ -163,7 +161,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
           MaterialPageRoute(
               builder: (_) => ItineraryDetailPage(itinerary: item)),
         );
-        _load(); // refresh after returning
+        _load();
       },
       child: Container(
         margin: const EdgeInsets.only(bottom: 16),
@@ -179,7 +177,8 @@ class _ItineraryPageState extends State<ItineraryPage> {
 
             // Photo banner
             ClipRRect(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(20)),
               child: SizedBox(
                 height: 140,
                 width: double.infinity,
@@ -203,7 +202,6 @@ class _ItineraryPageState extends State<ItineraryPage> {
                                 fontWeight: FontWeight.bold,
                                 color: Color(0xFF1A1A2E))),
                       ),
-                      // Delete button
                       GestureDetector(
                         onTap: () => _confirmDelete(item),
                         child: Container(
@@ -221,14 +219,12 @@ class _ItineraryPageState extends State<ItineraryPage> {
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      _chip(Icons.calendar_today_rounded,
-                          item.startDate),
+                      _chip(Icons.calendar_today_rounded, item.startDate),
                       const SizedBox(width: 8),
                       _chip(Icons.wb_sunny_outlined,
                           '${item.totalDays} ${item.totalDays == 1 ? "day" : "days"}'),
                       const SizedBox(width: 8),
-                      _chip(Icons.place_rounded,
-                          '$totalPlaces places'),
+                      _chip(Icons.place_rounded, '$totalPlaces places'),
                     ],
                   ),
                   const SizedBox(height: 10),
@@ -264,8 +260,10 @@ class _ItineraryPageState extends State<ItineraryPage> {
         children: [
           Icon(icon, size: 11, color: const Color(0xFF7C4DFF)),
           const SizedBox(width: 4),
-          Text(label, style: const TextStyle(fontSize: 11,
-              color: Color(0xFF5E35B1), fontWeight: FontWeight.w500)),
+          Text(label,
+              style: const TextStyle(fontSize: 11,
+                  color: Color(0xFF5E35B1),
+                  fontWeight: FontWeight.w500)),
         ],
       ),
     );
@@ -279,14 +277,16 @@ class _ItineraryPageState extends State<ItineraryPage> {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20)),
         title: const Text('Delete Itinerary',
             style: TextStyle(fontWeight: FontWeight.bold)),
         content: Text('Delete "${item.title}"? This cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
+            child: Text('Cancel',
+                style: TextStyle(color: Colors.grey[600])),
           ),
           ElevatedButton(
             onPressed: () { Navigator.pop(context); _delete(item); },
@@ -304,16 +304,13 @@ class _ItineraryPageState extends State<ItineraryPage> {
   }
 
   Future<void> _goGenerate() async {
-    // Load preferences first
     await UserPreferenceService.instance.load();
     if (!mounted) return;
-
-    final places = NearbyPlacesService.instance.cachedPlaces;
 
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => GenerateItineraryPage(),
+        builder: (_) => const GenerateItineraryPage(), // ← fixed, no params
       ),
     ).then((_) => _load());
   }

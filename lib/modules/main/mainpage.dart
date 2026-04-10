@@ -1,16 +1,16 @@
-import 'dart:ui';
 
-import '../place/detectPlacePage.dart';
+import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'bottomnav.dart';
-import '../../services/location_service.dart';
-import '../../services/placeModal.dart';
-import '../../services/nearbyPlace_service.dart';
-import '../../services/userPreference_service.dart'; // ← 新增
 import 'package:geolocator/geolocator.dart';
+import 'bottomnav.dart';
+import '../place/detectPlacePage.dart';
 import '../place/placeDetailPage.dart';
 import 'package:geocoding/geocoding.dart';
 import '../../services/route_service.dart';
+import '../../services/location_service.dart';
+import '../../services/placeModal.dart';
+import '../../services/nearbyPlace_service.dart';
+import '../../services/userPreference_service.dart'; 
 
 class MainPage extends StatefulWidget {
   final dynamic username;
@@ -24,7 +24,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
 
   late PageController _pageController;
   List<PlaceModel> _nearbyPlaces    = [];
-  List<PlaceModel> _forYouPlaces    = []; // ← 新增
+  List<PlaceModel> _forYouPlaces    = []; 
   bool _loadingNearby               = true;
 
   final String _weatherCondition    = "sunny";
@@ -136,17 +136,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
 
     final limit = _distanceLimitMeters;
 
-    // ✅ 先按 travelMode 过滤距离
-    // ✅ 只允许这些 category 出现在 For You
     const allowedTypes = {
       'restaurant',
       'park',
-      'tourist_attraction',
+      'entertainment',
       'shopping_mall',
-      'amusement_park',
-      'cafe',
-      'night_club',
-      'museum',
     };
 
     final withinRange = _nearbyPlaces.where((place) {
@@ -243,12 +237,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────
 
   final List<Map<String, dynamic>> _categories = [
-    {"label": "All",          "type": "all",               "icon": Icons.grid_view_rounded,       "color": const Color(0xFFCCFBF1)},
-    {"label": "Nature",       "type": "park",               "icon": Icons.park_rounded,             "color": const Color(0xFFDCFCE7)},
-    {"label": "Historical",   "type": "tourist_attraction", "icon": Icons.account_balance_rounded,  "color": const Color(0xFFFFEDD5)},
-    {"label": "Shopping",     "type": "shopping_mall",      "icon": Icons.shopping_bag_rounded,     "color": const Color(0xFFE0E7FF)},
-    {"label": "Food",         "type": "restaurant",         "icon": Icons.restaurant_rounded,       "color": const Color(0xFFFFE4E6)},
-    {"label": "Entertainment","type": "amusement_park",     "icon": Icons.local_activity_rounded,   "color": const Color(0xFFF3E8FF)},
+    {"label": "All",          "type": "all",           "icon": Icons.grid_view_rounded,      "color": const Color(0xFFCCFBF1)},
+    {"label": "Food",         "type": "restaurant",    "icon": Icons.restaurant_rounded,     "color": const Color(0xFFFFE4E6)},
+    {"label": "Nature",       "type": "park",          "icon": Icons.park_rounded,           "color": const Color(0xFFDCFCE7)},
+    {"label": "Entertain",    "type": "entertainment", "icon": Icons.local_activity_rounded, "color": const Color(0xFFF3E8FF)},
+    {"label": "Shopping",     "type": "shopping_mall", "icon": Icons.shopping_bag_rounded,   "color": const Color(0xFFE0E7FF)},
+    {"label": "Transport",    "type": "transit",       "icon": Icons.directions_transit,     "color": const Color(0xFFDBEAFE)},
+    {"label": "Service",      "type": "service",       "icon": Icons.miscellaneous_services, "color": const Color(0xFFCCFBF1)},
   ];
 
   String _selectedCategory = "All";
@@ -582,13 +577,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   }
 
   Widget _buildPlaceholderBg(PlaceModel place) {
-    // 根据 primaryType 显示不同颜色和图标
+    
     const typeConfig = {
-      'restaurant':         {'color': Color(0xFFFFE4E6), 'icon': Icons.restaurant_rounded},
-      'park':               {'color': Color(0xFFDCFCE7), 'icon': Icons.park_rounded},
-      'tourist_attraction': {'color': Color(0xFFFFEDD5), 'icon': Icons.account_balance_rounded},
-      'shopping_mall':      {'color': Color(0xFFE0E7FF), 'icon': Icons.shopping_bag_rounded},
-      'amusement_park':     {'color': Color(0xFFF3E8FF), 'icon': Icons.local_activity_rounded},
+      'restaurant':    {'color': Color(0xFFFFE4E6), 'icon': Icons.restaurant_rounded},
+      'park':          {'color': Color(0xFFDCFCE7), 'icon': Icons.park_rounded},
+      'entertainment': {'color': Color(0xFFF3E8FF), 'icon': Icons.local_activity_rounded},
+      'shopping_mall': {'color': Color(0xFFE0E7FF), 'icon': Icons.shopping_bag_rounded},
+      'transit':       {'color': Color(0xFFDBEAFE), 'icon': Icons.directions_transit},
+      'service':       {'color': Color(0xFFCCFBF1), 'icon': Icons.miscellaneous_services},
     };
 
     final config = typeConfig[place.primaryType] ?? 
@@ -759,15 +755,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
-                    Container(
-                      margin: const EdgeInsets.only(left: 10),
-                      child: Icon(_getWeatherIcon(_weatherCondition), color: Colors.amber, size: 24),
-                    ),
+                    // Container(
+                    //   margin: const EdgeInsets.only(left: 10),
+                    //   child: Icon(_getWeatherIcon(_weatherCondition), color: Colors.amber, size: 24),
+                    // ),
                   ],
                 ),
                 const SizedBox(height: 48),
                 Text(
-                  "Hello, ${widget.username.isEmpty ? "Traveler" : widget.username} 👋",
+                  "Hello ${widget.username.isEmpty ? "" : widget.username} 👋",
                   style: const TextStyle(
                     color: Colors.white, fontSize: 32,
                     fontWeight: FontWeight.w900, letterSpacing: 0.8,
@@ -799,27 +795,44 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                 const SizedBox(width: 15),
                 const Icon(Icons.search_rounded, color: Color(0xFF6366F1), size: 24),
                 const SizedBox(width: 10),
-                const Expanded(
-                  child: TextField(
-                    decoration: InputDecoration(
-                      hintText: "Explore new places...",
-                      hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
-                      border: InputBorder.none,
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => _goToDetect(),
+                    child: const IgnorePointer(  
+                      child: TextField(
+                        decoration: InputDecoration(
+                          hintText: "Explore new places...",
+                          hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
+                          border: InputBorder.none,
+                        ),
+                      ),
                     ),
                   ),
                 ),
                 Container(height: 20, width: 1, color: Colors.grey.shade200),
                 IconButton(
                   icon: const Icon(Icons.tune_rounded, color: Color(0xFF6366F1), size: 20),
-                  onPressed: () {},
+                  onPressed: () => _goToDetect(),  // ← tune 按钮也跳过去
                 ),
               ],
             ),
-          ),
+        ),
         ),
       ],
     );
   }
+
+  void _goToDetect() {
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => RealTimeDetectPage(
+        autoFocusSearch: true, 
+        onBack: () => Navigator.pop(context),
+      ),
+    ),
+  );
+}
 
   Widget _buildCategorySection() {
     return SizedBox(

@@ -139,7 +139,7 @@ class ItineraryService {
           final raw = await PlacesApiService.searchNearby(
             lat:            lat,
             lng:            lng,
-            type:           type,
+            types:           [type],
             radius:         10000, // 10km — wider than nearby places (5km)
             maxResultCount: 20,    // Google API hard limit is 20
           );

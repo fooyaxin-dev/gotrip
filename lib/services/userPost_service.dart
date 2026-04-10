@@ -18,7 +18,7 @@ class UserStatsService {
         'postCount': FieldValue.increment(1),
       });
     } catch (e) {
-      print('更新帖子数失败: $e');
+      print('Update post count failed: $e');
     }
   }
 
@@ -28,11 +28,16 @@ class UserStatsService {
     if (userId == null) return;
 
     try {
+      final doc = await _firestore.collection('users').doc(userId).get();
+      final current = (doc.data() as Map<String, dynamic>?)?['postCount'] ?? 0;
+      
+      if (current <= 0) return; // ✅ 已经是 0，不再递减
+      
       await _firestore.collection('users').doc(userId).update({
         'postCount': FieldValue.increment(-1),
       });
     } catch (e) {
-      print('更新帖子数失败: $e');
+      print('Update post count failed: $e');
     }
   }
 
@@ -46,7 +51,7 @@ class UserStatsService {
         'favouriteCount': FieldValue.increment(1),
       });
     } catch (e) {
-      print('更新收藏数失败: $e');
+      print('Update favourite count failed: $e');
     }
   }
 
@@ -60,7 +65,7 @@ class UserStatsService {
         'favouriteCount': FieldValue.increment(-1),
       });
     } catch (e) {
-      print('更新收藏数失败: $e');
+      print('Update favourite count failed: $e');
     }
   }
 
@@ -74,7 +79,7 @@ class UserStatsService {
         'routeCount': FieldValue.increment(1),
       });
     } catch (e) {
-      print('更新路线数失败: $e');
+      print('Update route count failed: $e');
     }
   }
 
@@ -88,7 +93,7 @@ class UserStatsService {
         'routeCount': FieldValue.increment(-1),
       });
     } catch (e) {
-      print('更新路线数失败: $e');
+      print('Update route count failed: $e');
     }
   }
 
@@ -116,7 +121,7 @@ class UserStatsService {
         };
       }
     } catch (e) {
-      print('获取统计失败: $e');
+      print('Get user stats failed: $e');
     }
 
     return {'postCount': 0, 'favouriteCount': 0, 'routeCount': 0};
@@ -167,9 +172,9 @@ class UserStatsService {
         'postCount': actualCount,
       });
 
-      print('✅ 重新计算帖子数: $actualCount');
+      print('✅ Recount post: $actualCount');
     } catch (e) {
-      print('重新计算失败: $e');
+      print('Update post count failed: $e');
     }
   }
 
@@ -205,7 +210,7 @@ class UserStatsService {
         }
       }
     } catch (e) {
-      print('初始化统计失败: $e');
+      print('Initialize user stats failed: $e');
     }
   }
 }
