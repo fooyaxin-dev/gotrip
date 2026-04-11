@@ -59,6 +59,13 @@ class VisionService {
       } 
     }
 
+    print('🌐 Sending request to Vision API...');
+    // 在 http.post 之前
+    print('📊 Image base64 first 100 chars: ${base64Image.substring(0, 100)}');
+    // 在收到 response 之后
+    print('📩 Vision API status: ${response.statusCode}');
+    print('📩 Vision API body: ${response.body}');
+
     // Landmark not detected
     return {
       'landmark': 'No landmark detected',
@@ -66,5 +73,7 @@ class VisionService {
       'lat': null,
       'lng': null,
     };
+
+    
   }
 }

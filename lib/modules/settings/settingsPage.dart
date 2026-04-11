@@ -68,30 +68,30 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 20),
 
           // ── App Settings ─────────────────────
-          _buildSectionHeader('App Settings'),
-          _buildLanguageTile(),
-          _buildSwitchTile(
-            icon: Icons.notifications_rounded,
-            iconColor: const Color(0xFFFF6B35),
-            iconBg: const Color(0xFFFFF0EB),
-            title: 'Notifications',
-            subtitle: 'Get updates about nearby places',
-            value: _notificationsEnabled,
-            onChanged: (val) => setState(() => _notificationsEnabled = val),
-          ),
+          // _buildSectionHeader('App Settings'),
+          // _buildLanguageTile(),
+          // _buildSwitchTile(
+          //   icon: Icons.notifications_rounded,
+          //   iconColor: const Color(0xFFFF6B35),
+          //   iconBg: const Color(0xFFFFF0EB),
+          //   title: 'Notifications',
+          //   subtitle: 'Get updates about nearby places',
+          //   value: _notificationsEnabled,
+          //   onChanged: (val) => setState(() => _notificationsEnabled = val),
+          // ),
 
           const SizedBox(height: 20),
 
           // ── Account ──────────────────────────
           _buildSectionHeader('Account'),
-          _buildTile(
-            icon: Icons.lock_outline_rounded,
-            iconColor: const Color(0xFF3498DB),
-            iconBg: const Color(0xFFEBF5FF),
-            title: 'Change Password',
-            subtitle: 'Update your account password',
-            onTap: () => _showChangePasswordDialog(),
-          ),
+          // _buildTile(
+          //   icon: Icons.lock_outline_rounded,
+          //   iconColor: const Color(0xFF3498DB),
+          //   iconBg: const Color(0xFFEBF5FF),
+          //   title: 'Change Password',
+          //   subtitle: 'Update your account password',
+          //   onTap: () => _showChangePasswordDialog(),
+          // ),
           _buildTile(
             icon: Icons.logout_rounded,
             iconColor: const Color(0xFFE74C3C),
@@ -214,63 +214,63 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildLanguageTile() {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 8, offset: const Offset(0, 2))],
-      ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        leading: Container(
-          width: 42, height: 42,
-          decoration: BoxDecoration(
-              color: const Color(0xFFEBFFF5),
-              borderRadius: BorderRadius.circular(12)),
-          child: const Icon(Icons.language_rounded,
-              color: Color(0xFF2ECC71), size: 22),
-        ),
-        title: const Text('Language',
-            style: TextStyle(
-                fontSize: 15, fontWeight: FontWeight.w600, color: Colors.black87)),
-        subtitle: const Text('App display language',
-            style: TextStyle(fontSize: 12, color: Colors.grey)),
-        trailing: Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFFF0EBFF),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: ['EN', 'CN'].map((lang) {
-              final isSelected = _selectedLanguage == lang;
-              return GestureDetector(
-                onTap: () => setState(() => _selectedLanguage = lang),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? const Color(0xFF7C4DFF)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(lang,
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          color: isSelected ? Colors.white : Colors.grey[600])),
-                ),
-              );
-            }).toList(),
-          ),
-        ),
-      ),
-    );
-  }
+  // Widget _buildLanguageTile() {
+  //   return Container(
+  //     margin: const EdgeInsets.only(bottom: 10),
+  //     decoration: BoxDecoration(
+  //       color: Colors.white,
+  //       borderRadius: BorderRadius.circular(16),
+  //       boxShadow: [BoxShadow(
+  //           color: Colors.black.withOpacity(0.04),
+  //           blurRadius: 8, offset: const Offset(0, 2))],
+  //     ),
+  //     child: ListTile(
+  //       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+  //       leading: Container(
+  //         width: 42, height: 42,
+  //         decoration: BoxDecoration(
+  //             color: const Color(0xFFEBFFF5),
+  //             borderRadius: BorderRadius.circular(12)),
+  //         child: const Icon(Icons.language_rounded,
+  //             color: Color(0xFF2ECC71), size: 22),
+  //       ),
+  //       title: const Text('Language',
+  //           style: TextStyle(
+  //               fontSize: 15, fontWeight: FontWeight.w600, color: Colors.black87)),
+  //       subtitle: const Text('App display language',
+  //           style: TextStyle(fontSize: 12, color: Colors.grey)),
+  //       trailing: Container(
+  //         decoration: BoxDecoration(
+  //           color: const Color(0xFFF0EBFF),
+  //           borderRadius: BorderRadius.circular(8),
+  //         ),
+  //         child: Row(
+  //           mainAxisSize: MainAxisSize.min,
+  //           children: ['EN', 'CN'].map((lang) {
+  //             final isSelected = _selectedLanguage == lang;
+  //             return GestureDetector(
+  //               onTap: () => setState(() => _selectedLanguage = lang),
+  //               child: Container(
+  //                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+  //                 decoration: BoxDecoration(
+  //                   color: isSelected
+  //                       ? const Color(0xFF7C4DFF)
+  //                       : Colors.transparent,
+  //                   borderRadius: BorderRadius.circular(8),
+  //                 ),
+  //                 child: Text(lang,
+  //                     style: TextStyle(
+  //                         fontSize: 13,
+  //                         fontWeight: FontWeight.bold,
+  //                         color: isSelected ? Colors.white : Colors.grey[600])),
+  //               ),
+  //             );
+  //           }).toList(),
+  //         ),
+  //       ),
+  //     ),
+  //   );
+  // }
 
   // ─────────────────────────────────────────────
   // Dialogs

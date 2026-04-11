@@ -8,7 +8,7 @@ import '../../services/itinerary_service.dart';
 import '../../services/history_service.dart';
 import '../../services/location_service.dart';
 import '../place/placeDetailPage.dart';
-import '../place/detectPlacePage.dart';
+import '../place/routePreviewPage.dart';
 
 class ItineraryDetailPage extends StatefulWidget {
   final ItineraryModel itinerary;
@@ -1031,11 +1031,22 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
   void _navigate(ItineraryPlace place) {
     if (place.lat == null || place.lng == null) return;
+    
+    final pos = LocationService.instance.currentPosition;
+    if (pos == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to get your current location')),
+      );
+      return;
+    }
+
     Navigator.push(context, MaterialPageRoute(
-      builder: (_) => RealTimeDetectPage(
-        landmarkLat: place.lat!,
-        landmarkLng: place.lng!,
-        onBack: () => Navigator.pop(context),
+      builder: (_) => RoutePreviewPage(
+        startLat:        pos.latitude,
+        startLng:        pos.longitude,
+        endLat:          place.lat!,
+        endLng:          place.lng!,
+        destinationName: place.name,
       ),
     ));
   }

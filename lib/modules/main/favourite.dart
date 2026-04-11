@@ -223,12 +223,12 @@ class _FavouritePageState extends State<FavouritePage> with TickerProviderStateM
                         Icon(Icons.favorite_border, size: 72, color: Colors.grey[300]),
                         const SizedBox(height: 16),
                         Text(
-                          _selectedType == 'All' ? '还没有收藏' : '此分类暂无收藏',
+                          _selectedType == 'All' ? 'No favorites yet' : 'This category has no favorites',
                           style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.grey[500]),
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          '浏览地点时点击 ❤️ 即可收藏',
+                          'Browse places and tap ❤️ to favorite',
                           style: TextStyle(fontSize: 14, color: Colors.grey[400]),
                         ),
                       ],

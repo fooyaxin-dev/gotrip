@@ -229,8 +229,36 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
 
   RouteResult _calcRoute(double lat, double lng, PlaceModel place) {
     final dist = Geolocator.distanceBetween(lat, lng, place.lat!, place.lng!);
-    return RouteResult(distanceMeters: dist, durationSeconds: (dist / 1.4).round());
+    final mode = UserPreferenceService.instance.current.travelMode;
+
+    // 直线距离 × 迂回系数 = 实际路程估算
+    final driveRoad = dist * 1.4;  // 驾车实际路程约是直线的 1.4 倍
+    final walkRoad  = dist * 1.2;  // 走路实际路程约是直线的 1.2 倍
+
+    final driveSecs = (driveRoad / 8.3).round();  // 8.3 m/s ≈ 30 km/h 城市均速
+    final walkSecs  = (walkRoad / 1.4).round();   // 1.4 m/s ≈ 5 km/h
+
+    return RouteResult(
+      distanceMeters: dist,
+      durationSeconds: mode == 'walk' ? walkSecs : driveSecs,
+      walkDurationSeconds: mode == 'both' ? walkSecs : null,
+    );
   }
+
+  String _formatDuration(String placeId) {
+    final route = _routeResults[placeId];
+    if (route == null) return "--";
+    final mode = UserPreferenceService.instance.current.travelMode;
+    final mainMins = (route.durationSeconds ~/ 60).toString();
+
+    if (mode == 'both' && route.walkDurationSeconds != null) {
+      final walkMins = (route.walkDurationSeconds! ~/ 60).toString();
+      return '$mainMins min drive • $walkMins min walk';
+    }
+
+    return mode == 'walk' ? '$mainMins min walk' : '$mainMins min drive';
+  }
+
 
   // ─────────────────────────────────────────────
   // Categories & filter
@@ -264,8 +292,21 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     if (_nearbyPlaces.isEmpty) return [];
     final pos = LocationService.instance.currentPosition;
     if (pos == null) return [];
+
+    const allowedTypes = {
+      'restaurant',
+      'park',
+      'entertainment',
+      'shopping_mall',
+      'tourist_attraction',
+    };
+
     final sorted = List<PlaceModel>.from(_nearbyPlaces)
-      ..removeWhere((p) => p.photoUrl == null || p.photoUrl!.isEmpty)
+      ..removeWhere((p) =>
+          p.photoUrl == null ||
+          p.photoUrl!.isEmpty ||
+          (!allowedTypes.contains(p.primaryType) &&
+          !p.allTypes.any((t) => allowedTypes.contains(t))))  
       ..sort((a, b) {
         final distA = _routeResults[a.id]?.distanceMeters ?? double.infinity;
         final distB = _routeResults[b.id]?.distanceMeters ?? double.infinity;
@@ -310,10 +351,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
             const SizedBox(height: 28),
 
             // ── 2. Browse by Category ───────────
-            _buildCategorySection(),
-            const SizedBox(height: 16),
+            
             _buildSectionHeader("Recommended Places", true),
             const SizedBox(height: 10),
+            _buildCategorySection(),
+            
             SizedBox(
               height: 320,
               child: _loadingNearby
@@ -368,7 +410,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                     ),
             ),
 
-            SizedBox(height: 24 + MediaQuery.of(context).padding.bottom + kBottomNavigationBarHeight),
+            SizedBox(height: 10 + MediaQuery.of(context).padding.bottom + kBottomNavigationBarHeight),
           ],
         ),
       ),
@@ -561,9 +603,9 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                             fontWeight: FontWeight.bold)),
                     const SizedBox(height: 4),
                     Row(children: [
-                      Icon(_travelModeIcon, color: Colors.white70, size: 12),
+                      Icon(Icons.straighten_rounded, color: Colors.white70, size: 12),
                       const SizedBox(width: 3),
-                      Text('$dist km • $mins min',
+                      Text('~$dist km away',
                           style: const TextStyle(color: Colors.white70, fontSize: 11)),
                     ]),
                   ],
@@ -790,6 +832,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                 blurRadius: 20, offset: const Offset(0, 10),
               )],
             ),
+            child: GestureDetector(
+            onTap: () => _goToDetect(),
             child: Row(
               children: [
                 const SizedBox(width: 15),
@@ -798,24 +842,21 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                 Expanded(
                   child: GestureDetector(
                     onTap: () => _goToDetect(),
-                    child: const IgnorePointer(  
-                      child: TextField(
-                        decoration: InputDecoration(
-                          hintText: "Explore new places...",
-                          hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
-                          border: InputBorder.none,
-                        ),
+                    child: const TextField(
+                      enabled: false,
+                      decoration: InputDecoration(
+                        hintText: "Explore new places...",
+                        hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
+                        border: InputBorder.none,
                       ),
                     ),
                   ),
                 ),
                 Container(height: 20, width: 1, color: Colors.grey.shade200),
-                IconButton(
-                  icon: const Icon(Icons.tune_rounded, color: Color(0xFF6366F1), size: 20),
-                  onPressed: () => _goToDetect(),  // ← tune 按钮也跳过去
-                ),
+                
               ],
             ),
+          ),
         ),
         ),
       ],
@@ -847,7 +888,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
           final label     = cat["label"];
           final isSelected = label == _selectedCategory;
           return GestureDetector(
-            onTap: () => setState(() => _selectedCategory = label),
+            onTap: () => setState(() {
+              _selectedCategory = label;
+              _pageController.jumpToPage(0);  
+            }),
             child: Column(
               children: [
                 AnimatedContainer(
@@ -891,9 +935,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
         children: [
           Text(title, style: const TextStyle(
               fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
-          if (showAll)
-            const Text("See All", style: TextStyle(
-                color: Color(0xFF6366F1), fontWeight: FontWeight.bold)),
+         
         ],
       ),
     );
@@ -905,7 +947,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     final place = places[index];
     final route = _routeResults[place.id];
     final dist  = route != null ? (route.distanceMeters / 1000).toStringAsFixed(1) : "--";
-    final mins  = route != null ? (route.durationSeconds ~/ 60).toString() : "--";
+
 
     return GestureDetector(
       onTap: () => _openPlaceDetail(place),
@@ -965,9 +1007,9 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                         maxLines: 1, overflow: TextOverflow.ellipsis),
                     const SizedBox(height: 4),
                     Row(children: [
-                      const Icon(Icons.directions_walk, color: Colors.white70, size: 14),
+                      Icon(Icons.straighten_rounded, color: Colors.white70, size: 14),
                       const SizedBox(width: 4),
-                      Text("$dist km • $mins min",
+                      Text('~$dist km away',
                           style: const TextStyle(color: Colors.white70, fontSize: 12)),
                     ]),
                   ],
@@ -983,7 +1025,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   Widget _buildSpecialAsymmetricCard(PlaceModel place, int index) {
     final route  = _routeResults[place.id];
     final dist   = route != null ? (route.distanceMeters / 1000).toStringAsFixed(1) : "--";
-    final time   = route != null ? (route.durationSeconds ~/ 60).toString() : "--";
     final isEven = index % 2 == 0;
 
     return GestureDetector(
@@ -1014,7 +1055,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
                           color: Colors.black, borderRadius: BorderRadius.circular(5)),
-                      child: Text("$time MINS WALK",
+                      child: Text('~$dist KM AWAY',
                           style: const TextStyle(color: Colors.white, fontSize: 10,
                               fontWeight: FontWeight.bold)),
                     ),

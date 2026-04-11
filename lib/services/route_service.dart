@@ -13,12 +13,14 @@ class RouteResult {
   final int durationSeconds;
   final List<dynamic> polylinePoints;
   final dynamic bounds;
+  final int? walkDurationSeconds; 
 
   RouteResult({ 
     required this.distanceMeters,
     required this.durationSeconds,
     this.polylinePoints = const [],
     this.bounds,
+    this.walkDurationSeconds,
   });
 }
 

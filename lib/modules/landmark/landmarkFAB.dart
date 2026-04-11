@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
 
 import '../../services/vision_service.dart';
 import 'landmarkResult.dart';
@@ -19,6 +20,7 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
   
   late AnimationController _scanController;
   bool _loading = false;
+  bool _isFlashOn = false;
   final ImagePicker _picker = ImagePicker();
 
   CameraController? _cameraController;
@@ -62,6 +64,9 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
 
   @override
   void dispose() {
+    if (_isFlashOn && _cameraController != null) {
+      _cameraController!.setFlashMode(FlashMode.off);
+    }
     _cameraController?.dispose();
     _scanController.dispose();
     super.dispose();
@@ -78,16 +83,34 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
     });
 
     final file = await _cameraController!.takePicture();
-    final bytes = await File(file.path).readAsBytes();
+    final rawBytes = await File(file.path).readAsBytes();
 
+    print('📷 RAW image size: ${rawBytes.length} bytes (${(rawBytes.length / 1024 / 1024).toStringAsFixed(2)} MB)');
+
+    final decoded = img.decodeImage(rawBytes);
+    print('📐 Decoded size: ${decoded?.width}x${decoded?.height}');
+
+    final fixed = img.bakeOrientation(decoded!);
+    print('🔄 After bakeOrientation: ${fixed.width}x${fixed.height}');
+
+    final bytes = Uint8List.fromList(img.encodeJpg(fixed, quality: 90));
+    print('📦 Final encoded size: ${bytes.length} bytes (${(bytes.length / 1024 / 1024).toStringAsFixed(2)} MB)');
+
+    // ✅ 拍完马上显示照片，不等 API
     setState(() {
-      _previewBytes = bytes; // 显示当前拍的照片
+      _previewBytes = bytes;
     });
 
-    // Vision API
     final base64Image = base64Encode(bytes);
-    final response = await VisionService.detectLandmarkWithJson(base64Image);
+    print('📤 Base64 length: ${base64Image.length}');
 
+    print('🚀 Calling VisionService...');
+    final response = await VisionService.detectLandmarkWithJson(base64Image);
+    print('✅ Response: $response');
+    print('🏛️ Landmark: ${response['landmark']}');
+    print('📋 rawJson: ${response['rawJson']}');
+
+    // ✅ API 回来后只更新 loading 状态
     setState(() {
       _loading = false;
     });
@@ -162,6 +185,17 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
         _previewBytes = null;
       });
     }
+  }
+
+  Future<void> _toggleFlash() async {
+    if (_cameraController == null || !_isCameraReady) return;
+
+    final newMode = _isFlashOn ? FlashMode.off : FlashMode.torch;
+    await _cameraController!.setFlashMode(newMode);
+
+    setState(() {
+      _isFlashOn = !_isFlashOn;
+    });
   }
 
 @override
@@ -295,7 +329,10 @@ class _LandmarkFABState extends State<LandmarkFAB> with SingleTickerProviderStat
                         ),
                       ),
                     ),
-                    _lensActionButton(icon: Icons.flash_on, onTap: () {}),
+                    _lensActionButton(
+                      icon: _isFlashOn ? Icons.flash_on : Icons.flash_off,
+                      onTap: kIsWeb ? () {} : _toggleFlash,  // Web 没有闪光灯，直接 no-op
+                    ),
                   ],
                 ),
               ),

@@ -491,7 +491,7 @@ class UserPreferenceService {
     if (priceLevel == null) return 1.0; // unknown → don't penalize
 
     const scores = <String, List<double>>{
-      //                  PL1   PL2   PL3   PL4
+      //           PL1   PL2   PL3   PL4
       'budget':   [1.0,  0.8,  0.3,  0.0],
       'midRange': [0.6,  1.0,  1.0,  0.5],
       'premium':  [0.2,  0.6,  1.0,  1.0],
@@ -576,4 +576,5 @@ class UserPreferenceService {
     }
     return null;
   }
+
 }

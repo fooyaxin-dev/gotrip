@@ -5,6 +5,7 @@ class Post {
   final String title;
   final String content;
   final List<String> images;
+  final List<String> videoPaths; 
   final int rating;
   final bool isAnonymous;
   final bool allowComments;
@@ -29,6 +30,7 @@ class Post {
     required this.title,
     required this.content,
     required this.images,
+    this.videoPaths = const [],
     this.rating = 0,
     this.isAnonymous = false,
     this.allowComments = true,
@@ -69,6 +71,7 @@ class Post {
       title: data['title'] ?? '',
       content: data['content'] ?? '',
       images: List<String>.from(rawImages),
+      videoPaths: List<String>.from(data['videoPaths'] ?? []),
       rating: data['rating'] ?? 0,
       isAnonymous: data['isAnonymous'] ?? false,
       allowComments: data['allowComments'] ?? true,

@@ -332,27 +332,27 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 50),
 
-                // ===== Social Media =====
-                const Text(
-                  '-- or login with --',
-                  style: TextStyle(
-                    color: Colors.black54,
-                    fontSize: 14,
-                  ),
-                ),
+                // // ===== Social Media =====
+                // const Text(
+                //   '-- or login with --',
+                //   style: TextStyle(
+                //     color: Colors.black54,
+                //     fontSize: 14,
+                //   ),
+                // ),
 
-                const SizedBox(height: 15),
+                // const SizedBox(height: 15),
 
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    _socialCircle(FontAwesomeIcons.google, const Color(0xFF4285F4), _handleGoogleSignIn),
-                    const SizedBox(width: 15),
-                    _socialCircle(FontAwesomeIcons.facebook, const Color(0xFF1877F2), _handleFacebookSignIn),
-                    const SizedBox(width: 15),
-                    _socialCircle(FontAwesomeIcons.twitter, const Color(0xFF1DA1F2),null),
-                  ],
-                ),
+                // Row(
+                //   mainAxisAlignment: MainAxisAlignment.center,
+                //   children: [
+                //     _socialCircle(FontAwesomeIcons.google, const Color(0xFF4285F4), _handleGoogleSignIn),
+                //     const SizedBox(width: 15),
+                //     _socialCircle(FontAwesomeIcons.facebook, const Color(0xFF1877F2), _handleFacebookSignIn),
+                //     const SizedBox(width: 15),
+                //     _socialCircle(FontAwesomeIcons.twitter, const Color(0xFF1DA1F2),null),
+                //   ],
+                // ),
 
                 const SizedBox(height: 150),
 

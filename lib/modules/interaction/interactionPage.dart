@@ -10,6 +10,7 @@ import 'addPost.dart';
 import 'postModel.dart';
 import '../../services/post_service.dart';
 import '../../services/like_service.dart';
+import '../profile/videoPlayer.dart';
 
 class InteractionPage extends StatefulWidget {
   const InteractionPage({super.key});
@@ -191,6 +192,7 @@ class _InteractionPageState extends State<InteractionPage> {
                   },
                   color: const Color(0xFFD35D3E),
                   child: ListView.builder(
+                    key: const PageStorageKey('post_list'),
                     physics: const BouncingScrollPhysics(),
                     itemCount: snapshot.data!.length,
                     padding: const EdgeInsets.only(top: 10, bottom: 90),
@@ -428,7 +430,7 @@ class _InteractionPageState extends State<InteractionPage> {
               maxLines: 3,
               overflow: TextOverflow.ellipsis),
           const SizedBox(height: 12),
-          _buildImageGrid(post.images),
+          _buildMediaGrid(post),
           if (post.tags.isNotEmpty) ...[
             const SizedBox(height: 12),
             Wrap(
@@ -531,54 +533,78 @@ class _InteractionPageState extends State<InteractionPage> {
     );
   }
 
-  Widget _buildImageGrid(List<String> images) {
-    if (images.isEmpty) return const SizedBox.shrink();
-    if (images.length == 1) {
+  Widget _buildMediaGrid(Post post) {
+    final images = post.images;
+    final videos = post.videoPaths;
+
+    if (images.isEmpty && videos.isEmpty) return const SizedBox.shrink();
+
+    // 把图片和视频合并成一个列表，用 bool 区分
+    final List<(String path, bool isVideo)> allMedia = [
+      ...images.map((p) => (p, false)),
+      ...videos.map((p) => (p, true)),
+    ];
+
+    if (allMedia.length == 1) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: Image.file(File(images[0]),
-            width: double.infinity,
-            height: 250,
-            fit: BoxFit.cover,
-            errorBuilder: (c, e, s) => Container(
-                height: 250,
-                color: Colors.grey[300],
-                child: const Center(
-                    child: Icon(Icons.broken_image,
-                        size: 50, color: Colors.grey)))),
+        child: _buildSingleMediaTile(allMedia[0].$1, allMedia[0].$2,
+            height: 250),
       );
     }
+
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: images.length == 2 ? 2 : 3,
-          crossAxisSpacing: 8,
-          mainAxisSpacing: 8),
-      itemCount: images.length > 9 ? 9 : images.length,
-      itemBuilder: (context, index) => ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: Stack(fit: StackFit.expand, children: [
-          Image.file(File(images[index]),
-              fit: BoxFit.cover,
-              errorBuilder: (c, e, s) => Container(
-                  color: Colors.grey[300],
-                  child:
-                      const Icon(Icons.broken_image, color: Colors.grey))),
-          if (images.length > 9 && index == 8)
-            Container(
+        crossAxisCount: allMedia.length == 2 ? 2 : 3,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+      ),
+      itemCount: allMedia.length > 9 ? 9 : allMedia.length,
+      itemBuilder: (context, index) {
+        final (path, isVideo) = allMedia[index];
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Stack(fit: StackFit.expand, children: [
+            _buildSingleMediaTile(path, isVideo),
+            if (allMedia.length > 9 && index == 8)
+              Container(
                 color: Colors.black.withOpacity(0.6),
                 child: Center(
-                    child: Text('+${images.length - 9}',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold)))),
-        ]),
-      ),
+                  child: Text('+${allMedia.length - 9}',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold)),
+                ),
+              ),
+          ]),
+        );
+      },
     );
   }
 
+
+  Widget _buildSingleMediaTile(String path, bool isVideo, {double? height}) {
+    if (isVideo) {
+      return SizedBox(
+        height: height ?? 200,
+        child: LocalVideoPlayer(path: path),
+      );
+    }
+    return Image.file(
+      File(path),
+      height: height,
+      fit: BoxFit.cover,
+      errorBuilder: (c, e, s) => Container(
+          height: height,
+          color: Colors.grey[300],
+          child: const Icon(Icons.broken_image, color: Colors.grey)),
+    );
+  }
+    
+    
   Widget _buildLikeButton(Post post, bool isLiked) {
     return StreamBuilder<int>(
       stream: _likeService.likeCountStream(post.id!),

@@ -158,6 +158,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   void initState() {
     super.initState();
     _bootstrap();
+
+      _searchFocus.addListener(() {
+        setState(() {}); // focus 变化时重新 build
+      });
     
     if (widget.autoFocusSearch) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1029,13 +1033,13 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           ),
 
           // ✅ Floating "View Itinerary (N)" button
-          if (_selectedPlaceIds.isNotEmpty)
+          if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
             Positioned(
               bottom: 24 + MediaQuery.of(context).padding.bottom,
               left: 24, right: 24,
               child: GestureDetector(
                 onTap: _viewSelectedItinerary,
-                child: Container(
+                child: Container( 
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
@@ -1065,9 +1069,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 ),
               ),
             ),
-
           if (_isLoading)
             const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
+
         ],
       ),
     );
@@ -1186,39 +1190,38 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
         // Sort + selected count
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(children: [
-            _buildStyledFilterChip(
-              label: "Nearest", isSelected: _sortMode == SortMode.distance,
-              onTap: () => setState(() => _sortMode = SortMode.distance),
-              icon: Icons.near_me_outlined,
-            ),
-            const SizedBox(width: 8),
-            _buildStyledFilterChip(
-              label: "High Rated", isSelected: _sortMode == SortMode.rating,
-              onTap: () => setState(() => _sortMode = SortMode.rating),
-              icon: Icons.star_outline_rounded,
-            ),
-            // ✅ Selected count badge
-            if (_selectedPlaceIds.isNotEmpty) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: const Color(0xFF7C4DFF).withOpacity(0.3)),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  const Icon(Icons.check_circle_rounded, size: 14, color: Color(0xFF7C4DFF)),
-                  const SizedBox(width: 4),
-                  Text('${_selectedPlaceIds.length} selected',
-                      style: const TextStyle(fontSize: 12, color: Color(0xFF7C4DFF), fontWeight: FontWeight.w600)),
-                ]),
-              ),
-            ],
-          ]),
+  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+  child: Row(children: [
+    _buildStyledFilterChip(
+      label: "Nearest", isSelected: _sortMode == SortMode.distance,
+      onTap: () => setState(() => _sortMode = SortMode.distance),
+      icon: Icons.near_me_outlined,
+    ),
+    const SizedBox(width: 5),
+    _buildStyledFilterChip(
+      label: "High Rated", isSelected: _sortMode == SortMode.rating,
+      onTap: () => setState(() => _sortMode = SortMode.rating),
+      icon: Icons.star_outline_rounded,
+    ),
+    if (_selectedPlaceIds.isNotEmpty) ...[
+      const SizedBox(width: 8),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6), // 👈 减小 horizontal
+        decoration: BoxDecoration(
+          color: const Color(0xFF7C4DFF).withOpacity(0.1),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFF7C4DFF).withOpacity(0.3)),
         ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.check_circle_rounded, size: 14, color: Color(0xFF7C4DFF)),
+          const SizedBox(width: 4),
+          Text('${_selectedPlaceIds.length}',  // 👈 只显示数字，省空间
+              style: const TextStyle(fontSize: 12, color: Color(0xFF7C4DFF), fontWeight: FontWeight.w600)),
+        ]),
+      ),
+    ],
+  ]),
+),
 
         if (_selectedPrimary != null && subCategories.containsKey(_selectedPrimary))
           _buildSecondaryBar(),
@@ -1433,7 +1436,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7), // 原来是 horizontal: 14
         decoration: BoxDecoration(
           color: isSelected ? Colors.blue[600] : Colors.grey[100],
           borderRadius: BorderRadius.circular(20),

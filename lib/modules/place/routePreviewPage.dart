@@ -471,7 +471,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                                 fontSize: 15, color: Colors.grey[600])),
             
                         Text(
-                          '· Fastest route   |',
+                          '· route   |',
                           style: TextStyle(fontSize: 12, color: Colors.grey[500]),
                         ),
                         const SizedBox(width: 8),

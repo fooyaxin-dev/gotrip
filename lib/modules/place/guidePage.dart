@@ -17,7 +17,7 @@ class NavStep {
   final LatLng startLocation;
   final LatLng endLocation;
 
-  NavStep({
+  NavStep({ 
     required this.instruction,
     required this.maneuver,
     required this.distanceMeters,
@@ -57,14 +57,11 @@ class _GuidePageState extends State<GuidePage> {
   bool    _loading = true;
   String? _error;
 
-  // Full polyline for off-route detection
   List<LatLng> _polylinePoints = [];
 
-  // Two-tone polyline split
   List<LatLng> _walkedPoints    = [];
   List<LatLng> _remainingPoints = [];
 
-  // Monotone nearest polyline index — only ever increases
   int _nearestPolylineIdx = 0;
 
   LatLngBounds? _routeBounds;
@@ -84,10 +81,9 @@ class _GuidePageState extends State<GuidePage> {
   final List<Position> _positionBuffer = [];
   static const int     _bufferSize     = 3;
 
-  // Flag to distinguish programmatic vs user camera moves
-  bool _isFollowing        = true;
+  bool _isFollowing       = true;
   bool _isProgrammaticMove = false;
-  bool _isOverview         = false;
+  bool _isOverview        = false;
 
   bool   _isRerouting = false;
   static const double _offRouteThreshold  = 50.0;
@@ -99,15 +95,14 @@ class _GuidePageState extends State<GuidePage> {
 
   BitmapDescriptor? _arrowIcon;
 
-  // Compass throttle — only rebuild when heading changes > 2°
-  double _currentHeading      = 0;
-  double _lastRenderedHeading = -999;
+  double _currentHeading       = 0;
+  double _lastRenderedHeading  = -999;
   static const double _headingThresholdDeg = 2.0;
   StreamSubscription<CompassXEvent>? _compassStream;
 
-  // Camera throttle
+  // FIX 3: 镜头节流从 250ms 改为 80ms
   DateTime _lastCameraUpdate = DateTime.fromMillisecondsSinceEpoch(0);
-  static const Duration _cameraThrottle = Duration(milliseconds: 250);
+  static const Duration _cameraThrottle = Duration(milliseconds: 80);
 
   static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
 
@@ -166,7 +161,7 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // Compass — throttled, marker only
+  // Compass
   // ─────────────────────────────────────────────
 
   void _startCompass() {
@@ -253,6 +248,8 @@ class _GuidePageState extends State<GuidePage> {
             'routes.legs.steps.staticDuration,'
             'routes.legs.steps.startLocation,'
             'routes.legs.steps.endLocation,'
+            // FIX 2: 额外请求每个 step 的 polyline，拿到更多 points
+            'routes.legs.steps.polyline,'
             'routes.viewport',
       }, body: body);
 
@@ -266,7 +263,27 @@ class _GuidePageState extends State<GuidePage> {
 
       final route  = routes[0];
       final legs   = (route['legs'] as List);
-      final points = _decodePolyline(route['polyline']['encodedPolyline'] as String);
+
+      // FIX 2: 从每个 step 的 polyline 合并，拿到更密集的 points
+      final points = <LatLng>[];
+      for (final leg in legs) {
+        for (final s in (leg['steps'] as List)) {
+          if (s['polyline'] != null && s['polyline']['encodedPolyline'] != null) {
+            final stepPoints = _decodePolyline(s['polyline']['encodedPolyline'] as String);
+            if (points.isNotEmpty && stepPoints.isNotEmpty) {
+              // 避免重复点
+              points.addAll(stepPoints.skip(1));
+            } else {
+              points.addAll(stepPoints);
+            }
+          }
+        }
+      }
+
+      // Fallback: 如果 step polylines 拿不到，用 route level polyline
+      final finalPoints = points.isNotEmpty
+          ? points
+          : _decodePolyline(route['polyline']['encodedPolyline'] as String);
 
       final vp  = route['viewport'];
       final ne  = vp['high'];
@@ -305,8 +322,8 @@ class _GuidePageState extends State<GuidePage> {
       if (!mounted) return;
 
       setState(() {
-        _polylinePoints       = points;
-        _remainingPoints      = List.from(points);
+        _polylinePoints       = finalPoints;
+        _remainingPoints      = List.from(finalPoints);
         _walkedPoints         = [];
         _routeBounds          = bounds;
         _remainingMeters      = totalDist;
@@ -348,7 +365,6 @@ class _GuidePageState extends State<GuidePage> {
     });
   }
 
-  // Rebuild two-tone polylines (grey = walked, blue = remaining)
   void _rebuildPolylines() {
     _polylines.clear();
 
@@ -377,39 +393,58 @@ class _GuidePageState extends State<GuidePage> {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // FIX: Monotone polyline split — index only ever advances
-  // ─────────────────────────────────────────────
-
+  // FIX 2: 用用户精确坐标投影到 polyline，插入分割点
   void _updatePolylineSplit(LatLng userPos) {
     if (_polylinePoints.isEmpty) return;
 
-    // Only search forward from current index — never go backwards.
-    // This prevents GPS jitter from suddenly graying out large ahead segments.
-    final searchEnd = (_nearestPolylineIdx + 60).clamp(0, _polylinePoints.length - 1);
+    // 只往前搜索，不往后退（用户只会向前走）
+    final searchStart = (_nearestPolylineIdx - 5).clamp(0, _polylinePoints.length - 1);
+    final searchEnd   = _polylinePoints.length - 1;
 
     int    bestIdx  = _nearestPolylineIdx;
     double bestDist = double.infinity;
 
-    for (int i = _nearestPolylineIdx; i <= searchEnd; i++) {
+    for (int i = searchStart; i <= searchEnd; i++) {
       final d = Geolocator.distanceBetween(
         userPos.latitude, userPos.longitude,
         _polylinePoints[i].latitude, _polylinePoints[i].longitude,
       );
-      if (d < bestDist) {
-        bestDist = d;
-        bestIdx  = i;
-      }
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+      // 找到之后如果距离开始增大，可以提前停止
+      if (d > bestDist + 50 && i > bestIdx + 10) break;
     }
 
-    // Only advance the index, never retreat
-    if (bestIdx <= _nearestPolylineIdx) return;
-
     _nearestPolylineIdx = bestIdx;
-    _walkedPoints    = _polylinePoints.sublist(0, bestIdx + 1);
-    _remainingPoints = _polylinePoints.sublist(bestIdx);
+
+    // FIX 2 核心：找到用户在哪两个 point 之间，投影出精确分割点
+    LatLng splitPoint = userPos;
+    if (bestIdx < _polylinePoints.length - 1) {
+      final a = _polylinePoints[bestIdx];
+      final b = _polylinePoints[bestIdx + 1];
+      splitPoint = _projectPointOntoSegment(userPos, a, b);
+    }
+
+    // 灰色 = 之前所有 points + 精确分割点
+    // 蓝色 = 精确分割点 + 之后所有 points
+    _walkedPoints    = [..._polylinePoints.sublist(0, bestIdx + 1), splitPoint];
+    _remainingPoints = [splitPoint, ..._polylinePoints.sublist(bestIdx + 1)];
 
     _rebuildPolylines();
+  }
+
+  // FIX 2: 把用户坐标投影到线段上，返回精确分割点
+  LatLng _projectPointOntoSegment(LatLng p, LatLng a, LatLng b) {
+    final double ax = a.longitude, ay = a.latitude;
+    final double bx = b.longitude, by = b.latitude;
+    final double px = p.longitude,  py = p.latitude;
+    final double dx = bx - ax,      dy = by - ay;
+
+    if (dx == 0 && dy == 0) return a;
+
+    final double t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
+    final double c = t.clamp(0.0, 1.0);
+
+    return LatLng(ay + c * dy, ax + c * dx);
   }
 
   void _updateMyMarker(double lat, double lng, double heading) {
@@ -442,7 +477,7 @@ class _GuidePageState extends State<GuidePage> {
       await _mapController!.animateCamera(
         CameraUpdate.newCameraPosition(CameraPosition(
           target:  LatLng(lat, lng),
-          zoom:    19,           // ← changed from 17.5
+          zoom:    20,
           tilt:    0,
           bearing: _currentHeading,
         )),
@@ -543,7 +578,7 @@ class _GuidePageState extends State<GuidePage> {
         return;
       }
 
-      // 2. Off-route (only while moving)
+      // 2. Off-route
       if (isMoving && !_isRerouting && _polylinePoints.isNotEmpty) {
         final minDist = _minDistToPolylineFast(userLatLng);
         if (minDist > _offRouteThreshold) {
@@ -560,7 +595,7 @@ class _GuidePageState extends State<GuidePage> {
 
       // 3. Step switching
       if (_steps.isNotEmpty && _currentStepIndex < _steps.length - 1) {
-        final currentStep = _steps[_currentStepIndex];
+        final currentStep   = _steps[_currentStepIndex];
         final distToStepEnd = Geolocator.distanceBetween(
           pos.latitude, pos.longitude,
           currentStep.endLocation.latitude,
@@ -594,16 +629,13 @@ class _GuidePageState extends State<GuidePage> {
         _distToCurrentTurnEnd = distEnd.clamp(0.0, step.distanceMeters);
       }
 
-      // 5. State update + polyline split
+      // FIX 1: 无条件更新时间和距离，不管 isMoving
       setState(() {
-        _currentPosition = pos;
-        if (isMoving) {
-          // Update polyline split first so _nearestPolylineIdx is current
-          _updatePolylineSplit(userLatLng);
-          // Then calculate remaining based on updated index
-          _remainingMeters  = _calcRemainingMeters(pos);
-          _remainingSeconds = _calcRemainingSeconds(pos);
-        }
+        _currentPosition  = pos;
+        _remainingMeters  = _calcRemainingMeters(pos);
+        _remainingSeconds = _calcRemainingSeconds(pos);
+        // FIX 2: 每次都更新 polyline split
+        _updatePolylineSplit(userLatLng);
         _updateMyMarker(pos.latitude, pos.longitude, _currentHeading);
       });
 
@@ -615,7 +647,7 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // Heading validation toward next step
+  // Heading validation
   // ─────────────────────────────────────────────
 
   bool _isHeadingTowardNextStep(Position pos) {
@@ -639,7 +671,7 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // Fast min-dist with cached nearest index (for off-route check)
+  // Fast min-dist
   // ─────────────────────────────────────────────
 
   double _minDistToPolylineFast(LatLng point) {
@@ -688,57 +720,37 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // FIX: Remaining distance — sum polyline segments ahead of user
-  // ─────────────────────────────────────────────
-
-  double _calcRemainingMeters(Position pos) {
-    if (_polylinePoints.isEmpty) return 0;
-
-    final idx = _nearestPolylineIdx;
-
-    // Distance from user to the nearest polyline point
-    double total = Geolocator.distanceBetween(
-      pos.latitude, pos.longitude,
-      _polylinePoints[idx].latitude,
-      _polylinePoints[idx].longitude,
-    );
-
-    // Sum all remaining polyline segments from nearest point to destination
-    for (int i = idx; i < _polylinePoints.length - 1; i++) {
-      total += Geolocator.distanceBetween(
-        _polylinePoints[i].latitude,   _polylinePoints[i].longitude,
-        _polylinePoints[i+1].latitude, _polylinePoints[i+1].longitude,
-      );
-    }
-
-    return total;
-  }
-
-  // ─────────────────────────────────────────────
-  // FIX: Remaining seconds — steps-based with current step ratio
+  // Remaining calculations
   // ─────────────────────────────────────────────
 
   int _calcRemainingSeconds(Position pos) {
     if (_steps.isEmpty) return 0;
-
-    // Sum duration of all future steps (after current)
     int future = 0;
     for (int i = _currentStepIndex + 1; i < _steps.length; i++) {
       future += _steps[i].durationSeconds;
     }
-
-    // For current step, pro-rate by remaining distance ratio
-    final step = _steps[_currentStepIndex];
-    final distToStepEnd = Geolocator.distanceBetween(
+    final step  = _steps[_currentStepIndex];
+    final dist  = Geolocator.distanceBetween(
       pos.latitude, pos.longitude,
-      step.endLocation.latitude,
-      step.endLocation.longitude,
+      step.endLocation.latitude, step.endLocation.longitude,
     );
     final ratio = step.distanceMeters > 0
-        ? (distToStepEnd / step.distanceMeters).clamp(0.0, 1.0)
-        : 0.0;
+        ? (dist / step.distanceMeters).clamp(0.0, 1.0) : 0.0;
+    return (step.durationSeconds * ratio).toInt() + future;
+  }
 
-    return (step.durationSeconds * ratio).round() + future;
+  double _calcRemainingMeters(Position pos) {
+    if (_steps.isEmpty) return 0;
+    double future = 0;
+    for (int i = _currentStepIndex + 1; i < _steps.length; i++) {
+      future += _steps[i].distanceMeters;
+    }
+    final step = _steps[_currentStepIndex];
+    final dist = Geolocator.distanceBetween(
+      pos.latitude, pos.longitude,
+      step.endLocation.latitude, step.endLocation.longitude,
+    );
+    return dist.clamp(0.0, step.distanceMeters) + future;
   }
 
   // ─────────────────────────────────────────────
@@ -879,7 +891,7 @@ class _GuidePageState extends State<GuidePage> {
         GoogleMap(
           initialCameraPosition: CameraPosition(
             target:  LatLng(widget.startLat, widget.startLng),
-            zoom:    19,         // ← changed from 17.5
+            zoom:    20,
             tilt:    0,
             bearing: _currentHeading,
           ),

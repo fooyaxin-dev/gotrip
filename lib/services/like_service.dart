@@ -13,7 +13,7 @@ class LikeService {
     try {
       String? userId = _auth.currentUser?.uid;
       if (userId == null) {
-        throw Exception('用户未登录');
+        throw Exception('User not logged in');
       }
 
       // 检查是否已点赞
@@ -29,7 +29,7 @@ class LikeService {
         return true;
       }
     } catch (e) {
-      throw Exception('点赞失败: $e');
+      throw Exception('Failed to toggle like: $e');
     }
   }
 
