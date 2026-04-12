@@ -790,17 +790,17 @@ class _PostingPageState extends State<PostingPage> {
                 isAnonymous,
                 (v) => setState(() => isAnonymous = v)),
             const SizedBox(height: 15),
-            _buildSwitchOption(
-                'Allow Comments',
-                'Other users can comment on your post',
-                allowComments,
-                (v) => setState(() => allowComments = v)),
-            const SizedBox(height: 15),
-            _buildSwitchOption(
-                'Allow Sharing',
-                'Other users can share your post',
-                allowShare,
-                (v) => setState(() => allowShare = v)),
+            // _buildSwitchOption(
+            //     'Allow Comments',
+            //     'Other users can comment on your post',
+            //     allowComments,
+            //     (v) => setState(() => allowComments = v)),
+            // const SizedBox(height: 15),
+            // _buildSwitchOption(
+            //     'Allow Sharing',
+            //     'Other users can share your post',
+            //     allowShare,
+            //     (v) => setState(() => allowShare = v)),
 
             const SizedBox(height: 150),
           ]),

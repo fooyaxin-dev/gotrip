@@ -17,7 +17,7 @@ class NavStep {
   final LatLng startLocation;
   final LatLng endLocation;
 
-  NavStep({ 
+  NavStep({
     required this.instruction,
     required this.maneuver,
     required this.distanceMeters,
@@ -58,11 +58,13 @@ class _GuidePageState extends State<GuidePage> {
   String? _error;
 
   List<LatLng> _polylinePoints = [];
-
-  List<LatLng> _walkedPoints    = [];
+  List<LatLng> _walkedPoints   = [];
   List<LatLng> _remainingPoints = [];
 
   int _nearestPolylineIdx = 0;
+
+  // The snapped position on the route — used for icon display
+  LatLng? _snappedPosition;
 
   LatLngBounds? _routeBounds;
   double _remainingMeters  = 0;
@@ -78,31 +80,38 @@ class _GuidePageState extends State<GuidePage> {
   StreamSubscription<Position>? _positionStream;
   Position? _currentPosition;
 
+  // Small buffer — size 2 to reduce lag
   final List<Position> _positionBuffer = [];
-  static const int     _bufferSize     = 3;
+  static const int _bufferSize = 2;
 
-  bool _isFollowing       = true;
+  bool _isFollowing        = true;
   bool _isProgrammaticMove = false;
-  bool _isOverview        = false;
+  bool _isOverview         = false;
 
   bool   _isRerouting = false;
-  static const double _offRouteThreshold  = 50.0;
-  static const double _arrivedThreshold   = 30.0;
-  bool   _hasArrived  = false;
+  static const double _offRouteThreshold = 50.0;
+  static const double _arrivedThreshold  = 30.0;
+  bool   _hasArrived = false;
 
   int _offRouteConfirmCount = 0;
   static const int _offRouteConfirmThreshold = 4;
 
   BitmapDescriptor? _arrowIcon;
 
-  double _currentHeading       = 0;
-  double _lastRenderedHeading  = -999;
+  // Compass — only used when stationary
+  double _currentHeading      = 0;
+  double _lastRenderedHeading = -999;
   static const double _headingThresholdDeg = 2.0;
   StreamSubscription<CompassXEvent>? _compassStream;
 
-  // FIX 3: 镜头节流从 250ms 改为 80ms
-  DateTime _lastCameraUpdate = DateTime.fromMillisecondsSinceEpoch(0);
-  static const Duration _cameraThrottle = Duration(milliseconds: 80);
+  // GPS-derived bearing — drives camera + marker when moving
+  double _gpsHeading = 0;
+
+  // Smooth camera follow ticker — 16ms ≈ 60fps
+  Timer? _cameraTimer;
+  LatLng? _cameraTarget;
+  double  _cameraBearing = 0;
+  static const double _cameraZoom = 20.0;
 
   static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
 
@@ -119,17 +128,47 @@ class _GuidePageState extends State<GuidePage> {
       heading: 0, speed: 0, speedAccuracy: 0,
       altitudeAccuracy: 0.0, headingAccuracy: 0.0,
     );
+    _snappedPosition = LatLng(widget.startLat, widget.startLng);
+    _cameraTarget    = LatLng(widget.startLat, widget.startLng);
     _createArrowIcon().then((_) => _loadRoute(widget.startLat, widget.startLng));
     _startCompass();
+    _startCameraTimer();
   }
 
   @override
   void dispose() {
     _positionStream?.cancel();
     _compassStream?.cancel();
+    _cameraTimer?.cancel();
     _mapController?.dispose();
     _positionBuffer.clear();
     super.dispose();
+  }
+
+  // ─────────────────────────────────────────────
+  // Smooth camera ticker — runs at ~60fps
+  // Lerps camera toward target so it glides smoothly
+  // ─────────────────────────────────────────────
+
+  void _startCameraTimer() {
+    _cameraTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
+      if (!mounted || _mapController == null) return;
+      if (!_isFollowing || _isOverview) return;
+      if (_cameraTarget == null) return;
+
+      _isProgrammaticMove = true;
+      _mapController!.moveCamera(
+        CameraUpdate.newCameraPosition(CameraPosition(
+          target:  _cameraTarget!,
+          zoom:    _cameraZoom,
+          tilt:    0,
+          bearing: _cameraBearing,
+        )),
+      );
+      // Reset flag after a brief delay so onCameraMoveStarted
+      // doesn't misfire on the next frame
+      Future.microtask(() { _isProgrammaticMove = false; });
+    });
   }
 
   // ─────────────────────────────────────────────
@@ -161,7 +200,7 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // Compass
+  // Compass — only rotates marker when stationary
   // ─────────────────────────────────────────────
 
   void _startCompass() {
@@ -176,13 +215,10 @@ class _GuidePageState extends State<GuidePage> {
       if (delta < _headingThresholdDeg && _lastRenderedHeading != -999) return;
       _lastRenderedHeading = _currentHeading;
 
-      if (_currentPosition != null) {
+      final isMoving = (_currentPosition?.speed ?? 0) > 0.3;
+      if (!isMoving && _snappedPosition != null) {
         setState(() {
-          _updateMyMarker(
-            _currentPosition!.latitude,
-            _currentPosition!.longitude,
-            _currentHeading,
-          );
+          _updateMyMarker(_snappedPosition!, _currentHeading);
         });
       }
     });
@@ -248,7 +284,6 @@ class _GuidePageState extends State<GuidePage> {
             'routes.legs.steps.staticDuration,'
             'routes.legs.steps.startLocation,'
             'routes.legs.steps.endLocation,'
-            // FIX 2: 额外请求每个 step 的 polyline，拿到更多 points
             'routes.legs.steps.polyline,'
             'routes.viewport',
       }, body: body);
@@ -261,17 +296,16 @@ class _GuidePageState extends State<GuidePage> {
       final routes = data['routes'] as List?;
       if (routes == null || routes.isEmpty) throw Exception('No routes found');
 
-      final route  = routes[0];
-      final legs   = (route['legs'] as List);
+      final route = routes[0];
+      final legs  = (route['legs'] as List);
 
-      // FIX 2: 从每个 step 的 polyline 合并，拿到更密集的 points
+      // Merge step polylines for denser points
       final points = <LatLng>[];
       for (final leg in legs) {
         for (final s in (leg['steps'] as List)) {
           if (s['polyline'] != null && s['polyline']['encodedPolyline'] != null) {
             final stepPoints = _decodePolyline(s['polyline']['encodedPolyline'] as String);
             if (points.isNotEmpty && stepPoints.isNotEmpty) {
-              // 避免重复点
               points.addAll(stepPoints.skip(1));
             } else {
               points.addAll(stepPoints);
@@ -280,17 +314,16 @@ class _GuidePageState extends State<GuidePage> {
         }
       }
 
-      // Fallback: 如果 step polylines 拿不到，用 route level polyline
       final finalPoints = points.isNotEmpty
           ? points
           : _decodePolyline(route['polyline']['encodedPolyline'] as String);
 
-      final vp  = route['viewport'];
-      final ne  = vp['high'];
-      final sw  = vp['low'];
+      final vp = route['viewport'];
+      final ne = vp['high'];
+      final sw = vp['low'];
       final bounds = LatLngBounds(
-        southwest: LatLng(sw['latitude'],  sw['longitude']),
-        northeast: LatLng(ne['latitude'],  ne['longitude']),
+        southwest: LatLng(sw['latitude'], sw['longitude']),
+        northeast: LatLng(ne['latitude'], ne['longitude']),
       );
 
       final steps = <NavStep>[];
@@ -304,7 +337,7 @@ class _GuidePageState extends State<GuidePage> {
             maneuver:        maneuver,
             distanceMeters:  (s['distanceMeters'] as num? ?? 0).toDouble(),
             durationSeconds: _parseDuration(s['staticDuration'] as String? ?? '0s'),
-            startLocation:   LatLng(
+            startLocation: LatLng(
               s['startLocation']['latLng']['latitude'],
               s['startLocation']['latLng']['longitude'],
             ),
@@ -347,9 +380,10 @@ class _GuidePageState extends State<GuidePage> {
   // ─────────────────────────────────────────────
 
   void _drawRoute(double fromLat, double fromLng) {
+    final startLatLng = LatLng(fromLat, fromLng);
     setState(() {
       _rebuildPolylines();
-      _updateMyMarker(fromLat, fromLng, _currentHeading);
+      _updateMyMarker(startLatLng, _gpsHeading);
       _markers
         ..removeWhere((m) => m.markerId.value == 'destination')
         ..add(Marker(
@@ -358,10 +392,6 @@ class _GuidePageState extends State<GuidePage> {
           icon:       BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
           infoWindow: InfoWindow(title: widget.destinationName ?? 'Destination'),
         ));
-    });
-
-    Future.delayed(const Duration(milliseconds: 400), () {
-      _animateCameraToUser(fromLat, fromLng);
     });
   }
 
@@ -393,11 +423,11 @@ class _GuidePageState extends State<GuidePage> {
     }
   }
 
-  // FIX 2: 用用户精确坐标投影到 polyline，插入分割点
-  void _updatePolylineSplit(LatLng userPos) {
-    if (_polylinePoints.isEmpty) return;
+  // Returns the snapped LatLng on the polyline
+  LatLng _updatePolylineSplit(LatLng userPos) {
+    if (_polylinePoints.isEmpty) return userPos;
 
-    // 只往前搜索，不往后退（用户只会向前走）
+    // Search forward only — user only moves forward
     final searchStart = (_nearestPolylineIdx - 5).clamp(0, _polylinePoints.length - 1);
     final searchEnd   = _polylinePoints.length - 1;
 
@@ -410,13 +440,12 @@ class _GuidePageState extends State<GuidePage> {
         _polylinePoints[i].latitude, _polylinePoints[i].longitude,
       );
       if (d < bestDist) { bestDist = d; bestIdx = i; }
-      // 找到之后如果距离开始增大，可以提前停止
       if (d > bestDist + 50 && i > bestIdx + 10) break;
     }
 
     _nearestPolylineIdx = bestIdx;
 
-    // FIX 2 核心：找到用户在哪两个 point 之间，投影出精确分割点
+    // Project user position onto the segment for a precise split point
     LatLng splitPoint = userPos;
     if (bestIdx < _polylinePoints.length - 1) {
       final a = _polylinePoints[bestIdx];
@@ -424,15 +453,13 @@ class _GuidePageState extends State<GuidePage> {
       splitPoint = _projectPointOntoSegment(userPos, a, b);
     }
 
-    // 灰色 = 之前所有 points + 精确分割点
-    // 蓝色 = 精确分割点 + 之后所有 points
     _walkedPoints    = [..._polylinePoints.sublist(0, bestIdx + 1), splitPoint];
     _remainingPoints = [splitPoint, ..._polylinePoints.sublist(bestIdx + 1)];
-
     _rebuildPolylines();
+
+    return splitPoint; // snapped position on the route
   }
 
-  // FIX 2: 把用户坐标投影到线段上，返回精确分割点
   LatLng _projectPointOntoSegment(LatLng p, LatLng a, LatLng b) {
     final double ax = a.longitude, ay = a.latitude;
     final double bx = b.longitude, by = b.latitude;
@@ -447,12 +474,13 @@ class _GuidePageState extends State<GuidePage> {
     return LatLng(ay + c * dy, ax + c * dx);
   }
 
-  void _updateMyMarker(double lat, double lng, double heading) {
+  // Icon always placed at snapped position — never raw GPS
+  void _updateMyMarker(LatLng snappedPos, double heading) {
     _markers
       ..removeWhere((m) => m.markerId.value == 'me')
       ..add(Marker(
         markerId: const MarkerId('me'),
-        position: LatLng(lat, lng),
+        position: snappedPos,
         icon:     _arrowIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
         rotation: heading,
         anchor:   const Offset(0.5, 0.5),
@@ -462,35 +490,20 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // Camera
+  // Camera — driven by smooth ticker, not animateCamera
   // ─────────────────────────────────────────────
 
-  Future<void> _animateCameraToUser(double lat, double lng) async {
-    if (_mapController == null) return;
-
-    final now = DateTime.now();
-    if (now.difference(_lastCameraUpdate) < _cameraThrottle) return;
-    _lastCameraUpdate = now;
-
-    _isProgrammaticMove = true;
-    try {
-      await _mapController!.animateCamera(
-        CameraUpdate.newCameraPosition(CameraPosition(
-          target:  LatLng(lat, lng),
-          zoom:    20,
-          tilt:    0,
-          bearing: _currentHeading,
-        )),
-      );
-    } finally {
-      _isProgrammaticMove = false;
-    }
+  void _updateCameraTarget(LatLng snappedPos, double bearing) {
+    // Just update the target — the ticker will glide camera there at 60fps
+    _cameraTarget   = snappedPos;
+    _cameraBearing  = bearing;
   }
 
   void _recenter() {
-    if (_currentPosition == null) return;
+    if (_snappedPosition == null) return;
     setState(() { _isFollowing = true; _isOverview = false; });
-    _animateCameraToUser(_currentPosition!.latitude, _currentPosition!.longitude);
+    _cameraTarget  = _snappedPosition;
+    _cameraBearing = _gpsHeading;
   }
 
   Future<void> _toggleOverview() async {
@@ -500,6 +513,7 @@ class _GuidePageState extends State<GuidePage> {
       _isFollowing = !_isOverview;
     });
     if (_isOverview) {
+      _cameraTimer?.cancel();
       _isProgrammaticMove = true;
       try {
         await _mapController?.animateCamera(
@@ -507,8 +521,11 @@ class _GuidePageState extends State<GuidePage> {
         );
       } finally {
         _isProgrammaticMove = false;
+        // Restart ticker when coming back from overview
+        if (!_isOverview) _startCameraTimer();
       }
     } else {
+      _startCameraTimer();
       _recenter();
     }
   }
@@ -542,7 +559,7 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // GPS tracking
+  // GPS tracking — 100ms interval
   // ─────────────────────────────────────────────
 
   void _startTracking() {
@@ -552,7 +569,7 @@ class _GuidePageState extends State<GuidePage> {
       locationSettings: AndroidSettings(
         accuracy:         LocationAccuracy.bestForNavigation,
         distanceFilter:   0,
-        intervalDuration: const Duration(milliseconds: 500),
+        intervalDuration: const Duration(milliseconds: 100),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationText:  "Navigation is active",
           notificationTitle: "Turn-by-turn Navigation",
@@ -566,6 +583,20 @@ class _GuidePageState extends State<GuidePage> {
       final pos        = _smoothPosition(rawPos);
       final isMoving   = rawPos.speed > 0.3;
       final userLatLng = LatLng(pos.latitude, pos.longitude);
+
+      // Update GPS heading from movement direction
+      if (isMoving && _currentPosition != null) {
+        final moved = Geolocator.distanceBetween(
+          _currentPosition!.latitude, _currentPosition!.longitude,
+          pos.latitude, pos.longitude,
+        );
+        if (moved > 0.5) {
+          _gpsHeading = _bearingBetween(
+            _currentPosition!.latitude, _currentPosition!.longitude,
+            pos.latitude, pos.longitude,
+          );
+        }
+      }
 
       // 1. Arrived
       final distToDest = Geolocator.distanceBetween(
@@ -601,7 +632,6 @@ class _GuidePageState extends State<GuidePage> {
           currentStep.endLocation.latitude,
           currentStep.endLocation.longitude,
         );
-
         if (distToStepEnd < 15 && _isHeadingTowardNextStep(pos)) {
           _stepEndConfirmCount++;
           if (_stepEndConfirmCount >= _stepConfirmThreshold) {
@@ -618,7 +648,7 @@ class _GuidePageState extends State<GuidePage> {
         }
       }
 
-      // 4. Update distance to current turn end
+      // 4. Distance to turn end
       if (_steps.isNotEmpty) {
         final step    = _steps[_currentStepIndex];
         final distEnd = Geolocator.distanceBetween(
@@ -629,20 +659,24 @@ class _GuidePageState extends State<GuidePage> {
         _distToCurrentTurnEnd = distEnd.clamp(0.0, step.distanceMeters);
       }
 
-      // FIX 1: 无条件更新时间和距离，不管 isMoving
+      // 5. Snap to route + update everything
       setState(() {
-        _currentPosition  = pos;
+        _currentPosition = pos;
         _remainingMeters  = _calcRemainingMeters(pos);
         _remainingSeconds = _calcRemainingSeconds(pos);
-        // FIX 2: 每次都更新 polyline split
-        _updatePolylineSplit(userLatLng);
-        _updateMyMarker(pos.latitude, pos.longitude, _currentHeading);
-      });
 
-      // 6. Camera follow
-      if (_isFollowing && !_isOverview) {
-        _animateCameraToUser(pos.latitude, pos.longitude);
-      }
+        // Snap icon to route
+        final snapped    = _updatePolylineSplit(userLatLng);
+        _snappedPosition = snapped;
+
+        final heading = isMoving ? _gpsHeading : _currentHeading;
+        _updateMyMarker(snapped, heading);
+
+        // Update smooth camera target
+        if (_isFollowing && !_isOverview) {
+          _updateCameraTarget(snapped, _gpsHeading);
+        }
+      });
     });
   }
 
@@ -657,7 +691,7 @@ class _GuidePageState extends State<GuidePage> {
       pos.latitude, pos.longitude,
       next.startLocation.latitude, next.startLocation.longitude,
     );
-    final diff = (((_currentHeading - targetBearing) % 360) + 360) % 360;
+    final diff = (((_gpsHeading - targetBearing) % 360) + 360) % 360;
     return (diff > 180 ? 360 - diff : diff) < 60;
   }
 
@@ -671,7 +705,7 @@ class _GuidePageState extends State<GuidePage> {
   }
 
   // ─────────────────────────────────────────────
-  // Fast min-dist
+  // Fast min-dist to polyline
   // ─────────────────────────────────────────────
 
   double _minDistToPolylineFast(LatLng point) {
@@ -729,8 +763,8 @@ class _GuidePageState extends State<GuidePage> {
     for (int i = _currentStepIndex + 1; i < _steps.length; i++) {
       future += _steps[i].durationSeconds;
     }
-    final step  = _steps[_currentStepIndex];
-    final dist  = Geolocator.distanceBetween(
+    final step = _steps[_currentStepIndex];
+    final dist = Geolocator.distanceBetween(
       pos.latitude, pos.longitude,
       step.endLocation.latitude, step.endLocation.longitude,
     );
@@ -891,9 +925,9 @@ class _GuidePageState extends State<GuidePage> {
         GoogleMap(
           initialCameraPosition: CameraPosition(
             target:  LatLng(widget.startLat, widget.startLng),
-            zoom:    20,
+            zoom:    _cameraZoom,
             tilt:    0,
-            bearing: _currentHeading,
+            bearing: _gpsHeading,
           ),
           markers:                 _markers,
           polylines:               _polylines,
@@ -903,11 +937,9 @@ class _GuidePageState extends State<GuidePage> {
           compassEnabled:          false,
           onMapCreated: (c) {
             _mapController = c;
-            Future.delayed(const Duration(milliseconds: 200), () {
-              _animateCameraToUser(widget.startLat, widget.startLng);
-            });
           },
           onCameraMoveStarted: () {
+            // Only stop following on genuine user touch
             if (!_isProgrammaticMove && _isFollowing) {
               setState(() => _isFollowing = false);
             }
@@ -975,10 +1007,10 @@ class _GuidePageState extends State<GuidePage> {
           child: Column(children: [
             if (!_isFollowing) ...[
               _circleBtn(
-                icon: Icons.my_location_rounded,
-                color: Colors.white,
+                icon:      Icons.my_location_rounded,
+                color:     Colors.white,
                 iconColor: const Color(0xFF1A73E8),
-                onTap: _recenter,
+                onTap:     _recenter,
               ),
               const SizedBox(height: 12),
             ],
