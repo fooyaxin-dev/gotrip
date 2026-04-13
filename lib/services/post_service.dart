@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
-import '../modules/interaction/postModel.dart';
+import '../models/postModel.dart';
 import '../../services/userPost_service.dart';
 
 /// Firebase 服务类 - 本地存储版本 (不使用 Firebase Storage)

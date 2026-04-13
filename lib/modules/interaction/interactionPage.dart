@@ -7,7 +7,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'addPost.dart';
-import 'postModel.dart';
+import '../../models/postModel.dart';
 import '../../services/post_service.dart';
 import '../../services/like_service.dart';
 import '../profile/videoPlayer.dart';

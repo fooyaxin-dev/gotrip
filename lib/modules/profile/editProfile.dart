@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'userModel.dart';
+import '../../models/userModel.dart';
 import '../../services/user_service.dart';
 
 class EditProfilePage extends StatefulWidget {

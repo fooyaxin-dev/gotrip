@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
-import '../interaction/postModel.dart';
+import '../../models/postModel.dart';
 import '../../services/post_service.dart';
 import 'videoPlayer.dart';
 

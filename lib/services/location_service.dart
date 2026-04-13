@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:geolocator/geolocator.dart';
-import '../modules/itinerary/itineraryModel.dart';
+import '../models/itineraryModel.dart';
 
 enum LocationStatus {
   success,

@@ -9,9 +9,9 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'placeDetailPage.dart';
 import '../../services/route_service.dart';
 import '../../services/location_service.dart';
-import '../../services/placeModal.dart';
+import '../../models/placeModal.dart';
 import '../../services/nearbyPlace_service.dart'; 
-import '../../modules/itinerary/itineraryModel.dart';
+import '../../models/itineraryModel.dart';
 import '../../modules/itinerary/itineraryDetail.dart';
 import 'routePreviewPage.dart';
 import '../../services/placesAPI_service.dart';
@@ -429,14 +429,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
  
   // realtime 模式从 NearbyPlacesService 拿
   List<PlaceModel> _getRealtimePlaces() {
-  final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
-  final source = isLandmarkMode
-      ? _landmarkPlaces
-      : NearbyPlacesService.instance.getByPrimary(null);
+    final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
+    final source = isLandmarkMode
+        ? _landmarkPlaces
+        : NearbyPlacesService.instance.getByPrimary(null);
 
-  if (_selectedPrimary == null) return source;
-  return source.where((p) => p.primaryType == _selectedPrimary).toList();
-}
+    if (_selectedPrimary == null) return source;
+    return source.where((p) => p.primaryType == _selectedPrimary).toList();
+  }
 
   void _onPrimaryTap(String type) {
     setState(() {

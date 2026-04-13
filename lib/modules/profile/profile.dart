@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'barSwap.dart';
 import 'postWidget.dart';
 import 'historyWidget.dart';
-import 'userModel.dart';
+import '../../models/userModel.dart';
 import '../../services/user_service.dart';
 import 'editProfile.dart';
 import 'profileInfo.dart';

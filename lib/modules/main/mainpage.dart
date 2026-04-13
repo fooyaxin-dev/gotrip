@@ -1,5 +1,5 @@
 
-import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'bottomnav.dart';
@@ -8,7 +8,7 @@ import '../place/placeDetailPage.dart';
 import 'package:geocoding/geocoding.dart';
 import '../../services/route_service.dart';
 import '../../services/location_service.dart';
-import '../../services/placeModal.dart';
+import '../../models/placeModal.dart';
 import '../../services/nearbyPlace_service.dart';
 import '../../services/userPreference_service.dart'; 
 
@@ -70,7 +70,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     await _initLocation();
     await _loadNearby();
     _calculateRoutes();
-    _buildForYou(); // ← 新增
+    _buildForYou(); 
   }
 
   Future<void> _initLocation() async {

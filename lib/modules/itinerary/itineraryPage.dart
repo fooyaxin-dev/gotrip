@@ -1,7 +1,7 @@
 // pages/itinerary/itinerary_page.dart
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../itinerary/itineraryModel.dart';
+import '../../models/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
 import '../../services/userPreference_service.dart';
 import '../itinerary/itineraryGeneratePage.dart';

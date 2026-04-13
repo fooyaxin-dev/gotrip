@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'placeModal.dart';
+import '../models/placeModal.dart';
 import 'placesAPI_service.dart';
 import 'location_service.dart';
 

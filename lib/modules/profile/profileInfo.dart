@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'userModel.dart';
+import '../../models/userModel.dart';
 import '../../services/user_service.dart';
 import 'editProfile.dart';
 

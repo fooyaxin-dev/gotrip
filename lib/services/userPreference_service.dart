@@ -336,7 +336,7 @@ class UserPreferenceService {
                  + 0.10 * budget).clamp(0.0, 1.0);
 
     return RecommendationScore(
-      total:             total,
+      total:             total, 
       interestMatch:     interest,
       distanceScore:     distance,
       ratingScore:       ratingS,
