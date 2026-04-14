@@ -63,10 +63,10 @@ class _EditProfilePageState extends State<EditProfilePage> {
         // 提取 Base64 部分
         String base64String = imageUrl.split(',')[1];
         Uint8List bytes = base64Decode(base64String);
-        print('✅ Base64 图片解码成功，大小: ${bytes.length} bytes');
+        print('✅ Base64 picture decode successful，size: ${bytes.length} bytes');
         return MemoryImage(bytes);
       } catch (e) {
-        print('❌ Base64 解码失败: $e');
+        print('❌ Base64 decode failed: $e');
         return null;
       }
     }
@@ -82,7 +82,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
   // 选择图片
   Future<void> _pickImage(ImageSource source, bool isProfileImage) async {
     try {
-      print('📸 开始选择图片: ${isProfileImage ? "头像" : "背景"}');
+   
       
       final XFile? image = await _picker.pickImage(
         source: source,
@@ -92,24 +92,24 @@ class _EditProfilePageState extends State<EditProfilePage> {
       );
 
       if (image != null) {
-        print('✅ 图片已选择: ${image.path}');
-        print('   文件大小: ${await File(image.path).length()} bytes');
+        print('✅ selected image: ${image.path}');
+        print('   file size: ${await File(image.path).length()} bytes');
         
         setState(() {
           if (isProfileImage) {
             _newProfileImage = File(image.path);
-            print('   → 设置为新头像');
+            print('   → set as new profile image');
           } else {
             _newBackgroundImage = File(image.path);
-            print('   → 设置为新背景');
+            print('   → set as new background image');
           }
         });
       } else {
-        print('❌ 用户取消选择图片');
+        print('❌ user cancelled image selection');
       }
     } catch (e) {
-      print('❌ 选择图片失败: $e');
-      _showErrorSnackBar('选择图片失败: $e');
+      print('❌ choose image failed: $e');
+      _showErrorSnackBar('choose image failed: $e');
     }
   }
 
@@ -123,7 +123,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
             children: [
               ListTile(
                 leading: const Icon(Icons.photo_library),
-                title: const Text('从相册选择'),
+                title: const Text('choose from gallery'),
                 onTap: () {
                   Navigator.pop(context);
                   _pickImage(ImageSource.gallery, isProfileImage);
@@ -131,7 +131,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
               ),
               ListTile(
                 leading: const Icon(Icons.photo_camera),
-                title: const Text('拍照'),
+                title: const Text('take a photo'),
                 onTap: () {
                   Navigator.pop(context);
                   _pickImage(ImageSource.camera, isProfileImage);
@@ -147,7 +147,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
   // 保存更改
   Future<void> _saveChanges() async {
     print('\n═══════════════════════════════════════');
-    print('💾 开始保存更改');
+    print('💾 start saving changes');
     print('═══════════════════════════════════════');
     
     setState(() {
@@ -159,65 +159,65 @@ class _EditProfilePageState extends State<EditProfilePage> {
       String profileImageUrl = widget.userProfile.profileImageUrl;
       String backgroundImageUrl = widget.userProfile.backgroundImageUrl;
       
-      print('📋 初始值:');
+      print('📋 initial values:');
       print('  profileImageUrl length: ${profileImageUrl.length}');
       print('  backgroundImageUrl length: ${backgroundImageUrl.length}');
       print('');
 
       // 上传新头像
       if (_newProfileImage != null) {
-        print('📤 处理新头像...');
-        print('  文件路径: ${_newProfileImage!.path}');
+        print('📤 start processing new profile image...');
+        print('  file path: ${_newProfileImage!.path}');
         
         String? newUrl = await _userService.uploadProfileImage(
           _newProfileImage!,
           widget.userProfile.uid,
         );
         
-        print('📥 处理结果:');
-        print('  返回的 Base64 length: ${newUrl?.length ?? 0}');
+        print('📥 processing result:');
+        print('  returned Base64 length: ${newUrl?.length ?? 0}');
         
         if (newUrl != null && newUrl.isNotEmpty) {
-          print('  ✅ 头像处理成功！');
+          print('  ✅ profile image processing successful!');
           profileImageUrl = newUrl;
-          print('  ✅ 头像已更新');
+          print('  ✅ profile image updated');
         } else {
-          print('  ❌ 头像处理失败！');
+          print('  ❌ profile image processing failed!');
         }
         print('');
       } else {
-        print('ℹ️  没有新头像需要上传');
+        print('ℹ️  no new profile image to upload');
         print('');
       }
 
       // 上传新背景图
       if (_newBackgroundImage != null) {
-        print('📤 处理新背景图...');
-        print('  文件路径: ${_newBackgroundImage!.path}');
+        print('📤 start processing new background image...');
+        print('  file path: ${_newBackgroundImage!.path}');
         
         String? newUrl = await _userService.uploadBackgroundImage(
           _newBackgroundImage!,
           widget.userProfile.uid,
         );
         
-        print('📥 处理结果:');
-        print('  返回的 Base64 length: ${newUrl?.length ?? 0}');
+        print('📥 processing result:');
+        print('  returned Base64 length: ${newUrl?.length ?? 0}');
         
         if (newUrl != null && newUrl.isNotEmpty) {
-          print('  ✅ 背景图处理成功！');
+          print('  ✅ background image processing successful!');
           backgroundImageUrl = newUrl;
-          print('  ✅ 背景图已更新');
+          print('  ✅ background image updated');
         } else {
-          print('  ❌ 背景图处理失败！');
+          print('  ❌ background image processing failed!');
         }
         print('');
       } else {
-        print('ℹ️  没有新背景图需要上传');
+        print('ℹ️  no new background image to upload');
         print('');
       }
 
       // 准备要保存的数据
-      print('📋 准备保存到数据库的数据:');
+      print('📋 initial values:');
       print('  username: ${_usernameController.text.trim()}');
       print('  bio: ${_bioController.text.trim()}');
       print('  profileImageUrl length: ${profileImageUrl.length}');
@@ -232,32 +232,32 @@ class _EditProfilePageState extends State<EditProfilePage> {
         backgroundImageUrl: backgroundImageUrl,
       );
 
-      print('💾 调用 updateUserProfile...');
+      print('💾 use updateUserProfile...');
 
       // 保存到数据库
       bool success = await _userService.updateUserProfile(updatedProfile);
 
-      print('💾 保存结果: $success');
+      print('💾 save result: $success');
       print('');
 
       if (success) {
-        print('✅ 保存成功！');
+        print('✅ save successful!');
         print('═══════════════════════════════════════\n');
         
         if (mounted) {
           Navigator.pop(context, true); // 返回 true 表示已更新
-          _showSuccessSnackBar('保存成功！');
+          _showSuccessSnackBar('save successful！');
         }
       } else {
-        print('❌ 保存失败！');
+        print('❌ save failed: unknown error');
         print('═══════════════════════════════════════\n');
-        _showErrorSnackBar('保存失败，请重试');
+        _showErrorSnackBar('save failed，please try again');
       }
     } catch (e, stackTrace) {
       print('❌ 保存过程中出错: $e');
       print('Stack trace: $stackTrace');
       print('═══════════════════════════════════════\n');
-      _showErrorSnackBar('保存失败: $e');
+      _showErrorSnackBar('save failed: $e');
     } finally {
       if (mounted) {
         setState(() {
@@ -291,7 +291,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('编辑资料'),
+        title: const Text('edit profile'),
         actions: [
           TextButton(
             onPressed: _isLoading ? null : _saveChanges,
@@ -302,7 +302,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Text(
-                    '保存',
+                    'save',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -332,15 +332,15 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 children: [
                   _buildTextField(
                     controller: _usernameController,
-                    label: '用户名',
-                    hint: '输入您的用户名 (例如: @username)',
+                    label: 'username',
+                    hint: 'enter your username (e.g., @username)',
                     maxLength: 30,
                   ),
                   const SizedBox(height: 20),
                   _buildTextField(
                     controller: _bioController,
-                    label: '个人简介',
-                    hint: '介绍一下自己...',
+                    label: 'bio',
+                    hint: 'tell us about yourself...',
                     maxLines: 4,
                     maxLength: 150,
                   ),
@@ -360,14 +360,14 @@ class _EditProfilePageState extends State<EditProfilePage> {
     if (_newBackgroundImage != null) {
       // 用户刚选择的新图片
       backgroundImage = FileImage(_newBackgroundImage!);
-      print('🖼️ 显示新选择的背景图');
+      print('🖼️ displaying newly selected background image');
     } else {
       // 数据库中的图片（Base64 或 URL）
       backgroundImage = _getImageProvider(widget.userProfile.backgroundImageUrl);
       if (backgroundImage != null) {
-        print('🖼️ 显示数据库中的背景图');
+        print('🖼️ displaying background image from database');
       } else {
-        print('🖼️ 没有背景图，显示默认');
+        print('🖼️ no background image, displaying default');
       }
     }
 
@@ -398,7 +398,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                       ),
                       SizedBox(height: 8),
                       Text(
-                        '点击下方按钮添加背景图',
+                        'click the button below to add a background image',
                         style: TextStyle(color: Colors.grey),
                       ),
                     ],
@@ -428,17 +428,17 @@ class _EditProfilePageState extends State<EditProfilePage> {
     if (_newProfileImage != null) {
       // 用户刚选择的新图片
       profileImage = FileImage(_newProfileImage!);
-      print('👤 显示新选择的头像');
+      print('👤 displaying newly selected profile image');
     } else {
       // 数据库中的图片（Base64 或 URL）
       ImageProvider? dbImage = _getImageProvider(widget.userProfile.profileImageUrl);
       if (dbImage != null) {
         profileImage = dbImage;
-        print('👤 显示数据库中的头像');
+        print('👤 displaying profile image from database');
       } else {
         // 默认头像
         profileImage = const AssetImage('assets/images/profile.jpg');
-        print('👤 显示默认头像');
+        print('👤 displaying default profile image');
       }
     }
 
@@ -454,7 +454,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
               radius: 55,
               backgroundImage: profileImage,
               onBackgroundImageError: (exception, stackTrace) {
-                print('❌ 头像加载失败: $exception');
+                print('❌ profile image loading failed: $exception');
               },
             ),
           ),

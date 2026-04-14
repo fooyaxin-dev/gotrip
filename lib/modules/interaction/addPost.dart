@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:gotrip/models/postModel.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
-import '../../services/userPost_service.dart';
+import '../../services/post_service.dart';
 import '../../services/placesAPI_service.dart';
 
 // =====================================================
@@ -52,7 +53,7 @@ class _PostingPageState extends State<PostingPage> {
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  final UserStatsService _statsService = UserStatsService();
+  final PostService _statsService = PostService();
 
   final List<String> availableTags = [
     'food', 'travel', 'photography', 'daily', 'vlog',

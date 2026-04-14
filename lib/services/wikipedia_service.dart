@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'wikiCache_service.dart';
 
 class WikipediaService {
+  
   static const _headers = {
     'Accept': 'application/json',
     'User-Agent': 'TravelApp/1.0 (your@email.com)',

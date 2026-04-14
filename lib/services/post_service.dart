@@ -1,13 +1,89 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../models/postModel.dart';
-import '../../services/userPost_service.dart';
 
-/// Firebase 服务类 - 本地存储版本 (不使用 Firebase Storage)
 class PostService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final UserStatsService _statsService = UserStatsService();
+  final FirebaseAuth _auth = FirebaseAuth.instance; // ✅ 新增
+
+  // ===== 用户统计 (从 UserStatsService 迁移) =====
+
+  Future<void> incrementPostCount() async {
+    String? userId = _auth.currentUser?.uid;
+    if (userId == null) return;
+    try {
+      await _firestore.collection('users').doc(userId).update({
+        'postCount': FieldValue.increment(1),
+      });
+    } catch (e) {
+      print('Update post count failed: $e');
+    }
+  }
+
+  Future<void> decrementPostCount() async {
+    String? userId = _auth.currentUser?.uid;
+    if (userId == null) return;
+    try {
+      final doc = await _firestore.collection('users').doc(userId).get();
+      final current = (doc.data() as Map<String, dynamic>?)?['postCount'] ?? 0;
+      if (current <= 0) return;
+      await _firestore.collection('users').doc(userId).update({
+        'postCount': FieldValue.increment(-1),
+      });
+    } catch (e) {
+      print('Update post count failed: $e');
+    }
+  }
+
+  Future<void> incrementFavouriteCount() async {
+    String? userId = _auth.currentUser?.uid;
+    if (userId == null) return;
+    try {
+      await _firestore.collection('users').doc(userId).update({
+        'favouriteCount': FieldValue.increment(1),
+      });
+    } catch (e) {
+      print('Update favourite count failed: $e');
+    }
+  }
+
+  Future<void> decrementFavouriteCount() async {
+    String? userId = _auth.currentUser?.uid;
+    if (userId == null) return;
+    try {
+      await _firestore.collection('users').doc(userId).update({
+        'favouriteCount': FieldValue.increment(-1),
+      });
+    } catch (e) {
+      print('Update favourite count failed: $e');
+    }
+  }
+
+  Future<void> incrementRouteCount() async {
+    String? userId = _auth.currentUser?.uid;
+    if (userId == null) return;
+    try {
+      await _firestore.collection('users').doc(userId).update({
+        'routeCount': FieldValue.increment(1),
+      });
+    } catch (e) {
+      print('Update route count failed: $e');
+    }
+  }
+
+  Future<void> decrementRouteCount() async {
+    String? userId = _auth.currentUser?.uid;
+    if (userId == null) return;
+    try {
+      await _firestore.collection('users').doc(userId).update({
+        'routeCount': FieldValue.increment(-1),
+      });
+    } catch (e) {
+      print('Update route count failed: $e');
+    }
+  }
 
   // ===== 创建帖子 =====
 
@@ -121,8 +197,6 @@ class PostService {
             .toList());
   }
 
-  // ===== 按城市查询 =====
-
   Stream<List<Post>> getPostsByCity(String city) {
     return _firestore
         .collection('posts')
@@ -134,16 +208,9 @@ class PostService {
             snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList());
   }
 
-  /// 根据 wishlist 城市列表获取帖子 (最多 10 个城市, Firestore whereIn 限制)
-  /// 如果 cities 为空，返回空列表
   Stream<List<Post>> getPostsByWishlistCities(List<String> cities) {
-    // Firestore whereIn 最多支持 10 个值
     final limitedCities = cities.take(10).toList();
-
-    if (limitedCities.isEmpty) {
-      return Stream.value([]);
-    }
-
+    if (limitedCities.isEmpty) return Stream.value([]);
     return _firestore
         .collection('posts')
         .where('city', whereIn: limitedCities)
@@ -211,7 +278,7 @@ class PostService {
           }
         }
         await _firestore.collection('posts').doc(postId).delete();
-        await _statsService.decrementPostCount();
+        await decrementPostCount(); // ✅ 直接调用本类方法
       }
     } catch (e) {
       throw Exception('Failed to delete post: $e');
@@ -247,8 +314,7 @@ class PostService {
 
   Future<void> cleanOrphanedImages() async {
     try {
-      QuerySnapshot postsSnapshot =
-          await _firestore.collection('posts').get();
+      QuerySnapshot postsSnapshot = await _firestore.collection('posts').get();
       Set<String> usedImages = {};
       for (var doc in postsSnapshot.docs) {
         Post post = Post.fromFirestore(doc);
@@ -302,9 +368,7 @@ class PostService {
           .collection('posts')
           .orderBy('createdAt', descending: true)
           .limit(limit);
-      if (lastDocument != null) {
-        query = query.startAfterDocument(lastDocument);
-      }
+      if (lastDocument != null) query = query.startAfterDocument(lastDocument);
       QuerySnapshot snapshot = await query.get();
       return snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
     } catch (e) {

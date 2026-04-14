@@ -19,7 +19,6 @@ class UserProfile {
     this.routeCount = 0,
   });
 
-  // 从 Firestore 文档转换为 UserProfile 对象
   factory UserProfile.fromMap(Map<String, dynamic> map, String uid) {
     return UserProfile(
       uid: uid,
@@ -46,7 +45,6 @@ class UserProfile {
     };
   }
 
-  // 创建副本并更新某些字段
   UserProfile copyWith({
     String? username,
     String? displayName,
