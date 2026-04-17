@@ -136,6 +136,16 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   // ─────────────────────────────────────────────
 
   Future<void> _generate() async {
+
+    if (_useCurrentLocation) {
+      final pos = LocationService.instance.currentPosition;
+      if (pos == null) {
+        _showSnack('Unable to get your location. Please enable GPS or search a place manually.');
+        return;
+      }
+    }
+
+
     // If custom location selected but coords failed
     if (!_useCurrentLocation &&
         (_selectedLat == null || _selectedLng == null)) {
@@ -889,7 +899,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                           fontWeight: FontWeight.bold)),
                 ),
               ),
-            ],
+            ], 
           ),
         ),
       ),

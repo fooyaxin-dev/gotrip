@@ -26,7 +26,6 @@ class _ProfilePageState extends State<ProfilePage> {
   bool showProfile = true;
   int _currentIndex = 0;
 
-  // ✅ 只创建一次
   final List<Widget> _tabs = const [
     postWidget(),
     HistoryWidget(),
@@ -35,7 +34,7 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   void initState() {
     super.initState();
-    // ✅ stream 缓存在这里，整个生命周期只订阅一次
+
     _stream = _userService.getCurrentUserProfileStream();
     
   }
@@ -96,12 +95,10 @@ class _ProfilePageState extends State<ProfilePage> {
               children: [
                 SizedBox(height: height * 0.13),
 
-                // ✅ 独立 widget，ProfilePage 的 setState 完全不影响它
                 ProfileInfoWidget(onZoom: zoomProfile),
 
                 SizedBox(height: height * 0.03),
 
-                // ✅ tab 切换只重建这部分
                 BarSwap(
                   key: const ValueKey('barswap'),
                   selectedIndex: _currentIndex,
@@ -124,12 +121,11 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // ── 放大头像视图 ──────────────────────────────────────────────────────────
   Widget _buildZoomView(double height) {
     return InkWell(
       onTap: zoomProfile,
       child: StreamBuilder<UserProfile?>(
-        stream: _stream, // ✅ 用缓存的 stream
+        stream: _stream, 
         builder: (context, snapshot) {
           final userProfile = snapshot.data;
           if (userProfile == null) return const SizedBox();

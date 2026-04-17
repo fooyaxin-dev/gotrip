@@ -182,6 +182,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     days[dayIndex] = days[dayIndex].copyWith(places: places);
     setState(() => _itinerary = _itinerary.copyWith(days: days));
   }
+  
 
   // ─────────────────────────────────────────────
   // Time / Duration editing

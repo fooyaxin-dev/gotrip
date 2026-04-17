@@ -344,6 +344,10 @@ class ItineraryService {
       final prompt = '''
 You are a local travel guide creating a day trip itinerary.
 
+User's location: Lat $lat, Lng $lng
+All places listed below are within 10km of this exact location.
+Group each day's places geographically — keep stops close to each other to minimise travel time between them.
+
 Traveler profile:
 - Interests: $categoryText
 - Favourite cuisines: $cuisineText

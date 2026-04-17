@@ -152,7 +152,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
         "travelMode": routesMode,
         "routingPreference": mode == TravelMode.walk
             ? "ROUTING_PREFERENCE_UNSPECIFIED"
-            : "TRAFFIC_AWARE",   // ← 实时路况
+            : "TRAFFIC_AWARE",   
         "computeAlternativeRoutes": false,
         "languageCode": "en-US",
         "units": "METRIC",

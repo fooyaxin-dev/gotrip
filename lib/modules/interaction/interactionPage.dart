@@ -132,7 +132,7 @@ class _InteractionPageState extends State<InteractionPage> {
                     height: 3,
                     width: 20,
                     decoration: BoxDecoration(
-                        color: Colors.orange,
+                        color: Color(0xFF7C4DFF),
                         borderRadius: BorderRadius.circular(2))),
               ]),
               const SizedBox(width: 20),
@@ -164,7 +164,7 @@ class _InteractionPageState extends State<InteractionPage> {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(
                       child: CircularProgressIndicator(
-                          color: Color(0xFFD35D3E)));
+                          color: Color(0xFF7C4DFF)));
                 }
                 if (snapshot.hasError) {
                   return Center(
@@ -190,7 +190,7 @@ class _InteractionPageState extends State<InteractionPage> {
                     await _loadCities();
                     setState(() {});
                   },
-                  color: const Color(0xFFD35D3E),
+                  color: const Color(0xFF7C4DFF),
                   child: ListView.builder(
                     key: const PageStorageKey('post_list'),
                     physics: const BouncingScrollPhysics(),
@@ -241,7 +241,7 @@ class _InteractionPageState extends State<InteractionPage> {
             fontSize: 13,
           ),
           prefixIcon:
-              const Icon(Icons.search, color: Color(0xFFD35D3E), size: 20),
+              const Icon(Icons.search, color: Color(0xFF7C4DFF), size: 20),
           suffixIcon: _selectedCity != null || _searchController.text.isNotEmpty
               ? IconButton(
                   icon: const Icon(Icons.close, size: 18, color: Colors.grey),

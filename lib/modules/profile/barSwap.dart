@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class BarSwap extends StatelessWidget {
-  // ✅ 改成 StatelessWidget，内部不需要任何状态
+
   final Function(int)? onTabChanged;
   final int selectedIndex;
 
@@ -30,7 +30,7 @@ class BarSwap extends StatelessWidget {
         ),
         child: Stack(
           children: [
-            // 动画滑块
+     
             AnimatedAlign(
               alignment: selectedIndex == 0
                   ? Alignment.centerLeft

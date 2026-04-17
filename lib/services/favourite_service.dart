@@ -138,7 +138,7 @@ class FavouriteService {
     print('✅ Removed favourite, favouriteCount -1');
   }
 
-  /// 🔍 检查是否已收藏
+
   static Future<bool> isFavourite(String placeId) async {
     final collection = _favouritesCollection;
     if (collection == null) return false;
@@ -146,7 +146,7 @@ class FavouriteService {
     return doc.exists;
   }
 
-  /// 🔄 切换收藏状态
+  
   static Future<bool> toggleFavourite({
     required String placeId,
     required String name,

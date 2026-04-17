@@ -47,8 +47,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   TravelMode _travelMode = TravelMode.walk;
   bool _isTravelModeExpanded = false;
 
-  final List<PlaceModel> _displayedPlaces = [];
-  List<PlaceModel> _landmarkPlaces = [];
+  final List<PlaceModel> _displayedPlaces = []; // for real time place
+  List<PlaceModel> _landmarkPlaces = []; // for landmark mode, not affecting singleton 
   Map<String, RouteResult> _routeResults = {};
   bool _isLoading = false;
 
@@ -60,11 +60,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // Search
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
-  List<Map<String, dynamic>> _autocompleteSuggestions = [];
+  List<Map<String, dynamic>> _autocompleteSuggestions = []; //for autocomplete dropdown results
   bool _isSearchMode = false;     
   bool _isSearchLoading = false;
   String? _searchLocationName;      
-  Timer? _debounce;                 
+  Timer? _debounce; // prevent api spam
 
   final Set<String> _selectedPlaceIds = {};
   final Map<String, PlaceModel> _selectedPlacesMap = {}; 
@@ -187,7 +187,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     setState(() => _isLoading = true);
 
     if (widget.landmarkLat != null && widget.landmarkLng != null) {
-      // ✅ Landmark 模式：不碰 singleton，独立拉数据
+      // Landmark mode：no touch singleton
       _currentPosition = Position(
         latitude: widget.landmarkLat!,
         longitude: widget.landmarkLng!,
@@ -211,7 +211,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       setState(() {});
 
       try {
-        // ✅ 用独立方法拉，结果存在本地 _landmarkPlaces，不影响 singleton
+        // store the results in _landmarkPlaces (local)
         _landmarkPlaces = await NearbyPlacesService.instance.loadNearbyPlacesAt(
           lat: widget.landmarkLat!,
           lng: widget.landmarkLng!,
@@ -224,7 +224,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       }
 
     } else {
-      // ✅ GPS 模式：照常用 singleton
+      // GPS mode, use singleton cache
       final pos = LocationService.instance.currentPosition;
       if (pos == null) { _showErrorDialog('Error', 'Cannot get location'); return; }
       _currentPosition = pos;
@@ -284,7 +284,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       _searchController.text = suggestion['mainText'] ?? '';
     });
 
-    // 拿坐标
+    // 拿lat and lng
     final detail = await PlacesApiService.getPlaceLatLng(suggestion['placeId']);
     if (detail == null || detail['lat'] == null) {
       setState(() => _isSearchLoading = false);
@@ -318,7 +318,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         _searchPlaces       = places;
         _selectedPlaceIds.clear();
 
-        // 加一个 pin 在搜索的地点
+        // marker for the searched location
         _markers.removeWhere((m) => m.markerId.value == 'search_location');
         _markers.add(Marker(
           markerId: const MarkerId('search_location'),
@@ -328,11 +328,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         ));
       });
 
-      // 先 apply filter（把 places markers 加进去）
+      //  apply filter（add places markers into it）
       _applyFilter();
 
-      // filter 完了才移动 camera，这时候所有 markers 都在了
-      // 用 _animateToFitMarkers 会自动忽略 'me' marker（search mode）
+      // filter only move camera, at that time all marker already exist
+      // use of _animateToFitMarkers will ignore 'me' marker（search mode）
       _animateToFitMarkers(keepZoom: false);
 
     } catch (e) {
@@ -340,7 +340,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
  
-  // 清除 search，回到用户当前位置
+  // clear search，back to real time mode
   void _clearSearch() {
     _searchController.clear();
     _selectedPlacesMap.clear();
@@ -355,9 +355,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       _searchLocationName  = null;
       _searchPlaces        = [];
       _autocompleteSuggestions = [];
-      _selectedPlaceIds.clear(); // ← 清空选中的地点
-
-      // 更新 me marker 回真实位置
+      _selectedPlaceIds.clear(); // ← clear selected places
+      // me marker back to real time position
       if (realPos != null) {
         _markers.removeWhere((m) => m.markerId.value == 'me');
         _markers.removeWhere((m) => m.markerId.value == 'search_location');
@@ -427,7 +426,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     _animateToFitMarkers(keepZoom: true);
   }
  
-  // realtime 模式从 NearbyPlacesService 拿
+  // realtime mode take place from NearbyPlacesService
   List<PlaceModel> _getRealtimePlaces() {
     final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
     final source = isLandmarkMode
@@ -465,7 +464,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
     try {
       if (isLandmarkMode) {
-        // ✅ landmark 模式只刷新本地 list
+        // landmark mode refresh only update the local _landmarkPlaces, not touch singleton
         _landmarkPlaces = await NearbyPlacesService.instance.loadNearbyPlacesAt(
           lat: widget.landmarkLat!,
           lng: widget.landmarkLng!,
@@ -473,8 +472,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           context: context,
         );
       } else {
-        NearbyPlacesService.instance.clearCache(); // GPS 模式才清 singleton
-        await NearbyPlacesService.instance.loadNearbyPlacesOnce(categories, context);
+        NearbyPlacesService.instance.clearCache(); // realt time mode then clear singleton
+        await NearbyPlacesService.instance.loadNearbyPlacesOnce(categories, context); //recall
       }
     } catch (e) {
       setState(() => _isLoading = false);
@@ -484,47 +483,37 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     _applyFilter();
   }
 
-  // ─────────────────────────────────────────────
-  // ✅ Toggle place selection
-  // ─────────────────────────────────────────────
-
+  //  Toggle place selection
   void _togglePlaceSelection(PlaceModel place) {
     setState(() {
       if (_selectedPlaceIds.contains(place.id)) {
         _selectedPlaceIds.remove(place.id);
-        _selectedPlacesMap.remove(place.id); // ← 新增
+        _selectedPlacesMap.remove(place.id); 
       } else {
         _selectedPlaceIds.add(place.id);
-        _selectedPlacesMap[place.id] = place; // ← 新增
+        _selectedPlacesMap[place.id] = place; 
       }
     });
   }
 
-  // ─────────────────────────────────────────────
-  // ✅ View selected → push to ItineraryDetailPage
-  // ─────────────────────────────────────────────
-
+  // View selected then push to ItineraryDetailPage
   void _viewSelectedItinerary() {
     if (_selectedPlaceIds.isEmpty) return;
 
-    // 按距离排序
-    final selectedPlaces = _selectedPlacesMap.values.toList() // ← 从 Map 取
-      ..sort((a, b) {
-        final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
-        final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
-        return aD.compareTo(bD);
-      });
+    // arrange by distance location
+    final selectedPlaces = _buildOptimizedRoute();
 
-    // 从 09:00 开始自动排时间
+    //record for itinerary use
     final now       = DateTime.now();
     final dateStr   = DateFormat('yyyy-MM-dd').format(now);
-    var curHour     = 9;
+    var curHour     = 9;// start from 09:00am
     var curMin      = 0;
 
     final itineraryPlaces = selectedPlaces.map((p) {
       final timeStr  = '${curHour.toString().padLeft(2, '0')}:${curMin.toString().padLeft(2, '0')}';
-      final duration = p.primaryType == 'restaurant' ? 60 : 90;
+      final duration = p.primaryType == 'restaurant' ? 60 : 90; // stop time: 1h for restaurant, 1.5h for others
 
+      // calculate next place start time
       curMin  += duration;
       curHour += curMin ~/ 60;
       curMin   = curMin % 60;
@@ -557,6 +546,67 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       context,
       MaterialPageRoute(builder: (_) => ItineraryDetailPage(itinerary: itinerary)),
     );
+  }
+
+  List<PlaceModel> _buildOptimizedRoute() {
+    final remaining = _selectedPlacesMap.values.toList();
+    final result = <PlaceModel>[];
+
+    if (remaining.isEmpty || _currentPosition == null) return result;
+
+    double currentLat = _currentPosition!.latitude;
+    double currentLng = _currentPosition!.longitude;
+
+    int step = 1;
+
+    print("🚀 START ROUTE OPTIMIZATION");
+    print("📍 Start position: $currentLat, $currentLng");
+    print("📦 Total places: ${remaining.length}");
+
+    while (remaining.isNotEmpty) {
+      PlaceModel? nearest;
+      double minDist = double.infinity;
+
+      print("\n🔁 STEP $step");
+      print("📌 Current position: $currentLat, $currentLng");
+
+      for (final place in remaining) {
+        if (place.lat == null || place.lng == null) continue;
+
+        final dist = Geolocator.distanceBetween(
+          currentLat,
+          currentLng,
+          place.lat!,
+          place.lng!,
+        );
+
+        print("   👉 ${place.name} = ${dist.toStringAsFixed(1)} m");
+
+        if (dist < minDist) {
+          minDist = dist;
+          nearest = place;
+        }
+      }
+
+      if (nearest == null) break;
+
+      print("⭐ SELECTED: ${nearest.name} (${minDist.toStringAsFixed(1)} m)");
+
+      result.add(nearest);
+      remaining.remove(nearest);
+
+      currentLat = nearest.lat!;
+      currentLng = nearest.lng!;
+
+      step++;
+    }
+
+    print("\n🏁 FINAL ROUTE:");
+    for (int i = 0; i < result.length; i++) {
+      print("  ${i + 1}. ${result[i].name}");
+    }
+
+    return result;
   }
 
   // ─────────────────────────────────────────────

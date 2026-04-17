@@ -20,6 +20,7 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController emailController = TextEditingController();
   final TextEditingController pwdController = TextEditingController();
   bool isLoading = false;
+  bool _pwdVisible = false;
 
   @override
   void dispose() {
@@ -87,6 +88,141 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
+  // ================= Forgot Password =================
+  Future<void> _showForgotPasswordDialog() async {
+    final emailCtrl = TextEditingController();
+    bool isSending = false;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Column(
+            children: [
+              Icon(Icons.lock_reset, size: 48, color: Color(0xFF7C4DFF)),
+              SizedBox(height: 8),
+              Text(
+                'Reset Password',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Enter your email and we\'ll send you a reset link.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: emailCtrl,
+                keyboardType: TextInputType.emailAddress,
+                decoration: InputDecoration(
+                  hintText: 'Enter your email',
+                  prefixIcon: const Icon(Icons.email_outlined),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Color(0xFF7C4DFF)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: isSending
+                        ? null
+                        : () async {
+                            final email = emailCtrl.text.trim();
+                            if (email.isEmpty || !email.contains('@')) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Please enter a valid email'),
+                                  backgroundColor: Colors.redAccent,
+                                ),
+                              );
+                              return;
+                            }
+
+                            setDialogState(() => isSending = true);
+
+                            try {
+                              await FirebaseAuth.instance
+                                  .sendPasswordResetEmail(email: email);
+
+                              if (mounted) {
+                                Navigator.pop(ctx);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                        '✅ Reset email sent! Check your inbox.'),
+                                    backgroundColor: Colors.green,
+                                  ),
+                                );
+                              }
+                            } on FirebaseAuthException catch (e) {
+                              setDialogState(() => isSending = false);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(e.message ?? 'Error sending email'),
+                                  backgroundColor: Colors.redAccent,
+                                ),
+                              );
+                            }
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF7C4DFF),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: isSending
+                        ? const SizedBox(
+                            height: 18,
+                            width: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text('Send Link'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ================= Social Login =================
 
   // --- Google ---
@@ -94,7 +230,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _handleGoogleSignIn() async {
     try {
       final googleUser = await _googleSignIn.signIn();
-      if (googleUser == null) return; // 用户取消登录
+      if (googleUser == null) return;
 
       final googleAuth = await googleUser.authentication;
 
@@ -113,23 +249,22 @@ class _LoginPageState extends State<LoginPage> {
           context,
           MaterialPageRoute(
             builder: (_) => prefs.onboardingDone
-                ? const HomePage()           // 做过 onboarding → 直接进
-                : const OnboardingPage(),    // 没做过 → 先做 onboarding
+                ? const HomePage()
+                : const OnboardingPage(),
           ),
         );
       }
-      } catch (e) {
-        _showError('Google login failed: $e');
-      }
+    } catch (e) {
+      _showError('Google login failed: $e');
+    }
   }
 
-  // --- Facebook (flutter_facebook_auth 7.1.5) ---
+  // --- Facebook ---
   Future<void> _handleFacebookSignIn() async {
     try {
       final LoginResult result = await FacebookAuth.instance.login();
 
       if (result.status == LoginStatus.success && result.accessToken != null) {
-        // ⚠️ 正确写法：用 tokenString
         final String facebookToken = result.accessToken!.tokenString;
 
         final credential = FacebookAuthProvider.credential(facebookToken);
@@ -157,38 +292,6 @@ class _LoginPageState extends State<LoginPage> {
       _showError('Facebook login failed: $e');
     }
   }
-
-
-  // --- Twitter ---
-  // Future<void> _handleTwitterSignIn() async {
-  //   final twitterLogin = TwitterLogin(
-  //     apiKey: 'YOUR_API_KEY',          // 替换你的 Twitter API Key
-  //     apiSecretKey: 'YOUR_API_SECRET', // 替换你的 Twitter API Secret
-  //     redirectURI: 'YOUR_CALLBACK_URL',// 替换你的回调 URI
-  //   );
-
-  //   final authResult = await twitterLogin.login();
-
-  //   final status = authResult.status;
-  //   if (status == TwitterLoginStatus.loggedIn) {
-  //     final twitterCredential = TwitterAuthProvider.credential(
-  //       accessToken: authResult.authToken!,
-  //       secret: authResult.authTokenSecret!,
-  //     );
-  //     await FirebaseAuth.instance.signInWithCredential(twitterCredential);
-
-  //     if (mounted) {
-  //       Navigator.pushReplacement(
-  //         context,
-  //         MaterialPageRoute(builder: (_) => const HomePage()),
-  //       );
-  //     }
-  //   } else if (status == TwitterLoginStatus.cancelledByUser) {
-  //     _showError('Twitter login cancelled');
-  //   } else {
-  //     _showError('Twitter login failed: ${authResult.errorMessage}');
-  //   }
-  // }
 
   // ================= UI =================
   @override
@@ -273,11 +376,37 @@ class _LoginPageState extends State<LoginPage> {
                   controller: pwdController,
                   icon: Icons.lock,
                   hint: 'Enter your password',
-                  obscure: true,
+                  obscure: !_pwdVisible,
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _pwdVisible ? Icons.visibility_off : Icons.visibility,
+                      color: Colors.grey,
+                    ),
+                    onPressed: () => setState(() => _pwdVisible = !_pwdVisible),
+                  ),
                   validator: (value) {
                     if (value == null || value.isEmpty) return 'Password is required';
                     return null;
                   },
+                ),
+
+                // ===== Forgot Password =====
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 28, top: 8),
+                    child: GestureDetector(
+                      onTap: _showForgotPasswordDialog,
+                      child: const Text(
+                        'Forgot Password?',
+                        style: TextStyle(
+                          color: Color(0xFF7C4DFF),
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
 
                 const SizedBox(height: 20),
@@ -332,29 +461,7 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 50),
 
-                // // ===== Social Media =====
-                // const Text(
-                //   '-- or login with --',
-                //   style: TextStyle(
-                //     color: Colors.black54,
-                //     fontSize: 14,
-                //   ),
-                // ),
-
-                // const SizedBox(height: 15),
-
-                // Row(
-                //   mainAxisAlignment: MainAxisAlignment.center,
-                //   children: [
-                //     _socialCircle(FontAwesomeIcons.google, const Color(0xFF4285F4), _handleGoogleSignIn),
-                //     const SizedBox(width: 15),
-                //     _socialCircle(FontAwesomeIcons.facebook, const Color(0xFF1877F2), _handleFacebookSignIn),
-                //     const SizedBox(width: 15),
-                //     _socialCircle(FontAwesomeIcons.twitter, const Color(0xFF1DA1F2),null),
-                //   ],
-                // ),
-
-                const SizedBox(height: 150),
+                const SizedBox(height: 100),
 
                 // ===== Go to Signup =====
                 Row(
@@ -378,6 +485,8 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                   ],
                 ),
+
+                const SizedBox(height: 30),
               ],
             ),
           ),
@@ -394,6 +503,7 @@ class _LoginPageState extends State<LoginPage> {
     bool obscure = false,
     TextInputType keyboardType = TextInputType.text,
     String? Function(String?)? validator,
+    Widget? suffixIcon,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 25),
@@ -409,6 +519,7 @@ class _LoginPageState extends State<LoginPage> {
             icon: Icon(icon),
             hintText: hint,
             border: InputBorder.none,
+            suffixIcon: suffixIcon,
           ),
         ),
       ),

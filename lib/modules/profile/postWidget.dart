@@ -65,7 +65,7 @@ class _postWidgetState extends State<postWidget> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── 图片 / 视频帖子网格 ──
+         
             if (mediaPosts.isNotEmpty) ...[
               _buildSectionHeader(
                 icon: Icons.photo_library_outlined,
@@ -147,11 +147,9 @@ class _postWidgetState extends State<postWidget> {
     );
   }
 
-  // =====================================================
   // Media card (图片 / 视频)
-  // =====================================================
   Widget _buildMediaCard(Post post) {
-    // 优先取第一张图，没有图则显示 video 缩略图占位
+ 
     final bool hasImage = post.images.isNotEmpty;
     final bool hasVideo = post.videoPaths.isNotEmpty;
     final int totalMedia = post.images.length + post.videoPaths.length;
@@ -222,7 +220,7 @@ class _postWidgetState extends State<postWidget> {
             ),
           ),
 
-          // ── 可见性标签 ──
+  
           if (post.visibility != 'public')
             Positioned(
               top: 8,
@@ -288,9 +286,8 @@ class _postWidgetState extends State<postWidget> {
     );
   }
 
-  // =====================================================
+
   // Text card (纯文字帖子)
-  // =====================================================
   Widget _buildTextCard(Post post) {
     return GestureDetector(
       onTap: () => _showPostDetail(post),
@@ -311,7 +308,7 @@ class _postWidgetState extends State<postWidget> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── 标题 + 可见性 ──
+    
             Row(children: [
               Expanded(
                 child: Text(
@@ -336,7 +333,7 @@ class _postWidgetState extends State<postWidget> {
 
             const SizedBox(height: 6),
 
-            // ── 内容预览 ──
+    
             Text(
               post.content,
               maxLines: 2,
@@ -347,7 +344,6 @@ class _postWidgetState extends State<postWidget> {
                   height: 1.5),
             ),
 
-            // ── Tags ──
             if (post.tags.isNotEmpty) ...[
               const SizedBox(height: 8),
               Wrap(
@@ -372,7 +368,6 @@ class _postWidgetState extends State<postWidget> {
 
             const SizedBox(height: 10),
 
-            // ── 底部统计 ──
             Row(children: [
               Icon(Icons.favorite_border,
                   size: 13, color: Colors.grey[500]),
@@ -400,9 +395,8 @@ class _postWidgetState extends State<postWidget> {
     );
   }
 
-  // =====================================================
+
   // Placeholder widgets
-  // =====================================================
   Widget _greyPlaceholder() => Container(
         color: Colors.grey[300],
         child: const Icon(Icons.broken_image,
@@ -417,9 +411,7 @@ class _postWidgetState extends State<postWidget> {
         ),
       );
 
-  // =====================================================
   // Post detail bottom sheet
-  // =====================================================
   void _showPostDetail(Post post) {
     showModalBottomSheet(
       context: context,
@@ -449,13 +441,13 @@ class _postWidgetState extends State<postWidget> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ── 标题 ──
+         
                   Text(post.title,
                       style: const TextStyle(
                           fontSize: 22, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
 
-                  // ── 元信息行 ──
+        
                   Row(children: [
                     Icon(
                       post.visibility == 'public'
@@ -485,7 +477,6 @@ class _postWidgetState extends State<postWidget> {
 
                   const SizedBox(height: 20),
 
-                  // ── 图片横向列表 ──
                   if (post.images.isNotEmpty)
                     SizedBox(
                       height: 260,
@@ -510,7 +501,6 @@ class _postWidgetState extends State<postWidget> {
                       ),
                     ),
 
-                  // ── 视频缩略图横向列表 ──
                   if (post.videoPaths.isNotEmpty) ...[
                     if (post.images.isNotEmpty) const SizedBox(height: 10),
                     SizedBox(
@@ -534,11 +524,9 @@ class _postWidgetState extends State<postWidget> {
                   if (post.images.isNotEmpty || post.videoPaths.isNotEmpty)
                     const SizedBox(height: 20),
 
-                  // ── 内容 ──
                   Text(post.content,
                       style: const TextStyle(fontSize: 15, height: 1.6)),
 
-                  // ── Tags ──
                   if (post.tags.isNotEmpty) ...[
                     const SizedBox(height: 16),
                     Wrap(
@@ -580,7 +568,6 @@ class _postWidgetState extends State<postWidget> {
             ),
           ),
 
-          // ── 底部操作按钮 ──
           Container(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
             decoration: BoxDecoration(
@@ -624,9 +611,8 @@ class _postWidgetState extends State<postWidget> {
     );
   }
 
-  // =====================================================
+
   // Helpers
-  // =====================================================
   Widget _buildStatItem(IconData icon, String count, String label) {
     return Column(children: [
       Row(children: [

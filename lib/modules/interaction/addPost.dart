@@ -286,7 +286,7 @@ class _PostingPageState extends State<PostingPage> {
               ),
               const SizedBox(height: 12),
               ListTile(
-                leading: const Icon(Icons.camera_alt, color: Color(0xFFD35D3E)),
+                leading: const Icon(Icons.camera_alt, color: Color(0xFF7C4DFF)),
                 title: const Text('Take Photo'),
                 onTap: () {
                   Navigator.pop(context);
@@ -295,7 +295,7 @@ class _PostingPageState extends State<PostingPage> {
               ),
               ListTile(
                 leading:
-                    const Icon(Icons.photo_library, color: Color(0xFFD35D3E)),
+                    const Icon(Icons.photo_library, color: Color(0xFF7C4DFF)),
                 title: const Text('Choose Photos from Gallery'),
                 onTap: () {
                   Navigator.pop(context);
@@ -303,7 +303,7 @@ class _PostingPageState extends State<PostingPage> {
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.videocam, color: Color(0xFFD35D3E)),
+                leading: const Icon(Icons.videocam, color: Color(0xFF7C4DFF)),
                 title: const Text('Record Video'),
                 onTap: () {
                   Navigator.pop(context);
@@ -312,7 +312,7 @@ class _PostingPageState extends State<PostingPage> {
               ),
               ListTile(
                 leading:
-                    const Icon(Icons.video_library, color: Color(0xFFD35D3E)),
+                    const Icon(Icons.video_library, color: Color(0xFF7C4DFF)),
                 title: const Text('Choose Video from Gallery'),
                 onTap: () {
                   Navigator.pop(context);
@@ -417,7 +417,7 @@ class _PostingPageState extends State<PostingPage> {
                               horizontal: 16, vertical: 8),
                           decoration: BoxDecoration(
                             color: isSelected
-                                ? const Color(0xFFD35D3E)
+                                ? const Color(0xFF7C4DFF)
                                 : Colors.grey[200],
                             borderRadius: BorderRadius.circular(20),
                           ),
@@ -474,10 +474,10 @@ class _PostingPageState extends State<PostingPage> {
                   children: hotTopics.map((topic) {
                 return ListTile(
                   leading:
-                      const Icon(Icons.tag, color: Color(0xFFD35D3E)),
+                      const Icon(Icons.tag, color: Color(0xFF7C4DFF)),
                   title: Text(topic),
                   trailing: selectedTopic == topic
-                      ? const Icon(Icons.check, color: Color(0xFFD35D3E))
+                      ? const Icon(Icons.check, color: Color(0xFF7C4DFF))
                       : null,
                   onTap: () {
                     setState(() => selectedTopic = topic);
@@ -532,14 +532,14 @@ class _PostingPageState extends State<PostingPage> {
     bool isSelected = selectedVisibility == value;
     return ListTile(
       leading: Icon(icon,
-          color: isSelected ? const Color(0xFFD35D3E) : Colors.grey),
+          color: isSelected ? const Color(0xFF7C4DFF) : Colors.grey),
       title: Text(value,
           style: TextStyle(
               fontWeight:
                   isSelected ? FontWeight.bold : FontWeight.normal)),
       subtitle: Text(subtitle),
       trailing: isSelected
-          ? const Icon(Icons.check, color: Color(0xFFD35D3E))
+          ? const Icon(Icons.check, color: Color(0xFF7C4DFF))
           : null,
       onTap: () {
         setState(() => selectedVisibility = value);
@@ -565,7 +565,7 @@ class _PostingPageState extends State<PostingPage> {
       context: context,
       barrierDismissible: false,
       builder: (context) => const Center(
-          child: CircularProgressIndicator(color: Color(0xFFD35D3E))),
+          child: CircularProgressIndicator(color: Color(0xFF7C4DFF))),
     );
 
     setState(() => isUploading = true);
@@ -654,7 +654,7 @@ class _PostingPageState extends State<PostingPage> {
                 decoration: BoxDecoration(
                   color: isUploading
                       ? Colors.grey
-                      : const Color(0xFFD35D3E),
+                      : const Color(0xFF7C4DFF),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: const Text('Post',
@@ -822,11 +822,11 @@ class _PostingPageState extends State<PostingPage> {
                       horizontal: 25, vertical: 12),
                   decoration: BoxDecoration(
                     color:
-                        const Color(0xFFD35D3E).withOpacity(0.9),
+                        const Color(0xFF7C4DFF).withOpacity(0.9),
                     borderRadius: BorderRadius.circular(40),
                     boxShadow: [
                       BoxShadow(
-                          color: const Color(0xFFD35D3E).withOpacity(0.3),
+                          color: const Color(0xFF7C4DFF).withOpacity(0.3),
                           blurRadius: 15,
                           offset: const Offset(0, 5))
                     ],
@@ -978,7 +978,7 @@ class _PostingPageState extends State<PostingPage> {
       child: Row(children: [
         Icon(icon,
             color: hasValue
-                ? const Color(0xFFD35D3E)
+                ? const Color(0xFF7C4DFF)
                 : Colors.grey[600],
             size: 22),
         const SizedBox(width: 12),
@@ -1013,7 +1013,7 @@ class _PostingPageState extends State<PostingPage> {
           ])),
       Switch(
           value: value,
-          activeColor: const Color(0xFFD35D3E),
+          activeColor: const Color(0xFF7C4DFF),
           onChanged: isUploading ? null : onChanged),
     ]);
   }
@@ -1128,8 +1128,8 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
                             height: 20,
                             child: CircularProgressIndicator(
                                 strokeWidth: 2,
-                                color: Color(0xFFD35D3E))))
-                    : const Icon(Icons.search, color: Color(0xFFD35D3E)),
+                                color: Color(0xFF7C4DFF))))
+                    : const Icon(Icons.search, color: Color(0xFF7C4DFF)),
                 suffixIcon: _ctrl.text.isNotEmpty
                     ? IconButton(
                         icon: const Icon(Icons.close, size: 18),
@@ -1148,7 +1148,7 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(24),
                   borderSide: const BorderSide(
-                      color: Color(0xFFD35D3E), width: 1.5),
+                      color: Color(0xFF7C4DFF), width: 1.5),
                 ),
               ),
             ),
@@ -1181,7 +1181,7 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
                         leading: const CircleAvatar(
                           backgroundColor: Color(0xFFFFF3E0),
                           child: Icon(Icons.location_on,
-                              color: Color(0xFFD35D3E), size: 20),
+                              color: Color(0xFF7C4DFF), size: 20),
                         ),
                         title: Text(
                           s['mainText'] ?? s['description'] ?? '',
@@ -1208,7 +1208,7 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
             color: Colors.black.withOpacity(0.25),
             child: const Center(
                 child: CircularProgressIndicator(
-                    color: Color(0xFFD35D3E))),
+                    color: Color(0xFF7C4DFF))),
           ),
       ]),
     );

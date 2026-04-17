@@ -4,18 +4,17 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:gotrip/modules/place/detectPlacePage.dart';
 import '../../services/location_service.dart';
 import '../../services/wikipedia_service.dart';
+import '../../services/vision_service.dart';
 import '../../services/placesAPI_service.dart';
 
 class ResultPage extends StatefulWidget {
   final Uint8List imageBytes;
-  final String landmark;
-  final String rawJson;
+  final LandmarkResult landmarkResult;
 
   const ResultPage({
     super.key,
     required this.imageBytes,
-    required this.landmark, 
-    required this.rawJson,
+    required this.landmarkResult,
   });
 
   @override
@@ -25,41 +24,36 @@ class ResultPage extends StatefulWidget {
 class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   late TabController _tabController;
 
-  // Wikipedia info
-  String wikiTitle = '';
-  String wikiExtract = '';
-  List<String> wikiImages = [];
-  String wikiUrl = '';
-  bool wikiLoading = true;
-  bool _isTranslated = false; // true = came from Google Translate, not Wikipedia
+  // ── Info (Wikipedia / Gemini text) ────────────────────────
+  Map<String, dynamic>? _wikiResult;
+  bool _infoLoading = true;
 
-  // Google Places info
+  // ── Google Places ─────────────────────────────────────────
   Map<String, dynamic>? placeDetails;
   bool placeLoading = true;
 
-  // Images — Places Photos first, Wikipedia as fallback
+  // ── Images ────────────────────────────────────────────────
   List<String> displayImages = [];
 
-  // Wikipedia admission info
+  // ── Admission ─────────────────────────────────────────────
   String? admissionInfo;
   bool admissionLoading = true;
 
-  // PageController， UI
-  final PageController _pageController = PageController(initialPage: 0);
+  // ── PageView ──────────────────────────────────────────────
+  final PageController _pageController = PageController();
   int _currentImageIndex = 0;
-
-  // Track failed image URLs instead of mutating wikiImages during scroll
   final Set<String> _failedImageUrls = {};
 
-  // Shimmer animation
+  // ── Shimmer ───────────────────────────────────────────────
   late AnimationController _shimmerController;
   late Animation<double> _shimmerAnimation;
 
-  // ── Translation state ──────────────────────────────────────
+  // ── Translation ───────────────────────────────────────────
   String? _translatedExtract;
   String? _translatedTitle;
   String _selectedLangCode = 'en';
   bool _translating = false;
+  bool _isTranslated = false;
 
   static const _languages = [
     {'code': 'en',    'label': '🇬🇧 English'},
@@ -71,7 +65,64 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     {'code': 'fr',    'label': '🇫🇷 Français'},
     {'code': 'ar',    'label': '🇸🇦 العربية'},
   ];
-  // ──────────────────────────────────────────────────────────
+
+  // ── Convenience ───────────────────────────────────────────
+  LandmarkResult get _result => widget.landmarkResult;
+  bool get _isDetected => _result.isDetected;
+  String get _name => _result.normalizedName;
+
+  String get _displayTitle =>
+      _translatedTitle ?? _wikiResult?['title'] ?? _name;
+
+  String get _displayExtract =>
+      _translatedExtract ?? _wikiResult?['summary'] ?? '';
+
+  String get _wikiUrl => _wikiResult?['wikiUrl'] ?? '';
+
+  // Badge label + color based on detection method
+  String get _badgeLabel {
+    switch (_result.method) {
+      case DetectionMethod.visionLandmark:
+        return 'Vision';
+      case DetectionMethod.geminiVision:
+        return 'AI Vision';
+      case DetectionMethod.notDetected:
+        return '';
+    }
+  }
+
+  Color get _badgeBg {
+    switch (_result.method) {
+      case DetectionMethod.visionLandmark:
+        return Colors.blue.shade50;
+      case DetectionMethod.geminiVision:
+        return Colors.purple.shade50;
+      case DetectionMethod.notDetected:
+        return Colors.grey.shade100;
+    }
+  }
+
+  Color get _badgeColor {
+    switch (_result.method) {
+      case DetectionMethod.visionLandmark:
+        return Colors.blue.shade700;
+      case DetectionMethod.geminiVision:
+        return Colors.purple.shade700;
+      case DetectionMethod.notDetected:
+        return Colors.grey;
+    }
+  }
+
+  IconData get _badgeIcon {
+    switch (_result.method) {
+      case DetectionMethod.visionLandmark:
+        return Icons.location_on_rounded;
+      case DetectionMethod.geminiVision:
+        return Icons.auto_awesome;
+      case DetectionMethod.notDetected:
+        return Icons.help_outline;
+    }
+  }
 
   @override
   void initState() {
@@ -86,12 +137,11 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       CurvedAnimation(parent: _shimmerController, curve: Curves.easeInOut),
     );
 
-    if (widget.landmark != 'No landmark detected') {
-      _fetchWikipediaInfo();
+    if (_isDetected) {
+      _fetchInfo();
       _fetchPlaceDetails();
-      _fetchAdmissionInfo();
     } else {
-      wikiLoading = false;
+      _infoLoading = false;
       placeLoading = false;
       admissionLoading = false;
     }
@@ -109,44 +159,43 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // Data Fetching
   // ============================================================
 
-  Future<void> _fetchWikipediaInfo() async {
-    final landmarkName = widget.landmark.split(' (Confidence')[0];
+  Future<void> _fetchInfo() async {
     try {
-      final wikiResult = await WikipediaService.fetchLandmarkHistory(landmarkName);
+      // WikipediaService handles Wikipedia → Gemini text fallback internally
+      final result = await WikipediaService.fetchLandmarkHistory(_name);
+      if (!mounted) return;
       setState(() {
-        wikiTitle = wikiResult['title'] ?? landmarkName;
-        wikiExtract = wikiResult['summary'] ?? 'No historical info available';
-        wikiImages = List<String>.from(wikiResult['images'] ?? [])
-            .where((url) => !url.toLowerCase().endsWith('.svg'))
-            .toList();
-        wikiUrl = wikiResult['wikiUrl'] ?? '';
-        if (wikiUrl.isEmpty) {
-          wikiUrl =
-              'https://en.wikipedia.org/wiki/${landmarkName.replaceAll(' ', '_')}';
-        }
-        wikiLoading = false;
-        if (displayImages.isEmpty) {
-          displayImages = wikiImages;
+        _wikiResult = result;
+        admissionInfo = result['admissionInfo'] as String?;
+        admissionLoading = false;
+        _infoLoading = false;
+        final imgs = List<String>.from(result['images'] ?? []);
+        if (displayImages.isEmpty && imgs.isNotEmpty) {
+          displayImages = imgs;
         }
       });
+
+      // Fetch admission separately if not already in result
+      if (admissionInfo == null) {
+        final admission = await WikipediaService.fetchAdmissionInfo(_name);
+        if (mounted) setState(() => admissionInfo = admission);
+      }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
-        wikiTitle = landmarkName;
-        wikiExtract = 'Failed to load historical information.';
-        wikiLoading = false;
+        _infoLoading = false;
+        admissionLoading = false;
       });
     }
   }
 
   Future<void> _fetchPlaceDetails() async {
-    final landmarkName = widget.landmark.split(' (Confidence')[0];
     final pos = LocationService.instance.currentPosition;
-
     try {
       final results = await PlacesApiService.searchNearbyWithKeyword(
         lat: pos?.latitude ?? 0,
         lng: pos?.longitude ?? 0,
-        keyword: landmarkName,
+        keyword: _name,
         radius: 500,
         maxResultCount: 1,
       );
@@ -163,7 +212,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       }
 
       final details = await PlacesApiService.getPlaceDetails(placeId);
-
       final photosRaw = details['photos'] as List?;
       final placePhotoUrls = photosRaw
               ?.map((p) => (p as Map<String, dynamic>)['photoUri'] as String?)
@@ -171,25 +219,18 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               .toList() ??
           <String>[];
 
+      if (!mounted) return;
       setState(() {
         placeDetails = details;
         placeLoading = false;
         if (placePhotoUrls.isNotEmpty) {
-          displayImages = placePhotoUrls;
+          displayImages = placePhotoUrls; // Places photos take priority
         }
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() => placeLoading = false);
     }
-  }
-
-  Future<void> _fetchAdmissionInfo() async {
-    final landmarkName = widget.landmark.split(' (Confidence')[0];
-    final admission = await WikipediaService.fetchAdmissionInfo(landmarkName);
-    setState(() {
-      admissionInfo = admission;
-      admissionLoading = false;
-    });
   }
 
   // ============================================================
@@ -197,7 +238,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // ============================================================
 
   Future<void> _translateTo(String langCode) async {
-    // Reset to English — restore original text
     if (langCode == 'en') {
       setState(() {
         _selectedLangCode = 'en';
@@ -214,26 +254,22 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     });
 
     try {
-      final landmarkName = widget.landmark.split(' (Confidence')[0];
       final result = await WikipediaService.fetchSummaryInLanguage(
-        landmarkName,
-        langCode,
-        wikiExtract,
+        _name, langCode, _displayExtract,
       );
+      if (!mounted) return;
       setState(() {
-        _translatedTitle   = result['title']   as String?;
+        _translatedTitle = result['title'] as String?;
         _translatedExtract = result['extract'] as String?;
-        _isTranslated      = result['source']  == 'translated';
+        _isTranslated = result['source'] == 'translated';
         _translating = false;
       });
     } catch (e) {
-      setState(() => _translating = false);
       if (!mounted) return;
+      setState(() => _translating = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Translation failed for this landmark.',
-          ),
+          content: const Text('Translation failed for this landmark.'),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           margin: const EdgeInsets.all(16),
@@ -261,8 +297,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           child: CircleAvatar(
             backgroundColor: Colors.white.withAlpha(200),
             child: IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new,
-                  color: Colors.black, size: 18),
+              icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 18),
               onPressed: () => Navigator.pop(context, true),
             ),
           ),
@@ -276,19 +311,14 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             child: Image.memory(widget.imageBytes, fit: BoxFit.cover),
           ),
           Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
+            top: 0, left: 0, right: 0,
             child: Container(
               height: 100,
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.black.withOpacity(0.3),
-                    Colors.transparent,
-                  ],
+                  colors: [Colors.black.withOpacity(0.3), Colors.transparent],
                 ),
               ),
             ),
@@ -303,29 +333,21 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               return Container(
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius:
-                      const BorderRadius.vertical(top: Radius.circular(30)),
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
                   boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 10,
-                      spreadRadius: 1,
-                    ),
+                    BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10),
                   ],
                 ),
                 child: Column(
                   children: [
-                    // Drag handle
                     Container(
                       margin: const EdgeInsets.symmetric(vertical: 12),
-                      width: 40,
-                      height: 4,
+                      width: 40, height: 4,
                       decoration: BoxDecoration(
                         color: Colors.grey[300],
                         borderRadius: BorderRadius.circular(10),
                       ),
                     ),
-                    // Tab bar
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: TabBar(
@@ -335,10 +357,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                         indicatorColor: Colors.black,
                         indicatorWeight: 3,
                         indicatorSize: TabBarIndicatorSize.label,
-                        labelStyle: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
+                        labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                         tabs: const [
                           Tab(text: 'Overview'),
                           Tab(text: 'Info'),
@@ -371,134 +390,30 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // Tab Wrappers
   // ============================================================
 
-  Widget _buildOverviewTab(ScrollController scrollController, dynamic pos) {
+  Widget _buildOverviewTab(ScrollController sc, dynamic pos) {
     return SingleChildScrollView(
-      controller: scrollController,
+      controller: sc,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (widget.landmark == 'No landmark detected')
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.only(top: 50),
-                child: Text(
-                  'No landmark detected in this image.',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey,
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
-              ),
-            )
+          if (!_isDetected)
+            _noLandmarkMessage()
           else ...[
-            wikiLoading
-                ? _buildLoadingPlaceholder()
-                : _buildProSummaryContent(),
+            _infoLoading ? _buildLoadingPlaceholder() : _buildSummaryContent(),
             const SizedBox(height: 24),
-
-            if (!wikiLoading)
-              pos == null
-                  ? const Center(child: CircularProgressIndicator())
-                  : GestureDetector(
-                      onTap: () {
-                        final landmarkLocation = placeDetails?['location'];
-                        final lat =
-                            (landmarkLocation?['latitude'] as num?)
-                                    ?.toDouble() ??
-                                pos.latitude;
-                        final lng =
-                            (landmarkLocation?['longitude'] as num?)
-                                    ?.toDouble() ??
-                                pos.longitude;
-
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => RealTimeDetectPage(
-                              landmarkLat: lat,
-                              landmarkLng: lng,
-                              onBack: () => Navigator.pop(context),
-                            ),
-                          ),
-                        );
-                      },
-                      child: Builder(
-                        builder: (context) {
-                          final landmarkLocation =
-                              placeDetails?['location'];
-                          final mapLat =
-                              (landmarkLocation?['latitude'] as num?)
-                                      ?.toDouble() ??
-                                  pos.latitude;
-                          final mapLng =
-                              (landmarkLocation?['longitude'] as num?)
-                                      ?.toDouble() ??
-                                  pos.longitude;
-
-                          return Container(
-                            height: 180,
-                            width: double.infinity,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(20),
-                              child: Stack(
-                                children: [
-                                  Image.network(
-                                    'https://maps.googleapis.com/maps/api/staticmap?center=$mapLat,$mapLng&zoom=15&size=600x300&&markers=color:red%7Clabel:L%7C$mapLat,$mapLng&markers=color:blue%7Clabel:U%7C${pos.latitude},${pos.longitude}&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc',
-                                    fit: BoxFit.cover,
-                                    width: double.infinity,
-                                    height: double.infinity,
-                                    errorBuilder:
-                                        (context, error, stackTrace) {
-                                      return Container(
-                                        color: Colors.grey[200],
-                                        child: const Center(
-                                          child: Column(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.center,
-                                            children: [
-                                              Icon(Icons.map_outlined,
-                                                  size: 32,
-                                                  color: Colors.grey),
-                                              SizedBox(height: 6),
-                                              Text(
-                                                'Map unavailable',
-                                                style: TextStyle(
-                                                    fontSize: 11,
-                                                    color: Colors.grey),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                  const SizedBox(height: 16),
-
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                  ),
+            if (!_infoLoading) _buildMapSection(pos),
           ],
         ],
-      ),  
+      ),
     );
-
   }
 
-  
-  Widget _buildInfoTabWrapper(ScrollController scrollController) {
+  Widget _buildInfoTabWrapper(ScrollController sc) {
     return SingleChildScrollView(
-      controller: scrollController,
+      controller: sc,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-      child: widget.landmark == 'No landmark detected'
+      child: !_isDetected
           ? _noLandmarkMessage()
           : placeLoading || admissionLoading
               ? _buildLoadingPlaceholder()
@@ -506,11 +421,11 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildReviewsTabWrapper(ScrollController scrollController) {
+  Widget _buildReviewsTabWrapper(ScrollController sc) {
     return SingleChildScrollView(
-      controller: scrollController,
+      controller: sc,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-      child: widget.landmark == 'No landmark detected'
+      child: !_isDetected
           ? _noLandmarkMessage()
           : placeLoading
               ? _buildLoadingPlaceholder()
@@ -524,10 +439,224 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         padding: EdgeInsets.only(top: 50),
         child: Text(
           'No landmark detected in this image.',
-          style: TextStyle(
-            fontSize: 14,
-            color: Colors.grey,
-            fontStyle: FontStyle.italic,
+          style: TextStyle(fontSize: 14, color: Colors.grey, fontStyle: FontStyle.italic),
+        ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // Overview: Summary Content
+  // ============================================================
+
+  Widget _buildSummaryContent() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Title row
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Text(
+                _displayTitle,
+                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: -0.8),
+              ),
+            ),
+            const SizedBox(width: 8),
+
+            // Language picker
+            PopupMenuButton<String>(
+              initialValue: _selectedLangCode,
+              onSelected: _translateTo,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              itemBuilder: (_) => _languages.map((lang) => PopupMenuItem<String>(
+                value: lang['code'],
+                child: Text(lang['label']!,
+                  style: TextStyle(
+                    fontWeight: lang['code'] == _selectedLangCode
+                        ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+              )).toList(),
+              child: _translating
+                  ? const SizedBox(width: 20, height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.blue[50],
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.translate, size: 14, color: Colors.blue[700]),
+                          const SizedBox(width: 4),
+                          Text(_selectedLangCode.toUpperCase(),
+                            style: TextStyle(color: Colors.blue[700], fontSize: 10, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+            ),
+
+            const SizedBox(width: 8),
+
+            // Detection method badge
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: _badgeBg,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(_badgeIcon, size: 10, color: _badgeColor),
+                  const SizedBox(width: 3),
+                  Text(_badgeLabel,
+                    style: TextStyle(color: _badgeColor, fontSize: 10, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 16),
+
+        // Image carousel
+        if (displayImages.isNotEmpty) _buildImageCarousel(),
+
+        // Summary text
+        if (_displayExtract.isNotEmpty)
+          Container(
+            padding: const EdgeInsets.only(left: 16),
+            decoration: BoxDecoration(
+              border: Border(left: BorderSide(color: Colors.grey[300]!, width: 3)),
+            ),
+            child: Text(
+              _displayExtract,
+              textAlign: TextAlign.justify,
+              style: TextStyle(fontSize: 15, color: Colors.grey[800], height: 1.7, fontStyle: FontStyle.italic),
+            ),
+          ),
+
+        const SizedBox(height: 16),
+
+        // Wikipedia link (hide for Gemini-sourced summaries)
+        if (_wikiUrl.isNotEmpty)
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: () => _launchUrl(_wikiUrl),
+              icon: const Icon(Icons.auto_stories, size: 18),
+              label: const Text('Read More on Wikipedia'),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.blue[800],
+                textStyle: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildImageCarousel() {
+    final visible = displayImages.where((u) => !_failedImageUrls.contains(u)).toList();
+    if (visible.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          height: 220,
+          child: PageView.builder(
+            controller: _pageController,
+            itemCount: visible.length,
+            onPageChanged: (i) => setState(() => _currentImageIndex = i),
+            itemBuilder: (_, i) {
+              final url = visible[i];
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, 10))],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: Image.network(url, fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) setState(() => _failedImageUrls.add(url));
+                      });
+                      return Container(color: Colors.grey[200],
+                        child: const Center(child: Icon(Icons.broken_image, size: 40, color: Colors.grey)));
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        if (visible.length > 1)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(visible.length, (i) => Container(
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              width: _currentImageIndex == i ? 24 : 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: _currentImageIndex == i ? Colors.black : Colors.grey[300],
+                borderRadius: BorderRadius.circular(4),
+              ),
+            )),
+          ),
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+
+  Widget _buildMapSection(dynamic pos) {
+    if (pos == null) return const Center(child: CircularProgressIndicator());
+
+    final landmarkLocation = placeDetails?['location'];
+    final lat = (landmarkLocation?['latitude'] as num?)?.toDouble()
+        ?? _result.lat ?? pos.latitude;
+    final lng = (landmarkLocation?['longitude'] as num?)?.toDouble()
+        ?? _result.lng ?? pos.longitude;
+
+    return GestureDetector(
+      onTap: () => Navigator.push(context, MaterialPageRoute(
+        builder: (_) => RealTimeDetectPage(
+          landmarkLat: lat, landmarkLng: lng,
+          onBack: () => Navigator.pop(context),
+        ),
+      )),
+      child: Container(
+        height: 180,
+        decoration: BoxDecoration(borderRadius: BorderRadius.circular(20)),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Image.network(
+            'https://maps.googleapis.com/maps/api/staticmap'
+            '?center=$lat,$lng&zoom=15&size=600x300'
+            '&markers=color:red%7Clabel:L%7C$lat,$lng'
+            '&markers=color:blue%7Clabel:U%7C${pos.latitude},${pos.longitude}'
+            '&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc',
+            fit: BoxFit.cover,
+            width: double.infinity,
+            height: double.infinity,
+            errorBuilder: (_, __, ___) => Container(
+              color: Colors.grey[200],
+              child: const Center(child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.map_outlined, size: 32, color: Colors.grey),
+                  SizedBox(height: 6),
+                  Text('Map unavailable', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                ],
+              )),
+            ),
           ),
         ),
       ),
@@ -543,19 +672,12 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       return const Center(
         child: Padding(
           padding: EdgeInsets.only(top: 50),
-          child: Column(
-            children: [
-              Icon(Icons.search_off_rounded, size: 48, color: Colors.grey),
-              SizedBox(height: 12),
-              Text(
-                'No place info found.',
-                style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey,
-                    fontStyle: FontStyle.italic),
-              ),
-            ],
-          ),
+          child: Column(children: [
+            Icon(Icons.search_off_rounded, size: 48, color: Colors.grey),
+            SizedBox(height: 12),
+            Text('No place info found.',
+              style: TextStyle(fontSize: 14, color: Colors.grey, fontStyle: FontStyle.italic)),
+          ]),
         ),
       );
     }
@@ -571,280 +693,135 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     final rating = (d['rating'] as num?)?.toDouble();
 
     final weekdays = weekdayRaw?.map((e) {
-          final parts = (e as String).split(': ');
-          return _OpeningDay(
-            day: parts[0],
-            hours: parts.length > 1 ? parts[1] : 'Closed',
-          );
-        }).toList() ??
-        <_OpeningDay>[];
+      final parts = (e as String).split(': ');
+      return _OpeningDay(day: parts[0], hours: parts.length > 1 ? parts[1] : 'Closed');
+    }).toList() ?? <_OpeningDay>[];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 8),
-
-        // Open / Closed badge
         if (openNow != null)
           Container(
             margin: const EdgeInsets.only(bottom: 20),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
               color: openNow ? Colors.green[50] : Colors.red[50],
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  openNow
-                      ? Icons.check_circle_rounded
-                      : Icons.cancel_rounded,
-                  size: 16,
-                  color:
-                      openNow ? Colors.green[700] : Colors.red[700],
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  openNow ? 'Open Now' : 'Closed Now',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: openNow
-                        ? Colors.green[700]
-                        : Colors.red[700],
-                  ),
-                ),
-              ],
-            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(openNow ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                size: 16, color: openNow ? Colors.green[700] : Colors.red[700]),
+              const SizedBox(width: 6),
+              Text(openNow ? 'Open Now' : 'Closed Now',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold,
+                  color: openNow ? Colors.green[700] : Colors.red[700])),
+            ]),
           ),
-
-        // Address
         if (address != null) ...[
-          _buildSectionHeader(Icons.location_on_rounded, 'Address'),
+          _sectionHeader(Icons.location_on_rounded, 'Address'),
           const SizedBox(height: 10),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: Colors.grey[50],
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Text(
-              address,
-              style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.grey[700],
-                  height: 1.5),
-            ),
-          ),
+          _infoBox(child: Text(address, style: TextStyle(fontSize: 14, color: Colors.grey[700], height: 1.5))),
           const SizedBox(height: 24),
         ],
-
-        // Rating
         if (rating != null) ...[
-          _buildSectionHeader(Icons.star_rounded, 'Rating'),
+          _sectionHeader(Icons.star_rounded, 'Rating'),
           const SizedBox(height: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: Colors.grey[50],
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(
-              children: [
-                ...List.generate(5, (i) {
-                  final filled = i < rating.floor();
-                  final half = !filled && (i < rating);
-                  return Icon(
-                    half
-                        ? Icons.star_half_rounded
-                        : Icons.star_rounded,
-                    size: 20,
-                    color: filled || half
-                        ? Colors.amber[600]
-                        : Colors.grey[300],
-                  );
-                }),
-                const SizedBox(width: 10),
-                Text(
-                  rating.toStringAsFixed(1),
-                  style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700),
-                ),
-                Text(
-                  ' / 5.0',
-                  style: TextStyle(
-                      fontSize: 13, color: Colors.grey[500]),
-                ),
-              ],
-            ),
-          ),
+          _infoBox(child: Row(children: [
+            ...List.generate(5, (i) {
+              final filled = i < rating.floor();
+              final half = !filled && i < rating;
+              return Icon(half ? Icons.star_half_rounded : Icons.star_rounded,
+                size: 20, color: filled || half ? Colors.amber[600] : Colors.grey[300]);
+            }),
+            const SizedBox(width: 10),
+            Text(rating.toStringAsFixed(1), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+            Text(' / 5.0', style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+          ])),
           const SizedBox(height: 24),
         ],
-
-        // Admission
         if (admissionInfo != null) ...[
-          _buildSectionHeader(Icons.sell_rounded, 'Admission'),
+          _sectionHeader(Icons.sell_rounded, 'Admission'),
           const SizedBox(height: 10),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: Colors.grey[50],
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.monetization_on_outlined,
-                    size: 18, color: Colors.grey[600]),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    admissionInfo!,
-                    style: TextStyle(
-                        fontSize: 14, color: Colors.grey[700]),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          _infoBox(child: Row(children: [
+            Icon(Icons.monetization_on_outlined, size: 18, color: Colors.grey[600]),
+            const SizedBox(width: 12),
+            Expanded(child: Text(admissionInfo!, style: TextStyle(fontSize: 14, color: Colors.grey[700]))),
+          ])),
           const SizedBox(height: 24),
         ],
-
-        // Opening Hours
         if (weekdays.isNotEmpty) ...[
-          _buildSectionHeader(
-              Icons.access_time_rounded, 'Opening Hours'),
+          _sectionHeader(Icons.access_time_rounded, 'Opening Hours'),
           const SizedBox(height: 10),
           Container(
-            decoration: BoxDecoration(
-              color: Colors.grey[50],
-              borderRadius: BorderRadius.circular(16),
-            ),
+            decoration: BoxDecoration(color: Colors.grey[50], borderRadius: BorderRadius.circular(16)),
             child: Column(
               children: weekdays.asMap().entries.map((entry) {
                 final isLast = entry.key == weekdays.length - 1;
-                return Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 12),
-                      child: Row(
-                        mainAxisAlignment:
-                            MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            entry.value.day,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.black87,
-                            ),
-                          ),
-                          Text(
-                            entry.value.hours,
-                            style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.grey[600]),
-                          ),
-                        ],
-                      ),
+                return Column(children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(entry.value.day, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87)),
+                        Text(entry.value.hours, style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+                      ],
                     ),
-                    if (!isLast)
-                      Divider(
-                          height: 1,
-                          color: Colors.grey[200],
-                          indent: 16,
-                          endIndent: 16),
-                  ],
-                );
+                  ),
+                  if (!isLast) Divider(height: 1, color: Colors.grey[200], indent: 16, endIndent: 16),
+                ]);
               }).toList(),
             ),
           ),
           const SizedBox(height: 24),
         ],
-
-        // Contact
         if (phoneNumber != null || website != null) ...[
-          _buildSectionHeader(
-              Icons.contact_page_rounded, 'Contact'),
+          _sectionHeader(Icons.contact_page_rounded, 'Contact'),
           const SizedBox(height: 10),
           Container(
-            decoration: BoxDecoration(
-              color: Colors.grey[50],
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Column(
-              children: [
-                if (phoneNumber != null)
-                  _buildTappableRow(
-                    icon: Icons.phone_rounded,
-                    label: phoneNumber,
-                    onTap: () => launchUrl(
-                      Uri.parse('tel:$phoneNumber'),
-                      mode: LaunchMode.externalApplication,
-                    ),
-                    showDivider: website != null,
-                  ),
-                if (website != null)
-                  _buildTappableRow(
-                    icon: Icons.language_rounded,
-                    label: website
-                        .replaceFirst('https://', '')
-                        .replaceFirst('http://', '')
-                        .replaceFirst('www.', ''),
-                    onTap: () => launchUrl(
-                      Uri.parse(website),
-                      mode: LaunchMode.externalApplication,
-                    ),
-                    showDivider: false,
-                  ),
-              ],
-            ),
+            decoration: BoxDecoration(color: Colors.grey[50], borderRadius: BorderRadius.circular(16)),
+            child: Column(children: [
+              if (phoneNumber != null)
+                _tappableRow(icon: Icons.phone_rounded, label: phoneNumber,
+                  onTap: () => launchUrl(Uri.parse('tel:$phoneNumber'), mode: LaunchMode.externalApplication),
+                  showDivider: website != null),
+              if (website != null)
+                _tappableRow(
+                  icon: Icons.language_rounded,
+                  label: website.replaceFirst('https://', '').replaceFirst('http://', '').replaceFirst('www.', ''),
+                  onTap: () => launchUrl(Uri.parse(website), mode: LaunchMode.externalApplication),
+                  showDivider: false),
+            ]),
           ),
           const SizedBox(height: 24),
         ],
-
-        // Google Maps button
         if (googleMapsUrl != null)
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: () => launchUrl(
-                Uri.parse(googleMapsUrl),
-                mode: LaunchMode.externalApplication,
-              ),
+              onPressed: () => launchUrl(Uri.parse(googleMapsUrl), mode: LaunchMode.externalApplication),
               icon: const Icon(Icons.map_rounded, size: 18),
               label: const Text('Open in Google Maps'),
               style: OutlinedButton.styleFrom(
                 foregroundColor: Colors.black,
                 side: const BorderSide(color: Colors.black12),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 padding: const EdgeInsets.symmetric(vertical: 14),
               ),
             ),
           ),
-
         const SizedBox(height: 16),
       ],
     );
   }
 
-  
   // ============================================================
   // Reviews Tab
   // ============================================================
 
   Widget _buildReviewsTab() {
-    if (placeDetails == null ||
-        (placeDetails!['reviews'] as List?)?.isEmpty == true) {
+    if (placeDetails == null || (placeDetails!['reviews'] as List?)?.isEmpty == true) {
       return _buildEmptyReviews();
     }
 
@@ -857,648 +834,195 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 16),
-
-        // Overall rating card
         Container(
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(24),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.blueGrey.withOpacity(0.08),
-                blurRadius: 20,
-                offset: const Offset(0, 10),
-              ),
-            ],
+            boxShadow: [BoxShadow(color: Colors.blueGrey.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 10))],
           ),
-          child: Row(
-            children: [
-              // Big score on the left
-              Column(
-                children: [
-                  Text(
-                    rating.toStringAsFixed(1),
-                    style: const TextStyle(
-                      fontSize: 48,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1A1A1A),
+          child: Row(children: [
+            Column(children: [
+              Text(rating.toStringAsFixed(1),
+                style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Color(0xFF1A1A1A))),
+              _buildStarRating(rating),
+              const SizedBox(height: 8),
+              Text('${_formatCount(userRatingCount)} reviews',
+                style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+            ]),
+            const SizedBox(width: 32),
+            Expanded(child: Column(
+              children: [5, 4, 3, 2, 1].map((star) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(children: [
+                  Text('$star', style: const TextStyle(fontSize: 10)),
+                  const SizedBox(width: 8),
+                  Expanded(child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: star == 5 ? 0.8 : (star == 4 ? 0.4 : 0.1),
+                      backgroundColor: Colors.grey[100],
+                      color: Colors.amber[600],
+                      minHeight: 6,
                     ),
-                  ),
-                  _buildStarRating(rating),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${_formatCount(userRatingCount)} reviews',
-                    style: TextStyle(
-                        fontSize: 12, color: Colors.grey[500]),
-                  ),
-                ],
-              ),
-              const SizedBox(width: 32),
-              // Star distribution bars on the right
-              Expanded(
-                child: Column(
-                  children: [5, 4, 3, 2, 1].map((star) {
-                    return Padding(
-                      padding:
-                          const EdgeInsets.symmetric(vertical: 2),
-                      child: Row(
-                        children: [
-                          Text('$star',
-                              style: const TextStyle(fontSize: 10)),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
-                              child: LinearProgressIndicator(
-                                // TODO: Replace with actual distribution
-                                value: star == 5
-                                    ? 0.8
-                                    : (star == 4 ? 0.4 : 0.1),
-                                backgroundColor: Colors.grey[100],
-                                color: Colors.amber[600],
-                                minHeight: 6,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ),
-              ),
-            ],
-          ),
+                  )),
+                ]),
+              )).toList(),
+            )),
+          ]),
         ),
-
         const SizedBox(height: 32),
-        _buildSectionHeader(
-            Icons.chat_bubble_outline_rounded, 'Community Voice'),
+        _sectionHeader(Icons.chat_bubble_outline_rounded, 'Community Voice'),
         const SizedBox(height: 16),
-
-        ...reviewsRaw.map((r) => _buildReviewCard(r)).toList(),
+        ...reviewsRaw.map((r) => _buildReviewCard(r as Map<String, dynamic>)),
         const SizedBox(height: 20),
       ],
     );
   }
 
-  Widget _buildReviewCard(dynamic r) {
-    final review = r as Map<String, dynamic>;
-    final authorName =
-        review['authorAttribution']?['displayName'] as String? ??
-            'Traveler';
-    final authorPhoto =
-        review['authorAttribution']?['photoUri'] as String?;
+  Widget _buildReviewCard(Map<String, dynamic> review) {
+    final authorName = review['authorAttribution']?['displayName'] as String? ?? 'Traveler';
+    final authorPhoto = review['authorAttribution']?['photoUri'] as String?;
     final reviewRating = (review['rating'] as num?)?.toInt() ?? 0;
     final text = review['text']?['text'] as String? ?? '';
-    final relativeTime =
-        review['relativePublishTimeDescription'] as String? ?? '';
+    final relativeTime = review['relativePublishTimeDescription'] as String? ?? '';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                      color: Colors.blue.withOpacity(0.1), width: 2),
-                ),
-                child: CircleAvatar(
-                  radius: 20,
-                  backgroundImage: authorPhoto != null
-                      ? NetworkImage(authorPhoto)
-                      : null,
-                  backgroundColor: Colors.blue[50],
-                  child:
-                      authorPhoto == null ? Text(authorName[0]) : null,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(authorName,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15)),
-                    Text(relativeTime,
-                        style: TextStyle(
-                            color: Colors.grey[500], fontSize: 12)),
-                  ],
-                ),
-              ),
-              _buildSmallRatingTag(reviewRating),
-            ],
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          CircleAvatar(
+            radius: 20,
+            backgroundImage: authorPhoto != null ? NetworkImage(authorPhoto) : null,
+            backgroundColor: Colors.blue[50],
+            child: authorPhoto == null ? Text(authorName[0]) : null,
           ),
-          if (text.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 12, left: 2),
-              child: Text(
-                text,
-                style: TextStyle(
-                    color: Colors.grey[800],
-                    height: 1.6,
-                    fontSize: 14),
-                maxLines: 5,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          const SizedBox(height: 16),
-          Divider(color: Colors.grey[100], thickness: 1),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSmallRatingTag(int score) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.amber[50],
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.star_rounded, size: 14, color: Colors.amber[700]),
-          const SizedBox(width: 2),
-          Text(
-            '$score',
-            style: TextStyle(
-                color: Colors.amber[800],
-                fontWeight: FontWeight.bold,
-                fontSize: 12),
+          const SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(authorName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            Text(relativeTime, style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+          ])),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(color: Colors.amber[50], borderRadius: BorderRadius.circular(8)),
+            child: Row(children: [
+              Icon(Icons.star_rounded, size: 14, color: Colors.amber[700]),
+              const SizedBox(width: 2),
+              Text('$reviewRating', style: TextStyle(color: Colors.amber[800], fontWeight: FontWeight.bold, fontSize: 12)),
+            ]),
           ),
-        ],
-      ),
+        ]),
+        if (text.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 12, left: 2),
+            child: Text(text,
+              style: TextStyle(color: Colors.grey[800], height: 1.6, fontSize: 14),
+              maxLines: 5, overflow: TextOverflow.ellipsis),
+          ),
+        const SizedBox(height: 16),
+        Divider(color: Colors.grey[100], thickness: 1),
+      ]),
     );
   }
 
   Widget _buildStarRating(double rating) {
     return Row(
       mainAxisSize: MainAxisSize.min,
-      children: List.generate(5, (i) {
-        return Icon(
-          i < rating.floor()
-              ? Icons.star_rounded
-              : Icons.star_half_rounded,
-          size: 20,
-          color:
-              i < rating ? Colors.amber[600] : Colors.grey[300],
-        );
-      }),
+      children: List.generate(5, (i) => Icon(
+        i < rating.floor() ? Icons.star_rounded : Icons.star_half_rounded,
+        size: 20,
+        color: i < rating ? Colors.amber[600] : Colors.grey[300],
+      )),
     );
   }
 
   Widget _buildEmptyReviews() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.forum_outlined, size: 80, color: Colors.grey[200]),
-          const SizedBox(height: 16),
-          Text(
-            'No stories shared yet',
-            style: TextStyle(
-                color: Colors.grey[400],
-                fontSize: 16,
-                fontWeight: FontWeight.w500),
-          ),
-        ],
-      ),
-    );
+    return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Icon(Icons.forum_outlined, size: 80, color: Colors.grey[200]),
+      const SizedBox(height: 16),
+      Text('No stories shared yet',
+        style: TextStyle(color: Colors.grey[400], fontSize: 16, fontWeight: FontWeight.w500)),
+    ]));
   }
 
   // ============================================================
-  // Overview Tab Components
+  // Shared UI helpers
   // ============================================================
 
   Widget _buildLoadingPlaceholder() {
     return AnimatedBuilder(
       animation: _shimmerAnimation,
-      builder: (context, child) {
-        return Opacity(
-          opacity: _shimmerAnimation.value,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                height: 32,
-                width: 200,
-                decoration: BoxDecoration(
-                  color: Colors.grey[200],
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                height: 220,
-                decoration: BoxDecoration(
-                  color: Colors.grey[200],
-                  borderRadius: BorderRadius.circular(20),
-                ),
-              ),
-              const SizedBox(height: 16),
-              ...List.generate(
-                4,
-                (i) => Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Container(
-                    height: 14,
-                    width: i == 3 ? 180 : double.infinity,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[200],
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
+      builder: (_, __) => Opacity(
+        opacity: _shimmerAnimation.value,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Container(height: 32, width: 200,
+            decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(8))),
+          const SizedBox(height: 16),
+          Container(height: 220,
+            decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(20))),
+          const SizedBox(height: 16),
+          ...List.generate(4, (i) => Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Container(height: 14, width: i == 3 ? 180 : double.infinity,
+              decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(6))),
+          )),
+        ]),
+      ),
     );
   }
 
-  Widget _buildProSummaryContent() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // ── Title row with language picker ──────────────────
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Expanded(
-              child: Text(
-                _translatedTitle ?? wikiTitle,
-                style: const TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -0.8,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-
-            // 🌐 Language picker button
-            PopupMenuButton<String>(
-              initialValue: _selectedLangCode,
-              onSelected: _translateTo,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              itemBuilder: (_) => _languages
-                  .map(
-                    (lang) => PopupMenuItem<String>(
-                      value: lang['code'],
-                      child: Text(
-                        lang['label']!,
-                        style: TextStyle(
-                          fontWeight: lang['code'] == _selectedLangCode
-                              ? FontWeight.bold
-                              : FontWeight.normal,
-                        ),
-                      ),
-                    ),
-                  )
-                  .toList(),
-              child: _translating
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.blue[50],
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.translate,
-                              size: 14, color: Colors.blue[700]),
-                          const SizedBox(width: 4),
-                          Text(
-                            _selectedLangCode.toUpperCase(),
-                            style: TextStyle(
-                              color: Colors.blue[700],
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-            ),
-
-            const SizedBox(width: 8),
-
-            // Landmark badge
-            Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.blue[50],
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                'Landmark',
-                style: TextStyle(
-                    color: Colors.blue[700],
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        ),
-        // ────────────────────────────────────────────────────
-
-        const SizedBox(height: 16),
-
-        // Image carousel
-        if (displayImages.isNotEmpty)
-          Builder(
-            builder: (context) {
-              final visibleImages = displayImages
-                  .where((url) => !_failedImageUrls.contains(url))
-                  .toList();
-
-              if (visibleImages.isEmpty) return const SizedBox.shrink();
-
-              return Column(
-                children: [
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    height: 220,
-                    child: PageView.builder(
-                      controller: _pageController,
-                      itemCount: visibleImages.length,
-                      onPageChanged: (index) {
-                        setState(() => _currentImageIndex = index);
-                      },
-                      itemBuilder: (context, index) {
-                        final imageUrl = visibleImages[index];
-                        return Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 8),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(20),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.1),
-                                blurRadius: 20,
-                                offset: const Offset(0, 10),
-                              ),
-                            ],
-                          ),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(20),
-                            child: Image.network(
-                              imageUrl,
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) {
-                                WidgetsBinding.instance
-                                    .addPostFrameCallback((_) {
-                                  if (mounted) {
-                                    setState(() {
-                                      _failedImageUrls.add(imageUrl);
-                                      final newLength = displayImages
-                                          .where((u) =>
-                                              !_failedImageUrls.contains(u))
-                                          .length;
-                                      if (_currentImageIndex >= newLength) {
-                                        _currentImageIndex =
-                                            (newLength - 1).clamp(0, newLength);
-                                      }
-                                    });
-                                  }
-                                });
-                                return Container(
-                                  color: Colors.grey[200],
-                                  child: const Center(
-                                    child: Icon(Icons.broken_image,
-                                        size: 40, color: Colors.grey),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  if (visibleImages.length > 1)
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(
-                        visibleImages.length,
-                        (index) => Container(
-                          margin:
-                              const EdgeInsets.symmetric(horizontal: 4),
-                          width: _currentImageIndex == index ? 24 : 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: _currentImageIndex == index
-                                ? Colors.black
-                                : Colors.grey[300],
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        ),
-                      ),
-                    ),
-                  const SizedBox(height: 20),
-                ],
-              );
-            },
-          ),
-
-        // Extract / summary text
-        Container(
-          padding: const EdgeInsets.only(left: 16),
-          decoration: BoxDecoration(
-            border: Border(
-                left: BorderSide(color: Colors.grey[300]!, width: 3)),
-          ),
-          child: Text(
-            _translatedExtract ?? wikiExtract,
-            textAlign: TextAlign.justify,
-            style: TextStyle(
-              fontSize: 15,
-              color: Colors.grey[800],
-              height: 1.7,
-              fontStyle: FontStyle.italic,
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 16),
-
-        // Read more + Wikipedia link
-        if (wikiUrl.isNotEmpty)
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              onPressed: () => _launchWiki(wikiUrl),
-              icon: const Icon(Icons.auto_stories, size: 18),
-              label: const Text('Read More on Wikipedia'),
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.blue[800],
-                textStyle:
-                    const TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ),
-      ],
-    );
+  Widget _sectionHeader(IconData icon, String title) {
+    return Row(children: [
+      Icon(icon, size: 18, color: Colors.black87),
+      const SizedBox(width: 8),
+      Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: -0.3)),
+    ]);
   }
 
-  Widget _buildInfoCard({
-    required String label,
-    required String value,
-    required IconData icon,
-    required Color color,
-    double? height,
-  }) {
+  Widget _infoBox({required Widget child}) {
     return Container(
-      height: height,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(24),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [color, color.withOpacity(0.8)],
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.5),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, size: 20, color: Colors.black87),
-          ),
-          const Spacer(),
-          Text(
-            label,
-            style: const TextStyle(
-                fontSize: 11,
-                color: Colors.black54,
-                fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w900,
-                letterSpacing: -0.5),
-          ),
-        ],
-      ),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(color: Colors.grey[50], borderRadius: BorderRadius.circular(16)),
+      child: child,
     );
   }
 
-  // ============================================================
-  // Shared UI Helpers
-  // ============================================================
-
-  Widget _buildSectionHeader(IconData icon, String title) {
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: Colors.black87),
-        const SizedBox(width: 8),
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.3,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildTappableRow({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-    required bool showDivider,
+  Widget _tappableRow({
+    required IconData icon, required String label,
+    required VoidCallback onTap, required bool showDivider,
   }) {
-    return Column(
-      children: [
-        InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 14),
-            child: Row(
-              children: [
-                Icon(icon, size: 18, color: Colors.grey[600]),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    label,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.blue,
-                      decoration: TextDecoration.underline,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                Icon(Icons.chevron_right_rounded,
-                    size: 18, color: Colors.grey[400]),
-              ],
-            ),
-          ),
+    return Column(children: [
+      InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(children: [
+            Icon(icon, size: 18, color: Colors.grey[600]),
+            const SizedBox(width: 12),
+            Expanded(child: Text(label,
+              style: const TextStyle(fontSize: 14, color: Colors.blue, decoration: TextDecoration.underline),
+              overflow: TextOverflow.ellipsis)),
+            Icon(Icons.chevron_right_rounded, size: 18, color: Colors.grey[400]),
+          ]),
         ),
-        if (showDivider)
-          Divider(
-              height: 1,
-              color: Colors.grey[200],
-              indent: 16,
-              endIndent: 16),
-      ],
-    );
+      ),
+      if (showDivider) Divider(height: 1, color: Colors.grey[200], indent: 16, endIndent: 16),
+    ]);
   }
-
-  // ============================================================
-  // Utilities
-  // ============================================================
 
   String _formatCount(int count) {
-    if (count >= 1000000) {
-      return '${(count / 1000000).toStringAsFixed(1)}M';
-    }
+    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
     if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
     return count.toString();
   }
 
-  Future<void> _launchWiki(String url) async {
+  Future<void> _launchUrl(String url) async {
     final uri = Uri.parse(url);
     if (await canLaunchUrl(uri)) {
-      try {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } catch (e) {
-        await launchUrl(uri, mode: LaunchMode.platformDefault);
-      }
-    } else {
-      if (!mounted) return;
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Cannot open URL')),
       );
@@ -1506,7 +1030,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   }
 }
 
-// Private helper — only used within this file
 class _OpeningDay {
   final String day;
   final String hours;

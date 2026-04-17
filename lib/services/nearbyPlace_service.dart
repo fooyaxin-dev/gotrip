@@ -4,6 +4,7 @@ import 'placesAPI_service.dart';
 import 'location_service.dart';
 
 class NearbyPlacesService {
+  
   static final NearbyPlacesService instance = NearbyPlacesService._();
   NearbyPlacesService._();
 

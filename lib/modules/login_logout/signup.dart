@@ -22,6 +22,8 @@ class _SignupPageState extends State<SignupPage> {
   final TextEditingController repwdController = TextEditingController();
 
   bool isLoading = false;
+  bool _pwdVisible = false;
+  bool _repwdVisible = false;
 
   @override
   void dispose() {
@@ -68,7 +70,6 @@ class _SignupPageState extends State<SignupPage> {
 
       final uid = userCredential.user!.uid;
 
-      // ✅ 保存完整的用户资料（包含所有需要的字段）
       await FirebaseFirestore.instance.collection('users').doc(uid).set({
         'email': email,
         'username': username,
@@ -78,24 +79,18 @@ class _SignupPageState extends State<SignupPage> {
         'postCount': 0,
         'favouriteCount': 0,
         'routeCount': 0,
-        'onboardingDone': false,          // ← 新增
-        'preferences': {                  // ← 新增
+        'onboardingDone': false,
+        'preferences': {
           'categories': [],
           'cuisines': [],
           'travelMode': 'walk',
         },
       });
 
-      print('✅ User created successfully！');
-      print('   UID: $uid');
-      print('   Username: $username');
-      print('   Email: $email');
-
-      /// ✅ 直接跳 HomePage
       if (mounted) {
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const OnboardingPage()), 
+          MaterialPageRoute(builder: (_) => const OnboardingPage()),
         );
       }
     } on FirebaseAuthException catch (e) {
@@ -120,7 +115,6 @@ class _SignupPageState extends State<SignupPage> {
 
       _showError(message);
     } catch (e) {
-      print('❌ Sign Up failed: $e');
       _showError('Something went wrong');
     } finally {
       if (mounted) setState(() => isLoading = false);
@@ -134,6 +128,19 @@ class _SignupPageState extends State<SignupPage> {
         backgroundColor: Colors.indigoAccent,
       ),
     );
+  }
+
+  // ================= Password Strength Helper =================
+  String? _validatePassword(String? value) {
+    if (value == null || value.isEmpty) return 'Password is required';
+    if (value.length < 8) return 'At least 8 characters required';
+    if (!value.contains(RegExp(r'[A-Z]'))) return 'At least one uppercase letter (A-Z)';
+    if (!value.contains(RegExp(r'[a-z]'))) return 'At least one lowercase letter (a-z)';
+    if (!value.contains(RegExp(r'[0-9]'))) return 'At least one number (0-9)';
+    if (!value.contains(RegExp(r'[!@#\$&*~%^()\-_=+]'))) {
+      return 'At least one special character (!@#\$&*~)';
+    }
+    return null;
   }
 
   // ================= UI =================
@@ -205,15 +212,9 @@ class _SignupPageState extends State<SignupPage> {
                   icon: Icons.person,
                   hint: 'Enter your username',
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Username is required';
-                    }
-                    if (value.contains('@')) {
-                      return 'Username cannot contain @';
-                    }
-                    if (value.length < 3) {
-                      return 'Username must be at least 3 characters';
-                    }
+                    if (value == null || value.isEmpty) return 'Username is required';
+                    if (value.contains('@')) return 'Username cannot contain @';
+                    if (value.length < 3) return 'Username must be at least 3 characters';
                     return null;
                   },
                 ),
@@ -227,12 +228,8 @@ class _SignupPageState extends State<SignupPage> {
                   hint: 'Enter your email',
                   keyboardType: TextInputType.emailAddress,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Email is required';
-                    }
-                    if (!value.contains('@')) {
-                      return 'Invalid email';
-                    }
+                    if (value == null || value.isEmpty) return 'Email is required';
+                    if (!value.contains('@')) return 'Invalid email';
                     return null;
                   },
                 ),
@@ -244,13 +241,30 @@ class _SignupPageState extends State<SignupPage> {
                   controller: pwdController,
                   icon: Icons.lock,
                   hint: 'Enter your password',
-                  obscure: true,
-                  validator: (value) {
-                    if (value == null || value.length < 6) {
-                      return 'Password must be at least 6 characters';
-                    }
-                    return null;
-                  },
+                  obscure: !_pwdVisible,
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _pwdVisible ? Icons.visibility_off : Icons.visibility,
+                      color: Colors.grey,
+                    ),
+                    onPressed: () => setState(() => _pwdVisible = !_pwdVisible),
+                  ),
+                  validator: _validatePassword,
+                ),
+
+                // ===== Password hint =====
+                Padding(
+                  padding: const EdgeInsets.only(left: 30, top: 6, right: 25),
+                  child: Row(
+                    children: const [
+                      Icon(Icons.info_outline, size: 13, color: Colors.grey),
+                      SizedBox(width: 5),
+                      Text(
+                        'Min 8 chars, uppercase, lowercase, number & symbol',
+                        style: TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
+                    ],
+                  ),
                 ),
 
                 const SizedBox(height: 15),
@@ -260,11 +274,16 @@ class _SignupPageState extends State<SignupPage> {
                   controller: repwdController,
                   icon: Icons.lock_outline,
                   hint: 'Re-enter your password',
-                  obscure: true,
+                  obscure: !_repwdVisible,
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _repwdVisible ? Icons.visibility_off : Icons.visibility,
+                      color: Colors.grey,
+                    ),
+                    onPressed: () => setState(() => _repwdVisible = !_repwdVisible),
+                  ),
                   validator: (value) {
-                    if (value != pwdController.text) {
-                      return 'Passwords do not match';
-                    }
+                    if (value != pwdController.text) return 'Passwords do not match';
                     return null;
                   },
                 ),
@@ -277,9 +296,8 @@ class _SignupPageState extends State<SignupPage> {
                   child: SizedBox(
                     height: 55,
                     child: ElevatedButton(
-                      onPressed:
-                          isLoading ? null : createUserWithEmailAndPassword,
-                     style: ElevatedButton.styleFrom(
+                      onPressed: isLoading ? null : createUserWithEmailAndPassword,
+                      style: ElevatedButton.styleFrom(
                         padding: EdgeInsets.zero,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
@@ -331,9 +349,7 @@ class _SignupPageState extends State<SignupPage> {
                       onTap: () {
                         Navigator.pushReplacement(
                           context,
-                          MaterialPageRoute(
-                            builder: (_) => const LoginPage(),
-                          ),
+                          MaterialPageRoute(builder: (_) => const LoginPage()),
                         );
                       },
                       child: const Text(
@@ -364,6 +380,7 @@ class _SignupPageState extends State<SignupPage> {
     bool obscure = false,
     TextInputType keyboardType = TextInputType.text,
     String? Function(String?)? validator,
+    Widget? suffixIcon,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 25),
@@ -379,6 +396,7 @@ class _SignupPageState extends State<SignupPage> {
             icon: Icon(icon),
             hintText: hint,
             border: InputBorder.none,
+            suffixIcon: suffixIcon,
           ),
         ),
       ),

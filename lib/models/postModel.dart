@@ -63,7 +63,7 @@ class Post {
       userName = 'User_${data['userId'].toString().substring(0, 8)}';
     }
 
-    // 兼容旧字段 imagePaths 和新字段 images（Firebase Storage URL）
+  
     final rawImages = data['images'] ?? data['imagePaths'] ?? [];
 
     return Post(

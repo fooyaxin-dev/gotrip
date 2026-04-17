@@ -4,6 +4,7 @@ import 'package:get/get_navigation/src/root/get_material_app.dart';
 import 'modules/main/splashview.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'services/firebase_options.dart';
+import 'services/vision_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();

@@ -66,7 +66,7 @@ class PlacesApiService {
  static Future<List<Map<String, dynamic>>> searchNearby({
     required double lat,
     required double lng,
-    List<String>? types,          // ← 可选，不传 = 不限类型
+    List<String>? types,          
     int radius = 5000,
     int maxResultCount = 20,
   }) async {
@@ -174,7 +174,7 @@ class PlacesApiService {
       'input': input,
     };
  
-    // 如果有当前位置，加上 location bias（结果会偏向附近）
+    // if there is a valid lat/lng, add locationBias to prioritize nearby results (but not restrict to)
     if (lat != null && lng != null) {
       body['locationBias'] = {
         'circle': {
@@ -209,7 +209,7 @@ class PlacesApiService {
     }).where((s) => (s['placeId'] as String).isNotEmpty).toList();
   }
  
-  /// 📍 通过 placeId 拿坐标（用于 autocomplete 选完之后定位）
+  /// 📍 take lng and lat through place id (often do it after select a place autocomplete)
   static Future<Map<String, dynamic>?> getPlaceLatLng(String placeId) async {
     final url = Uri.parse('$_baseUrl/places/$placeId');
     final response = await http.get(
@@ -233,7 +233,7 @@ class PlacesApiService {
  
 
 
-  /// 📄 Place Details (带 Firebase 缓存)
+  /// 📄 Place Details (save to firebase)
   static Future<Map<String, dynamic>> getPlaceDetails(String placeId) async {
     final startTime = DateTime.now();
     print('📄 getPlaceDetails: $placeId');
@@ -318,21 +318,21 @@ class PlacesApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> getCacheStats() async {
-    try {
-      final snapshot = await _firestore.collection(_collectionName).get();
-      return {
-        'totalCachedPlaces': snapshot.docs.length,
-        'cacheHits': _cacheHits,
-        'cacheMisses': _cacheMisses,
-        'hitRate': _cacheHits + _cacheMisses > 0
-            ? (_cacheHits / (_cacheHits + _cacheMisses) * 100).toStringAsFixed(1)
-            : '0.0',
-      };
-    } catch (e) {
-      return {'totalCachedPlaces': 0, 'cacheHits': _cacheHits, 'cacheMisses': _cacheMisses, 'hitRate': '0.0'};
-    }
-  }
+  // static Future<Map<String, dynamic>> getCacheStats() async {
+  //   try {
+  //     final snapshot = await _firestore.collection(_collectionName).get();
+  //     return {
+  //       'totalCachedPlaces': snapshot.docs.length,
+  //       'cacheHits': _cacheHits,
+  //       'cacheMisses': _cacheMisses,
+  //       'hitRate': _cacheHits + _cacheMisses > 0
+  //           ? (_cacheHits / (_cacheHits + _cacheMisses) * 100).toStringAsFixed(1)
+  //           : '0.0',
+  //     };
+  //   } catch (e) {
+  //     return {'totalCachedPlaces': 0, 'cacheHits': _cacheHits, 'cacheMisses': _cacheMisses, 'hitRate': '0.0'};
+  //   }
+  // }
 
   static String buildPhotoUrl(String photoName, {int maxWidth = 800}) {
     return '$_baseUrl/$photoName/media?key=$_apiKey&maxWidthPx=$maxWidth';

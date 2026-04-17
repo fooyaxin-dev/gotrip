@@ -6,11 +6,11 @@ class PlaceModel {
   final double? lng;
   final double? rating;
   final String? photoUrl;
-  final String source; // 'google' | 'foursquare'
+  final String source; 
   final String? primaryType;
   final String? secondaryType;
   final List<String> allTypes;
-  final int? priceLevel; // 1 = cheap, 2 = moderate, 3 = expensive, 4 = very expensive
+  final int? priceLevel;
 
   PlaceModel({
     required this.id,

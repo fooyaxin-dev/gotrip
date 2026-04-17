@@ -20,7 +20,7 @@ class _ProfileInfoWidgetState extends State<ProfileInfoWidget> {
   @override
   void initState() {
     super.initState();
-    // ✅ 只创建一次，不会重复订阅
+   
     _stream = _userService.getCurrentUserProfileStream();
   }
 
@@ -64,7 +64,7 @@ class _ProfileInfoWidgetState extends State<ProfileInfoWidget> {
           children: [
             // 头像
             CircleAvatar(
-              backgroundColor: Colors.orange,
+              backgroundColor: Colors.indigoAccent,
               radius: 47,
               child: CircleAvatar(
                 backgroundColor: Colors.white,
@@ -109,7 +109,7 @@ class _ProfileInfoWidgetState extends State<ProfileInfoWidget> {
               icon: const Icon(Icons.edit, size: 18),
               label: const Text('Edit Profile'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange,
+                backgroundColor: Colors.indigoAccent,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(
                     horizontal: 20, vertical: 10),
