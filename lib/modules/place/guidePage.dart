@@ -1,10 +1,11 @@
+import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:compassx/compassx.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:intl/intl.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../services/route_service.dart';
-import 'navigateController.dart';
 
 class GuidePage extends StatefulWidget {
   final double startLat;
@@ -28,24 +29,61 @@ class GuidePage extends StatefulWidget {
   State<GuidePage> createState() => _GuidePageState();
 }
 
-class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
-
-  late final NavigationController _nav;
+class _GuidePageState extends State<GuidePage> {
 
   // ── Map ──
   GoogleMapController? _mapController;
   final Set<Marker>   _markers   = {};
   final Set<Polyline> _polylines = {};
+  final Set<Circle>   _circles   = {};  // ← 加这里
+
+
+  // ── Route ──
+  List<LatLng> _polylinePoints  = [];
+  List<LatLng> _walkedPoints    = [];
+  List<LatLng> _remainingPoints = [];
+  int          _nearestSegIdx   = 0;  // index of nearest *segment* (not point)
+  LatLngBounds? _routeBounds;
+
+  // ── Steps ──
+  List<NavStep> _steps            = [];
+  int           _currentStepIndex = 0;
+  double        _distToTurnEnd    = 0;
+  int           _stepConfirmCount = 0;
+
+  // ── ETA ──
+  double _remainingMeters  = 0;
+  int    _remainingSeconds = 0;
+
+  // ── Position ──
+  LatLng?   _userLatLng;
+  Position? _lastPos;
+  StreamSubscription<Position>? _positionSub;
+
+  // ── Heading ──
+  double _bearing = 0;
+  StreamSubscription<CompassXEvent>? _compassSub;
 
   // ── Camera ──
   bool     _isFollowing        = true;
-  bool     _isOverview         = false;
   bool     _isProgrammaticMove = false;
-  bool     _isUserInteracting  = false;
+  bool     _isOverview         = false;
   DateTime _lastCameraMove     = DateTime.fromMillisecondsSinceEpoch(0);
-  DateTime _lastProgMove       = DateTime.fromMillisecondsSinceEpoch(0);
-  DateTime _ignoreCameraUntil  = DateTime.fromMillisecondsSinceEpoch(0);
-  double?  _manualZoom;
+
+  // ── State ──
+  bool    _loading     = true;
+  String? _error;
+  bool    _isRerouting = false;
+  bool    _hasArrived  = false;
+  int     _offRouteCount = 0;
+
+  // ── Icon ──
+  BitmapDescriptor? _arrowIcon;
+
+  static const double _offRouteThresh  = 40.0;  // tighter than before
+  static const double _arrivedThresh   = 25.0;
+  static const int    _offRouteConfirm = 4;
+  static const int    _stepConfirm     = 2;
 
   // ─────────────────────────────────────────────
   // Lifecycle
@@ -54,190 +92,429 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-    _nav = NavigationController(
-      startLat:        widget.startLat,
-      startLng:        widget.startLng,
-      endLat:          widget.endLat,
-      endLng:          widget.endLng,
-      destinationName: widget.destinationName,
-      travelMode:      widget.travelMode,
-    );
-    _nav.onArrived = _showArrivedDialog;
-    _nav.addListener(_onNavUpdate);
-    _nav.init(this);
+    _createArrowIcon().then((_) => _initWithRealLocation());
+    _startCompass();
   }
 
   @override
   void dispose() {
-    _nav.removeListener(_onNavUpdate);
-    _nav.dispose();
+    _positionSub?.cancel();
+    _compassSub?.cancel();
     _mapController?.dispose();
     super.dispose();
   }
 
   // ─────────────────────────────────────────────
-  // Controller listener — rebuild map overlays + camera
+  // Init — real GPS then load route
   // ─────────────────────────────────────────────
 
-  void _onNavUpdate() {
-    if (!mounted) return;
-    setState(() {
-      _rebuildPolylines();
-      _placeArrow();
-      _placeDestinationMarker();
-    });
-    if (_isFollowing && !_isOverview && !_isUserInteracting && !_nav.loading) {
-      _moveCamera();
+  Future<void> _initWithRealLocation() async {
+    try {
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
+      );
+      if (!mounted) return;
+      setState(() {
+        _userLatLng = LatLng(pos.latitude, pos.longitude);
+        _lastPos    = pos;
+      });
+      _loadRoute(pos.latitude, pos.longitude);
+    } catch (_) {
+      setState(() => _userLatLng = LatLng(widget.startLat, widget.startLng));
+      _loadRoute(widget.startLat, widget.startLng);
     }
   }
 
   // ─────────────────────────────────────────────
-  // Map overlays
+  // Arrow icon (always points up; map rotates)
   // ─────────────────────────────────────────────
 
-  void _placeDestinationMarker() {
-    _markers
-      ..removeWhere((m) => m.markerId.value == 'destination')
-      ..add(Marker(
-        markerId:   const MarkerId('destination'),
-        position:   LatLng(widget.endLat, widget.endLng),
-        icon:       BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-        infoWindow: InfoWindow(title: widget.destinationName ?? 'Destination'),
-      ));
+  Future<void> _createArrowIcon() async {
+    const size = 72.0;
+    final rec  = ui.PictureRecorder();
+    final c    = Canvas(rec);
+    c.drawCircle(const Offset(size / 2, size / 2 + 2), size / 2 - 2,
+        Paint()..color = Colors.black26);
+    c.drawCircle(const Offset(size / 2, size / 2), size / 2 - 2,
+        Paint()..color = Colors.white);
+    c.drawCircle(const Offset(size / 2, size / 2), size / 2 - 6,
+        Paint()..color = const Color(0xFF1A73E8));
+    final arrow = Path()
+      ..moveTo(size / 2, 10)
+      ..lineTo(size / 2 + 15, size - 14)
+      ..lineTo(size / 2, size - 22)
+      ..lineTo(size / 2 - 15, size - 14)
+      ..close();
+    c.drawPath(arrow, Paint()..color = Colors.white);
+    final img   = await rec.endRecording().toImage(size.toInt(), size.toInt());
+    final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
+    if (bytes != null && mounted) {
+      setState(() =>
+          _arrowIcon = BitmapDescriptor.fromBytes(bytes.buffer.asUint8List()));
+    }
   }
 
-  void _placeArrow() {
-    final pos = _nav.displayLatLng ?? _nav.userLatLng;
-    if (pos == null) return;
-    _markers
-      ..removeWhere((m) => m.markerId.value == 'me')
-      ..add(Marker(
-        markerId: const MarkerId('me'),
-        position: pos,
-        icon:     _nav.arrowIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-        // FIX 7: rotate arrow marker to match current bearing
-        rotation: _nav.bearing,
-        anchor:   const Offset(0.5, 0.5),
-        flat:     true,
-        zIndex:   10,
-      ));
+  // ─────────────────────────────────────────────
+  // Compass — stationary only
+  // ─────────────────────────────────────────────
+
+  void _startCompass() {
+    _compassSub = CompassX.events.listen((e) {
+      if (!mounted || e.heading == null) return;
+      if ((_lastPos?.speed ?? 0) <= 0.5) {
+        setState(() {
+          _bearing = e.heading!;
+          if (_userLatLng != null) _placeArrow(_userLatLng!); // ← 加这行
+        });
+        _moveCamera();
+      }
+    });
   }
+
+  // ─────────────────────────────────────────────
+  // Route loading — delegates to RouteService
+  // ─────────────────────────────────────────────
+
+  Future<void> _loadRoute(double fromLat, double fromLng) async {
+    if (!mounted) return;
+    setState(() {
+      _loading          = true;
+      _error            = null;
+      _isRerouting      = false;
+      _polylines.clear();
+      _walkedPoints.clear();
+      _remainingPoints.clear();
+      _nearestSegIdx    = 0;
+      _stepConfirmCount = 0;
+      _offRouteCount    = 0;
+    });
+
+    try {
+      final result = await RouteService.instance.fetchNavigationRoute(
+        fromLat: fromLat, fromLng: fromLng,
+        toLat:   widget.endLat, toLng: widget.endLng,
+        mode:    widget.travelMode,
+      );
+
+      if (!mounted) return;
+
+      if (result.polylinePoints.length >= 2) {
+        _bearing = _calcBearing(
+            result.polylinePoints[0], result.polylinePoints[1]);
+      }
+
+      setState(() {
+        _polylinePoints   = result.polylinePoints;
+        _remainingPoints  = List.from(result.polylinePoints);
+        _walkedPoints     = [];
+        _routeBounds      = result.bounds;
+        _steps            = result.steps;
+        _currentStepIndex = 0;
+        _distToTurnEnd    = result.steps.isNotEmpty
+            ? result.steps[0].distanceMeters : 0;
+        _remainingMeters  = result.distanceMeters;
+        _remainingSeconds = result.durationSeconds;
+        _loading          = false;
+
+        _markers
+          ..removeWhere((m) => m.markerId.value == 'destination')
+          ..add(Marker(
+            markerId:   const MarkerId('destination'),
+            position:   LatLng(widget.endLat, widget.endLng),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+            infoWindow: InfoWindow(title: widget.destinationName ?? 'Destination'),
+          ));
+
+        _rebuildPolylines();
+        if (_userLatLng != null) _placeArrow(_userLatLng!);
+      });
+
+      await Future.delayed(const Duration(milliseconds: 300));
+      _moveCamera();
+      _startTracking();
+
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _error = e.toString(); _loading = false; });
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Polylines
+  // ─────────────────────────────────────────────
 
   void _rebuildPolylines() {
     _polylines.clear();
-    if (_nav.polylinePoints.length >= 2) {
-      _polylines.add(Polyline(
-        polylineId: const PolylineId('routeShadow'),
-        points:    _nav.polylinePoints,
-        color:     Colors.black.withOpacity(0.16),
-        width:     13,
-        startCap:  Cap.roundCap, endCap: Cap.roundCap,
-        jointType: JointType.round, zIndex: 0,
-      ));
-    }
-    if (_nav.walkedPoints.length >= 2) {
+    if (_walkedPoints.length >= 2) {
       _polylines.add(Polyline(
         polylineId: const PolylineId('walked'),
-        points:    _nav.walkedPoints,
-        color:     const Color(0xFF9AA4B2),
-        width:     9,
+        points:    _walkedPoints,
+        color:     Colors.grey.shade400,
+        width:     7,
         startCap:  Cap.roundCap, endCap: Cap.buttCap,
-        jointType: JointType.round, zIndex: 1,
+        jointType: JointType.round,
       ));
     }
-    if (_nav.remainingPoints.length >= 2) {
+    if (_remainingPoints.length >= 2) {
       _polylines.add(Polyline(
         polylineId: const PolylineId('remaining'),
-        points:    _nav.remainingPoints,
-        color:     const Color(0xFF1565D8),
-        width:     9,
+        points:    _remainingPoints,
+        color:     const Color(0xFF1A73E8),
+        width:     7,
         startCap:  Cap.roundCap, endCap: Cap.roundCap,
-        jointType: JointType.round, zIndex: 2,
-      ));
-      _polylines.add(Polyline(
-        polylineId: const PolylineId('remainingGlow'),
-        points:    _nav.remainingPoints,
-        color:     const Color(0xFF7CC7FF),
-        width:     4,
-        startCap:  Cap.roundCap, endCap: Cap.roundCap,
-        jointType: JointType.round, zIndex: 3,
+        jointType: JointType.round,
       ));
     }
   }
+
+  // ─────────────────────────────────────────────
+  // Snap — projects onto nearest SEGMENT (not point)
+  // This is the key fix vs the previous nearest-point approach.
+  // ─────────────────────────────────────────────
+
+  LatLng _snapAndSplit(LatLng user) {
+    if (_polylinePoints.length < 2) return user;
+
+    final searchStart = (_nearestSegIdx - 10).clamp(0, _polylinePoints.length - 2);
+    final searchEnd   = (_nearestSegIdx + 40).clamp(0, _polylinePoints.length - 2);
+
+    int    bestSeg  = _nearestSegIdx;
+    double bestDist = double.infinity;
+
+    for (int i = searchStart; i <= searchEnd; i++) {
+      final d = _distToSeg(user, _polylinePoints[i], _polylinePoints[i + 1]);
+      if (d < bestDist) { bestDist = d; bestSeg = i; }
+      if (i > bestSeg + 20 && d > bestDist * 2.5) break;
+    }
+
+    // ← 只允许前进，不能回退，防止 bearing 反转
+    if (bestSeg > _nearestSegIdx) _nearestSegIdx = bestSeg;
+
+    final snapped = _project(user, _polylinePoints[_nearestSegIdx],
+        _polylinePoints[_nearestSegIdx + 1]);
+
+    _walkedPoints    = [..._polylinePoints.sublist(0, _nearestSegIdx + 1), snapped];
+    _remainingPoints = [snapped, ..._polylinePoints.sublist(_nearestSegIdx + 1)];
+    _rebuildPolylines();
+    return snapped;
+  }
+
+  // ─────────────────────────────────────────────
+  // Arrow marker
+  // ─────────────────────────────────────────────
+
+  // ── 问题2：地图bearing跟随用户，marker rotation应该为0 ──
+// 因为 CameraPosition.bearing = _bearing，地图已经转了
+// marker的rotation应该相对于地图，不是绝对north
+// 如果地图朝north转了30度，marker不需要额外旋转
+
+// 在_markers里加一个Circle表示精度范围
+void _placeArrow(LatLng pos) {
+  _markers
+    ..removeWhere((m) => m.markerId.value == 'me')
+    ..add(Marker(
+      markerId: const MarkerId('me'),
+      position: pos,
+      icon: _arrowIcon ?? BitmapDescriptor.defaultMarkerWithHue(
+          BitmapDescriptor.hueAzure),
+      rotation: 0,
+      anchor: const Offset(0.5, 0.5),
+      flat: true,
+      zIndex: 10,
+    ));
+
+  // 精度圈
+  _circles  // 你需要加一个 final Set<Circle> _circles = {};
+    ..removeWhere((c) => c.circleId.value == 'accuracy')
+    ..add(Circle(
+      circleId: const CircleId('accuracy'),
+      center: pos,
+      radius: 8.0,
+      fillColor: const Color(0x221A73E8),
+      strokeColor: const Color(0x441A73E8),
+      strokeWidth: 1,
+    ));
+}
 
   // ─────────────────────────────────────────────
   // Camera
   // ─────────────────────────────────────────────
 
   double _zoomForSpeed(double mps) {
-    if (widget.travelMode == TravelMode.walk) {
-      if (mps >= 2.2) return 18.8;
-      if (mps >= 1.2) return 19.2;
-      return 19.6;
-    }
     if (mps >= 25) return 16.0;
-    if (mps >= 14) return 16.8;
-    if (mps >= 8)  return 17.6;
-    if (mps >= 3)  return 18.4;
-    return 19.0;
+    if (mps >= 14) return 17.0;
+    if (mps >= 8)  return 18.0;
+    if (mps >= 1)  return 19.0;
+    return 19.5;
   }
-
-  double _tiltForState() {
-    if (_isOverview || widget.travelMode == TravelMode.walk) return 0;
-    final speed = _nav.lastPos?.speed ?? 0;
-    if (speed < 1.2) return 0;
-    if (_nav.distToTurnEnd < 70) return 42;
-    if (speed >= 16) return 64;
-    if (speed >= 8)  return 56;
-    return 48;
-  }
-
-  double _effectiveZoom() =>
-      _manualZoom ?? _zoomForSpeed(_nav.lastPos?.speed ?? 0);
 
   void _moveCamera() {
-    final target = _nav.displayLatLng ?? _nav.userLatLng;
-    if (_mapController == null || target == null) return;
+    if (_mapController == null || _userLatLng == null) return;
     final now = DateTime.now();
-    // FIX 5: relax throttle to 160ms (matches ~200ms GPS interval better)
-    if (now.difference(_lastCameraMove).inMilliseconds < 160) return;
+    if (now.difference(_lastCameraMove).inMilliseconds < 80) return;
     _lastCameraMove = now;
 
     _isProgrammaticMove = true;
-    _lastProgMove       = now;
-    _ignoreCameraUntil  = now.add(const Duration(milliseconds: 450));
-
-    _mapController!.moveCamera(CameraUpdate.newCameraPosition(CameraPosition(
-      target:  target,
-      zoom:    _effectiveZoom(),
-      tilt:    _tiltForState(),
-      bearing: _nav.cameraBearing,
-    )));
-
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) _isProgrammaticMove = false;
+    _mapController!.animateCamera(    // ← 改成 animateCamera（平滑移动）
+      CameraUpdate.newCameraPosition(CameraPosition(
+        target:  _userLatLng!,
+        zoom:    _zoomForSpeed(_lastPos?.speed ?? 0),
+        tilt:    0,
+        bearing: _bearing,
+      )),
+    ).then((_) {
+      _isProgrammaticMove = false;    // ← 等动画完成才还原
     });
   }
 
-  void _recenter() {
-    setState(() {
-      _isFollowing = true;
-      _isOverview  = false;
-      _manualZoom  = null;
+  // ─────────────────────────────────────────────
+  // GPS tracking
+  // ─────────────────────────────────────────────
+
+  void _startTracking() {
+    _positionSub?.cancel();
+    _positionSub = Geolocator.getPositionStream(
+      locationSettings: AndroidSettings(
+        accuracy:         LocationAccuracy.bestForNavigation,
+        distanceFilter:   0,
+        intervalDuration: const Duration(milliseconds: 200),
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationText:  'Navigation is active',
+          notificationTitle: 'Turn-by-turn Navigation',
+          enableWakeLock:    true,
+        ),
+      ),
+    ).listen((raw) {
+      if (!mounted) return;
+      if (raw.accuracy > 30) return;
+
+      final isMoving  = raw.speed > 0.5;
+      final rawLatLng = LatLng(raw.latitude, raw.longitude);
+
+      // ── Snap first — _remainingPoints 更新后才能用它算 bearing ──
+      final snapped = _snapAndSplit(rawLatLng);
+
+      // ── Bearing: 用 remainingPoints 前方的点，永远不会指向身后 ──
+      if (isMoving && _remainingPoints.length >= 4) {
+        final newBearing = _calcBearing(
+          _remainingPoints[0], // 当前 snapped 位置
+          _remainingPoints[3], // 前方第3个点，方向稳定
+        );
+        _bearing = _lerpBearing(_bearing, newBearing, 0.12);
+      }
+
+      // ── Arrived ──
+      if (_dist(rawLatLng, LatLng(widget.endLat, widget.endLng)) <= _arrivedThresh
+          && !_hasArrived) {
+        _hasArrived = true;
+        _positionSub?.cancel();
+        _showArrivedDialog();
+        return;
+      }
+
+      // ── Off-route ──
+      if (isMoving && !_isRerouting && _polylinePoints.isNotEmpty) {
+        if (_minDistToRoute(rawLatLng) > _offRouteThresh) {
+          _offRouteCount++;
+          if (_offRouteCount >= _offRouteConfirm) {
+            _isRerouting = true;
+            _loadRoute(raw.latitude, raw.longitude);
+            return;
+          }
+        } else {
+          _offRouteCount = 0;
+        }
+      }
+
+      // ── Advance step ──
+      if (_steps.isNotEmpty && _currentStepIndex < _steps.length - 1) {
+        final step    = _steps[_currentStepIndex];
+        final distEnd = _distToStepEnd(rawLatLng, step);
+
+        if (distEnd < 15) {
+          _stepConfirmCount++;
+          if (_stepConfirmCount >= _stepConfirm) {
+            _stepConfirmCount = 0;
+            setState(() {
+              _currentStepIndex++;
+              _distToTurnEnd = _steps[_currentStepIndex].distanceMeters;
+            });
+          }
+        } else {
+          _stepConfirmCount = 0;
+        }
+      }
+
+      // ── Remaining ETA ──
+      if (_steps.isNotEmpty) {
+        final step = _steps[_currentStepIndex];
+        _distToTurnEnd = _dist(rawLatLng, step.endLocation)
+            .clamp(0.0, step.distanceMeters);
+        double futureM = 0; int futureS = 0;
+        for (int i = _currentStepIndex + 1; i < _steps.length; i++) {
+          futureM += _steps[i].distanceMeters;
+          futureS += _steps[i].durationSeconds;
+        }
+        final ratio = step.distanceMeters > 0
+            ? _distToTurnEnd / step.distanceMeters : 0.0;
+        _remainingMeters  = _distToTurnEnd + futureM;
+        _remainingSeconds = (step.durationSeconds * ratio).toInt() + futureS;
+      }
+
+      // ── Update state ──
+      setState(() {
+        _lastPos    = raw;
+        _userLatLng = snapped;
+        _placeArrow(snapped);
+      });
+
+      if (_isFollowing && !_isOverview) _moveCamera();
     });
+  }
+  
+  
+  // ─────────────────────────────────────────────
+  // Step distance — uses per-step polyline for accuracy
+  // ─────────────────────────────────────────────
+
+  /// Minimum distance from [user] to any segment of [step]'s polyline.
+  /// Falls back to straight-line distance to endLocation if no polyline.
+  double _distToStepEnd(LatLng user, NavStep step) {
+    final pts = step.polylinePoints;
+    if (pts.length < 2) return _dist(user, step.endLocation);
+
+    double minDist = double.infinity;
+    // Only check last quarter of step — the user is approaching the turn
+    final searchStart = (pts.length * 3 ~/ 4).clamp(0, pts.length - 2);
+    for (int i = searchStart; i < pts.length - 1; i++) {
+      final d = _distToSeg(user, pts[i], pts[i + 1]);
+      if (d < minDist) minDist = d;
+    }
+    // Also check straight-line to end marker
+    final dEnd = _dist(user, step.endLocation);
+    return minDist < dEnd ? minDist : dEnd;
+  }
+
+  // ─────────────────────────────────────────────
+  // Overview / recenter
+  // ─────────────────────────────────────────────
+
+  void _recenter() {
+    setState(() { _isFollowing = true; _isOverview = false; });
     _moveCamera();
   }
 
   Future<void> _toggleOverview() async {
-    if (_nav.routeBounds == null) return;
-    setState(() {
-      _isOverview  = !_isOverview;
-      _isFollowing = !_isOverview;
-    });
+    if (_routeBounds == null) return;
+    setState(() { _isOverview = !_isOverview; _isFollowing = !_isOverview; });
     if (_isOverview) {
       _isProgrammaticMove = true;
       await _mapController?.animateCamera(
-          CameraUpdate.newLatLngBounds(_nav.routeBounds!, 80));
+          CameraUpdate.newLatLngBounds(_routeBounds!, 80));
       _isProgrammaticMove = false;
     } else {
       _recenter();
@@ -256,7 +533,8 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         title: const Row(children: [
           Text('🎉', style: TextStyle(fontSize: 28)),
           SizedBox(width: 8),
-          Text('You have arrived!', style: TextStyle(fontWeight: FontWeight.bold)),
+          Text('You have arrived!',
+              style: TextStyle(fontWeight: FontWeight.bold)),
         ]),
         content: Text(widget.destinationName != null
             ? 'You have reached ${widget.destinationName}.'
@@ -264,7 +542,8 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         actions: [ElevatedButton(
           onPressed: () { Navigator.pop(context); Navigator.pop(context); },
           style: ElevatedButton.styleFrom(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12))),
           child: const Text('Done'),
         )],
       ),
@@ -272,26 +551,61 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   }
 
   // ─────────────────────────────────────────────
-  // Format helpers
+  // Math helpers
   // ─────────────────────────────────────────────
 
-  String _fmtDuration(int s) {
-    if (s < 60) return '$s sec';
-    final m = s ~/ 60;
-    if (m < 60) return '$m min';
-    final h = m ~/ 60; final r = m % 60;
-    return r == 0 ? '${h}h' : '${h}h ${r}min';
+  double _dist(LatLng a, LatLng b) =>
+      Geolocator.distanceBetween(
+          a.latitude, a.longitude, b.latitude, b.longitude);
+
+  double _calcBearing(LatLng from, LatLng to) {
+    final dLng = (to.longitude - from.longitude) * pi / 180;
+    final phi1 = from.latitude * pi / 180;
+    final phi2 = to.latitude   * pi / 180;
+    final y    = sin(dLng) * cos(phi2);
+    final x    = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLng);
+    return (atan2(y, x) * 180 / pi + 360) % 360;
   }
 
-  String _fmtDist(double m) =>
-      m < 1000 ? '${m.round()} m' : '${(m / 1000).toStringAsFixed(1)} km';
+  double _lerpBearing(double current, double target, double t) {
+    final diff = ((target - current + 540) % 360) - 180;
+    return (current + diff * t + 360) % 360;
+  }
 
-  String _fmtSpeed(double mps) => '${max(0, (mps * 3.6).round())} km/h';
+  double _minDistToRoute(LatLng p) {
+    if (_polylinePoints.length < 2) return double.infinity;
+    final s = (_nearestSegIdx - 10).clamp(0, _polylinePoints.length - 2);
+    final e = (_nearestSegIdx + 30).clamp(0, _polylinePoints.length - 2);
+    double min = double.infinity;
+    for (int i = s; i <= e; i++) {
+      final d = _distToSeg(p, _polylinePoints[i], _polylinePoints[i + 1]);
+      if (d < min) min = d;
+    }
+    return min;
+  }
 
-  // FIX 8: use intl DateFormat for correct AM/PM formatting
-  String _fmtArrival(int s) {
-    final arrival = DateTime.now().add(Duration(seconds: s));
-    return DateFormat('h:mm a').format(arrival);
+  /// Perpendicular distance from p to the segment a→b.
+  double _distToSeg(LatLng p, LatLng a, LatLng b) {
+    final ax = a.longitude, ay = a.latitude;
+    final bx = b.longitude, by = b.latitude;
+    final px = p.longitude,  py = p.latitude;
+    final dx = bx - ax, dy = by - ay;
+    if (dx == 0 && dy == 0) return _dist(p, a);
+    final t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
+    final tc = t.clamp(0.0, 1.0);
+    return Geolocator.distanceBetween(py, px, ay + tc * dy, ax + tc * dx);
+  }
+
+  /// Project p onto segment a→b, returning the closest point on the segment.
+  LatLng _project(LatLng p, LatLng a, LatLng b) {
+    final ax = a.longitude, ay = a.latitude;
+    final bx = b.longitude, by = b.latitude;
+    final px = p.longitude,  py = p.latitude;
+    final dx = bx - ax, dy = by - ay;
+    if (dx == 0 && dy == 0) return a;
+    final t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
+    final c = t.clamp(0.0, 1.0);
+    return LatLng(ay + c * dy, ax + c * dx);
   }
 
   IconData _maneuverIcon(String m) {
@@ -312,7 +626,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    if (_nav.loading) {
+    if (_loading) {
       return Scaffold(
         backgroundColor: Colors.white,
         body: Center(child: Column(
@@ -320,14 +634,14 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
           children: [
             const CircularProgressIndicator(),
             const SizedBox(height: 16),
-            Text(_nav.isRerouting ? 'Recalculating...' : 'Calculating route...',
+            Text(_isRerouting ? 'Recalculating...' : 'Calculating route...',
                 style: const TextStyle(fontSize: 16, color: Colors.grey)),
           ],
         )),
       );
     }
 
-    if (_nav.error != null) {
+    if (_error != null) {
       return Scaffold(
         backgroundColor: Colors.white,
         body: Center(child: Column(
@@ -335,10 +649,11 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
           children: [
             const Icon(Icons.error_outline, color: Colors.red, size: 56),
             const SizedBox(height: 16),
-            Text(_nav.error!, textAlign: TextAlign.center,
+            Text(_error!, textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 15, color: Colors.black54)),
             const SizedBox(height: 24),
-            ElevatedButton(onPressed: () => Navigator.pop(context),
+            ElevatedButton(
+                onPressed: () => Navigator.pop(context),
                 child: const Text('Go back')),
           ],
         )),
@@ -346,10 +661,16 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     }
 
     final mq      = MediaQuery.of(context);
-    final step    = _nav.currentStep;
-    final next    = _nav.nextStep;
-    final bannerH = mq.padding.top + (next != null ? 148.0 : 112.0);
-    final panelH  = widget.destinationName != null ? 132.0 : 116.0;
+    final step    = _steps.isNotEmpty ? _steps[_currentStepIndex] : null;
+    NavStep? nextStep;
+    if (step != null && _currentStepIndex < _steps.length - 1 &&
+        _distToTurnEnd < 100) {
+      nextStep = _steps[_currentStepIndex + 1];
+    }
+
+    final bannerH = mq.padding.top + (nextStep != null ? 130.0 : 98.0);
+    const panelH  = 90.0;
+    final svc     = RouteService.instance;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -358,190 +679,98 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         // ── Map ──
         GoogleMap(
           initialCameraPosition: CameraPosition(
-            target:  _nav.userLatLng ?? LatLng(widget.startLat, widget.startLng),
-            zoom:    19, tilt: 0,
-            bearing: _nav.bearing,
+            target:  _userLatLng ?? LatLng(widget.startLat, widget.startLng),
+            zoom:    19,
+            tilt:    0,
+            bearing: _bearing,
           ),
           markers:                 _markers,
           polylines:               _polylines,
+          circles:   _circles,
           myLocationEnabled:       false,
           myLocationButtonEnabled: false,
           zoomControlsEnabled:     false,
-          zoomGesturesEnabled:     true,
-          scrollGesturesEnabled:   true,
-          rotateGesturesEnabled:   false,
-          tiltGesturesEnabled:     false,
           compassEnabled:          false,
-          trafficEnabled:          widget.travelMode != TravelMode.walk,
-          buildingsEnabled:        widget.travelMode != TravelMode.walk,
+          buildingsEnabled:        false,
           onMapCreated: (c) {
             _mapController = c;
             Future.delayed(const Duration(milliseconds: 300), _moveCamera);
           },
-          onCameraMoveStarted: () => _isUserInteracting = true,
-          onCameraMove: (pos) {
-            final shouldIgnore = _isProgrammaticMove ||
-                DateTime.now().difference(_lastProgMove) < const Duration(milliseconds: 700) ||
-                DateTime.now().isBefore(_ignoreCameraUntil);
-            if (shouldIgnore) return;
-
-            final currentTarget = _nav.displayLatLng ?? _nav.userLatLng;
-            final targetShift   = currentTarget == null
-                ? double.infinity
-                : Geolocator.distanceBetween(
-                    pos.target.latitude, pos.target.longitude,
-                    currentTarget.latitude, currentTarget.longitude);
-            final autoZoom = _zoomForSpeed(_nav.lastPos?.speed ?? 0);
-            final zoomDiff = (pos.zoom - autoZoom).abs();
-
-            if (targetShift < 20) {
-              if (zoomDiff > 0.05) {
-                setState(() { _isFollowing = true; _manualZoom = pos.zoom; });
+          onCameraMoveStarted: () {
+            if (!_isProgrammaticMove) {
+              final now = DateTime.now();
+              // 启动后 1 秒内的镜头移动不算用户手动滑动
+              if (now.difference(_lastCameraMove).inMilliseconds > 1000) {
+                setState(() => _isFollowing = false);
               }
-              return;
             }
-            if (_isFollowing) setState(() => _isFollowing = false);
           },
-          onCameraIdle: () => _isUserInteracting = false,
           padding: EdgeInsets.only(
             top:    bannerH,
             bottom: panelH + mq.padding.bottom,
           ),
         ),
 
-        // ── Gradient overlay ──
-        IgnorePointer(
-          child: Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                colors: [
-                  Colors.black.withOpacity(0.14),
-                  Colors.transparent,
-                  Colors.transparent,
-                  Colors.black.withOpacity(0.08),
-                ],
-                stops: const [0.0, 0.18, 0.72, 1.0],
-              ),
-            ),
-          ),
-        ),
-
-        // ── Turn banner ──
+        // ── Turn-by-turn banner ──
         if (step != null)
           Positioned(
-            top: 0, left: 12, right: 12,
+            top: 0, left: 0, right: 0,
             child: Column(children: [
               Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1157C8),
-                  borderRadius: BorderRadius.circular(24),
-                  boxShadow: [BoxShadow(
-                    color: Colors.black.withOpacity(0.18),
-                    blurRadius: 18, offset: const Offset(0, 8),
-                  )],
-                ),
+                color: Colors.black87,
                 padding: EdgeInsets.fromLTRB(
-                    20, mq.padding.top + 12, 20, next != null ? 10 : 16),
+                    20, mq.padding.top + 12, 20, nextStep != null ? 10 : 16),
                 child: Row(children: [
-                  Container(
-                    width: 58, height: 58,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.16),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(_maneuverIcon(step.maneuver), color: Colors.white, size: 34),
-                  ),
+                  Icon(_maneuverIcon(step.maneuver),
+                      color: Colors.white, size: 44),
                   const SizedBox(width: 16),
                   Expanded(child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(_fmtDist(_nav.distToTurnEnd),
+                      Text(svc.formatDistance(_distToTurnEnd),
                           style: const TextStyle(color: Colors.white,
-                              fontSize: 30, fontWeight: FontWeight.w800)),
-                      const SizedBox(height: 6),
+                              fontSize: 28, fontWeight: FontWeight.bold)),
                       Text(step.instruction,
-                          style: const TextStyle(color: Colors.white,
-                              fontSize: 15, fontWeight: FontWeight.w600),
+                          style: TextStyle(
+                              color: Colors.grey[300], fontSize: 13),
                           maxLines: 2, overflow: TextOverflow.ellipsis),
                     ],
                   )),
                 ]),
               ),
-              if (next != null)
+              if (nextStep != null)
                 Container(
-                  margin: const EdgeInsets.only(top: 10),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.96),
-                    borderRadius: BorderRadius.circular(18),
-                    boxShadow: [BoxShadow(
-                      color: Colors.black.withOpacity(0.08),
-                      blurRadius: 12, offset: const Offset(0, 4),
-                    )],
-                  ),
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  color: Colors.black.withOpacity(0.75),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 20, vertical: 8),
                   child: Row(children: [
                     const Text('Then  ',
-                        style: TextStyle(color: Color(0xFF6B7280),
-                            fontSize: 12, fontWeight: FontWeight.w700)),
-                    Icon(_maneuverIcon(next.maneuver),
-                        color: const Color(0xFF1157C8), size: 20),
+                        style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    Icon(_maneuverIcon(nextStep.maneuver),
+                        color: Colors.grey[400], size: 20),
                     const SizedBox(width: 8),
-                    Expanded(child: Text(next.instruction,
-                        style: const TextStyle(color: Color(0xFF1F2937),
-                            fontSize: 12, fontWeight: FontWeight.w600),
+                    Expanded(child: Text(nextStep.instruction,
+                        style: TextStyle(
+                            color: Colors.grey[400], fontSize: 12),
                         maxLines: 1, overflow: TextOverflow.ellipsis)),
                   ]),
                 ),
             ]),
           ),
 
-        // ── ETA + distance chips ──
-        Positioned(
-          top: bannerH + 8, left: 12,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _floatingStat(Icons.schedule_rounded,
-                  'ETA ${_fmtArrival(_nav.remainingSeconds)}'),
-              const SizedBox(height: 8),
-              _floatingStat(Icons.route_rounded,
-                  _fmtDist(_nav.remainingMeters)),
-            ],
-          ),
-        ),
-
         // ── Right buttons ──
         Positioned(
           right: 16,
           bottom: panelH + mq.padding.bottom + 16,
           child: Column(children: [
-            if ((_nav.lastPos?.speed ?? 0) > 0.3) ...[
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(18),
-                  boxShadow: [BoxShadow(
-                    color: Colors.black.withOpacity(0.12),
-                    blurRadius: 10, offset: const Offset(0, 4),
-                  )],
-                ),
-                child: Text(_fmtSpeed(_nav.lastPos?.speed ?? 0),
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w700,
-                        color: Color(0xFF1F2937))),
-              ),
-              const SizedBox(height: 12),
-            ],
             if (!_isFollowing) ...[
               _circleBtn(Icons.my_location_rounded, Colors.white,
-                  const Color(0xFF1157C8), _recenter),
+                  const Color(0xFF1A73E8), _recenter),
               const SizedBox(height: 12),
             ],
             _circleBtn(
               _isOverview ? Icons.navigation_rounded : Icons.map_rounded,
-              _isOverview ? const Color(0xFF1157C8) : Colors.white,
+              _isOverview ? const Color(0xFF1A73E8) : Colors.white,
               _isOverview ? Colors.white : Colors.black87,
               _toggleOverview,
             ),
@@ -552,106 +781,82 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         Positioned(
           left: 0, right: 0, bottom: 0,
           child: Container(
-            padding: EdgeInsets.fromLTRB(24, 14, 24, 14 + mq.padding.bottom),
+            padding: EdgeInsets.fromLTRB(
+                24, 14, 24, 14 + mq.padding.bottom),
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(20)),
               boxShadow: [BoxShadow(
                 color: Colors.black.withOpacity(0.10),
-                blurRadius: 20, offset: const Offset(0, -6),
+                blurRadius: 16, offset: const Offset(0, -3),
               )],
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 42, height: 4,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFD7DEE7),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Row(children: [
-                  Expanded(child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
+            child: Row(children: [
+              Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
                     children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.baseline,
-                        textBaseline: TextBaseline.alphabetic,
-                        children: [
-                          Text(_fmtDuration(_nav.remainingSeconds),
-                              style: const TextStyle(fontSize: 28,
-                                  fontWeight: FontWeight.w800,
-                                  color: Color(0xFF111827))),
-                          const SizedBox(width: 8),
-                          Text(_fmtDist(_nav.remainingMeters),
-                              style: const TextStyle(fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                  color: Color(0xFF6B7280))),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text('Arrive by ${_fmtArrival(_nav.remainingSeconds)}',
-                          style: const TextStyle(fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFF4B5563))),
-                      if (widget.destinationName != null)
-                        Row(children: [
-                          Icon(Icons.location_on_rounded,
-                              size: 14, color: Colors.red[400]),
-                          const SizedBox(width: 4),
-                          Expanded(child: Text(widget.destinationName!,
-                              style: const TextStyle(fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: Color(0xFF6B7280)),
-                              overflow: TextOverflow.ellipsis)),
-                        ]),
+                      Text(svc.formatDuration(_remainingSeconds),
+                          style: const TextStyle(fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87)),
+                      const SizedBox(width: 8),
+                      Text(svc.formatDistance(_remainingMeters),
+                          style: TextStyle(
+                              fontSize: 14, color: Colors.grey[600])),
+                      const SizedBox(width: 8),
+                      Text('· ${svc.formatArrivalTime(_remainingSeconds)}',
+                          style: TextStyle(
+                              fontSize: 13, color: Colors.grey[500])),
                     ],
-                  )),
-                  const SizedBox(width: 12),
-                  OutlinedButton(
-                    onPressed: () => Navigator.pop(context),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 13),
-                      side: BorderSide(color: Colors.grey[300]!),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16)),
-                    ),
-                    child: const Text('Cancel',
-                        style: TextStyle(color: Color(0xFF1F2937),
-                            fontWeight: FontWeight.w700)),
                   ),
-                ]),
-                const SizedBox(height: 14),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(999),
-                  child: LinearProgressIndicator(
-                    value:           _nav.progress,
-                    minHeight:       7,
-                    backgroundColor: const Color(0xFFE8EEF5),
-                    valueColor:      const AlwaysStoppedAnimation(Color(0xFF1157C8)),
-                  ),
+                  if (widget.destinationName != null)
+                    Row(children: [
+                      Icon(Icons.location_on_rounded,
+                          size: 13, color: Colors.red[400]),
+                      const SizedBox(width: 4),
+                      Expanded(child: Text(widget.destinationName!,
+                          style: TextStyle(
+                              fontSize: 12, color: Colors.grey[500]),
+                          overflow: TextOverflow.ellipsis)),
+                    ]),
+                ],
+              )),
+              OutlinedButton(
+                onPressed: () => Navigator.pop(context),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 20, vertical: 12),
+                  side: BorderSide(color: Colors.grey[300]!),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
                 ),
-              ],
-            ),
+                child: const Text('Cancel',
+                    style: TextStyle(color: Colors.black87)),
+              ),
+            ]),
           ),
         ),
 
         // ── Off-route banner ──
-        if (_nav.isRerouting)
+        if (_isRerouting)
           Positioned(
             top: bannerH + 8, left: 20, right: 20,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
                 color: Colors.orange[700],
                 borderRadius: BorderRadius.circular(12),
               ),
               child: const Row(children: [
-                Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
+                Icon(Icons.refresh_rounded,
+                    color: Colors.white, size: 18),
                 SizedBox(width: 8),
                 Text('Off route, recalculating...',
                     style: TextStyle(color: Colors.white,
@@ -663,35 +868,8 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // Widget helpers
-  // ─────────────────────────────────────────────
-
-  Widget _floatingStat(IconData icon, String label) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.96),
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(
-          color: Colors.black.withOpacity(0.10),
-          blurRadius: 10, offset: const Offset(0, 4),
-        )],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: const Color(0xFF1157C8)),
-          const SizedBox(width: 6),
-          Text(label, style: const TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w700,
-              color: Color(0xFF1F2937))),
-        ],
-      ),
-    );
-  }
-
-  Widget _circleBtn(IconData icon, Color bg, Color fg, VoidCallback onTap) {
+  Widget _circleBtn(
+      IconData icon, Color bg, Color fg, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
       child: Container(

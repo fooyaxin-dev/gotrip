@@ -5,7 +5,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'placeDetailPage.dart';
 import '../../services/route_service.dart';
 import '../../services/location_service.dart';
@@ -16,6 +17,7 @@ import '../../modules/itinerary/itineraryDetail.dart';
 import 'routePreviewPage.dart';
 import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
+import '../../services/itinerary_service.dart';
 
 enum SortMode { distance, rating } 
 
@@ -497,54 +499,61 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   }
 
   // View selected then push to ItineraryDetailPage
-  void _viewSelectedItinerary() {
+  void _viewSelectedItinerary() async {
     if (_selectedPlaceIds.isEmpty) return;
 
-    // arrange by distance location
     final selectedPlaces = _buildOptimizedRoute();
-
-    //record for itinerary use
-    final now       = DateTime.now();
-    final dateStr   = DateFormat('yyyy-MM-dd').format(now);
-    var curHour     = 9;// start from 09:00am
-    var curMin      = 0;
+    final now     = DateTime.now();
+    final dateStr = DateFormat('yyyy-MM-dd').format(now);
+    var curHour = 9, curMin = 0;
 
     final itineraryPlaces = selectedPlaces.map((p) {
       final timeStr  = '${curHour.toString().padLeft(2, '0')}:${curMin.toString().padLeft(2, '0')}';
-      final duration = p.primaryType == 'restaurant' ? 60 : 90; // stop time: 1h for restaurant, 1.5h for others
-
-      // calculate next place start time
+      final duration = p.primaryType == 'restaurant' ? 60 : 90;
       curMin  += duration;
       curHour += curMin ~/ 60;
       curMin   = curMin % 60;
       if (curHour >= 21) { curHour = 21; curMin = 0; }
-
       return ItineraryPlace(
-        placeId:         p.id,
-        name:            p.name,
-        address:         p.address ?? '',
-        photoUrl:        p.photoUrl,
-        lat:             p.lat,
-        lng:             p.lng,
-        primaryType:     p.primaryType,
-        suggestedTime:   timeStr,
-        durationMinutes: duration,
-        notes:           'Added by you',
+        placeId: p.id, name: p.name, address: p.address ?? '',
+        photoUrl: p.photoUrl, lat: p.lat, lng: p.lng,
+        primaryType: p.primaryType, suggestedTime: timeStr,
+        durationMinutes: duration, notes: 'Added by you',
       );
     }).toList();
 
     final itinerary = ItineraryModel(
-      id:        '',
-      title:     'My Custom Trip',
+      id: '',
+      title: 'My Custom Trip',
       startDate: dateStr,
       totalDays: 1,
       days: [ItineraryDay(dayNumber: 1, date: dateStr, places: itineraryPlaces)],
       createdAt: now,
     );
 
+    final savedId = await ItineraryService.instance.save(itinerary);
+
+    if (savedId == null) {
+      if (!mounted) return;
+      final isLoggedIn = FirebaseAuth.instance.currentUser != null;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isLoggedIn
+              ? 'Failed to save itinerary'
+              : 'Please log in to save itinerary'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;  
+    }
+
+    // ✅ Only reaches here if save succeeded
+    final savedItinerary = ItineraryModel.fromMap(savedId, itinerary.toMap());
+
+    if (!mounted) return;
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => ItineraryDetailPage(itinerary: itinerary)),
+      MaterialPageRoute(builder: (_) => ItineraryDetailPage(itinerary: savedItinerary)),
     );
   }
 
@@ -635,6 +644,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       );
       _routeResults[place.id] = RouteResult(
         polylinePoints: [],
+        steps: const [],
         bounds: LatLngBounds(
           southwest: LatLng(min(_currentPosition!.latitude, place.lat!), min(_currentPosition!.longitude, place.lng!)),
           northeast: LatLng(max(_currentPosition!.latitude, place.lat!), max(_currentPosition!.longitude, place.lng!)),
@@ -660,6 +670,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       if (route == null) continue;
       _routeResults[place.id] = RouteResult(
         polylinePoints: route.polylinePoints,
+        steps: route.steps, 
         bounds: route.bounds,
         distanceMeters: route.distanceMeters,
         durationSeconds: (route.distanceMeters / _getSpeedMeterPerSecond()).round(),

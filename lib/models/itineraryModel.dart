@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 // models/itinerary_model.dart
 
 class ItineraryPlace {
@@ -165,7 +167,7 @@ class ItineraryModel {
     'startDate': startDate,
     'totalDays': totalDays,
     'days':      days.map((d) => d.toMap()).toList(),
-    'createdAt': createdAt,
+  'createdAt': Timestamp.fromDate(createdAt),
   };
 
   ItineraryModel copyWith({

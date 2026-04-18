@@ -1,6 +1,8 @@
 
 
 import 'package:flutter/material.dart';
+import 'dart:math';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'bottomnav.dart';
 import '../place/detectPlacePage.dart';
@@ -239,10 +241,23 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     final walkSecs  = (walkRoad / 1.4).round();   // 1.4 m/s ≈ 5 km/h
 
     return RouteResult(
+      polylinePoints: const [],
+      steps: const [],
+      bounds: LatLngBounds(
+        southwest: LatLng(
+          min(lat, place.lat!),
+          min(lng, place.lng!),
+        ),
+        northeast: LatLng(
+          max(lat, place.lat!),
+          max(lng, place.lng!),
+        ),
+      ),
       distanceMeters: dist,
       durationSeconds: mode == 'walk' ? walkSecs : driveSecs,
       walkDurationSeconds: mode == 'both' ? walkSecs : null,
     );
+    
   }
 
   String _formatDuration(String placeId) {

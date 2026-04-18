@@ -80,6 +80,10 @@ class ItineraryService {
   }
 
   Future<String?> save(ItineraryModel item) async {
+    if (_uid == null) {
+      print('❌ save: user not logged in');
+      return null;
+    }
     if (_col == null) return null;
     try {
       if (item.id.isEmpty) {
