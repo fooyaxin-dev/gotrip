@@ -35,7 +35,7 @@ class _GuidePageState extends State<GuidePage> {
   GoogleMapController? _mapController;
   final Set<Marker>   _markers   = {};
   final Set<Polyline> _polylines = {};
-  final Set<Circle>   _circles   = {};  // ← 加这里
+  final Set<Circle>   _circles   = {}; 
 
 
   // ── Route ──
@@ -321,7 +321,7 @@ void _placeArrow(LatLng pos) {
       position: pos,
       icon: _arrowIcon ?? BitmapDescriptor.defaultMarkerWithHue(
           BitmapDescriptor.hueAzure),
-      rotation: 0,
+      rotation: _bearing,
       anchor: const Offset(0.5, 0.5),
       flat: true,
       zIndex: 10,

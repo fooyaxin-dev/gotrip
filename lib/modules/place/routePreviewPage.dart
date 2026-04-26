@@ -106,7 +106,6 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   }
 
   // ── Fetch ──
-
   Future<void> _fetchMode(TravelMode mode) async {
     try {
       final summary = await _svc.fetchRouteSummary(
@@ -130,7 +129,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
             ..durationSeconds = summary.durationSeconds
             ..distanceMeters  = summary.distanceMeters
             ..loading         = false;
-          _routeData[TravelMode.motor] = summary;
+            _routeData[TravelMode.motor] = summary;
         }
       });
 
@@ -153,7 +152,6 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   }
 
   // ── Render polyline for selected mode ──
-
   void _renderPolyline(TravelMode mode) {
     final data = _routeData[mode];
     if (data == null) return;
