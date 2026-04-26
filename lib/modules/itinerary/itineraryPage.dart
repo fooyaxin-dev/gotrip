@@ -9,7 +9,7 @@ import 'itineraryDetail.dart';
 
 class ItineraryPage extends StatefulWidget {
   final VoidCallback? onBack;
-  final VoidCallback? onPlanTrip; // ← triggers New Trip from HomePage FAB
+  final VoidCallback? onPlanTrip; 
   const ItineraryPage({super.key, this.onBack, this.onPlanTrip});
 
   @override
@@ -43,9 +43,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
     }
   }
 
-  // ─────────────────────────────────────────────
   // Build
-  // ─────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -84,10 +82,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
     );
   }
 
-  // ─────────────────────────────────────────────
   // Empty state
-  // ─────────────────────────────────────────────
-
   Widget _buildEmpty() {
     return Center(
       child: Column(
@@ -127,10 +122,8 @@ class _ItineraryPageState extends State<ItineraryPage> {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // List
-  // ─────────────────────────────────────────────
 
+  // List
   Widget _buildList() {
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 100),
@@ -269,10 +262,8 @@ class _ItineraryPageState extends State<ItineraryPage> {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // Actions
-  // ─────────────────────────────────────────────
 
+  // Actions
   void _confirmDelete(ItineraryModel item) {
     showDialog(
       context: context,

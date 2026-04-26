@@ -215,8 +215,6 @@ class _InteractionPageState extends State<InteractionPage> {
     );
   }
 
-  // ─── 搜索栏 ────────────────────────────────────────────────────────────────
-
   Widget _buildSearchBar() {
     return Container(
       color: Colors.white,

@@ -34,10 +34,7 @@ class PlaceModel {
     return list;
   }
 
-  // ─────────────────────────────────────────────
   // Google Places API v2
-  // ─────────────────────────────────────────────
-
   factory PlaceModel.fromGoogle(
     Map<String, dynamic> g, {
     String? primary,

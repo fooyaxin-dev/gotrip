@@ -233,11 +233,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     final dist = Geolocator.distanceBetween(lat, lng, place.lat!, place.lng!);
     final mode = UserPreferenceService.instance.current.travelMode;
 
-    // 直线距离 × 迂回系数 = 实际路程估算
-    final driveRoad = dist * 1.4;  // 驾车实际路程约是直线的 1.4 倍
-    final walkRoad  = dist * 1.2;  // 走路实际路程约是直线的 1.2 倍
+    final driveRoad = dist * 1.4; 
+    final walkRoad  = dist * 1.2;  
 
-    final driveSecs = (driveRoad / 8.3).round();  // 8.3 m/s ≈ 30 km/h 城市均速
+    final driveSecs = (driveRoad / 8.3).round();  // 8.3 m/s ≈ 30 km/h 
     final walkSecs  = (walkRoad / 1.4).round();   // 1.4 m/s ≈ 5 km/h
 
     return RouteResult(

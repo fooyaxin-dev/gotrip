@@ -426,12 +426,12 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
   // 2. Distance Score (0.25)
   //
-  // Linear decay:  0 m → 1.0,  5 km → 0.0
+  // Linear decay:  0 m → 1.0,  15 km → 0.0
   // ─────────────────────────────────────────────
 
   double _distanceScore(double? distanceMeters) {
     if (distanceMeters == null || distanceMeters <= 0) return 0.5;
-    return (1.0 - distanceMeters / 5000.0).clamp(0.0, 1.0);
+    return (1.0 - distanceMeters / 15000.0).clamp(0.0, 1.0);
   }
 
   // ─────────────────────────────────────────────

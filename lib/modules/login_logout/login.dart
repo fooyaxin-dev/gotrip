@@ -416,6 +416,7 @@ class _LoginPageState extends State<LoginPage> {
                   padding: const EdgeInsets.symmetric(horizontal: 25),
                   child: SizedBox(
                     height: 55,
+                    width: double.infinity,
                     child: ElevatedButton(
                       onPressed: isLoading ? null : loginUserWithEmailAndPassword,
                       style: ElevatedButton.styleFrom(
@@ -459,9 +460,51 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ),
 
-                const SizedBox(height: 50),
+                const SizedBox(height: 30),
 
-                const SizedBox(height: 100),
+                // ===== OR Divider =====
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 25),
+                  child: Row(
+                    children: [
+                      const Expanded(child: Divider(thickness: 1)),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          'OR',
+                          style: TextStyle(
+                            color: Colors.grey.shade500,
+                            fontWeight: FontWeight.w500,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                      const Expanded(child: Divider(thickness: 1)),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+
+                // ===== Social Login Buttons =====
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _socialCircle(
+                      FontAwesomeIcons.google,
+                      Colors.red,
+                      _handleGoogleSignIn,
+                    ),
+                    const SizedBox(width: 20),
+                    _socialCircle(
+                      FontAwesomeIcons.facebook,
+                      const Color(0xFF1877F2),
+                      _handleFacebookSignIn,
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 30),
 
                 // ===== Go to Signup =====
                 Row(
@@ -472,7 +515,8 @@ class _LoginPageState extends State<LoginPage> {
                       onTap: () {
                         Navigator.pushReplacement(
                           context,
-                          MaterialPageRoute(builder: (context) => const SignupPage()),
+                          MaterialPageRoute(
+                              builder: (context) => const SignupPage()),
                         );
                       },
                       child: const Text(

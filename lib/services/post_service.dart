@@ -117,8 +117,6 @@ class PostService {
     }
   }
 
-  // ===== 读取帖子 =====
-
   Stream<List<Post>> getAllPosts() {
     return _firestore
         .collection('posts')

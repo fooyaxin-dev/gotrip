@@ -66,7 +66,7 @@ class RouteSummary {
 // ─────────────────────────────────────────────
 
 class RouteService {
-  RouteService._();
+  RouteService._(); 
   static final RouteService instance = RouteService._();
 
   // Move key to --dart-define=GOOGLE_MAPS_KEY=xxx at build time.

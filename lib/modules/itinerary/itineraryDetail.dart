@@ -1041,7 +1041,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       return;
     }
 
-    Navigator.push(context, MaterialPageRoute(
+      Navigator.push(context, MaterialPageRoute(
       builder: (_) => RoutePreviewPage(
         startLat:        pos.latitude,
         startLng:        pos.longitude,
@@ -1049,7 +1049,17 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         endLng:          place.lng!,
         destinationName: place.name,
       ),
-    ));
+    )).then((arrived) {
+      // ← 加这里，GuidePage 传回 true 就自动打卡
+      if (arrived == true && mounted) {
+        final dayIndex   = _tabController.index;
+        final placeIndex = _itinerary.days[dayIndex].places.indexOf(place);
+        if (placeIndex != -1) {
+          _markVisited(dayIndex, placeIndex);
+        }
+      }
+    });
+
   }
 }
 

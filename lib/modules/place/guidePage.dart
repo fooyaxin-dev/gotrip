@@ -394,15 +394,12 @@ void _placeArrow(LatLng pos) {
 
       final isMoving  = raw.speed > 0.5;
       final rawLatLng = LatLng(raw.latitude, raw.longitude);
-
-      // ── Snap first — _remainingPoints 更新后才能用它算 bearing ──
       final snapped = _snapAndSplit(rawLatLng);
 
-      // ── Bearing: 用 remainingPoints 前方的点，永远不会指向身后 ──
       if (isMoving && _remainingPoints.length >= 4) {
         final newBearing = _calcBearing(
-          _remainingPoints[0], // 当前 snapped 位置
-          _remainingPoints[3], // 前方第3个点，方向稳定
+          _remainingPoints[0], 
+          _remainingPoints[3], 
         );
         _bearing = _lerpBearing(_bearing, newBearing, 0.12);
       }
@@ -430,7 +427,6 @@ void _placeArrow(LatLng pos) {
         }
       }
 
-      // ── Advance step ──
       if (_steps.isNotEmpty && _currentStepIndex < _steps.length - 1) {
         final step    = _steps[_currentStepIndex];
         final distEnd = _distToStepEnd(rawLatLng, step);
@@ -540,7 +536,7 @@ void _placeArrow(LatLng pos) {
             ? 'You have reached ${widget.destinationName}.'
             : 'You have reached your destination.'),
         actions: [ElevatedButton(
-          onPressed: () { Navigator.pop(context); Navigator.pop(context); },
+          onPressed: () { Navigator.pop(context); Navigator.pop(context, true);  },
           style: ElevatedButton.styleFrom(
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12))),
