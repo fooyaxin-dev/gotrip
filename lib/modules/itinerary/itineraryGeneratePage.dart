@@ -131,12 +131,27 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     });
   }
 
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.info_outline, color: Colors.white),
+            const SizedBox(width: 8),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: const Color(0xFF7C4DFF),
+      )
+    );
+  }
+
   // ─────────────────────────────────────────────
   // Generate
   // ─────────────────────────────────────────────
 
   Future<void> _generate() async {
-
     if (_useCurrentLocation) {
       final pos = LocationService.instance.currentPosition;
       if (pos == null) {
@@ -145,8 +160,6 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       }
     }
 
-
-    // If custom location selected but coords failed
     if (!_useCurrentLocation &&
         (_selectedLat == null || _selectedLng == null)) {
       _showSnack('Please select a valid location from the suggestions.');
@@ -164,7 +177,6 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
             ? 'My Trip' : _titleController.text.trim(),
         overrideCategories: _activeCategories.toList(),
         overrideCuisines:   _activeCuisines.toList(),
-        // Pass custom coords if user picked a location
         overrideLat:        _useCurrentLocation ? null : _selectedLat,
         overrideLng:        _useCurrentLocation ? null : _selectedLng,
       );
@@ -176,34 +188,24 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
         return;
       }
 
-      final savedId = await ItineraryService.instance.save(itinerary);
-      if (!mounted) return;
-
-      final saved = ItineraryModel(
-        id:        savedId ?? '',
-        title:     itinerary.title,
-        startDate: itinerary.startDate,
-        totalDays: itinerary.totalDays,
-        days:      itinerary.days,
-        createdAt: itinerary.createdAt,
-      );
-
-      Navigator.pushReplacement(
+      // 直接传 unsaved itinerary，让用户自己决定要不要 save
+      final saved = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
-            builder: (_) => ItineraryDetailPage(itinerary: saved)),
+            builder: (_) => ItineraryDetailPage(itinerary: itinerary)),
       );
+
+      // 用户在 detail page 按了 Save 才回来
+      if (saved == true && mounted) {
+        Navigator.pop(context); // 回到 itinerary_page，触发 _load()
+      }
+
     } finally {
       if (mounted) setState(() => _isGenerating = false);
     }
   }
 
-  void _showSnack(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
-    );
-  }
-
+    
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context:     context,

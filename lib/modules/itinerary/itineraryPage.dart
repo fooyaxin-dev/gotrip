@@ -106,7 +106,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
               style: TextStyle(fontSize: 14, color: Colors.grey[500])),
           const SizedBox(height: 28),
           ElevatedButton.icon(
-            onPressed: () => widget.onPlanTrip?.call(),
+            onPressed: _goGenerate, 
             icon: const Icon(Icons.auto_awesome_rounded),
             label: const Text('Plan a Trip'),
             style: ElevatedButton.styleFrom(
@@ -149,12 +149,12 @@ class _ItineraryPageState extends State<ItineraryPage> {
 
     return GestureDetector(
       onTap: () async {
-        await Navigator.push(
+        final saved = await Navigator.push<bool>(
           context,
           MaterialPageRoute(
               builder: (_) => ItineraryDetailPage(itinerary: item)),
         );
-        _load();
+        if (saved == true) _load();
       },
       child: Container(
         margin: const EdgeInsets.only(bottom: 16),
@@ -298,11 +298,13 @@ class _ItineraryPageState extends State<ItineraryPage> {
     await UserPreferenceService.instance.load();
     if (!mounted) return;
 
-    Navigator.push(
+    await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => const GenerateItineraryPage(), // ← fixed, no params
+        builder: (_) => const GenerateItineraryPage(),
       ),
-    ).then((_) => _load());
+    );
+    _load(); // generate page pop 回来就 reload
   }
+
 }

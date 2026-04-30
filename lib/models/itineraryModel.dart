@@ -171,10 +171,11 @@ class ItineraryModel {
   };
 
   ItineraryModel copyWith({
+    String? id,         
     List<ItineraryDay>? days,
     String? title,
   }) => ItineraryModel(
-    id:        id,
+    id:        id        ?? this.id,   
     title:     title     ?? this.title,
     startDate: startDate,
     totalDays: totalDays,

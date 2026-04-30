@@ -35,7 +35,10 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   void initState() {
     super.initState();
     _itinerary     = widget.itinerary;
-    _tabController = TabController(length: _itinerary.totalDays, vsync: this);
+    _tabController = TabController(
+      length: _itinerary.days.length,
+      vsync: this,
+    );
 
     // Tell LocationService which places to watch
     LocationService.instance.watchItinerary(_itinerary);
@@ -95,16 +98,14 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
     setState(() => _itinerary = _itinerary.copyWith(days: days));
 
-    // Tell LocationService to stop watching this place
     LocationService.instance.markArrived(visited.placeId);
-
-    // Update watch list with new state
     LocationService.instance.watchItinerary(_itinerary);
 
-    // Auto-save silently
-    ItineraryService.instance.update(_itinerary);
+    // 只有已经保存过的 itinerary 才 auto-save visited 状态
+    if (_itinerary.id.isNotEmpty) {
+      ItineraryService.instance.update(_itinerary);
+    }
 
-    // Write this place into history
     HistoryService.instance.addEntry(
       placeName:      visited.name,
       address:        visited.address,
@@ -114,8 +115,12 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       itineraryTitle: _itinerary.title,
     );
 
-    // Scroll to next unvisited place
     _scrollToNextPlace(dayIndex);
+
+    _cardKeys.removeWhere((key, _) =>
+      !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key))
+    );
+
   }
 
   void _scrollToNextPlace(int dayIndex) {
@@ -142,15 +147,39 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
   Future<void> _save() async {
     setState(() => _isSaving = true);
-    await ItineraryService.instance.update(_itinerary);
+
+    String? savedId;
+
+    if (_itinerary.id.isEmpty) {
+      // 新的，用 save() 创建
+      savedId = await ItineraryService.instance.save(_itinerary);
+      if (savedId != null) {
+        setState(() => _itinerary = _itinerary.copyWith(id: savedId!));
+      }
+    } else {
+      // 已有的，用 update()
+      await ItineraryService.instance.update(_itinerary);
+      savedId = _itinerary.id;
+    }
+
     if (mounted) {
       setState(() => _isSaving = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✅ Itinerary saved!'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      if (savedId != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Itinerary saved!'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        Navigator.pop(context, true); // 告诉上一页需要 reload
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('❌ Save failed'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
 
@@ -161,6 +190,11 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     days[dayIndex] = days[dayIndex].copyWith(places: places);
     setState(() => _itinerary = _itinerary.copyWith(days: days));
     LocationService.instance.watchItinerary(_itinerary);
+
+    _cardKeys.removeWhere((key, _) =>
+      !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key))
+    );
+
   }
 
   void _reorderPlaces(int dayIndex, int oldIndex, int newIndex) {
@@ -171,6 +205,11 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     places.insert(newIndex, item);
     days[dayIndex] = days[dayIndex].copyWith(places: places);
     setState(() => _itinerary = _itinerary.copyWith(days: days));
+
+    _cardKeys.removeWhere((key, _) =>
+      !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key))
+    );
+
   }
 
   void _updatePlace(int dayIndex, int placeIndex, ItineraryPlace updated) {
@@ -1053,7 +1092,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       // ← 加这里，GuidePage 传回 true 就自动打卡
       if (arrived == true && mounted) {
         final dayIndex   = _tabController.index;
-        final placeIndex = _itinerary.days[dayIndex].places.indexOf(place);
+        final placeIndex = _itinerary.days[dayIndex].places
+          .indexWhere((p) => p.placeId == place.placeId);
         if (placeIndex != -1) {
           _markVisited(dayIndex, placeIndex);
         }

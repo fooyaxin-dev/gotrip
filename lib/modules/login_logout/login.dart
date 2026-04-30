@@ -1,8 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 import '../main/onBoarding.dart';
 import '../../services/userPreference_service.dart';
 import 'signup.dart';
@@ -88,9 +88,9 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  // ================= Forgot Password =================
   Future<void> _showForgotPasswordDialog() async {
     final emailCtrl = TextEditingController();
+    final formKey = GlobalKey<FormState>();
     bool isSending = false;
 
     await showDialog(
@@ -109,31 +109,49 @@ class _LoginPageState extends State<LoginPage> {
               ),
             ],
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Enter your email and we\'ll send you a reset link.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey, fontSize: 13),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: emailCtrl,
-                keyboardType: TextInputType.emailAddress,
-                decoration: InputDecoration(
-                  hintText: 'Enter your email',
-                  prefixIcon: const Icon(Icons.email_outlined),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(color: Color(0xFF7C4DFF)),
+          content: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Enter your registered email and we\'ll send you a reset link.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey, fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: emailCtrl,
+                  keyboardType: TextInputType.emailAddress,
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Please enter your email';
+                    }
+                    // More strict email validation
+                    final emailRegex = RegExp(r'^[\w\.-]+@[\w\.-]+\.\w{2,}$');
+                    if (!emailRegex.hasMatch(value.trim())) {
+                      return 'Please enter a valid email';
+                    }
+                    return null;
+                  },
+                  decoration: InputDecoration(
+                    hintText: 'Enter your email',
+                    prefixIcon: const Icon(Icons.email_outlined),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFF7C4DFF)),
+                    ),
+                    errorBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Colors.redAccent),
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           actions: [
             Row(
@@ -156,41 +174,60 @@ class _LoginPageState extends State<LoginPage> {
                     onPressed: isSending
                         ? null
                         : () async {
-                            final email = emailCtrl.text.trim();
-                            if (email.isEmpty || !email.contains('@')) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Please enter a valid email'),
-                                  backgroundColor: Colors.redAccent,
-                                ),
-                              );
-                              return;
-                            }
+                            if (!formKey.currentState!.validate()) return;
 
                             setDialogState(() => isSending = true);
 
                             try {
-                              await FirebaseAuth.instance
-                                  .sendPasswordResetEmail(email: email);
+                              await FirebaseAuth.instance.sendPasswordResetEmail(
+                                email: emailCtrl.text.trim(),
+                              );
 
                               if (mounted) {
                                 Navigator.pop(ctx);
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                        '✅ Reset email sent! Check your inbox.'),
+                                  SnackBar(
+                                    content: Row(
+                                      children: [
+                                        const Icon(Icons.mark_email_read,
+                                            color: Colors.white),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            'Reset link sent to ${emailCtrl.text.trim()}. Check your inbox (and spam folder).',
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                     backgroundColor: Colors.green,
+                                    duration: const Duration(seconds: 5),
                                   ),
                                 );
                               }
                             } on FirebaseAuthException catch (e) {
                               setDialogState(() => isSending = false);
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(e.message ?? 'Error sending email'),
-                                  backgroundColor: Colors.redAccent,
-                                ),
-                              );
+                              String message;
+                              switch (e.code) {
+                                case 'user-not-found':
+                                  message = 'No account found with this email';
+                                  break;
+                                case 'invalid-email':
+                                  message = 'Invalid email format';
+                                  break;
+                                case 'network-request-failed':
+                                  message = 'Network error. Please try again';
+                                  break;
+                                default:
+                                  message = 'Failed to send reset email';
+                              }
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(message),
+                                    backgroundColor: Colors.redAccent,
+                                  ),
+                                );
+                              }
                             }
                           },
                     style: ElevatedButton.styleFrom(
@@ -222,24 +259,47 @@ class _LoginPageState extends State<LoginPage> {
       ),
     );
   }
-
+  
   // ================= Social Login =================
 
   // --- Google ---
   final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email']);
+
   Future<void> _handleGoogleSignIn() async {
     try {
+      await _googleSignIn.signOut();
+      
       final googleUser = await _googleSignIn.signIn();
       if (googleUser == null) return;
 
       final googleAuth = await googleUser.authentication;
-
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      await FirebaseAuth.instance.signInWithCredential(credential);
+      final userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
+
+      // 检查是不是新用户，是的话才创建 Firestore 文档
+      if (userCredential.additionalUserInfo?.isNewUser == true) {
+        final user = userCredential.user!;
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'email': user.email ?? '',
+          'username': user.displayName ?? 'User',
+          'bio': 'Hello! I\'m new here 👋',
+          'profileImageUrl': user.photoURL ?? '',
+          'backgroundImageUrl': '',
+          'postCount': 0,
+          'favouriteCount': 0,
+          'routeCount': 0,
+          'onboardingDone': false,
+          'preferences': {
+            'categories': [],
+            'cuisines': [],
+            'travelMode': 'walk',
+          },
+        });
+      }
 
       if (mounted) {
         final prefs = await UserPreferenceService.instance.load();
@@ -258,41 +318,7 @@ class _LoginPageState extends State<LoginPage> {
       _showError('Google login failed: $e');
     }
   }
-
-  // --- Facebook ---
-  Future<void> _handleFacebookSignIn() async {
-    try {
-      final LoginResult result = await FacebookAuth.instance.login();
-
-      if (result.status == LoginStatus.success && result.accessToken != null) {
-        final String facebookToken = result.accessToken!.tokenString;
-
-        final credential = FacebookAuthProvider.credential(facebookToken);
-        await FirebaseAuth.instance.signInWithCredential(credential);
-
-        if (mounted) {
-          final prefs = await UserPreferenceService.instance.load();
-          if (!mounted) return;
-
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => prefs.onboardingDone
-                  ? const HomePage()
-                  : const OnboardingPage(),
-            ),
-          );
-        }
-      } else if (result.status == LoginStatus.cancelled) {
-        _showError('Facebook login cancelled by user');
-      } else {
-        _showError('Facebook login failed: ${result.message}');
-      }
-    } catch (e) {
-      _showError('Facebook login failed: $e');
-    }
-  }
-
+  
   // ================= UI =================
   @override
   Widget build(BuildContext context) {
@@ -486,7 +512,7 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 20),
 
-                // ===== Social Login Buttons =====
+                //  ===== Social Login Buttons =====
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -495,12 +521,7 @@ class _LoginPageState extends State<LoginPage> {
                       Colors.red,
                       _handleGoogleSignIn,
                     ),
-                    const SizedBox(width: 20),
-                    _socialCircle(
-                      FontAwesomeIcons.facebook,
-                      const Color(0xFF1877F2),
-                      _handleFacebookSignIn,
-                    ),
+                    
                   ],
                 ),
 

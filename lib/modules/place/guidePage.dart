@@ -168,7 +168,7 @@ class _GuidePageState extends State<GuidePage> {
       if ((_lastPos?.speed ?? 0) <= 0.5) {
         setState(() {
           _bearing = e.heading!;
-          if (_userLatLng != null) _placeArrow(_userLatLng!); // ← 加这行
+      
         });
         _moveCamera();
       }
@@ -367,7 +367,7 @@ void _placeArrow(LatLng pos) {
         bearing: _bearing,
       )),
     ).then((_) {
-      _isProgrammaticMove = false;    // ← 等动画完成才还原
+      _isProgrammaticMove = false;  
     });
   }
 
@@ -429,7 +429,7 @@ void _placeArrow(LatLng pos) {
 
       if (_steps.isNotEmpty && _currentStepIndex < _steps.length - 1) {
         final step    = _steps[_currentStepIndex];
-        final distEnd = _distToStepEnd(rawLatLng, step);
+        final distEnd = _dist(snapped, step.endLocation);
 
         if (distEnd < 15) {
           _stepConfirmCount++;
@@ -465,7 +465,30 @@ void _placeArrow(LatLng pos) {
       setState(() {
         _lastPos    = raw;
         _userLatLng = snapped;
-        _placeArrow(snapped);
+        
+        _markers
+          ..removeWhere((m) => m.markerId.value == 'me')
+          ..add(Marker(
+            markerId: const MarkerId('me'),
+            position: snapped,
+            icon: _arrowIcon ?? BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueAzure),
+            rotation: _bearing,
+            anchor: const Offset(0.5, 0.5),
+            flat: true,
+            zIndex: 10,
+          ));
+
+        _circles
+          ..removeWhere((c) => c.circleId.value == 'accuracy')
+          ..add(Circle(
+            circleId: const CircleId('accuracy'),
+            center: snapped,
+            radius: 8.0,
+            fillColor: const Color(0x221A73E8),
+            strokeColor: const Color(0x441A73E8),
+            strokeWidth: 1,
+          ));
       });
 
       if (_isFollowing && !_isOverview) _moveCamera();

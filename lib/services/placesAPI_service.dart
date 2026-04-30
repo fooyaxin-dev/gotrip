@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class PlacesApiService {
-  static const String _apiKey = 'AIzaSyB2fqEyndn2Z8d6YM38p1ZbmEADQJimBtI'; // String.fromEnvironment('GOOGLE_API_KEY');
+  static const String _apiKey ='AIzaSyB2fqEyndn2Z8d6YM38p1ZbmEADQJimBtI'; // String.fromEnvironment('GOOGLE_API_KEY');
   static const String _baseUrl = 'https://places.googleapis.com/v1';
 
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -244,20 +244,28 @@ class PlacesApiService {
           .collection(_collectionName)
           .doc(placeId)
           .get();
- 
+
       if (docSnapshot.exists) {
         final cachedData = docSnapshot.data()!;
+
+        // 检查缓存是否过期（超过 30 天就重新拿）
+        final cachedAt = cachedData['cachedAt'];
+        bool isExpired = true;
+        if (cachedAt != null && cachedAt is Timestamp) {
+          final age = DateTime.now().difference(cachedAt.toDate());
+          isExpired = age.inDays > 30;
+        }
 
         final hasTypes = cachedData.containsKey('types') &&
             (cachedData['types'] as List?)?.isNotEmpty == true;
         final hasLocation = cachedData.containsKey('location');
 
-        if (hasTypes && hasLocation) {
+        if (hasTypes && hasLocation && !isExpired) {
           _cacheHits++;
           print('✅ CACHE HIT (${DateTime.now().difference(startTime).inMilliseconds}ms)');
           return cachedData;
         } else {
-          print('⚠️ Cache outdated (missing types or location), re-fetching...');
+          print('⚠️ Cache expired or outdated, re-fetching...');
           await _firestore.collection(_collectionName).doc(placeId).delete();
         }
       }
@@ -274,6 +282,13 @@ class PlacesApiService {
           'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,location',
         ),
       );
+
+      if (response.statusCode == 404) {
+        // Place ID 失效，清掉缓存
+        print('⚠️ Place ID invalid (404), clearing cache: $placeId');
+        await _firestore.collection(_collectionName).doc(placeId).delete();
+        throw Exception('Place ID no longer valid: $placeId');
+      }
 
       if (response.statusCode != 200) {
         throw Exception('getPlaceDetails failed: ${response.body}');
@@ -294,6 +309,7 @@ class PlacesApiService {
       rethrow;
     }
   }
+    
     
   static Future<void> clearPlaceCache(String placeId) async {
     try {

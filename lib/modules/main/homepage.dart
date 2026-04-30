@@ -105,13 +105,20 @@ class _HomePageState extends State<HomePage> {
   // Navigate to generate itinerary
   // ─────────────────────────────────────────────
 
+  int _itineraryReloadKey = 0;
+
   Future<void> _goGenerateItinerary() async {
     await UserPreferenceService.instance.load();
     if (!mounted) return;
-    Navigator.push(
+    
+    await Navigator.push(  
       context,
       MaterialPageRoute(builder: (_) => const GenerateItineraryPage()),
     );
+    
+    if (mounted) {
+      setState(() => _itineraryReloadKey++);
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -127,6 +134,7 @@ class _HomePageState extends State<HomePage> {
       }),
       const SizedBox(), // center placeholder for FAB notch
       ItineraryPage(
+        key: ValueKey(_itineraryReloadKey), 
         onBack: () => setState(() => _currentIndex = 0),
         onPlanTrip: _goGenerateItinerary,
       ),

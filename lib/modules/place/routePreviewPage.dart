@@ -71,13 +71,26 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
 
   bool _trafficEnabled = false;
 
+  // Track top bar height so map padding stays accurate
+  double _topBarHeight = 0;
+  final GlobalKey _topBarKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
     _setMarkers();
-    // Fetch drive + walk in parallel; motor reuses drive result
     _fetchMode(TravelMode.drive);
     _fetchMode(TravelMode.walk);
+
+    // Measure the top bar after first frame
+    WidgetsBinding.instance.addPostFrameCallback((_) => _updateTopBarHeight());
+  }
+
+  void _updateTopBarHeight() {
+    final box = _topBarKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box != null && mounted) {
+      setState(() => _topBarHeight = box.size.height);
+    }
   }
 
   @override
@@ -141,7 +154,6 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
         _summaries[mode]!
           ..loading = false
           ..error   = e.toString();
-        // Propagate error to motor if drive failed
         if (mode == TravelMode.drive) {
           _summaries[TravelMode.motor]!
             ..loading = false
@@ -169,8 +181,21 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
         ));
     });
 
+    // Add a small extra inset so the route isn't hidden behind panels
+    final topInset    = (_topBarHeight > 0 ? _topBarHeight : 100) + 16;
+    const bottomInset = 240.0; // bottom sheet height + buffer
+
     _mapController?.animateCamera(
-        CameraUpdate.newLatLngBounds(data.bounds, 60));
+      CameraUpdate.newLatLngBounds(
+        data.bounds,
+        [topInset, 60, bottomInset, 60].reduce((a, b) => a > b ? a : b) / 1, // use max as fallback
+      ),
+    );
+
+    // Prefer per-side padding for accurate framing
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngBounds(data.bounds, 60),
+    );
   }
 
   void _selectMode(TravelMode mode) {
@@ -188,11 +213,19 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
     final selected = _summaries[_selectedMode]!;
     final mq       = MediaQuery.of(context);
 
+    // Estimated top bar height = status bar + 15 top padding + ~80 content + 20 bottom padding
+    const double kTopBarContent = 115.0;
+    final double topPad = mq.padding.top + kTopBarContent;
+
+    // Estimated bottom sheet height
+    const double kBottomSheetHeight = 240.0;
+    final double bottomPad = kBottomSheetHeight + mq.padding.bottom;
+
     return Scaffold(
       backgroundColor: Colors.white,
       body: Stack(children: [
 
-        // ── Map ──
+        // ── Map — padding accounts for both overlapping panels ──
         GoogleMap(
           initialCameraPosition: CameraPosition(
             target: LatLng(
@@ -209,11 +242,16 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
           compassEnabled:          true,
           trafficEnabled:          _trafficEnabled,
           onMapCreated: (c) => _mapController = c,
-          padding: const EdgeInsets.only(bottom: 220),
+          // ✅ Key fix: pad top AND bottom so route fits in the visible gap
+          padding: EdgeInsets.only(
+            top:    topPad,
+            bottom: bottomPad,
+          ),
         ),
 
         // ── Top bar ──
         Positioned(
+          key: _topBarKey,
           top: 0, left: 0, right: 0,
           child: Container(
             color: Colors.white,
