@@ -1,6 +1,6 @@
-// services/location_service.dart
 import 'dart:async';
 import 'dart:math';
+import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/itineraryModel.dart';
 
@@ -11,7 +11,6 @@ enum LocationStatus {
   permissionDeniedForever,
 }
 
-// Emitted when user arrives near a place
 class PlaceArrivalEvent {
   final String placeId;
   final String placeName;
@@ -26,10 +25,9 @@ class PlaceArrivalEvent {
   });
 }
 
-class LocationService {
+class LocationService extends ChangeNotifier {
   LocationService._privateConstructor();
-  static final LocationService instance =
-      LocationService._privateConstructor();
+  static final LocationService instance = LocationService._privateConstructor();
 
   Position? currentPosition;
   StreamSubscription<Position>? _positionStream;
@@ -37,26 +35,21 @@ class LocationService {
   double? get currentLat => currentPosition?.latitude;
   double? get currentLng => currentPosition?.longitude;
 
-  // ─────────────────────────────────────────────
-  // Proximity tracking
-  // ─────────────────────────────────────────────
+  // ── Significant move detection ──
+  double? _lastFetchLat;
+  double? _lastFetchLng;
+  static const double _refetchThresholdMetres = 10000; // 10km
 
-  // Radius in metres — same feeling as Waze
-  static const double _arrivalRadiusMetres = 100;
+  // ── Proximity tracking ──
+  static const double _arrivalRadiusMetres = 50;
 
-  // Internal controller — page listens to this
   final StreamController<PlaceArrivalEvent> _arrivalController =
       StreamController<PlaceArrivalEvent>.broadcast();
-
   Stream<PlaceArrivalEvent> get arrivalStream => _arrivalController.stream;
 
-  // Tracks which placeIds we've already fired so we don't spam the user
   final Set<String> _alreadyArrived = {};
-
-  // The places we're currently watching (unvisited only)
   List<_WatchedPlace> _watchedPlaces = [];
 
-  // Call this from ItineraryDetailPage when the itinerary changes
   void watchItinerary(ItineraryModel itinerary) {
     _watchedPlaces = [];
     _alreadyArrived.clear();
@@ -67,11 +60,11 @@ class LocationService {
         final place = day.places[p];
         if (!place.isVisited && place.lat != null && place.lng != null) {
           _watchedPlaces.add(_WatchedPlace(
-            placeId:    place.placeId,
-            placeName:  place.name,
-            lat:        place.lat!,
-            lng:        place.lng!,
-            dayIndex:   d,
+            placeId: place.placeId,
+            placeName: place.name,
+            lat: place.lat!,
+            lng: place.lng!,
+            dayIndex: d,
             placeIndex: p,
           ));
         }
@@ -79,7 +72,6 @@ class LocationService {
     }
   }
 
-  // Remove a place from watch list once confirmed visited
   void markArrived(String placeId) {
     _alreadyArrived.add(placeId);
     _watchedPlaces.removeWhere((w) => w.placeId == placeId);
@@ -90,43 +82,60 @@ class LocationService {
   // ─────────────────────────────────────────────
 
   Future<LocationStatus> initLocation() async {
-    bool serviceEnabled;
-    LocationPermission permission;
-
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return LocationStatus.serviceDisabled;
 
-    permission = await Geolocator.checkPermission();
+    LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        return LocationStatus.permissionDenied;
-      }
+      if (permission == LocationPermission.denied) return LocationStatus.permissionDenied;
     }
-    if (permission == LocationPermission.deniedForever) {
-      return LocationStatus.permissionDeniedForever;
-    }
+    if (permission == LocationPermission.deniedForever) return LocationStatus.permissionDeniedForever;
 
     currentPosition = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
 
+    _lastFetchLat = currentPosition?.latitude;
+    _lastFetchLng = currentPosition?.longitude;
+
     _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
-        accuracy:       LocationAccuracy.high,
-        distanceFilter: 10, // fire every 10m movement
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10,
       ),
     ).listen((Position pos) {
       currentPosition = pos;
       _checkProximity(pos);
+      _checkSignificantMove(pos);
     });
 
     return LocationStatus.success;
   }
 
   // ─────────────────────────────────────────────
-  // Proximity check — called on every GPS update
+  // Significant move → notify all listeners
+  // ─────────────────────────────────────────────
+
+  void _checkSignificantMove(Position pos) {
+    if (_lastFetchLat == null || _lastFetchLng == null) return;
+
+    final dist = _distanceMetres(
+      _lastFetchLat!, _lastFetchLng!,
+      pos.latitude, pos.longitude,
+    );
+
+    if (dist >= _refetchThresholdMetres) {
+      print('📍 Moved ${dist.toStringAsFixed(0)}m — notifying all listeners');
+      _lastFetchLat = pos.latitude;
+      _lastFetchLng = pos.longitude;
+      notifyListeners(); // ← 同時通知所有監聽者
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Proximity check
   // ─────────────────────────────────────────────
 
   void _checkProximity(Position pos) {
@@ -135,44 +144,40 @@ class LocationService {
 
       final dist = _distanceMetres(
         pos.latitude, pos.longitude,
-        watched.lat,  watched.lng,
+        watched.lat, watched.lng,
       );
 
       if (dist <= _arrivalRadiusMetres) {
-        _alreadyArrived.add(watched.placeId); // prevent re-firing
+        _alreadyArrived.add(watched.placeId);
         _arrivalController.add(PlaceArrivalEvent(
-          placeId:    watched.placeId,
-          placeName:  watched.placeName,
-          dayIndex:   watched.dayIndex,
+          placeId: watched.placeId,
+          placeName: watched.placeName,
+          dayIndex: watched.dayIndex,
           placeIndex: watched.placeIndex,
         ));
       }
     }
   }
 
-  // Haversine formula — accurate enough for short distances
-  double _distanceMetres(
-      double lat1, double lng1, double lat2, double lng2) {
-    const r = 6371000.0; // Earth radius in metres
+  double _distanceMetres(double lat1, double lng1, double lat2, double lng2) {
+    const r = 6371000.0;
     final dLat = _rad(lat2 - lat1);
     final dLng = _rad(lng2 - lng1);
     final a = sin(dLat / 2) * sin(dLat / 2) +
-        cos(_rad(lat1)) * cos(_rad(lat2)) *
-            sin(dLng / 2) * sin(dLng / 2);
+        cos(_rad(lat1)) * cos(_rad(lat2)) * sin(dLng / 2) * sin(dLng / 2);
     return r * 2 * atan2(sqrt(a), sqrt(1 - a));
   }
 
   double _rad(double deg) => deg * pi / 180;
 
-  // ─────────────────────────────────────────────
-
+  @override
   void dispose() {
     _positionStream?.cancel();
     _arrivalController.close();
+    super.dispose();
   }
 }
 
-// Internal helper class
 class _WatchedPlace {
   final String placeId;
   final String placeName;

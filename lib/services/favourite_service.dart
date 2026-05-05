@@ -9,7 +9,7 @@ class FavouriteService {
 
  
 
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc'; // String.fromEnvironment('GOOGLE_API_KEY');
+  static const String _apiKey = 'AIzaSyB2fqEyndn2Z8d6YM38p1ZbmEADQJimBtI'; // String.fromEnvironment('GOOGLE_API_KEY');
   static const String _baseUrl = 'https://places.googleapis.com/v1';
 
   static String? get _userId => _auth.currentUser?.uid;
@@ -27,7 +27,6 @@ class FavouriteService {
     return _firestore.collection('users').doc(uid);
   }
 
-  /// 🔍 从 API 或缓存获取 types
   static Future<List<String>> _fetchTypesFromApi(String placeId) async {
     try {
       final cached = await _firestore
@@ -71,7 +70,7 @@ class FavouriteService {
     return [];
   }
 
-  /// ❤️ 添加收藏 + favouriteCount + 1
+
   static Future<void> addFavourite({
     required String placeId,
     required String name,
@@ -91,7 +90,7 @@ class FavouriteService {
         ? types
         : await _fetchTypesFromApi(placeId);
 
-    // ✅ 用 batch 同时写两个 document，保证原子性
+  
     final batch = _firestore.batch();
 
     batch.set(collection.doc(placeId), {
@@ -115,7 +114,6 @@ class FavouriteService {
     print('✅ Added favourite, favouriteCount +1');
   }
 
-  /// 💔 移除收藏 + favouriteCount - 1
   static Future<void> removeFavourite(String placeId) async {
     final collection = _favouritesCollection;
     final userDoc = _userDoc;
@@ -177,7 +175,6 @@ class FavouriteService {
     }
   }
 
-  /// 📋 实时监听收藏列表
   static Stream<List<Map<String, dynamic>>> getFavouritesStream() {
     final collection = _favouritesCollection;
     if (collection == null) return Stream.value([]);

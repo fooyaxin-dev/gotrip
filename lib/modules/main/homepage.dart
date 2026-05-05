@@ -27,6 +27,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
+  bool _nearbyTabVisited = false; 
   String _username = "UserName";
   String _email = "user@email.com";
   String _profileImageUrl = "";
@@ -127,26 +128,30 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = [
-      MainPage(username: _username),
-      RealTimeDetectPage(onBack: () {
-        setState(() => _currentIndex = 0);
-      }),
-      const SizedBox(), // center placeholder for FAB notch
-      ItineraryPage(
-        key: ValueKey(_itineraryReloadKey), 
-        onBack: () => setState(() => _currentIndex = 0),
-        onPlanTrip: _goGenerateItinerary,
-      ),
-      const ProfilePage(),
-    ];
-
+    
     final bool isItineraryTab = _currentIndex == 3;
 
     return Scaffold(
       extendBody: true,
       drawer: _buildAppDrawer(context),
-      body: pages[_currentIndex],
+      body: IndexedStack(
+        index: _currentIndex,
+        children: [
+          MainPage(username: _username),
+          _nearbyTabVisited
+              ? RealTimeDetectPage(onBack: () {
+                  setState(() => _currentIndex = 0);
+                })
+              : const SizedBox(), // ← 沒訪問過就放空的
+          const SizedBox(),
+          ItineraryPage(
+            key: ValueKey(_itineraryReloadKey),
+            onBack: () => setState(() => _currentIndex = 0),
+            onPlanTrip: _goGenerateItinerary,
+          ),
+          const ProfilePage(),
+        ],
+      ),
 
       // ── Dynamic FAB based on current tab ──
       floatingActionButton: isItineraryTab
@@ -199,7 +204,10 @@ class _HomePageState extends State<HomePage> {
   Widget _buildNavItem(IconData icon, String label, int index) {
     final isSelected = _currentIndex == index;
     return InkWell(
-      onTap: () => setState(() => _currentIndex = index),
+          onTap: () => setState(() {
+            _currentIndex = index;
+            if (index == 1) _nearbyTabVisited = true; // ← 加這個
+          }),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [

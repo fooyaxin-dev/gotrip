@@ -89,7 +89,6 @@ class PlacesApiService {
       "maxResultCount": maxResultCount,
     };
 
-    // 只在有传 types 时才加这个字段
     if (types != null && types.isNotEmpty) {
       bodyMap["includedTypes"] = types;
     }
@@ -164,7 +163,7 @@ class PlacesApiService {
     required String input,
     double? lat,
     double? lng,
-    int radius = 50000, // 50km bias，不是 restrict
+    int radius = 50000, // 50km bias，not restrict
   }) async {
     if (input.trim().isEmpty) return [];
  

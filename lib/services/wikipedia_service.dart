@@ -12,9 +12,8 @@ class WikipediaService {
 
   static const int _maxImages = 10;
 
-  // ============================================================
+
   // 🌟 PUBLIC ENTRY (WITH FIREBASE CACHE)_getImageThumbUrl
-  // ============================================================
   static Future<Map<String, dynamic>> fetchLandmarkHistory(
     String landmarkName,
   ) async {
@@ -289,13 +288,13 @@ class WikipediaService {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
 
-        // 1️⃣ summary 的 thumbnail（兜底）
+        // summary 的 thumbnail（兜底）
         final String? thumb = data['thumbnail']?['source'];
 
-        // 2️⃣ 页面图片
+        // 页面图片
         final moreImages = await fetchPageImages(landmarkName);
 
-        // 3️⃣ 选择策略
+        // 选择策略
         List<String> finalImages = [];
 
         if (moreImages.isNotEmpty) {

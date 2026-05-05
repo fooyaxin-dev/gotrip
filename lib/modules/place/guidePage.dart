@@ -81,7 +81,7 @@ class _GuidePageState extends State<GuidePage> {
   BitmapDescriptor? _arrowIcon;
 
   static const double _offRouteThresh  = 40.0;  // tighter than before
-  static const double _arrivedThresh   = 25.0;
+  static const double _arrivedThresh   = 50.0;
   static const int    _offRouteConfirm = 4;
   static const int    _stepConfirm     = 2;
 
@@ -389,6 +389,7 @@ void _placeArrow(LatLng pos) {
         ),
       ),
     ).listen((raw) {
+      print('GPS: ${DateTime.now().millisecondsSinceEpoch} accuracy:${raw.accuracy}');
       if (!mounted) return;
       if (raw.accuracy > 30) return;
 

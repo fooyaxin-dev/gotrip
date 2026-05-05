@@ -66,7 +66,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     {'code': 'ar',    'label': '🇸🇦 العربية'},
   ];
 
-  // ── Convenience ───────────────────────────────────────────
   LandmarkResult get _result => widget.landmarkResult;
   bool get _isDetected => _result.isDetected;
   String get _name => _result.normalizedName;

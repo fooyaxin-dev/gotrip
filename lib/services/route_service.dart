@@ -5,9 +5,8 @@ import 'package:http/http.dart' as http;
 
 enum TravelMode { walk, drive, motor }
 
-// ─────────────────────────────────────────────
+
 // Data models
-// ─────────────────────────────────────────────
 
 class NavStep {
   final String instruction;
@@ -16,7 +15,7 @@ class NavStep {
   final int durationSeconds;
   final LatLng startLocation;
   final LatLng endLocation;
-  final List<LatLng> polylinePoints; // ← per-step polyline for accurate snap
+  final List<LatLng> polylinePoints; 
 
   const NavStep({
     required this.instruction,
@@ -61,9 +60,7 @@ class RouteSummary {
   });
 }
 
-// ─────────────────────────────────────────────
 // RouteService — single source of truth
-// ─────────────────────────────────────────────
 
 class RouteService {
   RouteService._(); 

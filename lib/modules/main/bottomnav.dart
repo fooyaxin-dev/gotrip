@@ -12,7 +12,7 @@ class BasePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 预留底部空间，避免被 BottomNavigationBar 盖住
+
     const double bottomPadding = 90;
 
     if (hasScroll) {

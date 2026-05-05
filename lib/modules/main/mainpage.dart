@@ -41,8 +41,30 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _pageController = PageController(viewportFraction: 0.8);
     _initAndLoad();
-
+    LocationService.instance.addListener(_onLocationChanged);
     UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged);
+  }
+
+  void _onLocationChanged() {
+    if (!mounted) return;
+    NearbyPlacesService.instance.clearCache();
+    
+    // telling user we're updating nearby places
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Row(children: [
+          Icon(Icons.location_on_rounded, color: Colors.white, size: 16),
+          SizedBox(width: 8),
+          Text('Updating nearby places...'),
+        ]),
+        duration: const Duration(seconds: 2),
+        backgroundColor: const Color(0xFF6366F1),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+    
+    _initAndLoad();
   }
 
   void _onPreferencesChanged() {
@@ -53,6 +75,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pageController.dispose();
+    LocationService.instance.removeListener(_onLocationChanged);
     UserPreferenceService.instance.preferencesChanged.removeListener(_onPreferencesChanged);
     super.dispose();
   }
@@ -63,12 +86,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
       if (!NearbyPlacesService.instance.hasLoaded) {
         _initAndLoad();
       } else {
-        _buildForYou(); // ← 加这行，resume 时重新计算 For You
+        _buildForYou(); 
       }
     }
   }
 
   Future<void> _initAndLoad() async {
+    NearbyPlacesService.instance.clearCache(); 
     await _initLocation();
     await _loadNearby();
     _calculateRoutes();
@@ -173,15 +197,12 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
       print('  ${p.name} | primary: ${p.primaryType} | types: ${p.allTypes.take(3)}');
     }
 
-
-    // 过滤 score = 0，最多 7 个
     final filtered = scored
         .where((e) => e.value > 0)
         .map((e) => e.key)
         .take(7)
         .toList();
 
-    // Fallback：距离内、有照片、评分高
     final result = filtered.isNotEmpty
         ? filtered
         : (List<PlaceModel>.from(withinRange)
@@ -204,7 +225,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
           .loadNearbyPlacesOnce(_categories, context);
       if (!mounted) return;
       setState(() {
-        _nearbyPlaces    = places;
+        _nearbyPlaces    = places; 
         _loadingNearby   = false;
       });
     } catch (e) {
@@ -333,99 +354,102 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   // Build
   // ─────────────────────────────────────────────
 
+
   @override
   Widget build(BuildContext context) {
     return BasePage(
-      child: SingleChildScrollView(
-        physics: const BouncingScrollPhysics(),
-        child: Column(
-          children: [
-            _buildHeader(),
-            const SizedBox(height: 25),
-            const SizedBox(height: 20),
+      child: RefreshIndicator(
+        onRefresh: _initAndLoad,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: Column(
+            children: [
+              _buildHeader(),
+              const SizedBox(height: 25),
+              const SizedBox(height: 20),
 
-            // ── 1. For You ──────────────────────
-            _buildSectionHeader("✨ For You", false),
-            const SizedBox(height: 4),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 25),
-              child: Row(
-                children: [
-                  Icon(Icons.near_me_rounded, size: 12, color: Colors.grey[400]),
-                  const SizedBox(width: 4),
-                  Text(
-                    'Showing places $_distanceLimitLabel',
-                    style: TextStyle(fontSize: 11, color: Colors.grey[400]),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
-            _buildForYouSection(),
-            const SizedBox(height: 28),
-
-            // ── 2. Browse by Category ───────────
-            
-            _buildSectionHeader("Recommended Places", true),
-            const SizedBox(height: 10),
-            _buildCategorySection(),
-            
-            SizedBox(
-              height: 320,
-              child: _loadingNearby
-                  ? const Center(child: CircularProgressIndicator())
-                  : _placeByCategory[_selectedCategory]?.isEmpty ?? true
-                      ? Center(child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.search_off, size: 48, color: Colors.grey[400]),
-                            const SizedBox(height: 12),
-                            Text('No places found in $_selectedCategory',
-                                style: TextStyle(color: Colors.grey[600])),
-                          ],
-                        ))
-                      : PageView.builder(
-                          controller: _pageController,
-                          itemCount: _placeByCategory[_selectedCategory]!.length,
-                          physics: const BouncingScrollPhysics(),
-                          itemBuilder: (context, index) {
-                            return AnimatedBuilder(
-                              animation: _pageController,
-                              builder: (context, child) {
-                                double value = 0;
-                                if (_pageController.position.haveDimensions) {
-                                  value = _pageController.page! - index;
-                                }
-                                return Transform(
-                                  transform: Matrix4.identity()
-                                    ..setEntry(3, 2, 0.001)
-                                    ..rotateY(value * 0.4)
-                                    ..scale(1 - (value.abs() * 0.1)),
-                                  child: child,
-                                );
-                              },
-                              child: _buildPlaceCard(index),
-                            );
-                          },
-                        ),
-            ),
-            const SizedBox(height: 20),
-
-            // ── 3. Nearby Trending ───────────────
-            _buildSectionHeader("Nearby Trending", false),
-            const SizedBox(height: 20),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 25),
-              child: _loadingNearby
-                  ? const Center(child: CircularProgressIndicator())
-                  : Column(
-                      children: List.generate(_nearbyTrending.length, (i) =>
-                          _buildSpecialAsymmetricCard(_nearbyTrending[i], i)),
+              // ── 1. For You ──────────────────────
+              _buildSectionHeader("✨ For You", false),
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 25),
+                child: Row(
+                  children: [
+                    Icon(Icons.near_me_rounded, size: 12, color: Colors.grey[400]),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Showing places $_distanceLimitLabel',
+                      style: TextStyle(fontSize: 11, color: Colors.grey[400]),
                     ),
-            ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              _buildForYouSection(),
+              const SizedBox(height: 28),
 
-            SizedBox(height: 10 + MediaQuery.of(context).padding.bottom + kBottomNavigationBarHeight),
-          ],
+              // ── 2. Browse by Category ───────────
+              _buildSectionHeader("Recommended Places", true),
+              const SizedBox(height: 10),
+              _buildCategorySection(),
+
+              SizedBox(
+                height: 320,
+                child: _loadingNearby
+                    ? const Center(child: CircularProgressIndicator())
+                    : _placeByCategory[_selectedCategory]?.isEmpty ?? true
+                        ? Center(child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.search_off, size: 48, color: Colors.grey[400]),
+                              const SizedBox(height: 12),
+                              Text('No places found in $_selectedCategory',
+                                  style: TextStyle(color: Colors.grey[600])),
+                            ],
+                          ))
+                        : PageView.builder(
+                            controller: _pageController,
+                            itemCount: _placeByCategory[_selectedCategory]!.length,
+                            physics: const BouncingScrollPhysics(),
+                            itemBuilder: (context, index) {
+                              return AnimatedBuilder(
+                                animation: _pageController,
+                                builder: (context, child) {
+                                  double value = 0;
+                                  if (_pageController.position.haveDimensions) {
+                                    value = _pageController.page! - index;
+                                  }
+                                  return Transform(
+                                    transform: Matrix4.identity()
+                                      ..setEntry(3, 2, 0.001)
+                                      ..rotateY(value * 0.4)
+                                      ..scale(1 - (value.abs() * 0.1)),
+                                    child: child,
+                                  );
+                                },
+                                child: _buildPlaceCard(index),
+                              );
+                            },
+                          ),
+              ),
+              const SizedBox(height: 20),
+
+              // ── 3. Nearby Trending ───────────────
+              _buildSectionHeader("Nearby Trending", false),
+              const SizedBox(height: 20),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 25),
+                child: _loadingNearby
+                    ? const Center(child: CircularProgressIndicator())
+                    : Column(
+                        children: List.generate(_nearbyTrending.length, (i) =>
+                            _buildSpecialAsymmetricCard(_nearbyTrending[i], i)),
+                      ),
+              ),
+
+              SizedBox(height: 10 + MediaQuery.of(context).padding.bottom + kBottomNavigationBarHeight),
+            ],
+          ),
         ),
       ),
     );

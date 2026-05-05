@@ -5,7 +5,6 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'placeDetailPage.dart';
 import '../../services/route_service.dart';
@@ -172,10 +171,20 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         });
       });
     }
+
+    LocationService.instance.addListener(_onLocationChanged);
+  }
+
+  void _onLocationChanged() {
+    if (!mounted) return;
+    if (_searchLocationName != null) return; // 搜尋模式下不自動 reload
+    if (widget.landmarkLat != null) return; 
+    _onRefresh();
   }
 
     @override
     void dispose() {
+      LocationService.instance.removeListener(_onLocationChanged);
       _searchController.dispose();
       _searchFocus.dispose();
       _debounce?.cancel();

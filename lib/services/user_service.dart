@@ -12,7 +12,6 @@ class UserService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  // 获取当前用户ID
   String? get currentUserId => _auth.currentUser?.uid;
 
   // 获取用户资料
@@ -26,10 +25,10 @@ class UserService {
         print('✅ Read successful');
         return UserProfile.fromMap(data, uid);
       }
-      print('❌ 用户文档不存在');
+      print('❌ User document does not exist');
       return null;
     } catch (e) {
-      print('❌ 读取用户资料失败: $e');
+      print('❌ Failed to read user profile: $e');
       return null;
     }
   }
@@ -61,7 +60,6 @@ class UserService {
       print('   Background image: ${(bgSize / 1024).toStringAsFixed(2)} KB');
       print('   Total: ${(totalSize / 1024).toStringAsFixed(2)} KB');
       
-      // Firestore 文档大小限制是 1MB
       if (totalSize > 1048576) { // 1MB
         print('⚠️  Warning: Document size exceeds 1MB limit!');
         print('   Recommendation: Compress images or use external storage');

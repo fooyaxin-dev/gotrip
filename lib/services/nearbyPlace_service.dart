@@ -20,9 +20,8 @@ class NearbyPlacesService {
   Map<String, List<PlaceModel>> get placesByType => Map.unmodifiable(_placesByTypeCache);
   bool get hasLoaded => _hasLoadedOnce;
 
-  // ─────────────────────────────────────────────
+ 
   // 本地分类：把 Google types 映射到你的主分类
-  // ─────────────────────────────────────────────
   static String _mapToPrimaryType(List<String> googleTypes) {
     if (googleTypes.any((t) => [
       'restaurant', 'cafe', 'coffee_shop', 'bakery', 'bar',
@@ -60,9 +59,7 @@ class NearbyPlacesService {
     return 'other';
   }
 
-  // ─────────────────────────────────────────────
-  // 核心：2 calls，本地分类
-  // ─────────────────────────────────────────────
+  // 核心 + 1st step：4 calls，then seperated the place based on category yourself
   Future<void> _fetchAndStore({
     required double lat,
     required double lng,
@@ -150,9 +147,7 @@ class NearbyPlacesService {
     targetByType.forEach((type, places) => print('   $type: ${places.length}'));
   }
   
-  // ─────────────────────────────────────────────
-  // GPS 模式：singleton cache
-  // ─────────────────────────────────────────────
+
   Future<List<PlaceModel>> loadNearbyPlacesOnce(
     List<Map<String, dynamic>> categories,
     BuildContext context, {
@@ -197,9 +192,7 @@ class NearbyPlacesService {
     return _allPlacesCache;
   }
 
-  // ─────────────────────────────────────────────
-  // Search / Landmark 模式：独立 cache
-  // ─────────────────────────────────────────────
+
   Future<List<PlaceModel>> loadNearbyPlacesAt({
     required double lat,
     required double lng,
@@ -231,9 +224,8 @@ class NearbyPlacesService {
     return results;
   }
 
-  // ─────────────────────────────────────────────
+
   // Getters
-  // ─────────────────────────────────────────────
   List<PlaceModel> getByPrimary(String? primary) {
     if (primary == null || primary == 'all') {
       return List.unmodifiable(_allPlacesCache);
@@ -243,7 +235,7 @@ class NearbyPlacesService {
 
   List<PlaceModel> getBySecondary({
     required String primary,
-    required String secondary,
+    required String secondary, 
     required List<String> allowTypes,
     required List<String> nameKeywords,
   }) {
@@ -263,9 +255,8 @@ class NearbyPlacesService {
     return results;
   }
 
-  // ─────────────────────────────────────────────
+
   // Utils
-  // ─────────────────────────────────────────────
   void _precacheImages(BuildContext context) {
     final withPhoto = _allPlacesCache.where((p) => p.photoUrl != null).toList();
     print('🖼️ Precaching ${withPhoto.length} images...');

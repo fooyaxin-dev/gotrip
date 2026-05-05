@@ -6,9 +6,8 @@ import '../models/postModel.dart';
 
 class PostService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance; // ✅ 新增
+  final FirebaseAuth _auth = FirebaseAuth.instance; 
 
-  // ===== 用户统计 (从 UserStatsService 迁移) =====
 
   Future<void> incrementPostCount() async {
     String? userId = _auth.currentUser?.uid;
@@ -85,7 +84,7 @@ class PostService {
     }
   }
 
-  // ===== 创建帖子 =====
+  // ===== create post =====
 
   Future<List<String>> saveImagesToLocal(List<File> images) async {
     List<String> imagePaths = [];

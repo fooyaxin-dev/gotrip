@@ -34,7 +34,7 @@ class PlaceModel {
     return list;
   }
 
-  // Google Places API v2
+  // convert from Google Places API response to our PlaceModel
   factory PlaceModel.fromGoogle(
     Map<String, dynamic> g, {
     String? primary,
