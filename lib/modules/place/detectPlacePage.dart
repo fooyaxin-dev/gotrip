@@ -560,10 +560,17 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     final savedItinerary = ItineraryModel.fromMap(savedId, itinerary.toMap());
 
     if (!mounted) return;
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => ItineraryDetailPage(itinerary: savedItinerary)),
-    );
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ItineraryDetailPage(itinerary: savedItinerary)),
+      ).then((_) {
+        if (mounted) {
+          setState(() {
+            _selectedPlaceIds.clear();
+            _selectedPlacesMap.clear();
+          });
+        }
+      });
   }
 
   List<PlaceModel> _buildOptimizedRoute() {
