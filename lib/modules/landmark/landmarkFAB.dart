@@ -58,36 +58,36 @@ class _LandmarkFABState extends State<LandmarkFAB>
   }
 
   // ── Core: process bytes → detect → navigate ───────────────
-  Future<void> _processImage(Uint8List bytes) async {
-    setState(() {
-      _previewBytes = bytes;
-      _loading = true;
-    });
+    Future<void> _processImage(Uint8List bytes) async {
+      setState(() {
+        _previewBytes = bytes;
+        _loading = true;
+      });
 
-    final base64Image = base64Encode(bytes);
-    debugPrint('🚀 Calling VisionService.detectLandmark...');
+      final base64Image = base64Encode(bytes);
+      debugPrint('🚀 Calling VisionService.detectLandmark...');
 
-    final landmarkResult = await VisionService.detectLandmark(base64Image);
+      final landmarkResult = await VisionService.detectLandmark(base64Image);
 
-    debugPrint('🏛️ Result: ${landmarkResult.landmark} [${landmarkResult.method}]');
-    setState(() => _loading = false);
+      debugPrint('🏛️ Result: ${landmarkResult.landmark} [${landmarkResult.method}]');
+      setState(() => _loading = false);
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    final shouldClear = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ResultPage(
-          imageBytes: bytes,
-          landmarkResult: landmarkResult,
+      await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ResultPage(
+            imageBytes: bytes,
+            landmarkResult: landmarkResult,
+          ),
         ),
-      ),
-    );
+      );
 
-    if (shouldClear == true && mounted) {
-      setState(() => _previewBytes = null);
+      if (mounted) {
+        setState(() => _previewBytes = null);
+      }
     }
-  }
 
   // ── 1. Camera ─────────────────────────────────────────────
   Future<void> _scanWithCamera() async {

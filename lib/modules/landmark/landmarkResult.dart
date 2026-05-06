@@ -297,7 +297,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             backgroundColor: Colors.white.withAlpha(200),
             child: IconButton(
               icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 18),
-              onPressed: () => Navigator.pop(context, true),
+              onPressed: () => Navigator.pop(context),
             ),
           ),
         ),
