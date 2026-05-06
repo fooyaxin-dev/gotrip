@@ -22,6 +22,10 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   bool _isGenerating     = false;
   final _titleController = TextEditingController(text: 'My Trip');
 
+  // ── FocusNodes ──
+  final _titleFocus    = FocusNode();
+  final _locationFocus = FocusNode();
+
   // ── Temporary overrides for this trip only ──
   late Set<String> _activeCategories;
   late Set<String> _activeCuisines;
@@ -68,7 +72,15 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   void dispose() {
     _titleController.dispose();
     _locationController.dispose();
+    _titleFocus.dispose();    // 👈
+    _locationFocus.dispose(); // 👈
     super.dispose();
+  }
+
+  // ── Dismiss keyboard helper ──
+  void _dismissKeyboard() {
+    _titleFocus.unfocus();
+    _locationFocus.unfocus();
   }
 
   // ─────────────────────────────────────────────
@@ -99,6 +111,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     final name    = suggestion['mainText'] as String? ??
                     suggestion['description'] as String? ?? '';
 
+    _dismissKeyboard(); // 👈
+
     setState(() {
       _suggestions = [];
       _locationController.text = name;
@@ -121,6 +135,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   }
 
   void _resetToCurrentLocation() {
+    _dismissKeyboard(); // 👈
     setState(() {
       _useCurrentLocation   = true;
       _selectedLat          = null;
@@ -152,6 +167,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   // ─────────────────────────────────────────────
 
   Future<void> _generate() async {
+    _dismissKeyboard(); // 👈
+
     if (_useCurrentLocation) {
       final pos = LocationService.instance.currentPosition;
       if (pos == null) {
@@ -188,16 +205,14 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
         return;
       }
 
-      // 直接传 unsaved itinerary，让用户自己决定要不要 save
       final saved = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
             builder: (_) => ItineraryDetailPage(itinerary: itinerary)),
       );
 
-      // 用户在 detail page 按了 Save 才回来
       if (saved == true && mounted) {
-        Navigator.pop(context); // 回到 itinerary_page，触发 _load()
+        Navigator.pop(context);
       }
 
     } finally {
@@ -205,8 +220,9 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     }
   }
 
-    
   Future<void> _pickDate() async {
+    _dismissKeyboard(); // 👈
+    await Future.delayed(const Duration(milliseconds: 100));
     final picked = await showDatePicker(
       context:     context,
       initialDate: _startDate,
@@ -220,6 +236,149 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       ),
     );
     if (picked != null) setState(() => _startDate = picked);
+  }
+
+  void _openAddSheet() {
+    _dismissKeyboard(); // 👈
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setSheet) => Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          ),
+          padding: EdgeInsets.fromLTRB(
+              24, 16, 24, 24 + MediaQuery.of(context).padding.bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40, height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text('Add to this trip',
+                  style: TextStyle(fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF1A1A2E))),
+              const SizedBox(height: 4),
+              Text('Select what you want for this itinerary',
+                  style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+              const SizedBox(height: 20),
+              const Text('Category',
+                  style: TextStyle(fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF1A1A2E))),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8, runSpacing: 8,
+                children: _allCategories.map((c) {
+                  final isOn = _activeCategories.contains(c['key']);
+                  return GestureDetector(
+                    onTap: () => setSheet(() => setState(() {
+                      isOn
+                          ? _activeCategories.remove(c['key'])
+                          : _activeCategories.add(c['key']!);
+                    })),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: isOn
+                            ? const Color(0xFF7C4DFF).withOpacity(0.12)
+                            : Colors.grey[100],
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: isOn
+                              ? const Color(0xFF7C4DFF)
+                              : Colors.transparent,
+                          width: 1.5,
+                        ),
+                      ),
+                      child: Text('${c['icon']} ${c['label']}',
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: isOn
+                                  ? const Color(0xFF7C4DFF)
+                                  : Colors.black87)),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 20),
+              const Text('Cuisine',
+                  style: TextStyle(fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF1A1A2E))),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8, runSpacing: 8,
+                children: _allCuisines.map((c) {
+                  final isOn = _activeCuisines.contains(c['key']);
+                  return GestureDetector(
+                    onTap: () => setSheet(() => setState(() {
+                      isOn
+                          ? _activeCuisines.remove(c['key'])
+                          : _activeCuisines.add(c['key']!);
+                    })),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: isOn
+                            ? const Color(0xFF7C4DFF).withOpacity(0.12)
+                            : Colors.grey[100],
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: isOn
+                              ? const Color(0xFF7C4DFF)
+                              : Colors.transparent,
+                          width: 1.5,
+                        ),
+                      ),
+                      child: Text('${c['icon']} ${c['label']}',
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: isOn
+                                  ? const Color(0xFF7C4DFF)
+                                  : Colors.black87)),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity, height: 48,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF7C4DFF),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                  child: const Text('Done',
+                      style: TextStyle(color: Colors.white,
+                          fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   // ─────────────────────────────────────────────
@@ -245,163 +404,173 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                 fontWeight: FontWeight.bold)),
         centerTitle: true,
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      body: GestureDetector(
+        onTap: _dismissKeyboard, // 👈
+        behavior: HitTestBehavior.opaque,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
 
-            // ── Hero Banner ──
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('✨ AI Trip Planner',
-                      style: TextStyle(color: Colors.white70, fontSize: 13)),
-                  const SizedBox(height: 8),
-                  const Text('Create your\nperfect itinerary',
-                      style: TextStyle(color: Colors.white, fontSize: 26,
-                          fontWeight: FontWeight.bold, height: 1.2)),
-                  const SizedBox(height: 12),
-                  Row(children: [
-                    const Icon(Icons.auto_awesome_rounded,
-                        color: Colors.white60, size: 13),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Personalised for you · ${prefs.budgetTier.label} budget',
-                      style: const TextStyle(
-                          color: Colors.white60, fontSize: 12),
-                    ),
-                  ]),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 28),
-
-            _buildSectionLabel('Trip Name'),
-            const SizedBox(height: 10),
-            _buildTextField(_titleController, 'e.g. Weekend Getaway'),
-
-            const SizedBox(height: 24),
-
-            // ── Location ──
-            _buildLocationSection(),
-
-            const SizedBox(height: 24),
-
-            _buildSectionLabel('Start Date'),
-            const SizedBox(height: 10),
-            _buildDatePicker(),
-
-            const SizedBox(height: 24),
-
-            _buildSectionLabel('Number of Days'),
-            const SizedBox(height: 10),
-            _buildNumberSelector(
-              value:     _totalDays,
-              min:       1, max: 7,
-              onChanged: (v) => setState(() => _totalDays = v),
-              suffix:    _totalDays == 1 ? 'day' : 'days',
-            ),
-
-            const SizedBox(height: 24),
-
-            _buildSectionLabel('Places per Day'),
-            const SizedBox(height: 10),
-            _buildNumberSelector(
-              value:     _placesPerDay,
-              min:       2, max: 6,
-              onChanged: (v) => setState(() => _placesPerDay = v),
-              suffix:    'places',
-            ),
-
-            const SizedBox(height: 24),
-
-            _buildPreferencesSection(),
-
-            const SizedBox(height: 32),
-
-            // ── Trip Summary ──
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF7C4DFF).withOpacity(0.06),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                    color: const Color(0xFF7C4DFF).withOpacity(0.2)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline_rounded,
-                      color: Color(0xFF7C4DFF), size: 20),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      '$_totalDays ${_totalDays == 1 ? "day" : "days"} · '
-                      '${_totalDays * _placesPerDay} places total · '
-                      'Starting ${DateFormat('MMM dd').format(_startDate)}',
-                      style: const TextStyle(
-                          fontSize: 13, color: Color(0xFF5E35B1),
-                          fontWeight: FontWeight.w500),
-                    ),
+              // ── Hero Banner ──
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 28),
-
-            // ── Generate Button ──
-            SizedBox(
-              width: double.infinity, height: 58,
-              child: ElevatedButton(
-                onPressed: _isGenerating ? null : _generate,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF7C4DFF),
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18)),
+                  borderRadius: BorderRadius.circular(24),
                 ),
-                child: _isGenerating
-                    ? const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          SizedBox(width: 20, height: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white)),
-                          SizedBox(width: 12),
-                          Text('Generating your trip...',
-                              style: TextStyle(fontSize: 16,
-                                  fontWeight: FontWeight.bold)),
-                        ],
-                      )
-                    : const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.auto_awesome_rounded, size: 20),
-                          SizedBox(width: 8),
-                          Text('Generate Itinerary',
-                              style: TextStyle(fontSize: 16,
-                                  fontWeight: FontWeight.bold)),
-                        ],
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('✨ AI Trip Planner',
+                        style: TextStyle(color: Colors.white70, fontSize: 13)),
+                    const SizedBox(height: 8),
+                    const Text('Create your\nperfect itinerary',
+                        style: TextStyle(color: Colors.white, fontSize: 26,
+                            fontWeight: FontWeight.bold, height: 1.2)),
+                    const SizedBox(height: 12),
+                    Row(children: [
+                      const Icon(Icons.auto_awesome_rounded,
+                          color: Colors.white60, size: 13),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Personalised for you · ${prefs.budgetTier.label} budget',
+                        style: const TextStyle(
+                            color: Colors.white60, fontSize: 12),
                       ),
+                    ]),
+                  ],
+                ),
               ),
-            ),
 
-            SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
-          ],
+              const SizedBox(height: 28),
+
+              _buildSectionLabel('Trip Name'),
+              const SizedBox(height: 10),
+              _buildTextField(_titleController, 'e.g. Weekend Getaway'),
+
+              const SizedBox(height: 24),
+
+              // ── Location ──
+              _buildLocationSection(),
+
+              const SizedBox(height: 24),
+
+              _buildSectionLabel('Start Date'),
+              const SizedBox(height: 10),
+              _buildDatePicker(),
+
+              const SizedBox(height: 24),
+
+              _buildSectionLabel('Number of Days'),
+              const SizedBox(height: 10),
+              _buildNumberSelector(
+                value:     _totalDays,
+                min:       1, max: 7,
+                onChanged: (v) {
+                  _dismissKeyboard(); // 👈
+                  setState(() => _totalDays = v);
+                },
+                suffix:    _totalDays == 1 ? 'day' : 'days',
+              ),
+
+              const SizedBox(height: 24),
+
+              _buildSectionLabel('Places per Day'),
+              const SizedBox(height: 10),
+              _buildNumberSelector(
+                value:     _placesPerDay,
+                min:       2, max: 6,
+                onChanged: (v) {
+                  _dismissKeyboard(); // 👈
+                  setState(() => _placesPerDay = v);
+                },
+                suffix:    'places',
+              ),
+
+              const SizedBox(height: 24),
+
+              _buildPreferencesSection(),
+
+              const SizedBox(height: 32),
+
+              // ── Trip Summary ──
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF7C4DFF).withOpacity(0.06),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                      color: const Color(0xFF7C4DFF).withOpacity(0.2)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline_rounded,
+                        color: Color(0xFF7C4DFF), size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '$_totalDays ${_totalDays == 1 ? "day" : "days"} · '
+                        '${_totalDays * _placesPerDay} places total · '
+                        'Starting ${DateFormat('MMM dd').format(_startDate)}',
+                        style: const TextStyle(
+                            fontSize: 13, color: Color(0xFF5E35B1),
+                            fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 28),
+
+              // ── Generate Button ──
+              SizedBox(
+                width: double.infinity, height: 58,
+                child: ElevatedButton(
+                  onPressed: _isGenerating ? null : _generate,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF7C4DFF),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18)),
+                  ),
+                  child: _isGenerating
+                      ? const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            SizedBox(width: 20, height: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white)),
+                            SizedBox(width: 12),
+                            Text('Generating your trip...',
+                                style: TextStyle(fontSize: 16,
+                                    fontWeight: FontWeight.bold)),
+                          ],
+                        )
+                      : const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.auto_awesome_rounded, size: 20),
+                            SizedBox(width: 8),
+                            Text('Generate Itinerary',
+                                style: TextStyle(fontSize: 16,
+                                    fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                ),
+              ),
+
+              SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
+            ],
+          ),
         ),
       ),
     );
@@ -418,7 +587,6 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
         _buildSectionLabel('Trip Location'),
         const SizedBox(height: 10),
 
-        // Toggle: Current vs Custom
         Container(
           decoration: BoxDecoration(
             color: Colors.white,
@@ -528,6 +696,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                     // Search field
                     TextField(
                       controller: _locationController,
+                      focusNode: _locationFocus, // 👈
                       onChanged: _onLocationTyped,
                       decoration: InputDecoration(
                         hintText: 'e.g. Penang, Kuala Lumpur, Tokyo...',
@@ -766,148 +935,6 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     );
   }
 
-  void _openAddSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, setSheet) => Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-          ),
-          padding: EdgeInsets.fromLTRB(
-              24, 16, 24, 24 + MediaQuery.of(context).padding.bottom),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(
-                child: Container(
-                  width: 40, height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[300],
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              const Text('Add to this trip',
-                  style: TextStyle(fontSize: 17,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1A1A2E))),
-              const SizedBox(height: 4),
-              Text('Select what you want for this itinerary',
-                  style: TextStyle(fontSize: 13, color: Colors.grey[500])),
-              const SizedBox(height: 20),
-              const Text('Category',
-                  style: TextStyle(fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF1A1A2E))),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8, runSpacing: 8,
-                children: _allCategories.map((c) {
-                  final isOn = _activeCategories.contains(c['key']);
-                  return GestureDetector(
-                    onTap: () => setSheet(() => setState(() {
-                      isOn
-                          ? _activeCategories.remove(c['key'])
-                          : _activeCategories.add(c['key']!);
-                    })),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 150),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: isOn
-                            ? const Color(0xFF7C4DFF).withOpacity(0.12)
-                            : Colors.grey[100],
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: isOn
-                              ? const Color(0xFF7C4DFF)
-                              : Colors.transparent,
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Text('${c['icon']} ${c['label']}',
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                              color: isOn
-                                  ? const Color(0xFF7C4DFF)
-                                  : Colors.black87)),
-                    ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 20),
-              const Text('Cuisine',
-                  style: TextStyle(fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF1A1A2E))),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8, runSpacing: 8,
-                children: _allCuisines.map((c) {
-                  final isOn = _activeCuisines.contains(c['key']);
-                  return GestureDetector(
-                    onTap: () => setSheet(() => setState(() {
-                      isOn
-                          ? _activeCuisines.remove(c['key'])
-                          : _activeCuisines.add(c['key']!);
-                    })),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 150),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: isOn
-                            ? const Color(0xFF7C4DFF).withOpacity(0.12)
-                            : Colors.grey[100],
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: isOn
-                              ? const Color(0xFF7C4DFF)
-                              : Colors.transparent,
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Text('${c['icon']} ${c['label']}',
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                              color: isOn
-                                  ? const Color(0xFF7C4DFF)
-                                  : Colors.black87)),
-                    ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity, height: 48,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF7C4DFF),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                  child: const Text('Done',
-                      style: TextStyle(color: Colors.white,
-                          fontWeight: FontWeight.bold)),
-                ),
-              ),
-            ], 
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _removableTag({
     required String label,
     required VoidCallback onRemove,
@@ -962,6 +989,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       ),
       child: TextField(
         controller: ctrl,
+        focusNode: _titleFocus, // 👈
         decoration: InputDecoration(
           hintText: hint,
           hintStyle: TextStyle(color: Colors.grey[400], fontSize: 14),

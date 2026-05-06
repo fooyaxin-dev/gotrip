@@ -44,6 +44,10 @@ class _PostingPageState extends State<PostingPage> {
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _contentController = TextEditingController();
 
+  // ── FocusNodes ──
+  final FocusNode _titleFocus = FocusNode();
+  final FocusNode _contentFocus = FocusNode();
+
   String? selectedCity;
   String? selectedLocation;
   List<String> selectedTags = [];
@@ -71,6 +75,11 @@ class _PostingPageState extends State<PostingPage> {
   bool get _isTextOnly => selectedMedia.isEmpty;
   int get _imageCount => selectedMedia.where((m) => !m.isVideo).length;
   int get _videoCount => selectedMedia.where((m) => m.isVideo).length;
+
+  void _dismissKeyboard() {
+    _titleFocus.unfocus();
+    _contentFocus.unfocus();
+  }
 
   String _extractCityFromAddress(String address) {
     if (address.isEmpty) return '';
@@ -144,7 +153,6 @@ class _PostingPageState extends State<PostingPage> {
         userPhoto = userData['profileImageUrl'];
       }
 
-      // Determine post type
       final String postType =
           (imagePaths.isEmpty && videoPaths.isEmpty) ? 'text' : 'media';
 
@@ -153,7 +161,7 @@ class _PostingPageState extends State<PostingPage> {
         'content': _contentController.text.trim(),
         'imagePaths': imagePaths,
         'videoPaths': videoPaths,
-        'postType': postType, // 'media' or 'text'
+        'postType': postType,
         'rating': rating,
         'isAnonymous': isAnonymous,
         'allowComments': allowComments,
@@ -264,6 +272,7 @@ class _PostingPageState extends State<PostingPage> {
   void _removeMedia(int index) => setState(() => selectedMedia.removeAt(index));
 
   void _showMediaSourceDialog() {
+    _dismissKeyboard(); // 👈
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -338,6 +347,7 @@ class _PostingPageState extends State<PostingPage> {
   // Location picker
   // =====================================================
   void _showLocationPicker() {
+    _dismissKeyboard(); // 👈
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -364,6 +374,7 @@ class _PostingPageState extends State<PostingPage> {
   // Tag picker
   // =====================================================
   void _showTagPicker() {
+    _dismissKeyboard(); // 👈
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -444,6 +455,7 @@ class _PostingPageState extends State<PostingPage> {
   // Topic picker
   // =====================================================
   void _showTopicPicker() {
+    _dismissKeyboard(); // 👈
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -497,6 +509,7 @@ class _PostingPageState extends State<PostingPage> {
   // Visibility settings
   // =====================================================
   void _showVisibilitySettings() {
+    _dismissKeyboard(); // 👈
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -552,6 +565,7 @@ class _PostingPageState extends State<PostingPage> {
   // Publish
   // =====================================================
   Future<void> _publishPost() async {
+    _dismissKeyboard(); // 👈
     final title = _titleController.text.trim();
     final content = _contentController.text.trim();
 
@@ -559,7 +573,6 @@ class _PostingPageState extends State<PostingPage> {
       _showErrorDialog('Please fill in both title and content');
       return;
     }
-    // No media requirement — text-only is allowed
 
     showDialog(
       context: context,
@@ -583,7 +596,7 @@ class _PostingPageState extends State<PostingPage> {
       );
       await _statsService.incrementPostCount();
 
-      Navigator.pop(context); // dismiss loader
+      Navigator.pop(context);
       _showSuccessSnack('Post published successfully!');
       await Future.delayed(const Duration(milliseconds: 800));
       if (mounted) Navigator.pop(context);
@@ -665,186 +678,173 @@ class _PostingPageState extends State<PostingPage> {
           const SizedBox(width: 12),
         ],
       ),
-      body: Stack(children: [
-        SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const SizedBox(height: 20),
+      body: GestureDetector(
+        onTap: _dismissKeyboard, // 👈 點空白處收鍵盤
+        behavior: HitTestBehavior.opaque,
+        child: Stack(children: [
+          SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const SizedBox(height: 20),
 
-            // ── Media grid ──
-            _buildMediaGrid(),
+              // ── Media grid ──
+              _buildMediaGrid(),
 
-            // ── Text-only hint ──
-            // if (_isTextOnly) ...[
-            //   const SizedBox(height: 8),
-            //   Row(children: [
-            //     Icon(Icons.text_fields, size: 16, color: Colors.grey[400]),
-            //     const SizedBox(width: 6),
-            //     Text('Text-only post — no media required',
-            //         style:
-            //             TextStyle(color: Colors.grey[400], fontSize: 12)),
-            //   ]),
-            // ],
+              const SizedBox(height: 30),
 
-            const SizedBox(height: 30),
-
-            // ── Title ──
-            TextField(
-              controller: _titleController,
-              enabled: !isUploading,
-              decoration: const InputDecoration(
-                hintText: 'Enter title~',
-                hintStyle: TextStyle(color: Colors.grey, fontSize: 16),
-                border: InputBorder.none,
+              // ── Title ──
+              TextField(
+                controller: _titleController,
+                focusNode: _titleFocus, // 👈
+                enabled: !isUploading,
+                decoration: const InputDecoration(
+                  hintText: 'Enter title~',
+                  hintStyle: TextStyle(color: Colors.grey, fontSize: 16),
+                  border: InputBorder.none,
+                ),
               ),
-            ),
-            Divider(color: Colors.grey[200], thickness: 1),
+              Divider(color: Colors.grey[200], thickness: 1),
 
-            // ── Content ──
-            TextField(
-              controller: _contentController,
-              enabled: !isUploading,
-              maxLines: 8,
-              decoration: const InputDecoration(
-                hintText:
-                    " What's on your mind? Share your travel experience, tips, or stories!",
-                hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
-                border: InputBorder.none,
+              // ── Content ──
+              TextField(
+                controller: _contentController,
+                focusNode: _contentFocus, // 👈
+                enabled: !isUploading,
+                maxLines: 8,
+                decoration: const InputDecoration(
+                  hintText:
+                      " What's on your mind? Share your travel experience, tips, or stories!",
+                  hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
+                  border: InputBorder.none,
+                ),
               ),
-            ),
 
-            const SizedBox(height: 20),
+              const SizedBox(height: 20),
 
-            // ── Feature buttons ──
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                  color: Colors.grey[50],
-                  borderRadius: BorderRadius.circular(12)),
-              child: Column(children: [
-                _buildFeatureButton(
-                  icon: Icons.location_on_outlined,
-                  label: selectedLocation != null
-                      ? '$selectedLocation${selectedCity != null && selectedCity!.isNotEmpty ? ' · $selectedCity' : ''}'
-                      : 'Add Location',
-                  onTap: _showLocationPicker,
-                  hasValue: selectedLocation != null,
-                ),
-                const Divider(height: 20),
-                _buildFeatureButton(
-                  icon: Icons.tag,
-                  label: selectedTopic ?? 'Add Topic',
-                  onTap: _showTopicPicker,
-                  hasValue: selectedTopic != null,
-                ),
-                const Divider(height: 20),
-                _buildFeatureButton(
-                  icon: Icons.sell_outlined,
-                  label: selectedTags.isEmpty
-                      ? 'Add Tags'
-                      : selectedTags.join(', '),
-                  onTap: _showTagPicker,
-                  hasValue: selectedTags.isNotEmpty,
-                ),
-                const Divider(height: 20),
-                _buildFeatureButton(
-                  icon: Icons.visibility_outlined,
-                  label: 'Visibility: $selectedVisibility',
-                  onTap: _showVisibilitySettings,
-                  hasValue: true,
+              // ── Feature buttons ──
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                    color: Colors.grey[50],
+                    borderRadius: BorderRadius.circular(12)),
+                child: Column(children: [
+                  _buildFeatureButton(
+                    icon: Icons.location_on_outlined,
+                    label: selectedLocation != null
+                        ? '$selectedLocation${selectedCity != null && selectedCity!.isNotEmpty ? ' · $selectedCity' : ''}'
+                        : 'Add Location',
+                    onTap: _showLocationPicker,
+                    hasValue: selectedLocation != null,
+                  ),
+                  const Divider(height: 20),
+                  _buildFeatureButton(
+                    icon: Icons.tag,
+                    label: selectedTopic ?? 'Add Topic',
+                    onTap: _showTopicPicker,
+                    hasValue: selectedTopic != null,
+                  ),
+                  const Divider(height: 20),
+                  _buildFeatureButton(
+                    icon: Icons.sell_outlined,
+                    label: selectedTags.isEmpty
+                        ? 'Add Tags'
+                        : selectedTags.join(', '),
+                    onTap: _showTagPicker,
+                    hasValue: selectedTags.isNotEmpty,
+                  ),
+                  const Divider(height: 20),
+                  _buildFeatureButton(
+                    icon: Icons.visibility_outlined,
+                    label: 'Visibility: $selectedVisibility',
+                    onTap: _showVisibilitySettings,
+                    hasValue: true,
+                  ),
+                ]),
+              ),
+
+              const SizedBox(height: 30),
+
+              // ── Rating ──
+              Row(children: [
+                const Text('Rating',
+                    style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.bold)),
+                const SizedBox(width: 15),
+                ...List.generate(
+                  5,
+                  (index) => GestureDetector(
+                    onTap: isUploading
+                        ? null
+                        : () {
+                            _dismissKeyboard(); // 👈
+                            setState(() => rating = index + 1);
+                          },
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Icon(Icons.star_rounded,
+                          size: 32,
+                          color: index < rating
+                              ? Colors.orange
+                              : Colors.grey[300]),
+                    ),
+                  ),
                 ),
               ]),
-            ),
 
-            const SizedBox(height: 30),
+              const SizedBox(height: 25),
 
-            // ── Rating ──
-            Row(children: [
-              const Text('Rating',
-                  style: TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold)),
-              const SizedBox(width: 15),
-              ...List.generate(
-                5,
-                (index) => GestureDetector(
-                  onTap: isUploading
-                      ? null
-                      : () => setState(() => rating = index + 1),
-                  child: Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: Icon(Icons.star_rounded,
-                        size: 32,
-                        color: index < rating
-                            ? Colors.orange
-                            : Colors.grey[300]),
-                  ),
-                ),
-              ),
+              _buildSwitchOption(
+                  'Anonymous',
+                  'Anonymous will hide your avatar and nickname',
+                  isAnonymous,
+                  (v) {
+                    _dismissKeyboard(); // 👈
+                    setState(() => isAnonymous = v);
+                  }),
+              const SizedBox(height: 15),
+
+              const SizedBox(height: 150),
             ]),
+          ),
 
-            const SizedBox(height: 25),
-
-            _buildSwitchOption(
-                'Anonymous',
-                'Anonymous will hide your avatar and nickname',
-                isAnonymous,
-                (v) => setState(() => isAnonymous = v)),
-            const SizedBox(height: 15),
-            // _buildSwitchOption(
-            //     'Allow Comments',
-            //     'Other users can comment on your post',
-            //     allowComments,
-            //     (v) => setState(() => allowComments = v)),
-            // const SizedBox(height: 15),
-            // _buildSwitchOption(
-            //     'Allow Sharing',
-            //     'Other users can share your post',
-            //     allowShare,
-            //     (v) => setState(() => allowShare = v)),
-
-            const SizedBox(height: 150),
-          ]),
-        ),
-
-        // ── Floating publish button ──
-        if (!isUploading)
-          Positioned(
-            right: 20,
-            bottom: 30,
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: _publishPost,
-                borderRadius: BorderRadius.circular(40),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 25, vertical: 12),
-                  decoration: BoxDecoration(
-                    color:
-                        const Color(0xFF7C4DFF).withOpacity(0.9),
-                    borderRadius: BorderRadius.circular(40),
-                    boxShadow: [
-                      BoxShadow(
-                          color: const Color(0xFF7C4DFF).withOpacity(0.3),
-                          blurRadius: 15,
-                          offset: const Offset(0, 5))
-                    ],
+          // ── Floating publish button ──
+          if (!isUploading)
+            Positioned(
+              right: 20,
+              bottom: 30,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: _publishPost,
+                  borderRadius: BorderRadius.circular(40),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 25, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF7C4DFF).withOpacity(0.9),
+                      borderRadius: BorderRadius.circular(40),
+                      boxShadow: [
+                        BoxShadow(
+                            color: const Color(0xFF7C4DFF).withOpacity(0.3),
+                            blurRadius: 15,
+                            offset: const Offset(0, 5))
+                      ],
+                    ),
+                    child: const Row(children: [
+                      Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                      SizedBox(width: 10),
+                      Text('Post',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold)),
+                    ]),
                   ),
-                  child: const Row(children: [
-                    Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                    SizedBox(width: 10),
-                    Text('Post',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold)),
-                  ]),
                 ),
               ),
             ),
-          ),
-      ]),
+        ]),
+      ),
     );
   }
 
@@ -856,7 +856,6 @@ class _PostingPageState extends State<PostingPage> {
       spacing: 10,
       runSpacing: 10,
       children: [
-        // Existing media items
         ...selectedMedia.asMap().entries.map((entry) {
           final index = entry.key;
           final item = entry.value;
@@ -876,7 +875,6 @@ class _PostingPageState extends State<PostingPage> {
                           width: 100, height: 100),
                     ),
             ),
-            // Remove button
             Positioned(
               top: 2,
               right: 2,
@@ -892,7 +890,6 @@ class _PostingPageState extends State<PostingPage> {
                 ),
               ),
             ),
-            // Video badge
             if (item.isVideo)
               Positioned(
                 bottom: 6,
@@ -921,7 +918,6 @@ class _PostingPageState extends State<PostingPage> {
           ]);
         }),
 
-        // Add button
         if (selectedMedia.length < _maxMedia)
           GestureDetector(
             onTap: _showMediaSourceDialog,
@@ -952,8 +948,6 @@ class _PostingPageState extends State<PostingPage> {
     );
   }
 
-  // Simple video thumbnail — grey box with play icon
-  // Replace with video_thumbnail package if you want real thumbnails
   Widget _buildVideoThumb(File file) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
@@ -1022,6 +1016,8 @@ class _PostingPageState extends State<PostingPage> {
   void dispose() {
     _titleController.dispose();
     _contentController.dispose();
+    _titleFocus.dispose(); // 👈
+    _contentFocus.dispose(); // 👈
     super.dispose();
   }
 }

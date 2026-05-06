@@ -263,6 +263,30 @@ class ItineraryService {
   // Generate via Gemini API
   // ─────────────────────────────────────────────
 
+  String _buildDayStructure(int placesPerDay, String cuisineText) {
+    final slots = <String>[];
+
+    if (placesPerDay == 2) {
+      slots.add('1. Morning (09:00-11:30): Non-restaurant place');
+      slots.add('2. Lunch/Dinner (12:30-14:30): MUST be a RESTAURANT — prefer $cuisineText');
+    } else if (placesPerDay == 3) {
+      slots.add('1. Morning (09:00-11:30): Non-restaurant place');
+      slots.add('2. Lunch (12:00-13:30): MUST be a RESTAURANT — prefer $cuisineText');
+      slots.add('3. Afternoon (14:30-17:00): Non-restaurant place');
+    } else {
+      // 4 places (default)
+      slots.add('1. Morning (08:00-10:30): Non-restaurant place');
+      slots.add('2. Lunch (11:30-13:30): MUST be a RESTAURANT — prefer $cuisineText');
+      slots.add('3. Afternoon (14:00-17:00): Non-restaurant place, DIFFERENT category from morning');
+      slots.add('4. Dinner (18:00-20:30): MUST be a RESTAURANT — prefer $cuisineText');
+      if (placesPerDay > 4) {
+        slots.add('5. Evening (21:00+): Any non-restaurant place');
+      }
+    }
+
+    return slots.join('\n');
+  }
+
   Future<ItineraryModel?> generate({
     required String startDate,
     required int    totalDays,
@@ -382,12 +406,7 @@ Full place details:
 ${jsonEncode(placesJson)}
 
 STRICT DAILY STRUCTURE (follow exactly):
-Each day MUST have exactly $placesPerDay places:
-1. Morning (08:00-10:30): Non-restaurant place (attraction / park / shopping / entertainment)
-2. Lunch (11:30-13:30): MUST be a RESTAURANT — prefer $cuisineText
-3. Afternoon (14:00-17:00): Non-restaurant place, DIFFERENT category from morning
-4. Dinner (18:00-20:30): MUST be a RESTAURANT — prefer $cuisineText
-${placesPerDay > 4 ? '5. Evening (21:00+): Any non-restaurant place' : ''}
+${_buildDayStructure(placesPerDay, cuisineText)}
 
 RULES:
 - Prefer places that match the traveler\'s budget: ${prefs.budgetTier.label}

@@ -920,233 +920,232 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     return Scaffold(
       resizeToAvoidBottomInset: false,
       extendBodyBehindAppBar: true,
-      body: Stack(
-        children: [
-          // ── Map ──
-          ValueListenableBuilder<double>(
-            valueListenable: _bottomPaddingNotifier,
-            builder: (context, extent, _) {
-              return GoogleMap(
-                initialCameraPosition: _initialCameraPosition!,
-                myLocationEnabled: true,
-                myLocationButtonEnabled: false,
-                markers: _markers,
-                onMapCreated: (c) => _mapController = c,
-                padding: EdgeInsets.only(bottom: screenHeight * extent, top: 60),
-              );
-            },
-          ),
-
-                // ── Search bar + Back button ──
-          Positioned(
-            top: 0, left: 0, right: 0,
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                child: Column(
-                  children: [
-                    // Search row
-                    Row(children: [
-                      // Back button
-                      Material(
-                        elevation: 4, shape: const CircleBorder(),
-                        clipBehavior: Clip.antiAlias, color: Colors.white,
-                        child: IconButton(
-                          icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: Colors.black87),
-                          onPressed: _isSearchMode ? () {
-                            setState(() { _isSearchMode = false; _autocompleteSuggestions = []; });
-                            _searchFocus.unfocus();
-                          } : widget.onBack,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
- 
-                      // Search field
-                      Expanded(
-                        child: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(28),
-                          child: TextField(
-                            controller: _searchController,
-                            focusNode: _searchFocus,
-                            onChanged: _onSearchChanged,
-                            onTap: () => setState(() => _isSearchMode = true),
-                            style: const TextStyle(fontSize: 14),
-                            decoration: InputDecoration(
-                              hintText: _searchLocationName != null
-                                  ? 'Near: $_searchLocationName'
-                                  : 'Search a place...',
-                              hintStyle: TextStyle(
-                                color: _searchLocationName != null
-                                    ? const Color(0xFF1A73E8)
-                                    : Colors.grey[400],
-                                fontSize: 14,
-                              ),
-                              prefixIcon: const Icon(Icons.search_rounded, color: Colors.grey, size: 20),
-                              suffixIcon: _searchController.text.isNotEmpty || _searchLocationName != null
-                                  ? IconButton(
-                                      icon: const Icon(Icons.close_rounded, size: 18, color: Colors.grey),
-                                      onPressed: _clearSearch,
-                                    )
-                                  : null,
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(28),
-                                borderSide: BorderSide.none,
-                              ),
-                              filled: true,
-                              fillColor: Colors.white,
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            ),
-                          ),
-                        ),
-                      ),
- 
-                      // Refresh button
-                      const SizedBox(width: 8),
-                      Material(
-                        elevation: 4, shape: const CircleBorder(),
-                        clipBehavior: Clip.antiAlias, color: Colors.white,
-                        child: IconButton(
-                          icon: const Icon(Icons.refresh_rounded, size: 18, color: Colors.black87),
-                          onPressed: _isLoading ? null : _onRefresh,
-                        ),
-                      ),
-                    ]),
- 
-                    // Autocomplete dropdown
-                    if (_isSearchMode && _autocompleteSuggestions.isNotEmpty)
-                      Container(
-                        margin: const EdgeInsets.only(top: 4, left: 44, right: 44),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: [BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 12, offset: const Offset(0, 4),
-                          )],
-                        ),
-                        child: ListView.separated(
-                          shrinkWrap: true,
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: _autocompleteSuggestions.length.clamp(0, 5),
-                          separatorBuilder: (_, __) => const Divider(height: 1, indent: 16, endIndent: 16),
-                          itemBuilder: (context, index) {
-                            final s = _autocompleteSuggestions[index];
-                            return ListTile(
-                              dense: true,
-                              leading: const Icon(Icons.location_on_outlined, color: Color(0xFF1A73E8), size: 20),
-                              title: Text(s['mainText'] ?? '',
-                                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-                              subtitle: Text(s['secondaryText'] ?? '',
-                                  style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-                                  maxLines: 1, overflow: TextOverflow.ellipsis),
-                              onTap: () => _onSuggestionSelected(s),
-                            );
-                          },
-                        ),
-                      ),
- 
-                    // Loading indicator
-                    if (_isSearchLoading)
-                      Container(
-                        margin: const EdgeInsets.only(top: 8),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 8)],
-                        ),
-                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                          SizedBox(width: 16, height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF1A73E8))),
-                          SizedBox(width: 10),
-                          Text('Searching nearby...', style: TextStyle(fontSize: 13, color: Colors.black54)),
-                        ]),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          // // ── Refresh button ──
-          // Positioned(
-          //   top: 50, right: 20,
-          //   child: SafeArea(child: Material(
-          //     elevation: 4, shape: const CircleBorder(), clipBehavior: Clip.antiAlias, color: Colors.white,
-          //     child: IconButton(
-          //       icon: const Icon(Icons.refresh_rounded, size: 20, color: Colors.black87),
-          //       onPressed: _isLoading ? null : _onRefresh,
-          //     ),
-          //   )),
-          // ),
-
-          // ── Bottom sheet ──
-          NotificationListener<DraggableScrollableNotification>(
-            onNotification: (n) { _bottomPaddingNotifier.value = n.extent; return false; },
-            child: DraggableScrollableSheet(
-              key: ValueKey(_searchLocationName), // ← 改这个，mode 变了 key 变了，sheet 自动 reset
-              initialChildSize: 0.4, minChildSize: 0.2, maxChildSize: 0.85,
-              snap: true,
-              builder: (context, scrollController) {
-                return Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15)],
-                  ),
-                  child: _buildPlaceListSheet(scrollController, sortedPlaces),
+      body: GestureDetector(
+        onTap: () {
+          _searchFocus.unfocus();
+          setState(() {
+            _isSearchMode = false;
+            _autocompleteSuggestions = [];
+          });
+        },
+        behavior: HitTestBehavior.translucent,
+        child: Stack(
+          children: [
+            // ── Map ──
+            ValueListenableBuilder<double>(
+              valueListenable: _bottomPaddingNotifier,
+              builder: (context, extent, _) {
+                return GoogleMap(
+                  initialCameraPosition: _initialCameraPosition!,
+                  myLocationEnabled: true,
+                  myLocationButtonEnabled: false,
+                  markers: _markers,
+                  onMapCreated: (c) => _mapController = c,
+                  padding: EdgeInsets.only(bottom: screenHeight * extent, top: 60),
                 );
               },
             ),
-          ),
 
-          // ✅ Floating "View Itinerary (N)" button
-          if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
+            // ── Search bar + Back button ──
             Positioned(
-              bottom: 24 + MediaQuery.of(context).padding.bottom,
-              left: 24, right: 24,
-              child: GestureDetector(
-                onTap: _viewSelectedItinerary,
-                child: Container( 
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
-                      begin: Alignment.centerLeft,
-                      end: Alignment.centerRight,
-                    ),
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [BoxShadow(
-                      color: const Color(0xFF7C4DFF).withOpacity(0.4),
-                      blurRadius: 16, offset: const Offset(0, 8),
-                    )],
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+              top: 0, left: 0, right: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                  child: Column(
                     children: [
-                      const Icon(Icons.map_rounded, color: Colors.white, size: 20),
-                      const SizedBox(width: 10),
-                      Text(
-                        'View Itinerary (${_selectedPlaceIds.length})',
-                        style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(width: 10),
-                      const Icon(Icons.arrow_forward_rounded, color: Colors.white70, size: 18),
+                      // Search row
+                      Row(children: [
+                        // Back button
+                        Material(
+                          elevation: 4, shape: const CircleBorder(),
+                          clipBehavior: Clip.antiAlias, color: Colors.white,
+                          child: IconButton(
+                            icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: Colors.black87),
+                            onPressed: _isSearchMode ? () {
+                              setState(() { _isSearchMode = false; _autocompleteSuggestions = []; });
+                              _searchFocus.unfocus();
+                            } : widget.onBack,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+
+                        // Search field
+                        Expanded(
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(28),
+                            child: TextField(
+                              controller: _searchController,
+                              focusNode: _searchFocus,
+                              onChanged: _onSearchChanged,
+                              onTap: () => setState(() => _isSearchMode = true),
+                              style: const TextStyle(fontSize: 14),
+                              decoration: InputDecoration(
+                                hintText: _searchLocationName != null
+                                    ? 'Near: $_searchLocationName'
+                                    : 'Search a place...',
+                                hintStyle: TextStyle(
+                                  color: _searchLocationName != null
+                                      ? const Color(0xFF1A73E8)
+                                      : Colors.grey[400],
+                                  fontSize: 14,
+                                ),
+                                prefixIcon: const Icon(Icons.search_rounded, color: Colors.grey, size: 20),
+                                suffixIcon: _searchController.text.isNotEmpty || _searchLocationName != null
+                                    ? IconButton(
+                                        icon: const Icon(Icons.close_rounded, size: 18, color: Colors.grey),
+                                        onPressed: _clearSearch,
+                                      )
+                                    : null,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(28),
+                                  borderSide: BorderSide.none,
+                                ),
+                                filled: true,
+                                fillColor: Colors.white,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              ),
+                            ),
+                          ),
+                        ),
+
+                        // Refresh button
+                        const SizedBox(width: 8),
+                        Material(
+                          elevation: 4, shape: const CircleBorder(),
+                          clipBehavior: Clip.antiAlias, color: Colors.white,
+                          child: IconButton(
+                            icon: const Icon(Icons.refresh_rounded, size: 18, color: Colors.black87),
+                            onPressed: _isLoading ? null : _onRefresh,
+                          ),
+                        ),
+                      ]),
+
+                      // Autocomplete dropdown
+                      if (_isSearchMode && _autocompleteSuggestions.isNotEmpty)
+                        Container(
+                          margin: const EdgeInsets.only(top: 4, left: 44, right: 44),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: [BoxShadow(
+                              color: Colors.black.withOpacity(0.1),
+                              blurRadius: 12, offset: const Offset(0, 4),
+                            )],
+                          ),
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: _autocompleteSuggestions.length.clamp(0, 5),
+                            separatorBuilder: (_, __) => const Divider(height: 1, indent: 16, endIndent: 16),
+                            itemBuilder: (context, index) {
+                              final s = _autocompleteSuggestions[index];
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.location_on_outlined, color: Color(0xFF1A73E8), size: 20),
+                                title: Text(s['mainText'] ?? '',
+                                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                                subtitle: Text(s['secondaryText'] ?? '',
+                                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                                onTap: () => _onSuggestionSelected(s),
+                              );
+                            },
+                          ),
+                        ),
+
+                      // Loading indicator
+                      if (_isSearchLoading)
+                        Container(
+                          margin: const EdgeInsets.only(top: 8),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 8)],
+                          ),
+                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                            SizedBox(width: 16, height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF1A73E8))),
+                            SizedBox(width: 10),
+                            Text('Searching nearby...', style: TextStyle(fontSize: 13, color: Colors.black54)),
+                          ]),
+                        ),
                     ],
                   ),
                 ),
               ),
             ),
-          if (_isLoading)
-            const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
 
-        ],
+            // ── Bottom sheet ──
+            NotificationListener<DraggableScrollableNotification>(
+              onNotification: (n) { _bottomPaddingNotifier.value = n.extent; return false; },
+              child: DraggableScrollableSheet(
+                key: ValueKey(_searchLocationName),
+                initialChildSize: 0.4, minChildSize: 0.2, maxChildSize: 0.85,
+                snap: true,
+                builder: (context, scrollController) {
+                  return Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 15)],
+                    ),
+                    child: _buildPlaceListSheet(scrollController, sortedPlaces),
+                  );
+                },
+              ),
+            ),
+
+            // ── Floating "View Itinerary (N)" button ──
+            if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
+              Positioned(
+                bottom: 24 + MediaQuery.of(context).padding.bottom,
+                left: 24, right: 24,
+                child: GestureDetector(
+                  onTap: _viewSelectedItinerary,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+                        begin: Alignment.centerLeft,
+                        end: Alignment.centerRight,
+                      ),
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [BoxShadow(
+                        color: const Color(0xFF7C4DFF).withOpacity(0.4),
+                        blurRadius: 16, offset: const Offset(0, 8),
+                      )],
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.map_rounded, color: Colors.white, size: 20),
+                        const SizedBox(width: 10),
+                        Text(
+                          'View Itinerary (${_selectedPlaceIds.length})',
+                          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(width: 10),
+                        const Icon(Icons.arrow_forward_rounded, color: Colors.white70, size: 18),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+            if (_isLoading)
+              const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
+          ],
+        ),
       ),
     );
   }
-
+    
+    
   // ─────────────────────────────────────────────
   // Place List Sheet
   // ─────────────────────────────────────────────
