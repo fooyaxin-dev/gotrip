@@ -1,0 +1,276 @@
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import '../../services/landmarkHistory_service.dart';
+
+class LandmarkHistoryPage extends StatefulWidget {
+  const LandmarkHistoryPage({super.key});
+
+  @override
+  State<LandmarkHistoryPage> createState() => _LandmarkHistoryPageState();
+}
+
+class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
+  List<LandmarkHistoryEntry> _entries = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final data = await LandmarkHistoryService.fetch(limit: 50);
+    if (mounted) setState(() { _entries = data; _loading = false; });
+  }
+
+  Future<void> _delete(LandmarkHistoryEntry entry) async {
+    await LandmarkHistoryService.delete(entry.id);
+    setState(() => _entries.removeWhere((e) => e.id == entry.id));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Removed from history'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _clearAll() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Clear History'),
+        content: const Text('Remove all scanned landmark records?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Clear All'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await LandmarkHistoryService.clearAll();
+      if (mounted) setState(() => _entries = []);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.grey[50],
+      appBar: AppBar(
+        title: const Text('Scan History',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        elevation: 0,
+        actions: [
+          if (_entries.isNotEmpty)
+            TextButton(
+              onPressed: _clearAll,
+              child: const Text('Clear All',
+                  style: TextStyle(color: Colors.redAccent)),
+            ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: Color(0xFF7C4DFF)))
+          : _entries.isEmpty
+              ? _buildEmpty()
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _entries.length,
+                    itemBuilder: (_, i) => _buildCard(_entries[i]),
+                  ),
+                ),
+    );
+  }
+
+  Widget _buildEmpty() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.history_rounded, size: 72, color: Colors.grey[300]),
+          const SizedBox(height: 16),
+          Text('No scans yet',
+              style: TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.bold,
+                  color: Colors.grey[500])),
+          const SizedBox(height: 8),
+          Text('Landmarks you scan will appear here',
+              style: TextStyle(fontSize: 13, color: Colors.grey[400])),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCard(LandmarkHistoryEntry entry) {
+    return Dismissible(
+      key: Key(entry.id),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: Colors.redAccent,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Icon(Icons.delete_rounded, color: Colors.white),
+      ),
+      onDismissed: (_) => _delete(entry),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            // ── Thumbnail ──────────────────────────────────────
+            ClipRRect(
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(16),
+                bottomLeft: Radius.circular(16),
+              ),
+              child: SizedBox(
+                width: 90,
+                height: 90,
+                child: _buildThumbnail(entry),
+              ),
+            ),
+
+            // ── Info ───────────────────────────────────────────
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(entry.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    if (entry.address != null)
+                      Text(entry.address!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12, color: Colors.grey[500])),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        // Detection method badge
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: entry.detectionMethod == 'vision'
+                                ? Colors.blue[50]
+                                : Colors.purple[50],
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            entry.detectionMethod == 'vision'
+                                ? 'Vision' : 'AI Vision',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: entry.detectionMethod == 'vision'
+                                  ? Colors.blue[700] : Colors.purple[700],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _formatDate(entry.scannedAt),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.grey[400]),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // ── Rating ─────────────────────────────────────────
+            if (entry.rating != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 14),
+                child: Column(
+                  children: [
+                    const Icon(Icons.star_rounded,
+                        color: Colors.amber, size: 18),
+                    Text(entry.rating!.toStringAsFixed(1),
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildThumbnail(LandmarkHistoryEntry entry) {
+    // Priority: Google Places photo > scanned image base64 > placeholder
+    if (entry.photoUrl != null && entry.photoUrl!.isNotEmpty) {
+      return Image.network(entry.photoUrl!, fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _placeholder());
+    }
+    if (entry.imageBase64 != null && entry.imageBase64!.isNotEmpty) {
+      try {
+        final bytes = base64Decode(entry.imageBase64!);
+        return Image.memory(bytes, fit: BoxFit.cover);
+      } catch (_) {}
+    }
+    return _placeholder();
+  }
+
+  Widget _placeholder() {
+    return Container(
+      color: const Color(0xFFEDE7F6),
+      child: const Icon(Icons.location_on_rounded,
+          color: Color(0xFF7C4DFF), size: 32),
+    );
+  }
+
+  String _formatDate(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24)   return '${diff.inHours}h ago';
+    if (diff.inDays < 7)     return '${diff.inDays}d ago';
+    return DateFormat('d MMM').format(dt);
+  }
+}

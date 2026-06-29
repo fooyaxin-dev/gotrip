@@ -1,11 +1,14 @@
-import 'package:flutter/material.dart';
 import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:gotrip/modules/place/detectPlacePage.dart';
 import '../../services/location_service.dart';
 import '../../services/wikipedia_service.dart';
 import '../../services/vision_service.dart';
 import '../../services/placesAPI_service.dart';
+import '../../services/landmarkHistory_service.dart';
+import '../../modules/place/favouriteButton.dart';
 
 class ResultPage extends StatefulWidget {
   final Uint8List imageBytes;
@@ -24,27 +27,21 @@ class ResultPage extends StatefulWidget {
 class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   late TabController _tabController;
 
-  // ── Info (Wikipedia / Gemini text) ────────────────────────
   Map<String, dynamic>? _wikiResult;
   bool _infoLoading = true;
 
-  // ── Google Places ─────────────────────────────────────────
   Map<String, dynamic>? placeDetails;
   bool placeLoading = true;
 
-  // ── Images ────────────────────────────────────────────────
   List<String> displayImages = [];
 
-  // ── Admission ─────────────────────────────────────────────
   String? admissionInfo;
   bool admissionLoading = true;
 
-  // ── PageView ──────────────────────────────────────────────
   final PageController _pageController = PageController();
   int _currentImageIndex = 0;
   final Set<String> _failedImageUrls = {};
 
-  // ── Shimmer ───────────────────────────────────────────────
   late AnimationController _shimmerController;
   late Animation<double> _shimmerAnimation;
 
@@ -54,6 +51,9 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   String _selectedLangCode = 'en';
   bool _translating = false;
   bool _isTranslated = false;
+
+  // ── History saved flag (avoid saving twice) ───────────────
+  bool _historySaved = false;
 
   static const _languages = [
     {'code': 'en',    'label': '🇬🇧 English'},
@@ -78,56 +78,72 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
   String get _wikiUrl => _wikiResult?['wikiUrl'] ?? '';
 
-  // Badge label + color based on detection method
   String get _badgeLabel {
     switch (_result.method) {
-      case DetectionMethod.visionLandmark:
-        return 'Vision';
-      case DetectionMethod.geminiVision:
-        return 'AI Vision';
-      case DetectionMethod.notDetected:
-        return '';
+      case DetectionMethod.visionLandmark: return 'Vision';
+      case DetectionMethod.geminiVision:   return 'AI Vision';
+      case DetectionMethod.notDetected:    return '';
     }
   }
 
   Color get _badgeBg {
     switch (_result.method) {
-      case DetectionMethod.visionLandmark:
-        return Colors.blue.shade50;
-      case DetectionMethod.geminiVision:
-        return Colors.purple.shade50;
-      case DetectionMethod.notDetected:
-        return Colors.grey.shade100;
+      case DetectionMethod.visionLandmark: return Colors.blue.shade50;
+      case DetectionMethod.geminiVision:   return Colors.purple.shade50;
+      case DetectionMethod.notDetected:    return Colors.grey.shade100;
     }
   }
 
   Color get _badgeColor {
     switch (_result.method) {
-      case DetectionMethod.visionLandmark:
-        return Colors.blue.shade700;
-      case DetectionMethod.geminiVision:
-        return Colors.purple.shade700;
-      case DetectionMethod.notDetected:
-        return Colors.grey;
+      case DetectionMethod.visionLandmark: return Colors.blue.shade700;
+      case DetectionMethod.geminiVision:   return Colors.purple.shade700;
+      case DetectionMethod.notDetected:    return Colors.grey;
     }
   }
 
   IconData get _badgeIcon {
     switch (_result.method) {
-      case DetectionMethod.visionLandmark:
-        return Icons.location_on_rounded;
-      case DetectionMethod.geminiVision:
-        return Icons.auto_awesome;
-      case DetectionMethod.notDetected:
-        return Icons.help_outline;
+      case DetectionMethod.visionLandmark: return Icons.location_on_rounded;
+      case DetectionMethod.geminiVision:   return Icons.auto_awesome;
+      case DetectionMethod.notDetected:    return Icons.help_outline;
     }
+  }
+
+  // ── Place ID for FavouriteButton ──────────────────────────
+  // Use Google Places id if available, fallback to landmark name slug
+  String get _placeId =>
+      placeDetails?['id'] as String? ??
+      _name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '_');
+
+  String get _placeAddress =>
+      placeDetails?['formattedAddress'] as String? ?? '';
+
+  double? get _placeRating =>
+      (placeDetails?['rating'] as num?)?.toDouble();
+
+  String? get _placePhoto {
+    final photos = placeDetails?['photos'] as List?;
+    if (photos != null && photos.isNotEmpty) {
+      return (photos[0] as Map<String, dynamic>)['photoUri'] as String?;
+    }
+    return null;
+  }
+
+  double? get _lat {
+    final loc = placeDetails?['location'];
+    return (loc?['latitude'] as num?)?.toDouble() ?? _result.lat;
+  }
+
+  double? get _lng {
+    final loc = placeDetails?['location'];
+    return (loc?['longitude'] as num?)?.toDouble() ?? _result.lng;
   }
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
-
     _shimmerController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
@@ -140,8 +156,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       _fetchInfo();
       _fetchPlaceDetails();
     } else {
-      _infoLoading = false;
-      placeLoading = false;
+      _infoLoading    = false;
+      placeLoading    = false;
       admissionLoading = false;
     }
   }
@@ -160,31 +176,27 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
   Future<void> _fetchInfo() async {
     try {
-      // WikipediaService handles Wikipedia → Gemini text fallback internally
       final result = await WikipediaService.fetchLandmarkHistory(_name);
       if (!mounted) return;
       setState(() {
-        _wikiResult = result;
-        admissionInfo = result['admissionInfo'] as String?;
+        _wikiResult      = result;
+        admissionInfo    = result['admissionInfo'] as String?;
         admissionLoading = false;
-        _infoLoading = false;
+        _infoLoading     = false;
         final imgs = List<String>.from(result['images'] ?? []);
-        if (displayImages.isEmpty && imgs.isNotEmpty) {
-          displayImages = imgs;
-        }
+        if (displayImages.isEmpty && imgs.isNotEmpty) displayImages = imgs;
       });
 
-      // Fetch admission separately if not already in result
       if (admissionInfo == null) {
         final admission = await WikipediaService.fetchAdmissionInfo(_name);
         if (mounted) setState(() => admissionInfo = admission);
       }
+
+      // ── Save to history once wiki info is ready ────────────
+      _maybeSaveHistory();
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _infoLoading = false;
-        admissionLoading = false;
-      });
+      setState(() { _infoLoading = false; admissionLoading = false; });
     }
   }
 
@@ -199,37 +211,69 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         maxResultCount: 1,
       );
 
-      if (results.isEmpty) {
-        setState(() => placeLoading = false);
-        return;
-      }
+      if (results.isEmpty) { setState(() => placeLoading = false); return; }
 
       final placeId = results[0]['id'] as String?;
-      if (placeId == null) {
-        setState(() => placeLoading = false);
-        return;
-      }
+      if (placeId == null) { setState(() => placeLoading = false); return; }
 
-      final details = await PlacesApiService.getPlaceDetails(placeId);
-      final photosRaw = details['photos'] as List?;
-      final placePhotoUrls = photosRaw
+      final details    = await PlacesApiService.getPlaceDetails(placeId);
+      final photosRaw  = details['photos'] as List?;
+      final placePhotos = photosRaw
               ?.map((p) => (p as Map<String, dynamic>)['photoUri'] as String?)
               .whereType<String>()
-              .toList() ??
-          <String>[];
+              .toList() ?? <String>[];
 
       if (!mounted) return;
       setState(() {
         placeDetails = details;
         placeLoading = false;
-        if (placePhotoUrls.isNotEmpty) {
-          displayImages = placePhotoUrls; // Places photos take priority
-        }
+        if (placePhotos.isNotEmpty) displayImages = placePhotos;
       });
+
+      // ── Update history with richer data once place details arrive ──
+      _maybeSaveHistory();
     } catch (e) {
       if (!mounted) return;
       setState(() => placeLoading = false);
     }
+  }
+
+  // ── Save to history (called after wiki AND place details) ──
+  void _maybeSaveHistory() {
+    if (_historySaved) return;
+    if (_infoLoading || placeLoading) return; // wait for both
+    _historySaved = true;
+
+    LandmarkHistoryService.save(
+      name:            _name,
+      lat:             _lat,
+      lng:             _lng,
+      wikiUrl:         _wikiUrl.isNotEmpty ? _wikiUrl : null,
+      address:         _placeAddress.isNotEmpty ? _placeAddress : null,
+      rating:          _placeRating,
+      photoUrl:        _placePhoto,
+      detectionMethod: _result.method == DetectionMethod.visionLandmark
+          ? 'vision' : 'gemini',
+    );
+  }
+
+  // ============================================================
+  // Share
+  // ============================================================
+
+  Future<void> _shareLandmark() async {
+    final buffer = StringBuffer();
+    buffer.writeln('📍 $_name');
+    if (_placeAddress.isNotEmpty) buffer.writeln(_placeAddress);
+    if (_lat != null && _lng != null) {
+      buffer.writeln('📌 https://maps.google.com/?q=$_lat,$_lng');
+    }
+    if (_wikiUrl.isNotEmpty) {
+      buffer.writeln('📖 Read more: $_wikiUrl');
+    }
+    buffer.writeln('\nDiscover landmarks with GoTrip ✈️');
+
+    await Share.share(buffer.toString());
   }
 
   // ============================================================
@@ -241,27 +285,22 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       setState(() {
         _selectedLangCode = 'en';
         _translatedExtract = null;
-        _translatedTitle = null;
-        _isTranslated = false;
+        _translatedTitle   = null;
+        _isTranslated      = false;
       });
       return;
     }
-
-    setState(() {
-      _translating = true;
-      _selectedLangCode = langCode;
-    });
-
+    setState(() { _translating = true; _selectedLangCode = langCode; });
     try {
       final result = await WikipediaService.fetchSummaryInLanguage(
         _name, langCode, _displayExtract,
       );
       if (!mounted) return;
       setState(() {
-        _translatedTitle = result['title'] as String?;
+        _translatedTitle   = result['title'] as String?;
         _translatedExtract = result['extract'] as String?;
-        _isTranslated = result['source'] == 'translated';
-        _translating = false;
+        _isTranslated      = result['source'] == 'translated';
+        _translating       = false;
       });
     } catch (e) {
       if (!mounted) return;
@@ -296,11 +335,51 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           child: CircleAvatar(
             backgroundColor: Colors.white.withAlpha(200),
             child: IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 18),
+              icon: const Icon(Icons.arrow_back_ios_new,
+                  color: Colors.black, size: 18),
               onPressed: () => Navigator.pop(context),
             ),
           ),
         ),
+        // ── Action buttons: Share + Favourite ────────────────
+        actions: _isDetected
+            ? [
+                // Share button
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: CircleAvatar(
+                    backgroundColor: Colors.white.withAlpha(200),
+                    child: IconButton(
+                      icon: const Icon(Icons.share_rounded,
+                          color: Colors.black, size: 20),
+                      onPressed: _shareLandmark,
+                      tooltip: 'Share',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Favourite button
+                Padding(
+                  padding: const EdgeInsets.only(top: 8, right: 12),
+                  child: CircleAvatar(
+                    backgroundColor: Colors.white.withAlpha(200),
+                    child: FavouriteButton(
+                      placeId:  _placeId,
+                      name:     _name,
+                      address:  _placeAddress,
+                      rating:   _placeRating,
+                      photoUrl: _placePhoto ?? displayImages.firstOrNull,
+                      lat:      _lat,
+                      lng:      _lng,
+                      types:    const ['tourist_attraction'],
+                      iconSize: 20,
+                      activeColor:   Colors.red,
+                      inactiveColor: Colors.black,
+                    ),
+                  ),
+                ),
+              ]
+            : null,
       ),
       body: Stack(
         children: [
@@ -332,9 +411,12 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               return Container(
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(30)),
                   boxShadow: [
-                    BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10),
+                    BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10),
                   ],
                 ),
                 child: Column(
@@ -356,7 +438,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                         indicatorColor: Colors.black,
                         indicatorWeight: 3,
                         indicatorSize: TabBarIndicatorSize.label,
-                        labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        labelStyle: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 16),
                         tabs: const [
                           Tab(text: 'Overview'),
                           Tab(text: 'Info'),
@@ -386,7 +469,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   }
 
   // ============================================================
-  // Tab Wrappers
+  // Tab Wrappers (unchanged from your original)
   // ============================================================
 
   Widget _buildOverviewTab(ScrollController sc, dynamic pos) {
@@ -399,7 +482,9 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           if (!_isDetected)
             _noLandmarkMessage()
           else ...[
-            _infoLoading ? _buildLoadingPlaceholder() : _buildSummaryContent(),
+            _infoLoading
+                ? _buildLoadingPlaceholder()
+                : _buildSummaryContent(),
             const SizedBox(height: 24),
             if (!_infoLoading) _buildMapSection(pos),
           ],
@@ -438,7 +523,10 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         padding: EdgeInsets.only(top: 50),
         child: Text(
           'No landmark detected in this image.',
-          style: TextStyle(fontSize: 14, color: Colors.grey, fontStyle: FontStyle.italic),
+          style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey,
+              fontStyle: FontStyle.italic),
         ),
       ),
     );
@@ -452,37 +540,43 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Title row
         Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Expanded(
               child: Text(
                 _displayTitle,
-                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: -0.8),
+                style: const TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.8),
               ),
             ),
             const SizedBox(width: 8),
-
             // Language picker
             PopupMenuButton<String>(
               initialValue: _selectedLangCode,
               onSelected: _translateTo,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              itemBuilder: (_) => _languages.map((lang) => PopupMenuItem<String>(
-                value: lang['code'],
-                child: Text(lang['label']!,
-                  style: TextStyle(
-                    fontWeight: lang['code'] == _selectedLangCode
-                        ? FontWeight.bold : FontWeight.normal,
-                  ),
-                ),
-              )).toList(),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              itemBuilder: (_) => _languages
+                  .map((lang) => PopupMenuItem<String>(
+                        value: lang['code'],
+                        child: Text(lang['label']!,
+                            style: TextStyle(
+                              fontWeight: lang['code'] == _selectedLangCode
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            )),
+                      ))
+                  .toList(),
               child: _translating
-                  ? const SizedBox(width: 20, height: 20,
+                  ? const SizedBox(
+                      width: 20, height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: Colors.blue[50],
                         borderRadius: BorderRadius.circular(8),
@@ -490,20 +584,23 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.translate, size: 14, color: Colors.blue[700]),
+                          Icon(Icons.translate,
+                              size: 14, color: Colors.blue[700]),
                           const SizedBox(width: 4),
                           Text(_selectedLangCode.toUpperCase(),
-                            style: TextStyle(color: Colors.blue[700], fontSize: 10, fontWeight: FontWeight.bold)),
+                              style: TextStyle(
+                                  color: Colors.blue[700],
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold)),
                         ],
                       ),
                     ),
             ),
-
             const SizedBox(width: 8),
-
             // Detection method badge
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
                 color: _badgeBg,
                 borderRadius: BorderRadius.circular(8),
@@ -514,35 +611,35 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                   Icon(_badgeIcon, size: 10, color: _badgeColor),
                   const SizedBox(width: 3),
                   Text(_badgeLabel,
-                    style: TextStyle(color: _badgeColor, fontSize: 10, fontWeight: FontWeight.bold)),
+                      style: TextStyle(
+                          color: _badgeColor,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold)),
                 ],
               ),
             ),
           ],
         ),
-
         const SizedBox(height: 16),
-
-        // Image carousel
         if (displayImages.isNotEmpty) _buildImageCarousel(),
-
-        // Summary text
         if (_displayExtract.isNotEmpty)
           Container(
             padding: const EdgeInsets.only(left: 16),
             decoration: BoxDecoration(
-              border: Border(left: BorderSide(color: Colors.grey[300]!, width: 3)),
+              border: Border(
+                  left: BorderSide(color: Colors.grey[300]!, width: 3)),
             ),
             child: Text(
               _displayExtract,
               textAlign: TextAlign.justify,
-              style: TextStyle(fontSize: 15, color: Colors.grey[800], height: 1.7, fontStyle: FontStyle.italic),
+              style: TextStyle(
+                  fontSize: 15,
+                  color: Colors.grey[800],
+                  height: 1.7,
+                  fontStyle: FontStyle.italic),
             ),
           ),
-
         const SizedBox(height: 16),
-
-        // Wikipedia link (hide for Gemini-sourced summaries)
         if (_wikiUrl.isNotEmpty)
           Align(
             alignment: Alignment.centerRight,
@@ -552,7 +649,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               label: const Text('Read More on Wikipedia'),
               style: TextButton.styleFrom(
                 foregroundColor: Colors.blue[800],
-                textStyle: const TextStyle(fontWeight: FontWeight.bold),
+                textStyle:
+                    const TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
           ),
@@ -561,7 +659,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   }
 
   Widget _buildImageCarousel() {
-    final visible = displayImages.where((u) => !_failedImageUrls.contains(u)).toList();
+    final visible =
+        displayImages.where((u) => !_failedImageUrls.contains(u)).toList();
     if (visible.isEmpty) return const SizedBox.shrink();
 
     return Column(
@@ -579,19 +678,27 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                 margin: const EdgeInsets.symmetric(horizontal: 8),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(20),
-                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, 10))],
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 20,
+                        offset: const Offset(0, 10))
+                  ],
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(20),
                   child: Image.network(url, fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) setState(() => _failedImageUrls.add(url));
-                      });
-                      return Container(color: Colors.grey[200],
-                        child: const Center(child: Icon(Icons.broken_image, size: 40, color: Colors.grey)));
-                    },
-                  ),
+                      errorBuilder: (_, __, ___) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted)
+                        setState(() => _failedImageUrls.add(url));
+                    });
+                    return Container(
+                        color: Colors.grey[200],
+                        child: const Center(
+                            child: Icon(Icons.broken_image,
+                                size: 40, color: Colors.grey)));
+                  }),
                 ),
               );
             },
@@ -600,15 +707,20 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         if (visible.length > 1)
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
-            children: List.generate(visible.length, (i) => Container(
-              margin: const EdgeInsets.symmetric(horizontal: 4),
-              width: _currentImageIndex == i ? 24 : 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: _currentImageIndex == i ? Colors.black : Colors.grey[300],
-                borderRadius: BorderRadius.circular(4),
+            children: List.generate(
+              visible.length,
+              (i) => Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                width: _currentImageIndex == i ? 24 : 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: _currentImageIndex == i
+                      ? Colors.black
+                      : Colors.grey[300],
+                  borderRadius: BorderRadius.circular(4),
+                ),
               ),
-            )),
+            ),
           ),
         const SizedBox(height: 20),
       ],
@@ -616,21 +728,22 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   }
 
   Widget _buildMapSection(dynamic pos) {
-    if (pos == null) return const Center(child: CircularProgressIndicator());
-
-    final landmarkLocation = placeDetails?['location'];
-    final lat = (landmarkLocation?['latitude'] as num?)?.toDouble()
-        ?? _result.lat ?? pos.latitude;
-    final lng = (landmarkLocation?['longitude'] as num?)?.toDouble()
-        ?? _result.lng ?? pos.longitude;
+    if (pos == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final lat = _lat ?? pos.latitude;
+    final lng = _lng ?? pos.longitude;
 
     return GestureDetector(
-      onTap: () => Navigator.push(context, MaterialPageRoute(
-        builder: (_) => RealTimeDetectPage(
-          landmarkLat: lat, landmarkLng: lng,
-          onBack: () => Navigator.pop(context),
-        ),
-      )),
+      onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => RealTimeDetectPage(
+              landmarkLat: lat,
+              landmarkLng: lng,
+              onBack: () => Navigator.pop(context),
+            ),
+          )),
       child: Container(
         height: 180,
         decoration: BoxDecoration(borderRadius: BorderRadius.circular(20)),
@@ -647,12 +760,14 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             height: double.infinity,
             errorBuilder: (_, __, ___) => Container(
               color: Colors.grey[200],
-              child: const Center(child: Column(
+              child: const Center(
+                  child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.map_outlined, size: 32, color: Colors.grey),
                   SizedBox(height: 6),
-                  Text('Map unavailable', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                  Text('Map unavailable',
+                      style: TextStyle(fontSize: 11, color: Colors.grey)),
                 ],
               )),
             ),
@@ -663,7 +778,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   }
 
   // ============================================================
-  // Info Tab
+  // Info Tab (unchanged from your original)
   // ============================================================
 
   Widget _buildInfoTab() {
@@ -675,26 +790,32 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             Icon(Icons.search_off_rounded, size: 48, color: Colors.grey),
             SizedBox(height: 12),
             Text('No place info found.',
-              style: TextStyle(fontSize: 14, color: Colors.grey, fontStyle: FontStyle.italic)),
+                style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey,
+                    fontStyle: FontStyle.italic)),
           ]),
         ),
       );
     }
 
-    final d = placeDetails!;
+    final d            = placeDetails!;
     final openingHours = d['regularOpeningHours'] as Map<String, dynamic>?;
-    final openNow = openingHours?['openNow'] as bool?;
-    final weekdayRaw = openingHours?['weekdayDescriptions'] as List?;
-    final phoneNumber = d['internationalPhoneNumber'] as String?;
-    final website = d['websiteUri'] as String?;
+    final openNow      = openingHours?['openNow'] as bool?;
+    final weekdayRaw   = openingHours?['weekdayDescriptions'] as List?;
+    final phoneNumber  = d['internationalPhoneNumber'] as String?;
+    final website      = d['websiteUri'] as String?;
     final googleMapsUrl = d['googleMapsUri'] as String?;
-    final address = d['formattedAddress'] as String?;
-    final rating = (d['rating'] as num?)?.toDouble();
+    final address      = d['formattedAddress'] as String?;
+    final rating       = (d['rating'] as num?)?.toDouble();
 
     final weekdays = weekdayRaw?.map((e) {
-      final parts = (e as String).split(': ');
-      return _OpeningDay(day: parts[0], hours: parts.length > 1 ? parts[1] : 'Closed');
-    }).toList() ?? <_OpeningDay>[];
+          final parts = (e as String).split(': ');
+          return _OpeningDay(
+              day: parts[0],
+              hours: parts.length > 1 ? parts[1] : 'Closed');
+        }).toList() ??
+        <_OpeningDay>[];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -703,49 +824,80 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         if (openNow != null)
           Container(
             margin: const EdgeInsets.only(bottom: 20),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
               color: openNow ? Colors.green[50] : Colors.red[50],
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(openNow ? Icons.check_circle_rounded : Icons.cancel_rounded,
-                size: 16, color: openNow ? Colors.green[700] : Colors.red[700]),
+              Icon(
+                  openNow
+                      ? Icons.check_circle_rounded
+                      : Icons.cancel_rounded,
+                  size: 16,
+                  color:
+                      openNow ? Colors.green[700] : Colors.red[700]),
               const SizedBox(width: 6),
               Text(openNow ? 'Open Now' : 'Closed Now',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold,
-                  color: openNow ? Colors.green[700] : Colors.red[700])),
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: openNow
+                          ? Colors.green[700]
+                          : Colors.red[700])),
             ]),
           ),
         if (address != null) ...[
           _sectionHeader(Icons.location_on_rounded, 'Address'),
           const SizedBox(height: 10),
-          _infoBox(child: Text(address, style: TextStyle(fontSize: 14, color: Colors.grey[700], height: 1.5))),
+          _infoBox(
+              child: Text(address,
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[700],
+                      height: 1.5))),
           const SizedBox(height: 24),
         ],
         if (rating != null) ...[
           _sectionHeader(Icons.star_rounded, 'Rating'),
           const SizedBox(height: 10),
-          _infoBox(child: Row(children: [
+          _infoBox(
+              child: Row(children: [
             ...List.generate(5, (i) {
               final filled = i < rating.floor();
-              final half = !filled && i < rating;
-              return Icon(half ? Icons.star_half_rounded : Icons.star_rounded,
-                size: 20, color: filled || half ? Colors.amber[600] : Colors.grey[300]);
+              final half   = !filled && i < rating;
+              return Icon(
+                  half
+                      ? Icons.star_half_rounded
+                      : Icons.star_rounded,
+                  size: 20,
+                  color: filled || half
+                      ? Colors.amber[600]
+                      : Colors.grey[300]);
             }),
             const SizedBox(width: 10),
-            Text(rating.toStringAsFixed(1), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
-            Text(' / 5.0', style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+            Text(rating.toStringAsFixed(1),
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w700)),
+            Text(' / 5.0',
+                style: TextStyle(
+                    fontSize: 13, color: Colors.grey[500])),
           ])),
           const SizedBox(height: 24),
         ],
         if (admissionInfo != null) ...[
           _sectionHeader(Icons.sell_rounded, 'Admission'),
           const SizedBox(height: 10),
-          _infoBox(child: Row(children: [
-            Icon(Icons.monetization_on_outlined, size: 18, color: Colors.grey[600]),
+          _infoBox(
+              child: Row(children: [
+            Icon(Icons.monetization_on_outlined,
+                size: 18, color: Colors.grey[600]),
             const SizedBox(width: 12),
-            Expanded(child: Text(admissionInfo!, style: TextStyle(fontSize: 14, color: Colors.grey[700]))),
+            Expanded(
+                child: Text(admissionInfo!,
+                    style: TextStyle(
+                        fontSize: 14, color: Colors.grey[700]))),
           ])),
           const SizedBox(height: 24),
         ],
@@ -753,22 +905,38 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           _sectionHeader(Icons.access_time_rounded, 'Opening Hours'),
           const SizedBox(height: 10),
           Container(
-            decoration: BoxDecoration(color: Colors.grey[50], borderRadius: BorderRadius.circular(16)),
+            decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: BorderRadius.circular(16)),
             child: Column(
               children: weekdays.asMap().entries.map((entry) {
                 final isLast = entry.key == weekdays.length - 1;
                 return Column(children: [
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
                     child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      mainAxisAlignment:
+                          MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(entry.value.day, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87)),
-                        Text(entry.value.hours, style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+                        Text(entry.value.day,
+                            style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.black87)),
+                        Text(entry.value.hours,
+                            style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey[600])),
                       ],
                     ),
                   ),
-                  if (!isLast) Divider(height: 1, color: Colors.grey[200], indent: 16, endIndent: 16),
+                  if (!isLast)
+                    Divider(
+                        height: 1,
+                        color: Colors.grey[200],
+                        indent: 16,
+                        endIndent: 16),
                 ]);
               }).toList(),
             ),
@@ -779,18 +947,28 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           _sectionHeader(Icons.contact_page_rounded, 'Contact'),
           const SizedBox(height: 10),
           Container(
-            decoration: BoxDecoration(color: Colors.grey[50], borderRadius: BorderRadius.circular(16)),
+            decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: BorderRadius.circular(16)),
             child: Column(children: [
               if (phoneNumber != null)
-                _tappableRow(icon: Icons.phone_rounded, label: phoneNumber,
-                  onTap: () => launchUrl(Uri.parse('tel:$phoneNumber'), mode: LaunchMode.externalApplication),
-                  showDivider: website != null),
+                _tappableRow(
+                    icon: Icons.phone_rounded,
+                    label: phoneNumber,
+                    onTap: () => launchUrl(
+                        Uri.parse('tel:$phoneNumber'),
+                        mode: LaunchMode.externalApplication),
+                    showDivider: website != null),
               if (website != null)
                 _tappableRow(
-                  icon: Icons.language_rounded,
-                  label: website.replaceFirst('https://', '').replaceFirst('http://', '').replaceFirst('www.', ''),
-                  onTap: () => launchUrl(Uri.parse(website), mode: LaunchMode.externalApplication),
-                  showDivider: false),
+                    icon: Icons.language_rounded,
+                    label: website
+                        .replaceFirst('https://', '')
+                        .replaceFirst('http://', '')
+                        .replaceFirst('www.', ''),
+                    onTap: () => launchUrl(Uri.parse(website),
+                        mode: LaunchMode.externalApplication),
+                    showDivider: false),
             ]),
           ),
           const SizedBox(height: 24),
@@ -799,13 +977,15 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: () => launchUrl(Uri.parse(googleMapsUrl), mode: LaunchMode.externalApplication),
+              onPressed: () => launchUrl(Uri.parse(googleMapsUrl),
+                  mode: LaunchMode.externalApplication),
               icon: const Icon(Icons.map_rounded, size: 18),
               label: const Text('Open in Google Maps'),
               style: OutlinedButton.styleFrom(
                 foregroundColor: Colors.black,
                 side: const BorderSide(color: Colors.black12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
                 padding: const EdgeInsets.symmetric(vertical: 14),
               ),
             ),
@@ -816,18 +996,19 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   }
 
   // ============================================================
-  // Reviews Tab
+  // Reviews Tab (unchanged from your original)
   // ============================================================
 
   Widget _buildReviewsTab() {
-    if (placeDetails == null || (placeDetails!['reviews'] as List?)?.isEmpty == true) {
+    if (placeDetails == null ||
+        (placeDetails!['reviews'] as List?)?.isEmpty == true) {
       return _buildEmptyReviews();
     }
 
-    final d = placeDetails!;
-    final rating = (d['rating'] as num?)?.toDouble() ?? 0.0;
+    final d               = placeDetails!;
+    final rating          = (d['rating'] as num?)?.toDouble() ?? 0.0;
     final userRatingCount = d['userRatingCount'] as int? ?? 0;
-    final reviewsRaw = d['reviews'] as List;
+    final reviewsRaw      = d['reviews'] as List;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -838,52 +1019,71 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(24),
-            boxShadow: [BoxShadow(color: Colors.blueGrey.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 10))],
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.blueGrey.withOpacity(0.08),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10))
+            ],
           ),
           child: Row(children: [
             Column(children: [
               Text(rating.toStringAsFixed(1),
-                style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Color(0xFF1A1A1A))),
+                  style: const TextStyle(
+                      fontSize: 48,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF1A1A1A))),
               _buildStarRating(rating),
               const SizedBox(height: 8),
               Text('${_formatCount(userRatingCount)} reviews',
-                style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+                  style:
+                      TextStyle(fontSize: 12, color: Colors.grey[500])),
             ]),
             const SizedBox(width: 32),
-            Expanded(child: Column(
-              children: [5, 4, 3, 2, 1].map((star) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Row(children: [
-                  Text('$star', style: const TextStyle(fontSize: 10)),
-                  const SizedBox(width: 8),
-                  Expanded(child: ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: star == 5 ? 0.8 : (star == 4 ? 0.4 : 0.1),
-                      backgroundColor: Colors.grey[100],
-                      color: Colors.amber[600],
-                      minHeight: 6,
-                    ),
-                  )),
-                ]),
-              )).toList(),
+            Expanded(
+                child: Column(
+              children: [5, 4, 3, 2, 1]
+                  .map((star) => Padding(
+                        padding:
+                            const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(children: [
+                          Text('$star',
+                              style: const TextStyle(fontSize: 10)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                              child: ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              value: star == 5
+                                  ? 0.8
+                                  : (star == 4 ? 0.4 : 0.1),
+                              backgroundColor: Colors.grey[100],
+                              color: Colors.amber[600],
+                              minHeight: 6,
+                            ),
+                          )),
+                        ]),
+                      ))
+                  .toList(),
             )),
           ]),
         ),
         const SizedBox(height: 32),
-        _sectionHeader(Icons.chat_bubble_outline_rounded, 'Community Voice'),
+        _sectionHeader(
+            Icons.chat_bubble_outline_rounded, 'Community Voice'),
         const SizedBox(height: 16),
-        ...reviewsRaw.map((r) => _buildReviewCard(r as Map<String, dynamic>)),
+        ...reviewsRaw
+            .map((r) => _buildReviewCard(r as Map<String, dynamic>)),
         const SizedBox(height: 20),
       ],
     );
   }
 
   Widget _buildReviewCard(Map<String, dynamic> review) {
-    final authorName = review['authorAttribution']?['displayName'] as String? ?? 'Traveler';
+    final authorName  = review['authorAttribution']?['displayName'] as String? ?? 'Traveler';
     final authorPhoto = review['authorAttribution']?['photoUri'] as String?;
     final reviewRating = (review['rating'] as num?)?.toInt() ?? 0;
-    final text = review['text']?['text'] as String? ?? '';
+    final text        = review['text']?['text'] as String? ?? '';
     final relativeTime = review['relativePublishTimeDescription'] as String? ?? '';
 
     return Container(
@@ -892,22 +1092,38 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         Row(children: [
           CircleAvatar(
             radius: 20,
-            backgroundImage: authorPhoto != null ? NetworkImage(authorPhoto) : null,
+            backgroundImage:
+                authorPhoto != null ? NetworkImage(authorPhoto) : null,
             backgroundColor: Colors.blue[50],
             child: authorPhoto == null ? Text(authorName[0]) : null,
           ),
           const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(authorName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-            Text(relativeTime, style: TextStyle(color: Colors.grey[500], fontSize: 12)),
-          ])),
+          Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(authorName,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 15)),
+                Text(relativeTime,
+                    style:
+                        TextStyle(color: Colors.grey[500], fontSize: 12)),
+              ])),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(color: Colors.amber[50], borderRadius: BorderRadius.circular(8)),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+                color: Colors.amber[50],
+                borderRadius: BorderRadius.circular(8)),
             child: Row(children: [
-              Icon(Icons.star_rounded, size: 14, color: Colors.amber[700]),
+              Icon(Icons.star_rounded,
+                  size: 14, color: Colors.amber[700]),
               const SizedBox(width: 2),
-              Text('$reviewRating', style: TextStyle(color: Colors.amber[800], fontWeight: FontWeight.bold, fontSize: 12)),
+              Text('$reviewRating',
+                  style: TextStyle(
+                      color: Colors.amber[800],
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12)),
             ]),
           ),
         ]),
@@ -915,8 +1131,12 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           Padding(
             padding: const EdgeInsets.only(top: 12, left: 2),
             child: Text(text,
-              style: TextStyle(color: Colors.grey[800], height: 1.6, fontSize: 14),
-              maxLines: 5, overflow: TextOverflow.ellipsis),
+                style: TextStyle(
+                    color: Colors.grey[800],
+                    height: 1.6,
+                    fontSize: 14),
+                maxLines: 5,
+                overflow: TextOverflow.ellipsis),
           ),
         const SizedBox(height: 16),
         Divider(color: Colors.grey[100], thickness: 1),
@@ -927,25 +1147,32 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   Widget _buildStarRating(double rating) {
     return Row(
       mainAxisSize: MainAxisSize.min,
-      children: List.generate(5, (i) => Icon(
-        i < rating.floor() ? Icons.star_rounded : Icons.star_half_rounded,
-        size: 20,
-        color: i < rating ? Colors.amber[600] : Colors.grey[300],
-      )),
+      children: List.generate(
+          5,
+          (i) => Icon(
+              i < rating.floor()
+                  ? Icons.star_rounded
+                  : Icons.star_half_rounded,
+              size: 20,
+              color: i < rating ? Colors.amber[600] : Colors.grey[300])),
     );
   }
 
   Widget _buildEmptyReviews() {
-    return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+    return Center(
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
       Icon(Icons.forum_outlined, size: 80, color: Colors.grey[200]),
       const SizedBox(height: 16),
       Text('No stories shared yet',
-        style: TextStyle(color: Colors.grey[400], fontSize: 16, fontWeight: FontWeight.w500)),
+          style: TextStyle(
+              color: Colors.grey[400],
+              fontSize: 16,
+              fontWeight: FontWeight.w500)),
     ]));
   }
 
   // ============================================================
-  // Shared UI helpers
+  // Shared UI helpers (unchanged)
   // ============================================================
 
   Widget _buildLoadingPlaceholder() {
@@ -953,19 +1180,34 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       animation: _shimmerAnimation,
       builder: (_, __) => Opacity(
         opacity: _shimmerAnimation.value,
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Container(height: 32, width: 200,
-            decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(8))),
-          const SizedBox(height: 16),
-          Container(height: 220,
-            decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(20))),
-          const SizedBox(height: 16),
-          ...List.generate(4, (i) => Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Container(height: 14, width: i == 3 ? 180 : double.infinity,
-              decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(6))),
-          )),
-        ]),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                  height: 32,
+                  width: 200,
+                  decoration: BoxDecoration(
+                      color: Colors.grey[200],
+                      borderRadius: BorderRadius.circular(8))),
+              const SizedBox(height: 16),
+              Container(
+                  height: 220,
+                  decoration: BoxDecoration(
+                      color: Colors.grey[200],
+                      borderRadius: BorderRadius.circular(20))),
+              const SizedBox(height: 16),
+              ...List.generate(
+                  4,
+                  (i) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Container(
+                            height: 14,
+                            width: i == 3 ? 180 : double.infinity,
+                            decoration: BoxDecoration(
+                                color: Colors.grey[200],
+                                borderRadius: BorderRadius.circular(6))),
+                      )),
+            ]),
       ),
     );
   }
@@ -974,46 +1216,66 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     return Row(children: [
       Icon(icon, size: 18, color: Colors.black87),
       const SizedBox(width: 8),
-      Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: -0.3)),
+      Text(title,
+          style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -0.3)),
     ]);
   }
 
   Widget _infoBox({required Widget child}) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(color: Colors.grey[50], borderRadius: BorderRadius.circular(16)),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+          color: Colors.grey[50],
+          borderRadius: BorderRadius.circular(16)),
       child: child,
     );
   }
 
   Widget _tappableRow({
-    required IconData icon, required String label,
-    required VoidCallback onTap, required bool showDivider,
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    required bool showDivider,
   }) {
     return Column(children: [
       InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(16),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(children: [
             Icon(icon, size: 18, color: Colors.grey[600]),
             const SizedBox(width: 12),
-            Expanded(child: Text(label,
-              style: const TextStyle(fontSize: 14, color: Colors.blue, decoration: TextDecoration.underline),
-              overflow: TextOverflow.ellipsis)),
-            Icon(Icons.chevron_right_rounded, size: 18, color: Colors.grey[400]),
+            Expanded(
+                child: Text(label,
+                    style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.blue,
+                        decoration: TextDecoration.underline),
+                    overflow: TextOverflow.ellipsis)),
+            Icon(Icons.chevron_right_rounded,
+                size: 18, color: Colors.grey[400]),
           ]),
         ),
       ),
-      if (showDivider) Divider(height: 1, color: Colors.grey[200], indent: 16, endIndent: 16),
+      if (showDivider)
+        Divider(
+            height: 1,
+            color: Colors.grey[200],
+            indent: 16,
+            endIndent: 16),
     ]);
   }
 
   String _formatCount(int count) {
     if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
-    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+    if (count >= 1000)    return '${(count / 1000).toStringAsFixed(1)}K';
     return count.toString();
   }
 
@@ -1022,9 +1284,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot open URL')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Cannot open URL')));
     }
   }
 }

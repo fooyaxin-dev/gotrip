@@ -1,8 +1,6 @@
 // services/itinerary_service.dart
-import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:http/http.dart' as http;
 import '../models/itineraryModel.dart';
 import '../models/placeModal.dart';
 import '../services/placesAPI_service.dart';
@@ -118,8 +116,7 @@ class ItineraryService {
   }
 
   // ─────────────────────────────────────────────
-  // Dedicated fetch for itinerary generation
-  // 10km radius, 50 per type, NOT cached
+  // Fetch places for itinerary generation
   // ─────────────────────────────────────────────
 
   Future<Map<String, List<PlaceModel>>> _fetchPlacesForItinerary({
@@ -134,7 +131,7 @@ class ItineraryService {
       'park',
     ];
 
-    print('🗺️ Fetching itinerary candidates (10km radius, 50 per type)...');
+    print('🗺️ Fetching itinerary candidates (10km radius)...');
     final stopwatch = Stopwatch()..start();
 
     final entries = await Future.wait(
@@ -143,9 +140,9 @@ class ItineraryService {
           final raw = await PlacesApiService.searchNearby(
             lat:            lat,
             lng:            lng,
-            types:           [type],
-            radius:         10000, // 10km — wider than nearby places (5km)
-            maxResultCount: 20,    // Google API hard limit is 20
+            types:          [type],
+            radius:         10000,
+            maxResultCount: 20,
           );
 
           final places = raw
@@ -226,7 +223,7 @@ class ItineraryService {
     final entertainment = topByType('amusement_park',     perCategory);
     final parks         = topByType('park',               perCategory);
 
-    print('📋 Per category (recommendation score):');
+    print('📋 Per category:');
     print('  🍽️  Restaurants: ${restaurants.length}');
     print('  🏛️  Attractions: ${attractions.length}');
     print('  🛍️  Malls: ${malls.length}');
@@ -244,48 +241,13 @@ class ItineraryService {
     addAll(entertainment);
     addAll(parks);
 
-    print('📍 Total sent to Gemini: ${result.length}');
-    for (final p in result) {
-      final s = prefs.recommendationScore(
-        primaryType:    p.primaryType,
-        allTypes:       p.allTypes,
-        rating:         p.rating,
-        distanceMeters: null,
-        priceLevel:     p.priceLevel,
-      );
-      print('  ${p.name} | ${p.primaryType} | priceLevel=${p.priceLevel ?? "null"} | $s');
-    }
-
+    print('📍 Total candidates: ${result.length}');
     return result;
   }
 
   // ─────────────────────────────────────────────
-  // Generate via Gemini API
+  // Generate — no Gemini, pure algorithm
   // ─────────────────────────────────────────────
-
-  String _buildDayStructure(int placesPerDay, String cuisineText) {
-    final slots = <String>[];
-
-    if (placesPerDay == 2) {
-      slots.add('1. Morning (09:00-11:30): Non-restaurant place');
-      slots.add('2. Lunch/Dinner (12:30-14:30): MUST be a RESTAURANT — prefer $cuisineText');
-    } else if (placesPerDay == 3) {
-      slots.add('1. Morning (09:00-11:30): Non-restaurant place');
-      slots.add('2. Lunch (12:00-13:30): MUST be a RESTAURANT — prefer $cuisineText');
-      slots.add('3. Afternoon (14:30-17:00): Non-restaurant place');
-    } else {
-      // 4 places (default)
-      slots.add('1. Morning (08:00-10:30): Non-restaurant place');
-      slots.add('2. Lunch (11:30-13:30): MUST be a RESTAURANT — prefer $cuisineText');
-      slots.add('3. Afternoon (14:00-17:00): Non-restaurant place, DIFFERENT category from morning');
-      slots.add('4. Dinner (18:00-20:30): MUST be a RESTAURANT — prefer $cuisineText');
-      if (placesPerDay > 4) {
-        slots.add('5. Evening (21:00+): Any non-restaurant place');
-      }
-    }
-
-    return slots.join('\n');
-  }
 
   Future<ItineraryModel?> generate({
     required String startDate,
@@ -294,16 +256,13 @@ class ItineraryService {
     required String tripTitle,
     List<String>?   overrideCategories,
     List<String>?   overrideCuisines,
-    double?         overrideLat,  // ← custom location from user
+    double?         overrideLat,
     double?         overrideLng,
   }) async {
     try {
-      final prefs = UserPreferenceService.instance.current;
+      final cuisines = overrideCuisines
+          ?? UserPreferenceService.instance.current.cuisines;
 
-      final categories = overrideCategories ?? prefs.categories;
-      final cuisines   = overrideCuisines   ?? prefs.cuisines;
-
-      // Use override coords if provided, else fall back to GPS
       double? lat = overrideLat;
       double? lng = overrideLng;
 
@@ -324,19 +283,9 @@ class ItineraryService {
       );
 
       if (validPlaces.isEmpty) {
-        print('❌ No valid places');
+        print('❌ No valid places found');
         return null;
       }
-
-      final placesJson = validPlaces.map((p) => {
-        'placeId':     p.id,
-        'name':        p.name,
-        'primaryType': p.primaryType ?? '',
-        'types':       p.allTypes.take(3).toList(),
-        'rating':      p.rating ?? 0,
-      }).toList();
-
-      final placeMap = { for (final p in validPlaces) p.id: p };
 
       final startDt  = DateTime.parse(startDate);
       final dayDates = List.generate(totalDays, (i) {
@@ -344,103 +293,20 @@ class ItineraryService {
         return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
       });
 
-      final dayDatesList = dayDates
-          .asMap()
-          .entries
-          .map((e) => 'Day ${e.key + 1} = ${e.value}')
-          .join(', ');
+      final days = _scheduleItinerary(
+        places:       validPlaces,
+        totalDays:    totalDays,
+        placesPerDay: placesPerDay,
+        startDates:   dayDates,
+        cuisines:     cuisines,
+      );
 
-      final cuisineText = cuisines.isEmpty
-          ? 'any cuisine'
-          : cuisines
-              .map((c) => '${c[0].toUpperCase()}${c.substring(1)}')
-              .join(', ');
-
-      final categoryText = categories.isEmpty
-          ? 'general sightseeing'
-          : categories.map((c) {
-              const labels = {
-                'restaurant':         'Food & Dining',
-                'park':               'Nature & Outdoors',
-                'tourist_attraction': 'Sightseeing & Culture',
-                'shopping_mall':      'Shopping',
-                'amusement_park':     'Entertainment',
-              };
-              return labels[c] ?? c;
-            }).join(', ');
-
-      final prompt = '''
-You are a local travel guide creating a day trip itinerary.
-
-User's location: Lat $lat, Lng $lng
-All places listed below are within 10km of this exact location.
-Group each day's places geographically — keep stops close to each other to minimise travel time between them.
-
-Traveler profile:
-- Interests: $categoryText
-- Favourite cuisines: $cuisineText
-- Travel mode: ${prefs.travelMode}
-- Budget: ${prefs.budgetTier.label}
-
-Trip: $tripTitle
-Days: $totalDays | Dates: $dayDatesList
-Places per day: $placesPerDay
-
-Available places by category:
-🍽️ RESTAURANTS (use for lunch & dinner only):
-${validPlaces.where((p) => p.primaryType == 'restaurant').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
-
-🏛️ ATTRACTIONS:
-${validPlaces.where((p) => p.primaryType == 'tourist_attraction').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
-
-🛍️ SHOPPING:
-${validPlaces.where((p) => p.primaryType == 'shopping_mall').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
-
-🎭 ENTERTAINMENT:
-${validPlaces.where((p) => p.primaryType == 'amusement_park').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
-
-🌿 PARKS & NATURE:
-${validPlaces.where((p) => p.primaryType == 'park').map((p) => '  - ${p.id}: ${p.name} (⭐${p.rating ?? 0})').join('\n')}
-
-Full place details:
-${jsonEncode(placesJson)}
-
-STRICT DAILY STRUCTURE (follow exactly):
-${_buildDayStructure(placesPerDay, cuisineText)}
-
-RULES:
-- Prefer places that match the traveler\'s budget: ${prefs.budgetTier.label}
-- NEVER use the same placeId twice across all days
-- Each day must cover at least 2 different non-restaurant categories
-- Prefer higher rated places
-- Prefer restaurants matching cuisine: $cuisineText
-- Use exact dates: $dayDatesList
-
-Return ONLY a raw JSON array. No markdown. No backticks. Start with [ end with ].
-Each place: placeId, suggestedTime, durationMinutes, notes (1 practical sentence).
-
-[
-  {
-    "dayNumber": 1,
-    "date": "${dayDates[0]}",
-    "places": [
-      {
-        "placeId": "...",
-        "suggestedTime": "09:00",
-        "durationMinutes": 90,
-        "notes": "..."
+      if (days == null || days.isEmpty) {
+        print('❌ Scheduling failed');
+        return null;
       }
-    ]
-  }
-]''';
 
-      final responseText = await _callGemini(prompt);
-      if (responseText == null) return null;
-
-      final days = _parseResponse(responseText, placeMap);
-      if (days == null) return null;
-
-      print('✅ Parsed ${days.length} days (expected $totalDays)');
+      print('✅ Scheduled ${days.length} days');
       for (int i = 0; i < days.length; i++) {
         print('  Day ${i + 1}: ${days[i].places.length} places'
             ' — ${days[i].places.map((p) => p.name).join(', ')}');
@@ -461,104 +327,243 @@ Each place: placeId, suggestedTime, durationMinutes, notes (1 practical sentence
   }
 
   // ─────────────────────────────────────────────
-  // Robust JSON parser
+  // Scheduler
   // ─────────────────────────────────────────────
 
-  List<ItineraryDay>? _parseResponse(
-    String responseText,
-    Map<String, PlaceModel> placeMap,
-  ) {
-    try {
-      String cleaned = responseText
-          .replaceAll(RegExp(r'```json\s*', multiLine: true), '')
-          .replaceAll(RegExp(r'```\s*',     multiLine: true), '')
-          .trim();
+  List<ItineraryDay>? _scheduleItinerary({
+    required List<PlaceModel> places,
+    required int              totalDays,
+    required int              placesPerDay,
+    required List<String>     startDates,
+    required List<String>     cuisines,
+  }) {
+    final restaurants = places.where((p) => p.primaryType == 'restaurant').toList();
+    final others      = places.where((p) => p.primaryType != 'restaurant').toList();
 
-      final jsonStart = cleaned.indexOf('[');
-      final jsonEnd   = cleaned.lastIndexOf(']');
+    final restaurantsPerDay = placesPerDay <= 2 ? 1 : 2;
+    final attractionsPerDay = placesPerDay - restaurantsPerDay;
 
-      final jsonStr = (jsonStart != -1 && jsonEnd != -1 && jsonEnd > jsonStart)
-          ? cleaned.substring(jsonStart, jsonEnd + 1)
-          : cleaned;
+    final clusters = _geoClusters(others, totalDays);
 
-      List<dynamic> daysJson;
-      try {
-        daysJson = jsonDecode(jsonStr) as List<dynamic>;
-      } catch (e) {
-        print('❌ JSON parse failed: $e');
-        print('❌ First 500 chars:\n${jsonStr.substring(0, jsonStr.length.clamp(0, 500))}');
-        return null;
-      }
+    final usedIds = <String>{};
+    final days    = <ItineraryDay>[];
 
-      return daysJson.map((d) {
-        final dayMap    = Map<String, dynamic>.from(d);
-        final rawPlaces = (dayMap['places'] as List? ?? []);
+    for (int i = 0; i < totalDays; i++) {
+      final clusterPlaces = clusters[i]
+          .where((p) => !usedIds.contains(p.id))
+          .take(attractionsPerDay)
+          .toList();
 
-        final fullPlaces = rawPlaces.map((p) {
-          final pm       = Map<String, dynamic>.from(p);
-          final placeId  = pm['placeId'] as String? ?? '';
-          final original = placeMap[placeId];
+      final dayCenter = _centroid(
+        clusterPlaces.isNotEmpty ? clusterPlaces : others,
+      );
+      final dayRestaurants = _closestUnused(
+        restaurants, dayCenter, restaurantsPerDay, usedIds, cuisines,
+      );
 
-          return {
-            'placeId':         placeId,
-            'name':            original?.name        ?? '',
-            'address':         original?.address     ?? '',
-            'photoUrl':        original?.photoUrl    ?? '',
-            'lat':             original?.lat         ?? 0.0,
-            'lng':             original?.lng         ?? 0.0,
-            'primaryType':     original?.primaryType ?? '',
-            'suggestedTime':   pm['suggestedTime']   ?? '09:00',
-            'durationMinutes': pm['durationMinutes'] ?? 60,
-            'notes':           pm['notes']           ?? '',
-          };
-        }).toList();
+      usedIds.addAll(clusterPlaces.map((p) => p.id));
+      usedIds.addAll(dayRestaurants.map((p) => p.id));
 
-        dayMap['places'] = fullPlaces;
-        return ItineraryDay.fromMap(dayMap);
-      }).toList();
-    } catch (e) {
-      print('❌ _parseResponse: $e');
-      return null;
+      final scheduled = _assignTimeSlots(
+        clusterPlaces, dayRestaurants, placesPerDay,
+      );
+
+      days.add(ItineraryDay(
+        dayNumber: i + 1,
+        date:      startDates[i],
+        places:    scheduled,
+      ));
     }
+
+    return days;
   }
 
   // ─────────────────────────────────────────────
-  // Gemini API
+  // Geo clustering — greedy one-pass k-means
+  // Groups nearby non-restaurant places into days
+  // so each day's stops are geographically close
   // ─────────────────────────────────────────────
 
-  Future<String?> _callGemini(String prompt) async {
-    try {
-      const String apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
+  List<List<PlaceModel>> _geoClusters(List<PlaceModel> places, int k) {
+    if (places.isEmpty) return List.generate(k, (_) => []);
 
-      final response = await http.post(
-        Uri.parse(
-          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey',
-        ),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'contents': [
-            {
-              'parts': [{'text': prompt}]
-            }
-          ],
-          'generationConfig': {
-            'temperature':      0.3,
-            'maxOutputTokens':  8000,
-            'responseMimeType': 'application/json',
-          }
-        }),
-      );
+    // Spread seeds across rating-sorted list so every day gets quality options
+    final sorted = [...places]
+      ..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
 
-      if (response.statusCode != 200) {
-        print('❌ Gemini ${response.statusCode}: ${response.body}');
-        return null;
+    final seeds = <PlaceModel>[];
+    final step  = (sorted.length / k).ceil().clamp(1, sorted.length);
+    for (int i = 0; i < k; i++) {
+      seeds.add(sorted[(i * step).clamp(0, sorted.length - 1)]);
+    }
+
+    final clusters = List.generate(k, (_) => <PlaceModel>[]);
+
+    for (final p in places) {
+      if (p.lat == null || p.lng == null) continue;
+      int    bestIdx  = 0;
+      double bestDist = double.infinity;
+      for (int i = 0; i < seeds.length; i++) {
+        final d = _distSq(p.lat!, p.lng!, seeds[i].lat!, seeds[i].lng!);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      clusters[bestIdx].add(p);
+    }
+
+    // Best-rated places come first within each cluster
+    for (final c in clusters) {
+      c.sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
+    }
+
+    return clusters;
+  }
+
+  // ─────────────────────────────────────────────
+  // Pick restaurants closest to the day's centroid
+  // Cuisine match takes priority over distance
+  // ─────────────────────────────────────────────
+
+  List<PlaceModel> _closestUnused(
+    List<PlaceModel>           pool,
+    ({double lat, double lng}) center,
+    int                        count,
+    Set<String>                used,
+    List<String>               cuisines,
+  ) {
+    final available = pool
+        .where((p) => !used.contains(p.id) && p.lat != null && p.lng != null)
+        .toList();
+
+    available.sort((a, b) {
+      final aMatch = cuisines.any((c) =>
+          a.name.toLowerCase().contains(c) ||
+          a.allTypes.any((t) => t.contains(c)));
+      final bMatch = cuisines.any((c) =>
+          b.name.toLowerCase().contains(c) ||
+          b.allTypes.any((t) => t.contains(c)));
+
+      if (aMatch != bMatch) return aMatch ? -1 : 1;
+
+      return _distSq(a.lat!, a.lng!, center.lat, center.lng)
+          .compareTo(_distSq(b.lat!, b.lng!, center.lat, center.lng));
+    });
+
+    return available.take(count).toList();
+  }
+
+  // ─────────────────────────────────────────────
+  // Assign time slots
+  // Structure mirrors the old Gemini prompt rules
+  // ─────────────────────────────────────────────
+
+  List<ItineraryPlace> _assignTimeSlots(
+    List<PlaceModel> attractions,
+    List<PlaceModel> restaurants,
+    int              placesPerDay,
+  ) {
+    final slots = <({String time, int duration, bool isRestaurant})>[];
+
+    if (placesPerDay == 2) {
+      slots.add((time: '09:00', duration: 120, isRestaurant: false));
+      slots.add((time: '12:30', duration: 75,  isRestaurant: true));
+    } else if (placesPerDay == 3) {
+      slots.add((time: '09:00', duration: 120, isRestaurant: false));
+      slots.add((time: '12:00', duration: 75,  isRestaurant: true));
+      slots.add((time: '14:30', duration: 120, isRestaurant: false));
+    } else if (placesPerDay == 4) {
+      slots.add((time: '08:00', duration: 150, isRestaurant: false));
+      slots.add((time: '11:30', duration: 75,  isRestaurant: true));
+      slots.add((time: '14:00', duration: 150, isRestaurant: false));
+      slots.add((time: '18:00', duration: 90,  isRestaurant: true));
+    } else if (placesPerDay == 5) {
+      slots.add((time: '08:00', duration: 120, isRestaurant: false));
+      slots.add((time: '11:00', duration: 75,  isRestaurant: true));
+      slots.add((time: '13:30', duration: 120, isRestaurant: false));
+      slots.add((time: '17:00', duration: 90,  isRestaurant: true));
+      slots.add((time: '19:30', duration: 90,  isRestaurant: false));
+    } else {
+      // 6 places
+      slots.add((time: '08:00', duration: 90,  isRestaurant: false));
+      slots.add((time: '10:30', duration: 90,  isRestaurant: false));
+      slots.add((time: '12:30', duration: 75,  isRestaurant: true));
+      slots.add((time: '14:30', duration: 90,  isRestaurant: false));
+      slots.add((time: '17:30', duration: 90,  isRestaurant: true));
+      slots.add((time: '20:00', duration: 90,  isRestaurant: false));
+    }
+
+    final result = <ItineraryPlace>[];
+    int attIdx = 0;
+    int resIdx = 0;
+
+    for (final slot in slots) {
+      PlaceModel? place;
+
+      if (slot.isRestaurant && resIdx < restaurants.length) {
+        place = restaurants[resIdx++];
+      } else if (!slot.isRestaurant && attIdx < attractions.length) {
+        place = attractions[attIdx++];
+      } else if (!slot.isRestaurant && resIdx < restaurants.length) {
+        place = restaurants[resIdx++]; // fallback
+      } else if (slot.isRestaurant && attIdx < attractions.length) {
+        place = attractions[attIdx++]; // fallback
       }
 
-      final data = jsonDecode(response.body);
-      return data['candidates'][0]['content']['parts'][0]['text'] as String?;
-    } catch (e) {
-      print('❌ _callGemini: $e');
-      return null;
+      if (place == null) continue;
+
+      result.add(ItineraryPlace(
+        placeId:         place.id,
+        name:            place.name,
+        address:         place.address ?? '',
+        photoUrl:        place.photoUrl,
+        lat:             place.lat,
+        lng:             place.lng,
+        suggestedTime:   slot.time,
+        durationMinutes: slot.duration,
+        notes:           _generateNote(place),
+      ));
     }
+
+    return result;
+  }
+
+  // ─────────────────────────────────────────────
+  // Rule-based notes
+  // ─────────────────────────────────────────────
+
+  String _generateNote(PlaceModel p) {
+    final stars = p.rating != null
+        ? '⭐ ${p.rating!.toStringAsFixed(1)} · '
+        : '';
+
+    return switch (p.primaryType ?? '') {
+      'restaurant'         => '${stars}Popular dining spot. Check wait times during peak hours.',
+      'tourist_attraction' => '${stars}A must-visit landmark. Arrive early to avoid crowds.',
+      'shopping_mall'      => '${stars}Great for shopping and indoor activities.',
+      'amusement_park'     => '${stars}Fun for all ages. Book tickets in advance if possible.',
+      'park'               => '${stars}Perfect for a relaxing outdoor break.',
+      _                    => '${stars}Worth a visit during your trip.',
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // Geometry helpers
+  // ─────────────────────────────────────────────
+
+  /// Squared Euclidean distance (no sqrt needed — used for comparison only)
+  double _distSq(double lat1, double lng1, double lat2, double lng2) {
+    final dlat = lat1 - lat2;
+    final dlng = lng1 - lng2;
+    return dlat * dlat + dlng * dlng;
+  }
+
+  /// Geographic centroid of a list of places
+  ({double lat, double lng}) _centroid(List<PlaceModel> places) {
+    final valid = places
+        .where((p) => p.lat != null && p.lng != null)
+        .toList();
+    if (valid.isEmpty) return (lat: 0.0, lng: 0.0);
+    final lat = valid.map((p) => p.lat!).reduce((a, b) => a + b) / valid.length;
+    final lng = valid.map((p) => p.lng!).reduce((a, b) => a + b) / valid.length;
+    return (lat: lat, lng: lng);
   }
 }

@@ -28,6 +28,8 @@ class FavouriteService {
   }
 
   static Future<List<String>> _fetchTypesFromApi(String placeId) async {
+    if (placeId.startsWith('geo_')) return [];
+    
     try {
       final cached = await _firestore
           .collection('place_details')

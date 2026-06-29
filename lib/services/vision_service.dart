@@ -31,7 +31,7 @@ enum DetectionMethod {
 }
 
 class VisionService {
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
+  static const String _apiKey = 'AQ.Ab8RN6IzpDwG-M2jWuXySJCvcywHMj7VBftYmPUkwaF2Cv77TA';
   static const double _highConfidenceThreshold = 0.70;
 
   // ─────────────────────────────────────────────────────────────

@@ -3,10 +3,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../models/postModel.dart';
+import 'algolia_service.dart';
 
 class PostService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance; 
+  final FirebaseAuth _auth = FirebaseAuth.instance;
 
 
   Future<void> incrementPostCount() async {
@@ -20,6 +21,21 @@ class PostService {
       print('Update post count failed: $e');
     }
   }
+
+  Future<void> incrementTagCounts(List<String> tags) async {
+    if (tags.isEmpty) return;
+    try {
+      final batch = _firestore.batch();
+      for (final tag in tags) {
+        final ref = _firestore.collection('tags').doc(tag);
+        batch.set(ref, {'count': FieldValue.increment(1)}, SetOptions(merge: true));
+      }
+      await batch.commit();
+    } catch (e) {
+      print('Update tag counts failed: $e');
+    }
+  }
+
 
   Future<void> decrementPostCount() async {
     String? userId = _auth.currentUser?.uid;
@@ -57,30 +73,6 @@ class PostService {
       });
     } catch (e) {
       print('Update favourite count failed: $e');
-    }
-  }
-
-  Future<void> incrementRouteCount() async {
-    String? userId = _auth.currentUser?.uid;
-    if (userId == null) return;
-    try {
-      await _firestore.collection('users').doc(userId).update({
-        'routeCount': FieldValue.increment(1),
-      });
-    } catch (e) {
-      print('Update route count failed: $e');
-    }
-  }
-
-  Future<void> decrementRouteCount() async {
-    String? userId = _auth.currentUser?.uid;
-    if (userId == null) return;
-    try {
-      await _firestore.collection('users').doc(userId).update({
-        'routeCount': FieldValue.increment(-1),
-      });
-    } catch (e) {
-      print('Update route count failed: $e');
     }
   }
 
@@ -260,12 +252,18 @@ class PostService {
 
   // ===== 删除帖子 =====
 
+  // ================================================================
+// 替换 post_service.dart 里的 deletePost() 方法
+// ================================================================
+
   Future<void> deletePost(String postId) async {
     try {
       DocumentSnapshot doc =
           await _firestore.collection('posts').doc(postId).get();
       if (doc.exists) {
         Post post = Post.fromFirestore(doc);
+
+        // ── 删本地图片 ──
         for (String imagePath in post.images) {
           try {
             File imageFile = File(imagePath);
@@ -274,8 +272,14 @@ class PostService {
             print('Failed to delete local image: $e');
           }
         }
+
+        // ── 删 Firestore ──
         await _firestore.collection('posts').doc(postId).delete();
-        await decrementPostCount(); // ✅ 直接调用本类方法
+
+        // ── 同步删 Algolia ──
+        await AlgoliaService.deletePost(postId);
+
+        await decrementPostCount();
       }
     } catch (e) {
       throw Exception('Failed to delete post: $e');
@@ -343,14 +347,48 @@ class PostService {
             snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList());
   }
 
+/// 同时搜索 标题 + 标签，合并去重，只返回 public 帖子
   Future<List<Post>> searchPosts(String keyword) async {
+    if (keyword.trim().isEmpty) return [];
+
     try {
-      QuerySnapshot snapshot = await _firestore
+      final kw = keyword.trim().toLowerCase();
+
+      // ── 1. 搜标题 (Firestore prefix match) ──
+      final titleSnapshot = await _firestore
           .collection('posts')
+          .where('visibility', isEqualTo: 'public')
           .where('title', isGreaterThanOrEqualTo: keyword)
-          .where('title', isLessThanOrEqualTo: keyword + '\uf8ff')
+          .where('title', isLessThanOrEqualTo: '$keyword\uf8ff')
+          .limit(10)
           .get();
-      return snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
+
+      // ── 2. 搜标签 (arrayContains，只能单个词) ──
+      final tagSnapshot = await _firestore
+          .collection('posts')
+          .where('visibility', isEqualTo: 'public')
+          .where('tags', arrayContains: kw)
+          .limit(10)
+          .get();
+
+      // ── 合并去重 ──
+      final seen = <String>{};
+      final posts = <Post>[];
+
+      for (final doc in [...titleSnapshot.docs, ...tagSnapshot.docs]) {
+        if (seen.add(doc.id)) {
+          posts.add(Post.fromFirestore(doc));
+        }
+      }
+
+      // 按时间倒序
+      posts.sort((a, b) {
+        if (a.createdAt == null) return 1;
+        if (b.createdAt == null) return -1;
+        return b.createdAt!.compareTo(a.createdAt!);
+      });
+
+      return posts;
     } catch (e) {
       throw Exception('Failed to search posts: $e');
     }

@@ -6,7 +6,6 @@ class UserProfile {
   final String backgroundImageUrl;
   final int postCount;
   final int favouriteCount;
-  final int routeCount;
 
   UserProfile({
     required this.uid,
@@ -16,7 +15,6 @@ class UserProfile {
     required this.backgroundImageUrl,
     this.postCount = 0,
     this.favouriteCount = 0,
-    this.routeCount = 0,
   });
 
   factory UserProfile.fromMap(Map<String, dynamic> map, String uid) {
@@ -28,7 +26,6 @@ class UserProfile {
       backgroundImageUrl: map['backgroundImageUrl'] ?? '',
       postCount: map['postCount'] ?? 0,
       favouriteCount: map['favouriteCount'] ?? 0,
-      routeCount: map['routeCount'] ?? 0,
     );
   }
 
@@ -41,20 +38,16 @@ class UserProfile {
       'backgroundImageUrl': backgroundImageUrl,
       'postCount': postCount,
       'favouriteCount': favouriteCount,
-      'routeCount': routeCount,
     };
   }
 
   UserProfile copyWith({
     String? username,
-    String? displayName,
-    
     String? bio,
     String? profileImageUrl,
     String? backgroundImageUrl,
     int? postCount,
     int? favouriteCount,
-    int? routeCount,
   }) {
     return UserProfile(
       uid: this.uid,
@@ -64,7 +57,6 @@ class UserProfile {
       backgroundImageUrl: backgroundImageUrl ?? this.backgroundImageUrl,
       postCount: postCount ?? this.postCount,
       favouriteCount: favouriteCount ?? this.favouriteCount,
-      routeCount: routeCount ?? this.routeCount,
     );
   }
 }

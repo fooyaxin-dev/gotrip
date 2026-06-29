@@ -3,12 +3,16 @@ import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class PlacesApiService {
-  static const String _apiKey ='AIzaSyB2fqEyndn2Z8d6YM38p1ZbmEADQJimBtI'; // String.fromEnvironment('GOOGLE_API_KEY');
+  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
   static const String _baseUrl = 'https://places.googleapis.com/v1';
 
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static const String _collectionName = 'place_details';
- 
+
+  // Cache for geo_ → Google Place ID lookups (in-memory, per session)
+  // Key: 'geo_placeId', Value: Google Place ID e.g. 'ChIJ...'
+  static final Map<String, String> _geoToGoogleIdCache = {};
+
   static int _totalApiCalls = 0;
   static int _searchNearbyCallCount = 0;
   static int _searchTextCallCount = 0;
@@ -22,11 +26,11 @@ class PlacesApiService {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': _apiKey,
       'X-Goog-FieldMask': fieldMask,
-    }; 
+    };
   }
 
   static void printStats() {
-    print('╔════════════════════════════════════════╗'); 
+    print('╔════════════════════════════════════════╗');
     print('║   📊 API Call Statistics               ║');
     print('╠════════════════════════════════════════╣');
     print('║ Total API Calls: $_totalApiCalls');
@@ -62,11 +66,105 @@ class PlacesApiService {
     print('📊 API stats reset');
   }
 
-  /// 🟡 searchNearby
- static Future<List<Map<String, dynamic>>> searchNearby({
+  // ── 🔍 Find Google Place ID for a Geoapify place ─────────────────────────
+  // Called only when user taps into a Geoapify place's detail page.
+  // Uses Text Search with name + coords to find the matching Google Place ID.
+  // Result is cached in Firestore so the same place is never looked up twice.
+  static Future<String?> findGooglePlaceId({
+    required String geoInternalId,   // our 'geo_xxx' id — used as cache key
+    required String placeName,
     required double lat,
     required double lng,
-    List<String>? types,          
+  }) async {
+    // 1. Check in-memory cache first (same session)
+    if (_geoToGoogleIdCache.containsKey(geoInternalId)) {
+      print('🧠 findGooglePlaceId: in-memory hit for $placeName');
+      return _geoToGoogleIdCache[geoInternalId];
+    }
+
+    // 2. Check Firestore cache (persists across sessions)
+    try {
+      final cacheDoc = await _firestore
+          .collection('geo_to_google_id')
+          .doc(geoInternalId)
+          .get();
+
+      if (cacheDoc.exists) {
+        final googleId = cacheDoc.data()?['googlePlaceId'] as String?;
+        if (googleId != null && googleId.isNotEmpty) {
+          print('💾 findGooglePlaceId: Firestore hit for $placeName → $googleId');
+          _geoToGoogleIdCache[geoInternalId] = googleId;
+          return googleId;
+        }
+      }
+    } catch (e) {
+      print('⚠️ findGooglePlaceId: Firestore cache check failed: $e');
+    }
+
+    // 3. Call Google Text Search API
+    print('🔵 findGooglePlaceId: Text Search for "$placeName" at ($lat, $lng)');
+    _totalApiCalls++;
+    _searchTextCallCount++;
+
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/places:searchText'),
+        headers: _headers('places.id,places.displayName,places.location'),
+        body: jsonEncode({
+          'textQuery': placeName,
+          'locationBias': {
+            'circle': {
+              'center': {'latitude': lat, 'longitude': lng},
+              'radius': 100.0,   // tight radius — we know the coords
+            }
+          },
+          'maxResultCount': 1,
+        }),
+      );
+
+      if (response.statusCode != 200) {
+        print('❌ findGooglePlaceId: Text Search failed ${response.statusCode}');
+        return null;
+      }
+
+      final data = json.decode(response.body);
+      final places = data['places'] as List?;
+      if (places == null || places.isEmpty) {
+        print('⚠️ findGooglePlaceId: no results for "$placeName"');
+        return null;
+      }
+
+      final googleId = places[0]['id'] as String?;
+      if (googleId == null || googleId.isEmpty) return null;
+
+      print('✅ findGooglePlaceId: "$placeName" → $googleId');
+
+      // 4. Save to Firestore cache so we never call this again for the same place
+      _firestore
+          .collection('geo_to_google_id')
+          .doc(geoInternalId)
+          .set({
+            'googlePlaceId': googleId,
+            'placeName':     placeName,
+            'lat':           lat,
+            'lng':           lng,
+            'cachedAt':      FieldValue.serverTimestamp(),
+          });
+
+      _geoToGoogleIdCache[geoInternalId] = googleId;
+      return googleId;
+
+    } catch (e) {
+      print('❌ findGooglePlaceId exception: $e');
+      return null;
+    }
+  }
+
+  /// 🟡 searchNearby
+  static Future<List<Map<String, dynamic>>> searchNearby({
+    required double lat,
+    required double lng,
+    List<String>? types,
     int radius = 5000,
     int maxResultCount = 20,
   }) async {
@@ -76,8 +174,6 @@ class PlacesApiService {
 
     final label = types == null ? 'ALL' : types.first;
     print('🟡 API Call #$_totalApiCalls: searchNearby | $label');
-
-    final url = Uri.parse('$_baseUrl/places:searchNearby');
 
     final Map<String, dynamic> bodyMap = {
       "locationRestriction": {
@@ -147,7 +243,6 @@ class PlacesApiService {
     );
 
     final duration = DateTime.now().difference(startTime);
-
     if (response.statusCode != 200) {
       throw Exception('searchText failed: ${response.body}');
     }
@@ -158,22 +253,18 @@ class PlacesApiService {
     return rawPlaces.map(_normalizePlace).toList();
   }
 
-  /// 🔍 Autocomplete — 用户输入时显示地点建议
+  /// 🔍 Autocomplete
   static Future<List<Map<String, dynamic>>> autocomplete({
     required String input,
     double? lat,
     double? lng,
-    int radius = 50000, // 50km bias，not restrict
+    int radius = 50000,
   }) async {
     if (input.trim().isEmpty) return [];
- 
+
     final url = Uri.parse('$_baseUrl/places:autocomplete');
- 
-    final body = <String, dynamic>{
-      'input': input,
-    };
- 
-    // if there is a valid lat/lng, add locationBias to prioritize nearby results (but not restrict to)
+    final body = <String, dynamic>{'input': input};
+
     if (lat != null && lng != null) {
       body['locationBias'] = {
         'circle': {
@@ -182,45 +273,45 @@ class PlacesApiService {
         }
       };
     }
- 
+
     final response = await http.post(
       url,
       headers: _headers('suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat'),
       body: jsonEncode(body),
     );
- 
+
     if (response.statusCode != 200) {
       print('❌ Autocomplete failed: ${response.body}');
       return [];
     }
- 
+
     final data = json.decode(response.body);
     final suggestions = (data['suggestions'] as List?) ?? [];
- 
+
     return suggestions.map((s) {
       final pred = s['placePrediction'];
       return {
-        'placeId':     pred['placeId'] ?? '',
-        'description': pred['text']?['text'] ?? '',
-        'mainText':    pred['structuredFormat']?['mainText']?['text'] ?? '',
+        'placeId':       pred['placeId'] ?? '',
+        'description':   pred['text']?['text'] ?? '',
+        'mainText':      pred['structuredFormat']?['mainText']?['text'] ?? '',
         'secondaryText': pred['structuredFormat']?['secondaryText']?['text'] ?? '',
       };
     }).where((s) => (s['placeId'] as String).isNotEmpty).toList();
   }
- 
-  /// 📍 take lng and lat through place id (often do it after select a place autocomplete)
+
+  /// 📍 Get lat/lng from place ID
   static Future<Map<String, dynamic>?> getPlaceLatLng(String placeId) async {
     final url = Uri.parse('$_baseUrl/places/$placeId');
     final response = await http.get(
       url,
       headers: _headers('displayName,formattedAddress,location'),
     );
- 
+
     if (response.statusCode != 200) {
       print('❌ getPlaceLatLng failed: ${response.body}');
       return null;
     }
- 
+
     final data = json.decode(response.body);
     return {
       'name':    data['displayName']?['text'] ?? '',
@@ -229,10 +320,8 @@ class PlacesApiService {
       'lng':     data['location']?['longitude'],
     };
   }
- 
 
-
-  /// 📄 Place Details (save to firebase)
+  /// 📄 Place Details (with Firebase cache)
   static Future<Map<String, dynamic>> getPlaceDetails(String placeId) async {
     final startTime = DateTime.now();
     print('📄 getPlaceDetails: $placeId');
@@ -247,7 +336,6 @@ class PlacesApiService {
       if (docSnapshot.exists) {
         final cachedData = docSnapshot.data()!;
 
-        // 检查缓存是否过期（超过 30 天就重新拿）
         final cachedAt = cachedData['cachedAt'];
         bool isExpired = true;
         if (cachedAt != null && cachedAt is Timestamp) {
@@ -255,7 +343,7 @@ class PlacesApiService {
           isExpired = age.inDays > 30;
         }
 
-        final hasTypes = cachedData.containsKey('types') &&
+        final hasTypes    = cachedData.containsKey('types') &&
             (cachedData['types'] as List?)?.isNotEmpty == true;
         final hasLocation = cachedData.containsKey('location');
 
@@ -283,8 +371,7 @@ class PlacesApiService {
       );
 
       if (response.statusCode == 404) {
-        // Place ID 失效，清掉缓存
-        print('⚠️ Place ID invalid (404), clearing cache: $placeId');
+        print('⚠️ Place ID invalid (404): $placeId');
         await _firestore.collection(_collectionName).doc(placeId).delete();
         throw Exception('Place ID no longer valid: $placeId');
       }
@@ -308,8 +395,7 @@ class PlacesApiService {
       rethrow;
     }
   }
-    
-    
+
   static Future<void> clearPlaceCache(String placeId) async {
     try {
       await _firestore.collection(_collectionName).doc(placeId).delete();
@@ -321,7 +407,7 @@ class PlacesApiService {
 
   static Future<void> clearAllCache() async {
     try {
-      final batch = _firestore.batch();
+      final batch    = _firestore.batch();
       final snapshot = await _firestore.collection(_collectionName).get();
       for (var doc in snapshot.docs) {
         batch.delete(doc.reference);
@@ -332,22 +418,6 @@ class PlacesApiService {
       print('❌ Failed to clear all cache: $e');
     }
   }
-
-  // static Future<Map<String, dynamic>> getCacheStats() async {
-  //   try {
-  //     final snapshot = await _firestore.collection(_collectionName).get();
-  //     return {
-  //       'totalCachedPlaces': snapshot.docs.length,
-  //       'cacheHits': _cacheHits,
-  //       'cacheMisses': _cacheMisses,
-  //       'hitRate': _cacheHits + _cacheMisses > 0
-  //           ? (_cacheHits / (_cacheHits + _cacheMisses) * 100).toStringAsFixed(1)
-  //           : '0.0',
-  //     };
-  //   } catch (e) {
-  //     return {'totalCachedPlaces': 0, 'cacheHits': _cacheHits, 'cacheMisses': _cacheMisses, 'hitRate': '0.0'};
-  //   }
-  // }
 
   static String buildPhotoUrl(String photoName, {int maxWidth = 800}) {
     return '$_baseUrl/$photoName/media?key=$_apiKey&maxWidthPx=$maxWidth';
@@ -362,19 +432,18 @@ class PlacesApiService {
     }
 
     return {
-      'id': p['id'],
-      'displayName': p['displayName'],
+      'id':               p['id'],
+      'displayName':      p['displayName'],
       'formattedAddress': p['formattedAddress'] ?? '',
       'location': {
-        'latitude': p['location']['latitude'],
+        'latitude':  p['location']['latitude'],
         'longitude': p['location']['longitude'],
       },
-      'types': (p['types'] as List?) ?? [],
-      'rating': (p['rating'] as num?)?.toDouble(),
-      'photos': photoList,
-      'priceLevel': p['priceLevel'],  
-      'source': 'google',
+      'types':      (p['types'] as List?) ?? [],
+      'rating':     (p['rating'] as num?)?.toDouble(),
+      'photos':     photoList,
+      'priceLevel': p['priceLevel'],
+      'source':     'google',
     };
   }
-
 }

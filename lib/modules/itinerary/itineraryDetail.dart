@@ -25,10 +25,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   late TabController  _tabController;
   bool _isSaving = false;
 
-  // For auto-scroll to next place card
   final Map<String, GlobalKey> _cardKeys = {};
-
-  // Arrival stream subscription
   StreamSubscription<PlaceArrivalEvent>? _arrivalSub;
 
   @override
@@ -39,11 +36,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       length: _itinerary.days.length,
       vsync: this,
     );
-
-    // Tell LocationService which places to watch
     LocationService.instance.watchItinerary(_itinerary);
-
-    // Listen for arrivals
     _arrivalSub = LocationService.instance.arrivalStream.listen(_onArrival);
   }
 
@@ -61,12 +54,10 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   void _onArrival(PlaceArrivalEvent event) {
     if (!mounted) return;
 
-    // Switch to the correct day tab first
     if (_tabController.index != event.dayIndex) {
       _tabController.animateTo(event.dayIndex);
     }
 
-    // Show Waze-style arrived dialog
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -82,7 +73,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   // ─────────────────────────────────────────────
-  // Mark visited
+  // Mark visited — KEY CHANGE: pass placeId + primaryType to history
   // ─────────────────────────────────────────────
 
   void _markVisited(int dayIndex, int placeIndex) {
@@ -101,11 +92,11 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     LocationService.instance.markArrived(visited.placeId);
     LocationService.instance.watchItinerary(_itinerary);
 
-    // 只有已经保存过的 itinerary 才 auto-save visited 状态
     if (_itinerary.id.isNotEmpty) {
       ItineraryService.instance.update(_itinerary);
     }
 
+    // ── Save to history with placeId + primaryType + city (auto-extracted) ──
     HistoryService.instance.addEntry(
       placeName:      visited.name,
       address:        visited.address,
@@ -113,14 +104,14 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       visitedAt:      visited.visitedAt!,
       itineraryId:    _itinerary.id,
       itineraryTitle: _itinerary.title,
+      placeId:        visited.placeId,      // ← Google Place ID
+      primaryType:    visited.primaryType,  // ← e.g. 'restaurant', 'park'
     );
 
     _scrollToNextPlace(dayIndex);
 
     _cardKeys.removeWhere((key, _) =>
-      !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key))
-    );
-
+        !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key)));
   }
 
   void _scrollToNextPlace(int dayIndex) {
@@ -151,13 +142,11 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     String? savedId;
 
     if (_itinerary.id.isEmpty) {
-      // 新的，用 save() 创建
       savedId = await ItineraryService.instance.save(_itinerary);
       if (savedId != null) {
         setState(() => _itinerary = _itinerary.copyWith(id: savedId!));
       }
     } else {
-      // 已有的，用 update()
       await ItineraryService.instance.update(_itinerary);
       savedId = _itinerary.id;
     }
@@ -171,7 +160,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
             behavior: SnackBarBehavior.floating,
           ),
         );
-        Navigator.pop(context, true); // 告诉上一页需要 reload
+        Navigator.pop(context, true);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -192,9 +181,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     LocationService.instance.watchItinerary(_itinerary);
 
     _cardKeys.removeWhere((key, _) =>
-      !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key))
-    );
-
+        !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key)));
   }
 
   void _reorderPlaces(int dayIndex, int oldIndex, int newIndex) {
@@ -207,21 +194,17 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     setState(() => _itinerary = _itinerary.copyWith(days: days));
 
     _cardKeys.removeWhere((key, _) =>
-      !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key))
-    );
-
+        !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key)));
   }
 
   void _updatePlace(int dayIndex, int placeIndex, ItineraryPlace updated) {
     final days   = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
     places[placeIndex] = updated;
-    // Re-sort by time after any time edit
     places.sort((a, b) => a.suggestedTime.compareTo(b.suggestedTime));
     days[dayIndex] = days[dayIndex].copyWith(places: places);
     setState(() => _itinerary = _itinerary.copyWith(days: days));
   }
-  
 
   // ─────────────────────────────────────────────
   // Time / Duration editing
@@ -286,7 +269,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
               ),
               const SizedBox(height: 16),
               const Text('Visit Duration',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  style: TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(height: 4),
               Text('Select how long you plan to stay',
                   style: TextStyle(fontSize: 12, color: Colors.grey[500])),
@@ -307,8 +291,9 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                     selectedColor: const Color(0xFF7C4DFF),
                     labelStyle: TextStyle(
                       color: isSelected ? Colors.white : Colors.black87,
-                      fontWeight:
-                          isSelected ? FontWeight.bold : FontWeight.normal,
+                      fontWeight: isSelected
+                          ? FontWeight.bold
+                          : FontWeight.normal,
                     ),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10)),
@@ -357,7 +342,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                   ),
                   child: const Text('Confirm',
                       style: TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold)),
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold)),
                 ),
               ),
             ],
@@ -402,7 +388,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   // ─────────────────────────────────────────────
-  // Sliver Header  (now with progress bar)
+  // Sliver Header
   // ─────────────────────────────────────────────
 
   Widget _buildSliverHeader() {
@@ -415,7 +401,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       pinned: true,
       backgroundColor: const Color(0xFF5E35B1),
       leading: IconButton(
-        icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
+        icon: const Icon(Icons.arrow_back_ios_new,
+            color: Colors.white, size: 20),
         onPressed: () => Navigator.pop(context),
       ),
       actions: [
@@ -445,7 +432,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                         color: Colors.white70, size: 14),
                     SizedBox(width: 6),
                     Text('AI Generated Itinerary',
-                        style: TextStyle(color: Colors.white70, fontSize: 12)),
+                        style: TextStyle(
+                            color: Colors.white70, fontSize: 12)),
                   ]),
                   const SizedBox(height: 8),
                   Text(_itinerary.title,
@@ -455,13 +443,13 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                           fontWeight: FontWeight.bold)),
                   const SizedBox(height: 6),
                   Text(
-                    '${_itinerary.totalDays} ${_itinerary.totalDays == 1 ? "day" : "days"} · '
+                    '${_itinerary.totalDays} '
+                    '${_itinerary.totalDays == 1 ? "day" : "days"} · '
                     'Starting ${_itinerary.startDate}',
-                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 13),
                   ),
                   const SizedBox(height: 12),
-
-                  // ── Progress bar ──
                   Row(children: [
                     Expanded(
                       child: ClipRRect(
@@ -505,12 +493,15 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         labelStyle:
             const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
         tabs: List.generate(_itinerary.totalDays, (i) {
-          final day  = _itinerary.days.length > i ? _itinerary.days[i] : null;
+          final day  = _itinerary.days.length > i
+              ? _itinerary.days[i]
+              : null;
           final date = day != null
               ? DateFormat('MMM dd').format(DateTime.parse(day.date))
               : 'Day ${i + 1}';
           final isComplete = day?.isCompleted ?? false;
-          return Tab(text: '${isComplete ? "✅ " : ""}Day ${i + 1}\n$date');
+          return Tab(
+              text: '${isComplete ? "✅ " : ""}Day ${i + 1}\n$date');
         }),
       ),
     );
@@ -551,7 +542,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       itemBuilder: (_, i) {
         final place     = day.places[i];
         final isVisited = place.isVisited;
-        final isNext    = !isVisited && nextPlace?.placeId == place.placeId;
+        final isNext    = !isVisited &&
+            nextPlace?.placeId == place.placeId;
 
         _cardKeys.putIfAbsent(place.placeId, () => GlobalKey());
 
@@ -567,7 +559,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   // ─────────────────────────────────────────────
-  // Place Card  —  3 states: visited / next / upcoming
+  // Place Card
   // ─────────────────────────────────────────────
 
   Widget _buildPlaceCard(
@@ -609,12 +601,12 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         child: Column(
           children: [
 
-            // ── "Next Stop" banner ──
+            // Next Stop banner
             if (isNext)
               Container(
                 width: double.infinity,
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+                padding: const EdgeInsets.symmetric(
+                    vertical: 6, horizontal: 16),
                 decoration: const BoxDecoration(
                   color: Color(0xFF7C4DFF),
                   borderRadius:
@@ -632,16 +624,16 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                 ]),
               ),
 
-            // ── "Visited" banner ──
+            // Visited banner
             if (isVisited)
               Container(
                 width: double.infinity,
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+                padding: const EdgeInsets.symmetric(
+                    vertical: 6, horizontal: 16),
                 decoration: BoxDecoration(
                   color: Colors.green[50],
-                  borderRadius:
-                      const BorderRadius.vertical(top: Radius.circular(18)),
+                  borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(18)),
                 ),
                 child: Row(children: [
                   Icon(Icons.check_circle_rounded,
@@ -657,11 +649,10 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                 ]),
               ),
 
-            // ── Top row: time + duration + delete + drag ──
+            // Top row: time + duration + delete + drag
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
               child: Row(children: [
-
                 // Time chip
                 GestureDetector(
                   onTap: isVisited
@@ -671,11 +662,12 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                     padding: const EdgeInsets.symmetric(
                         horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                      color:
+                          const Color(0xFF7C4DFF).withOpacity(0.1),
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
-                          color:
-                              const Color(0xFF7C4DFF).withOpacity(0.3)),
+                          color: const Color(0xFF7C4DFF)
+                              .withOpacity(0.3)),
                     ),
                     child: Row(children: [
                       const Icon(Icons.access_time_rounded,
@@ -700,7 +692,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                 GestureDetector(
                   onTap: isVisited
                       ? null
-                      : () => _pickDuration(dayIndex, placeIndex, place),
+                      : () =>
+                          _pickDuration(dayIndex, placeIndex, place),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 8, vertical: 4),
@@ -715,7 +708,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                       const SizedBox(width: 3),
                       Text(_formatDuration(place.durationMinutes),
                           style: TextStyle(
-                              fontSize: 11, color: Colors.grey[700])),
+                              fontSize: 11,
+                              color: Colors.grey[700])),
                       if (!isVisited) ...[
                         const SizedBox(width: 3),
                         Icon(Icons.edit_rounded,
@@ -728,7 +722,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
                 if (!isVisited) ...[
                   GestureDetector(
-                    onTap: () => _confirmRemove(dayIndex, placeIndex),
+                    onTap: () =>
+                        _confirmRemove(dayIndex, placeIndex),
                     child: Container(
                       padding: const EdgeInsets.all(6),
                       decoration: BoxDecoration(
@@ -746,9 +741,9 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
               ]),
             ),
 
-            // ── Place info ──
+            // Place info
             Padding(
-              key: cardKey, // used for Scrollable.ensureVisible
+              key: cardKey,
               padding: const EdgeInsets.all(12),
               child: Row(children: [
                 ClipRRect(
@@ -757,7 +752,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                       ? Image.network(
                           place.photoUrl!,
                           width: 70, height: 70, fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _placeholderImg(),
+                          errorBuilder: (_, __, ___) =>
+                              _placeholderImg(),
                         )
                       : _placeholderImg(),
                 ),
@@ -774,7 +770,6 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                           color: isVisited
                               ? Colors.grey[500]
                               : const Color(0xFF1A1A2E),
-                          // Strike-through when visited
                           decoration: isVisited
                               ? TextDecoration.lineThrough
                               : null,
@@ -804,7 +799,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
               ]),
             ),
 
-            // ── Action buttons — hidden when visited ──
+            // Action buttons
             if (!isVisited)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
@@ -830,7 +825,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                       ),
                     ]),
 
-                    // ── DEBUG ONLY: simulate arrival without GPS ──
+                    // Debug only
                     if (kDebugMode) ...[
                       const SizedBox(height: 8),
                       GestureDetector(
@@ -842,23 +837,29 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                         )),
                         child: Container(
                           width: double.infinity,
-                          padding: const EdgeInsets.symmetric(vertical: 7),
+                          padding:
+                              const EdgeInsets.symmetric(vertical: 7),
                           decoration: BoxDecoration(
                             color: Colors.orange[50],
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: Colors.orange[300]!),
+                            borderRadius:
+                                BorderRadius.circular(10),
+                            border: Border.all(
+                                color: Colors.orange[300]!),
                           ),
                           child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
+                            mainAxisAlignment:
+                                MainAxisAlignment.center,
                             children: [
                               Icon(Icons.bug_report_rounded,
-                                  size: 13, color: Colors.orange[700]),
+                                  size: 13,
+                                  color: Colors.orange[700]),
                               const SizedBox(width: 5),
                               Text('Simulate Arrival',
                                   style: TextStyle(
                                       fontSize: 11,
                                       color: Colors.orange[700],
-                                      fontWeight: FontWeight.w600)),
+                                      fontWeight:
+                                          FontWeight.w600)),
                             ],
                           ),
                         ),
@@ -881,14 +882,14 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   Widget _placeholderImg() => Container(
-    width: 70, height: 70,
-    decoration: BoxDecoration(
-      color: Colors.grey[100],
-      borderRadius: BorderRadius.circular(12),
-    ),
-    child: Icon(Icons.location_on_rounded,
-        color: Colors.grey[300], size: 30),
-  );
+        width: 70, height: 70,
+        decoration: BoxDecoration(
+          color: Colors.grey[100],
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Icon(Icons.location_on_rounded,
+            color: Colors.grey[300], size: 30),
+      );
 
   Widget _actionBtn({
     required IconData icon,
@@ -961,7 +962,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                     SizedBox(width: 8),
                     Text('Save Itinerary',
                         style: TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.bold)),
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold)),
                   ],
                 ),
         ),
@@ -981,7 +983,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
             borderRadius: BorderRadius.circular(20)),
         title: const Text('Remove Place',
             style: TextStyle(fontWeight: FontWeight.bold)),
-        content: const Text('Remove this place from your itinerary?'),
+        content:
+            const Text('Remove this place from your itinerary?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -1064,47 +1067,51 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         ),
       ),
     );
-    if (result != null && result['action'] == 'start_navigation' && mounted) {
+    if (result != null &&
+        result['action'] == 'start_navigation' &&
+        mounted) {
       _navigate(place);
     }
   }
 
   void _navigate(ItineraryPlace place) {
     if (place.lat == null || place.lng == null) return;
-    
+
     final pos = LocationService.instance.currentPosition;
     if (pos == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to get your current location')),
+        const SnackBar(
+            content: Text('Unable to get your current location')),
       );
       return;
     }
 
-      Navigator.push(context, MaterialPageRoute(
-      builder: (_) => RoutePreviewPage(
-        startLat:        pos.latitude,
-        startLng:        pos.longitude,
-        endLat:          place.lat!,
-        endLng:          place.lng!,
-        destinationName: place.name,
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RoutePreviewPage(
+          startLat:        pos.latitude,
+          startLng:        pos.longitude,
+          endLat:          place.lat!,
+          endLng:          place.lng!,
+          destinationName: place.name,
+        ),
       ),
-    )).then((arrived) {
-      // ← 加这里，GuidePage 传回 true 就自动打卡
+    ).then((arrived) {
       if (arrived == true && mounted) {
         final dayIndex   = _tabController.index;
         final placeIndex = _itinerary.days[dayIndex].places
-          .indexWhere((p) => p.placeId == place.placeId);
+            .indexWhere((p) => p.placeId == place.placeId);
         if (placeIndex != -1) {
           _markVisited(dayIndex, placeIndex);
         }
       }
     });
-
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Waze-style arrived dialog  (extracted widget for cleanliness)
+// Waze-style arrived dialog
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ArrivedDialog extends StatelessWidget {
@@ -1121,7 +1128,8 @@ class _ArrivedDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(

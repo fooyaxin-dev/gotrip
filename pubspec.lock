@@ -9,6 +9,54 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "1.3.59"
+  algolia_client_core:
+    dependency: transitive
+    description:
+      name: algolia_client_core
+      sha256: "88b23e33b771b81f2ffbaa94293e45c09625d4ede5b10b58dcb0c3c1d90c5e04"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.46.2"
+  algolia_client_insights:
+    dependency: transitive
+    description:
+      name: algolia_client_insights
+      sha256: "05a2669bdc8ee525b087a78ddb949b2927e344fa61dbfd36eb8fecfad0b29f32"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.46.2"
+  algolia_client_search:
+    dependency: transitive
+    description:
+      name: algolia_client_search
+      sha256: "9857500e807c43aef9768c1a769b30def84f75fc161065f659cc818e6e7cc516"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.46.2"
+  algolia_helper_flutter:
+    dependency: "direct main"
+    description:
+      name: algolia_helper_flutter
+      sha256: "4add0a73f476bbac3204ae1ffbb5e66f73cdaf6ae6496038256d9c56d970a7d9"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.6.0"
+  algolia_insights:
+    dependency: transitive
+    description:
+      name: algolia_insights
+      sha256: "2d94aecfee207e8c0cb403ec9cdcf98baacdfa89054d5f2a26fbca87f358e0b4"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.0.4"
+  algoliasearch:
+    dependency: transitive
+    description:
+      name: algoliasearch
+      sha256: "63910f214f3402232279bff010eb9a132b4c103a35f2ce08329ad13e646d4241"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.46.2"
   animated_splash_screen:
     dependency: "direct main"
     description:
@@ -217,6 +265,22 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "0.7.12"
+  dio:
+    dependency: transitive
+    description:
+      name: dio
+      sha256: aff32c08f92787a557dd5c0145ac91536481831a01b4648136373cddb0e64f8c
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "5.9.2"
+  dio_web_adapter:
+    dependency: transitive
+    description:
+      name: dio_web_adapter
+      sha256: "2f9e64323a7c3c7ef69567d5c800424a11f8337b8b228bad02524c9fb3c1f340"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "2.1.2"
   equatable:
     dependency: transitive
     description:
@@ -387,6 +451,14 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_tts:
+    dependency: "direct main"
+    description:
+      name: flutter_tts
+      sha256: ce5eb209b40e95f2f4a1397116c87ab2fcdff32257d04ed7a764e75894c03775
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "4.2.5"
   flutter_web_plugins:
     dependency: transitive
     description: flutter
@@ -608,6 +680,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "0.12.4+4"
+  hive:
+    dependency: transitive
+    description:
+      name: hive
+      sha256: "8dcf6db979d7933da8217edcec84e9df1bdb4e4edc7fc77dbd5aa74356d6d941"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "2.2.3"
   html:
     dependency: transitive
     description:
@@ -752,6 +832,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "3.0.0"
+  logging:
+    dependency: transitive
+    description:
+      name: logging
+      sha256: c8245ada5f1717ed44271ed1c26b8ce85ca3228fd2ffdb75468ab01979309d61
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.3.0"
   lottie:
     dependency: "direct main"
     description:
@@ -928,6 +1016,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "2.3.1"
+  rxdart:
+    dependency: transitive
+    description:
+      name: rxdart
+      sha256: "5c3004a4a8dbb94bd4bf5412a4def4acdaa12e12f269737a5751369e12d1a962"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "0.28.0"
   sanitize_html:
     dependency: transitive
     description:

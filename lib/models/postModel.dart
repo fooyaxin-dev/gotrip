@@ -5,15 +5,16 @@ class Post {
   final String title;
   final String content;
   final List<String> images;
-  final List<String> videoPaths; 
+  final List<String> videoPaths;
   final int rating;
   final bool isAnonymous;
   final bool allowComments;
   final bool allowShare;
   final String? location;
   final String? city;
+  final double? locationLat;   
+  final double? locationLng;  
   final List<String> tags;
-  final List<String> mentionedFriends;
   final String? topic;
   final String visibility;
   final DateTime? createdAt;
@@ -37,8 +38,9 @@ class Post {
     this.allowShare = true,
     this.location,
     this.city,
+    this.locationLat,  
+    this.locationLng,   
     this.tags = const [],
-    this.mentionedFriends = const [],
     this.topic,
     this.visibility = 'public',
     this.createdAt,
@@ -63,61 +65,62 @@ class Post {
       userName = 'User_${data['userId'].toString().substring(0, 8)}';
     }
 
-  
     final rawImages = data['images'] ?? data['imagePaths'] ?? [];
 
     return Post(
-      id: doc.id,
-      title: data['title'] ?? '',
-      content: data['content'] ?? '',
-      images: List<String>.from(rawImages),
-      videoPaths: List<String>.from(data['videoPaths'] ?? []),
-      rating: data['rating'] ?? 0,
-      isAnonymous: data['isAnonymous'] ?? false,
-      allowComments: data['allowComments'] ?? true,
-      allowShare: data['allowShare'] ?? true,
-      location: data['location'],
-      city: data['city'],
-      tags: List<String>.from(data['tags'] ?? []),
-      mentionedFriends: List<String>.from(data['mentionedFriends'] ?? []),
-      topic: data['topic'],
-      visibility: data['visibility'] ?? 'public',
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
-      userId: data['userId'] ?? '',
-      userName: userName,
-      userPhoto: data['userPhoto'],
-      userEmail: data['userEmail'],
-      likes: data['likes'] ?? 0,
-      comments: data['comments'] ?? 0,
-      shares: data['shares'] ?? 0,
+      id:               doc.id,
+      title:            data['title']           ?? '',
+      content:          data['content']         ?? '',
+      images:           List<String>.from(rawImages),
+      videoPaths:       List<String>.from(data['videoPaths']       ?? []),
+      rating:           data['rating']          ?? 0,
+      isAnonymous:      data['isAnonymous']     ?? false,
+      allowComments:    data['allowComments']   ?? true,
+      allowShare:       data['allowShare']      ?? true,
+      location:         data['location'],
+      city:             data['city'],
+      locationLat:      (data['locationLat'] as num?)?.toDouble(),  // ← 新增
+      locationLng:      (data['locationLng'] as num?)?.toDouble(),  // ← 新增
+      tags:             List<String>.from(data['tags']             ?? []),
+      topic:            data['topic'],
+      visibility:       data['visibility']      ?? 'public',
+      createdAt:        (data['createdAt'] as Timestamp?)?.toDate(),
+      userId:           data['userId']          ?? '',
+      userName:         userName,
+      userPhoto:        data['userPhoto'],
+      userEmail:        data['userEmail'],
+      likes:            data['likes']           ?? 0,
+      comments:         data['comments']        ?? 0,
+      shares:           data['shares']          ?? 0,
     );
   }
 
   Map<String, dynamic> toMap() {
     return {
-      'title': title,
-      'content': content,
-      'images': images,
-      'rating': rating,
-      'isAnonymous': isAnonymous,
-      'allowComments': allowComments,
-      'allowShare': allowShare,
-      'location': location,
-      'city': city,
-      'tags': tags,
-      'mentionedFriends': mentionedFriends,
-      'topic': topic,
-      'visibility': visibility,
-      'createdAt': createdAt != null
+      'title':            title,
+      'content':          content,
+      'images':           images,
+      'rating':           rating,
+      'isAnonymous':      isAnonymous,
+      'allowComments':    allowComments,
+      'allowShare':       allowShare,
+      'location':         location,
+      'city':             city,
+      'locationLat':      locationLat,   // ← 新增
+      'locationLng':      locationLng,   // ← 新增
+      'tags':             tags,
+      'topic':            topic,
+      'visibility':       visibility,
+      'createdAt':        createdAt != null
           ? Timestamp.fromDate(createdAt!)
           : FieldValue.serverTimestamp(),
-      'userId': userId,
-      'userName': userName,
-      'userPhoto': userPhoto,
-      'userEmail': userEmail,
-      'likes': likes,
-      'comments': comments,
-      'shares': shares,
+      'userId':           userId,
+      'userName':         userName,
+      'userPhoto':        userPhoto,
+      'userEmail':        userEmail,
+      'likes':            likes,
+      'comments':         comments,
+      'shares':           shares,
     };
   }
 
@@ -132,8 +135,9 @@ class Post {
     bool? allowShare,
     String? location,
     String? city,
+    double? locationLat,   // ← 新增
+    double? locationLng,   // ← 新增
     List<String>? tags,
-    List<String>? mentionedFriends,
     String? topic,
     String? visibility,
     DateTime? createdAt,
@@ -146,46 +150,43 @@ class Post {
     int? shares,
   }) {
     return Post(
-      id: id ?? this.id,
-      title: title ?? this.title,
-      content: content ?? this.content,
-      images: images ?? this.images,
-      rating: rating ?? this.rating,
-      isAnonymous: isAnonymous ?? this.isAnonymous,
-      allowComments: allowComments ?? this.allowComments,
-      allowShare: allowShare ?? this.allowShare,
-      location: location ?? this.location,
-      city: city ?? this.city,
-      tags: tags ?? this.tags,
-      mentionedFriends: mentionedFriends ?? this.mentionedFriends,
-      topic: topic ?? this.topic,
-      visibility: visibility ?? this.visibility,
-      createdAt: createdAt ?? this.createdAt,
-      userId: userId ?? this.userId,
-      userName: userName ?? this.userName,
-      userPhoto: userPhoto ?? this.userPhoto,
-      userEmail: userEmail ?? this.userEmail,
-      likes: likes ?? this.likes,
-      comments: comments ?? this.comments,
-      shares: shares ?? this.shares,
+      id:               id               ?? this.id,
+      title:            title            ?? this.title,
+      content:          content          ?? this.content,
+      images:           images           ?? this.images,
+      rating:           rating           ?? this.rating,
+      isAnonymous:      isAnonymous      ?? this.isAnonymous,
+      allowComments:    allowComments    ?? this.allowComments,
+      allowShare:       allowShare       ?? this.allowShare,
+      location:         location         ?? this.location,
+      city:             city             ?? this.city,
+      locationLat:      locationLat      ?? this.locationLat,   
+      locationLng:      locationLng      ?? this.locationLng,   
+      tags:             tags             ?? this.tags,
+      topic:            topic            ?? this.topic,
+      visibility:       visibility       ?? this.visibility,
+      createdAt:        createdAt        ?? this.createdAt,
+      userId:           userId           ?? this.userId,
+      userName:         userName         ?? this.userName,
+      userPhoto:        userPhoto        ?? this.userPhoto,
+      userEmail:        userEmail        ?? this.userEmail,
+      likes:            likes            ?? this.likes,
+      comments:         comments         ?? this.comments,
+      shares:           shares           ?? this.shares,
     );
   }
 
-  /// 判断图片是否为网络 URL（Firebase Storage）
   bool get hasNetworkImages =>
       images.isNotEmpty && images.first.startsWith('http');
 
   @override
   String toString() =>
-      'Post{id: $id, title: $title, userName: $userName, city: $city, images: ${images.length}, likes: $likes}';
+      'Post{id: $id, title: $title, userName: $userName, city: $city, lat: $locationLat, lng: $locationLng, images: ${images.length}, likes: $likes}';
 
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
-    return other is Post &&
-        other.id == id &&
-        other.title == title &&
-        other.userId == userId;
+    return other is Post && other.id == id && other.title == title && other.userId == userId;
   }
 
   @override

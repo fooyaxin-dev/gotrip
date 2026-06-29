@@ -12,7 +12,28 @@
           "package_name": "com.example.gotrip"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "531377587322-gl193b12csqf8a02lu6g129j4s7k71u3.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.gotrip",
+            "certificate_hash": "03ff20dadf80c74e06f59f90cc048363d78378dd"
+          }
+        },
+        {
+          "client_id": "531377587322-qsvdr35k388ck0u9kf8vdb53cs2l60i8.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.gotrip",
+            "certificate_hash": "d4e60dfb02856f08a821c56429c8dd85aaeea092"
+          }
+        },
+        {
+          "client_id": "531377587322-5rhlekgg664h1h04cjemv1lcgupm1hth.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyCIFxUh6gTjzLY4hI9CGbwtY_3c52Ov1XQ"
@@ -20,7 +41,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "531377587322-5rhlekgg664h1h04cjemv1lcgupm1hth.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "531377587322-15hbj3rve1gqp9enaonbp4rdrr25nfg1.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.gotrip"
+              }
+            }
+          ]
         }
       }
     }

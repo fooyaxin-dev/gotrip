@@ -2,14 +2,49 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// City Extractor (same logic as dashboard)
+// ─────────────────────────────────────────────────────────────────────────────
+
+String _extractCity(String address) {
+  if (address.isEmpty) return '';
+
+  // Strategy 1: postcode pattern — "50000 Kuala Lumpur"
+  final postcodeRegex = RegExp(r'\d{4,6}\s+([A-Za-z][^,]+)');
+  final postcodeMatch = postcodeRegex.firstMatch(address);
+  if (postcodeMatch != null) {
+    return postcodeMatch.group(1)!.trim();
+  }
+
+  // Strategy 2: second-to-last segment
+  final parts = address.split(',').map((s) => s.trim()).toList();
+  if (parts.length >= 2) {
+    final candidate = parts[parts.length - 2];
+    if (!RegExp(r'^\d+$').hasMatch(candidate) && candidate.isNotEmpty) {
+      return candidate;
+    }
+  }
+
+  // Strategy 3: last segment
+  if (parts.isNotEmpty) return parts.last;
+  return '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HistoryEntry
+// ─────────────────────────────────────────────────────────────────────────────
+
 class HistoryEntry {
   final String id;
   final String placeName;
   final String address;
   final String? photoUrl;
   final DateTime visitedAt;
-  final String itineraryId;     // group by trip
+  final String itineraryId;
   final String itineraryTitle;
+  final String? placeId;      // ← 新增：Google Place ID
+  final String? primaryType;  // ← 新增：e.g. 'restaurant', 'park'
+  final String? city;         // ← 新增：extracted from address
 
   HistoryEntry({
     required this.id,
@@ -19,6 +54,9 @@ class HistoryEntry {
     required this.visitedAt,
     required this.itineraryId,
     required this.itineraryTitle,
+    this.placeId,
+    this.primaryType,
+    this.city,
   });
 
   factory HistoryEntry.fromMap(String id, Map<String, dynamic> m) =>
@@ -30,25 +68,36 @@ class HistoryEntry {
         visitedAt:      (m['visitedAt'] as Timestamp).toDate(),
         itineraryId:    m['itineraryId']    ?? '',
         itineraryTitle: m['itineraryTitle'] ?? '',
+        placeId:        m['placeId'],
+        primaryType:    m['primaryType'],
+        city:           m['city'],
       );
 
   Map<String, dynamic> toMap() => {
-    'placeName':      placeName, 
+    'placeName':      placeName,
     'address':        address,
     'photoUrl':       photoUrl,
     'visitedAt':      Timestamp.fromDate(visitedAt),
     'itineraryId':    itineraryId,
     'itineraryTitle': itineraryTitle,
+    'placeId':        placeId,
+    'primaryType':    primaryType,
+    'city':           city,
   };
 }
 
-// One card in the collection view
+// ─────────────────────────────────────────────────────────────────────────────
+// TripHistory — one card in the collection view
+// ─────────────────────────────────────────────────────────────────────────────
+
 class TripHistory {
   final String itineraryId;
   final String itineraryTitle;
-  final List<HistoryEntry> places; // all visited places for this trip
+  final List<HistoryEntry> places;
+
   DateTime get latestVisit =>
       places.map((p) => p.visitedAt).reduce((a, b) => a.isAfter(b) ? a : b);
+
   String? get coverPhoto =>
       places.firstWhere((p) => p.photoUrl != null,
           orElse: () => places.first).photoUrl;
@@ -59,6 +108,10 @@ class TripHistory {
     required this.places,
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HistoryService
+// ─────────────────────────────────────────────────────────────────────────────
 
 class HistoryService {
   static final HistoryService instance = HistoryService._();
@@ -78,8 +131,14 @@ class HistoryService {
     required DateTime visitedAt,
     required String itineraryId,
     required String itineraryTitle,
+    String? placeId,      // ← 新增
+    String? primaryType,  // ← 新增
   }) async {
     if (_col == null) return;
+
+    // Auto-extract city from address
+    final city = _extractCity(address);
+
     try {
       await _col!.add(HistoryEntry(
         id:             '',
@@ -89,6 +148,9 @@ class HistoryService {
         visitedAt:      visitedAt,
         itineraryId:    itineraryId,
         itineraryTitle: itineraryTitle,
+        placeId:        placeId,
+        primaryType:    primaryType,
+        city:           city.isNotEmpty ? city : null,
       ).toMap());
     } catch (e) {
       print('❌ HistoryService.addEntry: $e');
@@ -99,9 +161,13 @@ class HistoryService {
   Future<List<TripHistory>> fetchGrouped() async {
     if (_col == null) return [];
     try {
-      final snap = await _col!.orderBy('visitedAt', descending: true).get();
+      final snap = await _col!
+          .orderBy('visitedAt', descending: true)
+          .get();
+
       final entries = snap.docs
-          .map((d) => HistoryEntry.fromMap(d.id, d.data() as Map<String, dynamic>))
+          .map((d) => HistoryEntry.fromMap(
+                d.id, d.data() as Map<String, dynamic>))
           .toList();
 
       // Group by itineraryId

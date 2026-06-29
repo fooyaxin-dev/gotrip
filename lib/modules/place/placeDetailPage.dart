@@ -2,25 +2,29 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:geolocator/geolocator.dart'; 
+import 'package:geolocator/geolocator.dart';
 import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
-import 'routePreviewPage.dart'; 
+import 'routePreviewPage.dart';
 
 class PlaceDetailPage extends StatefulWidget {
-  final String placeId;
-  final double? lat;   // destination latitude
-  final double? lng;   // destination longitude
-  final double? userLat; // user current latitude
-  final double? userLng; // user current longitude
+  final String placeId;        // Google ID for google places, 'geo_xxx' for geoapify
+  final String? placeName;     // needed for Geoapify → Google Text Search
+  final double? lat;
+  final double? lng;
+  final double? userLat;
+  final double? userLng;
+  final String source;         // 'google' or 'geoapify'
 
   const PlaceDetailPage({
     super.key,
     required this.placeId,
+    this.placeName,
     this.lat,
     this.lng,
     this.userLat,
     this.userLng,
+    this.source = 'google',
   });
 
   @override
@@ -37,6 +41,14 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   Timer? _autoPlayTimer;
   bool _isUserInteracting = false;
 
+  List<String> _photoUrls  = [];
+  String? _firstPhotoUrl;
+
+  // The resolved Google Place ID — may differ from widget.placeId for Geoapify places
+  String? _resolvedGooglePlaceId;
+
+  bool get _isGeoapify => widget.source == 'geoapify';
+
   @override
   void initState() {
     super.initState();
@@ -51,43 +63,101 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     super.dispose();
   }
 
-  Future<void> _fetchPlaceDetails() async {
-    setState(() {
-      loading = true;
-      error = null;
-    });
-
-    try {
-      final data = await PlacesApiService.getPlaceDetails(widget.placeId);
-      setState(() {
-        placeDetail = data;
-        loading = false;
-      });
-    } catch (e) {
-      setState(() {
-        error = e.toString();
-        loading = false;
-      });
-    }
-  }
-
   void _startAutoPlay(int total) {
     _autoPlayTimer?.cancel();
     if (total <= 1) return;
+    _autoPlayTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
+      if (!mounted) { timer.cancel(); return; }
+      if (_isUserInteracting) return;
+      final nextPage = (_currentPhotoIndex + 1) % total;
+      _pageController.animateToPage(
+        nextPage,
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
 
-    _autoPlayTimer = Timer.periodic(
-      const Duration(seconds: 4),
-      (timer) {
-        if (_isUserInteracting) return;
-        int nextPage = _currentPhotoIndex + 1;
-        if (nextPage >= total) nextPage = 0;
-        _pageController.animateToPage(
-          nextPage,
-          duration: const Duration(milliseconds: 500),
-          curve: Curves.easeOutCubic,
+  Future<void> _fetchPlaceDetails() async {
+    setState(() { loading = true; error = null; });
+
+    try {
+      String googlePlaceId;
+
+      if (_isGeoapify) {
+        // ── Step 1: Resolve Geoapify place → Google Place ID ─────────────────
+        // Uses Text Search with name + coords, result cached in Firestore
+        final name = widget.placeName ?? '';
+        if (name.isEmpty || widget.lat == null || widget.lng == null) {
+          setState(() {
+            error = 'Not enough information to load place details.';
+            loading = false;
+          });
+          return;
+        }
+
+        setState(() {
+          // Show a more specific loading message while resolving
+          loading = true;
+        });
+
+        final resolvedId = await PlacesApiService.findGooglePlaceId(
+          geoInternalId: widget.placeId,
+          placeName:     name,
+          lat:           widget.lat!,
+          lng:           widget.lng!,
         );
-      },
-    );
+
+        if (resolvedId == null) {
+          setState(() {
+            error = 'Could not find details for this place.';
+            loading = false;
+          });
+          return;
+        }
+
+        googlePlaceId = resolvedId;
+        _resolvedGooglePlaceId = resolvedId;
+
+      } else {
+        // ── Google place: use placeId directly ───────────────────────────────
+        googlePlaceId = widget.placeId;
+        _resolvedGooglePlaceId = widget.placeId;
+      }
+
+      // ── Step 2: Fetch detail (same flow for both sources) ─────────────────
+      // Firebase cache is keyed by Google Place ID, so Geoapify places
+      // get cached too after the first lookup — subsequent taps are free.
+      final data = await PlacesApiService.getPlaceDetails(googlePlaceId);
+
+      // ── Build photo URLs ──────────────────────────────────────────────────
+      final List<String> urls = [];
+      String? firstUrl;
+      final photos = data['photos'] as List?;
+      if (photos != null && photos.isNotEmpty) {
+        for (final photo in photos) {
+          urls.add(PlacesApiService.buildPhotoUrl(photo['name'], maxWidth: 800));
+        }
+        firstUrl = PlacesApiService.buildPhotoUrl(photos[0]['name'], maxWidth: 400);
+      }
+
+      setState(() {
+        placeDetail    = data;
+        _photoUrls     = urls;
+        _firstPhotoUrl = firstUrl;
+        loading        = false;
+      });
+
+      if (urls.length > 1) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _startAutoPlay(urls.length));
+      }
+
+    } catch (e) {
+      setState(() {
+        error   = e.toString();
+        loading = false;
+      });
+    }
   }
 
   void _navigateToGuide(String name) async {
@@ -106,7 +176,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unable to get current location. Please check location permissions.')),
+            const SnackBar(content: Text('Unable to get current location.')),
           );
         }
         return;
@@ -114,19 +184,15 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     }
 
     if (!mounted) return;
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => RoutePreviewPage(
-          startLat: startLat!,
-          startLng: startLng!,
-          endLat: widget.lat!,
-          endLng: widget.lng!,
-          destinationName: name,
-        ),
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => RoutePreviewPage(
+        startLat:        startLat!,
+        startLng:        startLng!,
+        endLat:          widget.lat!,
+        endLng:          widget.lng!,
+        destinationName: name,
       ),
-    );
+    ));
   }
 
   @override
@@ -134,100 +200,121 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('Place Details')),
       body: loading
-          ? const Center(child: CircularProgressIndicator())
+          ? _buildLoadingState()
           : error != null
-              ? Center(child: Text('Error: $error'))
+              ? _buildErrorState()
               : _buildContent(),
     );
   }
 
+  Widget _buildLoadingState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 16),
+          Text(
+            _isGeoapify ? 'Fetching place details...' : 'Loading...',
+            style: TextStyle(color: Colors.grey[600], fontSize: 14),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorState() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.location_off_rounded, size: 56, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text(
+              error!,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey[600], fontSize: 15),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: _fetchPlaceDetails,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Try Again'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildContent() {
-    final name = placeDetail?['displayName']?['text'] ?? 'Unknown';
-    final address = placeDetail?['formattedAddress'] ?? 'No address';
-    final rating = (placeDetail?['rating'] as num?)?.toDouble();
-    final phone = placeDetail?['internationalPhoneNumber'];
+    final name    = placeDetail?['displayName']?['text'] ?? 'Unknown';
+    final address = placeDetail?['formattedAddress']     ?? 'No address';
+    final rating  = (placeDetail?['rating'] as num?)?.toDouble();
+    final phone   = placeDetail?['internationalPhoneNumber'];
     final website = placeDetail?['websiteUri'];
-    final isOpen = placeDetail?['regularOpeningHours']?['openNow'];
-    final photos = placeDetail?['photos'] as List?;
+    final isOpen  = placeDetail?['regularOpeningHours']?['openNow'];
 
     final List<String> types = (placeDetail?['types'] as List?)
-            ?.map((e) => e.toString())
-            .toList() ??
-        [];
+        ?.map((e) => e.toString())
+        .toList() ?? [];
 
-    String? firstPhotoUrl;
-    if (photos != null && photos.isNotEmpty) {
-      firstPhotoUrl = PlacesApiService.buildPhotoUrl(
-        photos[0]['name'],
-        maxWidth: 400,
-      );
-    }
-
-    List<String> photoUrls = [];
-    if (photos != null && photos.isNotEmpty) {
-      for (var photo in photos) {
-        photoUrls.add(PlacesApiService.buildPhotoUrl(photo['name'], maxWidth: 800));
-      }
-    }
+    // For FavouriteButton: Geoapify places now have a resolved Google Place ID
+    // so we pass that instead of the internal geo_ id
+    final favPlaceId = _resolvedGooglePlaceId ?? widget.placeId;
 
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildPhotoCarousel(photoUrls),
+          _buildPhotoCarousel(_photoUrls),
 
           Padding(
             padding: const EdgeInsets.all(20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Title + Favourite button + Rating
+                // Title + Favourite + Rating
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Expanded(
-                      child: Text(
-                        name,
-                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                      child: Text(name,
+                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                    ),
+                    Row(children: [
+                      FavouriteButton(
+                        placeId:  favPlaceId,   // ← resolved Google ID
+                        name:     name,
+                        address:  address,
+                        rating:   rating,
+                        photoUrl: _firstPhotoUrl,
+                        lat:      widget.lat,
+                        lng:      widget.lng,
+                        types:    types,
+                        iconSize: 26,
+                        activeColor:   Colors.red,
+                        inactiveColor: Colors.grey,
+                        showBackground: false,
                       ),
-                    ),
-                    Row(
-                      children: [
-                        FavouriteButton(
-                          placeId: widget.placeId,
-                          name: name,
-                          address: address,
-                          rating: rating,
-                          photoUrl: firstPhotoUrl,
-                          lat: widget.lat,
-                          lng: widget.lng,
-                          types: types,
-                          iconSize: 26,
-                          activeColor: Colors.red,
-                          inactiveColor: Colors.grey,
-                          showBackground: false,
-                        ),
-                        if (rating != null)
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.orange[50],
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.star, color: Colors.orange, size: 18),
-                                const SizedBox(width: 4),
-                                Text(
-                                  rating.toString(),
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold, color: Colors.orange),
-                                ),
-                              ],
-                            ),
+                      if (rating != null)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.orange[50],
+                            borderRadius: BorderRadius.circular(8),
                           ),
-                      ],
-                    ),
+                          child: Row(children: [
+                            const Icon(Icons.star, color: Colors.orange, size: 18),
+                            const SizedBox(width: 4),
+                            Text(rating.toString(),
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, color: Colors.orange)),
+                          ]),
+                        ),
+                    ]),
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -258,20 +345,16 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
                       _buildActionButton(Icons.phone, "Call", phone != null,
-                        onTap: phone != null ? () => _launchPhone(phone) : null,
-                      ),
+                          onTap: phone != null ? () => _launchPhone(phone) : null),
                       _buildActionButton(Icons.public, "Website", website != null,
-                        onTap: website != null ? () => _launchWebsite(website) : null,
-                      ),
+                          onTap: website != null ? () => _launchWebsite(website) : null),
                       _buildActionButton(
-                        Icons.directions,
-                        "Directions",
+                        Icons.directions, "Directions",
                         widget.lat != null && widget.lng != null,
                         onTap: () => _navigateToGuide(name),
                       ),
                       _buildActionButton(Icons.share, "Share", true,
-                        onTap: () => _sharePlace(name, address, website),
-                      ),
+                          onTap: () => _sharePlace(name, address, website)),
                     ],
                   ),
                 ),
@@ -279,18 +362,19 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                 const SizedBox(height: 20),
 
                 _buildInfoSection(Icons.location_on, "Address", address),
+
                 if (placeDetail?['regularOpeningHours']?['weekdayDescriptions'] != null)
                   _buildOpeningHours(
                       placeDetail!['regularOpeningHours']['weekdayDescriptions']),
-                if (phone != null) _buildInfoSection(Icons.call, "Phone", phone),
-                if (website != null) _buildInfoSection(Icons.language, "Website", website),
+
+                if (phone != null)   _buildInfoSection(Icons.call,     "Phone",   phone),
+                if (website != null) _buildInfoSection(Icons.language,  "Website", website),
 
                 const Divider(),
                 const SizedBox(height: 10),
-                const Text(
-                  "Reviews",
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
+
+                const Text("Reviews",
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 16),
 
                 if (placeDetail?['reviews'] != null)
@@ -298,7 +382,8 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                 else
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 20),
-                    child: Text("No reviews yet", style: TextStyle(color: Colors.grey)),
+                    child: Text("No reviews yet",
+                        style: TextStyle(color: Colors.grey)),
                   ),
               ],
             ),
@@ -312,14 +397,18 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     if (photoUrls.isEmpty) {
       return Container(
         height: 250,
-        color: Colors.grey[200],
-        child: const Icon(Icons.image, size: 50),
+        color: Colors.grey[100],
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.image_not_supported_rounded, size: 48, color: Colors.grey[400]),
+            const SizedBox(height: 8),
+            Text('No photos available',
+                style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+          ],
+        ),
       );
     }
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _startAutoPlay(photoUrls.length);
-    });
 
     return Stack(
       children: [
@@ -328,7 +417,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
           child: NotificationListener<ScrollNotification>(
             onNotification: (notification) {
               if (notification is ScrollStartNotification) _isUserInteracting = true;
-              if (notification is ScrollEndNotification) _isUserInteracting = false;
+              if (notification is ScrollEndNotification)   _isUserInteracting = false;
               return false;
             },
             child: PageView.builder(
@@ -336,49 +425,41 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
               itemCount: photoUrls.length,
               physics: const PageScrollPhysics(),
               onPageChanged: (index) => setState(() => _currentPhotoIndex = index),
-              itemBuilder: (context, index) {
-                return GestureDetector(
-                  onTap: () => _showFullScreenPhoto(context, photoUrls, index),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      image: DecorationImage(
-                        image: NetworkImage(photoUrls[index]),
-                        fit: BoxFit.cover,
-                      ),
+              itemBuilder: (context, index) => GestureDetector(
+                onTap: () => _showFullScreenPhoto(context, photoUrls, index),
+                child: Container(
+                  decoration: BoxDecoration(
+                    image: DecorationImage(
+                      image: NetworkImage(photoUrls[index]),
+                      fit: BoxFit.cover,
                     ),
                   ),
-                );
-              },
+                ),
+              ),
             ),
           ),
         ),
-        if (photoUrls.length > 1)
+        if (photoUrls.length > 1) ...[
           Positioned(
-            bottom: 15,
-            left: 0,
-            right: 0,
+            bottom: 15, left: 0, right: 0,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(photoUrls.length, (index) {
-                return AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  margin: const EdgeInsets.symmetric(horizontal: 3),
-                  width: _currentPhotoIndex == index ? 10 : 8,
-                  height: _currentPhotoIndex == index ? 10 : 8,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _currentPhotoIndex == index
-                        ? Colors.white
-                        : Colors.white.withOpacity(0.4),
-                  ),
-                );
-              }),
+              children: List.generate(photoUrls.length, (index) => AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                width:  _currentPhotoIndex == index ? 10 : 8,
+                height: _currentPhotoIndex == index ? 10 : 8,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _currentPhotoIndex == index
+                      ? Colors.white
+                      : Colors.white.withOpacity(0.4),
+                ),
+              )),
             ),
           ),
-        if (photoUrls.length > 1)
           Positioned(
-            top: 15,
-            right: 15,
+            top: 15, right: 15,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
@@ -391,6 +472,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
               ),
             ),
           ),
+        ],
       ],
     );
   }
@@ -422,16 +504,14 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
       child: InkWell(
         onTap: isAvailable ? onTap : null,
         borderRadius: BorderRadius.circular(30),
-        child: Column(
-          children: [
-            CircleAvatar(
-              backgroundColor: Colors.blue[50],
-              child: Icon(icon, color: Colors.blue[600]),
-            ),
-            const SizedBox(height: 8),
-            Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-          ],
-        ),
+        child: Column(children: [
+          CircleAvatar(
+            backgroundColor: Colors.blue[50],
+            child: Icon(icon, color: Colors.blue[600]),
+          ),
+          const SizedBox(height: 8),
+          Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+        ]),
       ),
     );
   }
@@ -476,13 +556,11 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
                 tilePadding: EdgeInsets.zero,
                 childrenPadding: const EdgeInsets.only(bottom: 10),
                 expandedCrossAxisAlignment: CrossAxisAlignment.start,
-                children: weekdayDescriptions.map((desc) {
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(desc.toString(),
-                        style: TextStyle(color: Colors.grey[700], fontSize: 14)),
-                  );
-                }).toList(),
+                children: weekdayDescriptions.map((desc) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(desc.toString(),
+                      style: TextStyle(color: Colors.grey[700], fontSize: 14)),
+                )).toList(),
               ),
             ),
           ),
@@ -493,10 +571,10 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
 
   Widget _buildReviewItem(Map<String, dynamic> review) {
     final authorName = review['authorAttribution']?['displayName'] ?? 'Anonymous';
-    final photoUrl = review['authorAttribution']?['photoUri'];
-    final rating = review['rating'] ?? 0;
-    final text = review['text']?['text'] ?? '';
-    final timeDesc = review['relativePublishTimeDescription'] ?? '';
+    final photoUrl   = review['authorAttribution']?['photoUri'];
+    final rating     = review['rating'] ?? 0;
+    final text       = review['text']?['text'] ?? '';
+    final timeDesc   = review['relativePublishTimeDescription'] ?? '';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
@@ -508,37 +586,35 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              CircleAvatar(
-                radius: 20,
-                backgroundColor: Colors.blue[100],
-                backgroundImage: photoUrl != null ? NetworkImage(photoUrl) : null,
-                child: photoUrl == null
-                    ? Text(authorName[0], style: const TextStyle(color: Colors.blue))
-                    : null,
+          Row(children: [
+            CircleAvatar(
+              radius: 20,
+              backgroundColor: Colors.blue[100],
+              backgroundImage: photoUrl != null ? NetworkImage(photoUrl) : null,
+              child: photoUrl == null
+                  ? Text(authorName[0], style: const TextStyle(color: Colors.blue))
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(authorName,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  Text(timeDesc,
+                      style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                ],
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(authorName,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                    Text(timeDesc,
-                        style: TextStyle(color: Colors.grey[500], fontSize: 12)),
-                  ],
-                ),
-              ),
-              Row(
-                children: List.generate(5, (index) => Icon(
-                  Icons.star,
-                  size: 14,
-                  color: index < rating ? Colors.orange : Colors.grey[300],
-                )),
-              ),
-            ],
-          ),
+            ),
+            Row(
+              children: List.generate(5, (index) => Icon(
+                Icons.star,
+                size: 14,
+                color: index < rating ? Colors.orange : Colors.grey[300],
+              )),
+            ),
+          ]),
           const SizedBox(height: 12),
           Text(
             text,
@@ -555,12 +631,9 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     final uri = Uri(scheme: 'tel', path: phone);
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri);
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to make a call')),
-        );
-      }
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to make a call')));
     }
   }
 
@@ -568,12 +641,9 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     final uri = Uri.parse(url);
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to open website')),
-        );
-      }
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to open website')));
     }
   }
 

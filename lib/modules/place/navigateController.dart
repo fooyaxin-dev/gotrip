@@ -8,28 +8,11 @@ import 'package:compassx/compassx.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import '../../services/route_service.dart';
 
-class NavStep {
-  final String instruction;
-  final String maneuver;
-  final double distanceMeters;
-  final int durationSeconds;
-  final LatLng startLocation;
-  final LatLng endLocation;
-
-  NavStep({
-    required this.instruction,
-    required this.maneuver,
-    required this.distanceMeters,
-    required this.durationSeconds,
-    required this.startLocation,
-    required this.endLocation,
-  });
-}
-
 class NavigationController extends ChangeNotifier {
+
   // ── Config ──
   final double startLat;
   final double startLng;
@@ -47,7 +30,7 @@ class NavigationController extends ChangeNotifier {
     this.travelMode = TravelMode.drive,
   });
 
-  static const String _apiKey ='AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';// String.fromEnvironment('MAPS_API_KEY');
+  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
 
   static const double _offRouteThresh  = 50.0;
   static const double _arrivedThresh   = 30.0;
@@ -62,16 +45,16 @@ class NavigationController extends ChangeNotifier {
   LatLngBounds? routeBounds;
 
   // ── Steps ──
-  List<NavStep> steps              = [];
-  List<int>     stepEndPolylineIdx = [];
-  int           currentStepIndex  = 0;
-  double        distToTurnEnd     = 0;
+  List<NavStep> steps               = [];
+  List<int>     stepEndPolylineIdx  = [];
+  int           currentStepIndex   = 0;
+  double        distToTurnEnd      = 0;
   int           _stepConfirmCount  = 0;
   int           _stepConfirmForIndex = -1;
 
   // ── ETA ──
-  double remainingMeters  = 0;
-  int    remainingSeconds = 0;
+  double remainingMeters   = 0;
+  int    remainingSeconds  = 0;
   double _totalRouteMeters = 0;
 
   // ── Position ──
@@ -84,20 +67,30 @@ class NavigationController extends ChangeNotifier {
   double bearing = 0;
 
   // ── State ──
-  bool    loading     = true;
+  bool    loading        = true;
   String? error;
-  bool    isRerouting = false;
-  bool    hasArrived  = false;
+  bool    isRerouting    = false;
+  bool    hasArrived     = false;
   int     _offRouteCount = 0;
 
   // ── Icon ──
   BitmapDescriptor? arrowIcon;
 
   // ── Internals ──
-  StreamSubscription<Position>?     _positionSub;
+  StreamSubscription<Position>?      _positionSub;
   StreamSubscription<CompassXEvent>? _compassSub;
   Ticker?       _ticker;
   VoidCallback? onArrived;
+
+  // ── TTS ──
+  final FlutterTts _tts = FlutterTts();
+  String? _lastSpokenInstruction;
+  bool    _ttsEnabled = true;
+  bool get ttsEnabled => _ttsEnabled;
+
+  // Distance reminder dedup — track which distance thresholds already spoken
+  // Key = stepIndex, Value = set of thresholds already announced (300, 100, 30)
+  final Map<int, Set<int>> _spokenDistanceReminders = {};
 
   // ─────────────────────────────────────────────
   // Init & dispose
@@ -105,20 +98,30 @@ class NavigationController extends ChangeNotifier {
 
   Future<void> init(TickerProvider vsync) async {
     _ticker = vsync.createTicker(_onTick)..start();
+    await _initTts();
     await _createArrowIcon();
     await _initWithRealLocation();
     _startCompass();
   }
 
+  Future<void> _initTts() async {
+    await _tts.setLanguage('en-US');
+    await _tts.setSpeechRate(0.5);
+    await _tts.setVolume(1.0);
+    await _tts.setPitch(1.0);
+  }
+
+  @override
   void dispose() {
     _ticker?.dispose();
     _positionSub?.cancel();
     _compassSub?.cancel();
+    _tts.stop();
     super.dispose();
   }
 
   // ─────────────────────────────────────────────
-  // Ticker — smooth display position
+  // Ticker — smooth display position interpolation
   // ─────────────────────────────────────────────
 
   void _onTick(Duration _) {
@@ -148,7 +151,7 @@ class NavigationController extends ChangeNotifier {
       userLatLng    = LatLng(pos.latitude, pos.longitude);
       targetLatLng  = userLatLng;
       displayLatLng = userLatLng;
-      lastPos = pos;
+      lastPos       = pos;
       await _loadRoute(pos.latitude, pos.longitude);
     } catch (_) {
       userLatLng    = LatLng(startLat, startLng);
@@ -188,6 +191,40 @@ class NavigationController extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────────
+  // TTS helpers
+  // ─────────────────────────────────────────────
+
+  Future<void> _speak(String text) async {
+    if (!_ttsEnabled) return;
+    if (text == _lastSpokenInstruction) return;
+    _lastSpokenInstruction = text;
+    await _tts.stop();
+    await _tts.speak(text);
+  }
+
+  void toggleTts() {
+    _ttsEnabled = !_ttsEnabled;
+    if (!_ttsEnabled) _tts.stop();
+    notifyListeners();
+  }
+
+  // FIX: distance reminder dedup — only speak each threshold once per step
+  void _maybeAnnounceDistance(int stepIdx, double dist, String instruction) {
+    final spoken = _spokenDistanceReminders.putIfAbsent(stepIdx, () => {});
+
+    if (dist <= 300 && dist > 250 && !spoken.contains(300)) {
+      spoken.add(300);
+      _speak('In 300 meters, $instruction');
+    } else if (dist <= 100 && dist > 80 && !spoken.contains(100)) {
+      spoken.add(100);
+      _speak('In 100 meters, $instruction');
+    } else if (dist <= 30 && dist > 10 && !spoken.contains(30)) {
+      spoken.add(30);
+      _speak(instruction);
+    }
+  }
+
+  // ─────────────────────────────────────────────
   // Compass
   // ─────────────────────────────────────────────
 
@@ -196,8 +233,7 @@ class NavigationController extends ChangeNotifier {
       if (e.heading == null) return;
       final isMoving = (lastPos?.speed ?? 0) > 0.5;
       if (!isMoving) {
-        const t = 0.18;
-        bearing = _lerpBearing(bearing, e.heading!, t);
+        bearing = _lerpBearing(bearing, e.heading!, 0.18);
         notifyListeners();
       }
     });
@@ -216,72 +252,93 @@ class NavigationController extends ChangeNotifier {
   }
 
   Future<void> _loadRoute(double fromLat, double fromLng) async {
-    currentStepIndex     = 0;
-    steps                = [];
-    stepEndPolylineIdx   = [];
-    _stepConfirmCount    = 0;
-    _stepConfirmForIndex = -1;
-    _offRouteCount       = 0;
-    loading              = true;
-    error                = null;
-    isRerouting          = false;
-    walkedPoints         = [];
-    remainingPoints      = [];
-    nearestIdx           = 0;
+    currentStepIndex       = 0;
+    steps                  = [];
+    stepEndPolylineIdx     = [];
+    _stepConfirmCount      = 0;
+    _stepConfirmForIndex   = -1;
+    _offRouteCount         = 0;
+    _spokenDistanceReminders.clear();
+    _lastSpokenInstruction = null;
+    loading                = true;
+    error                  = null;
+    isRerouting            = false;
+    walkedPoints           = [];
+    remainingPoints        = [];
+    nearestIdx             = 0;
     notifyListeners();
 
     try {
       final url  = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
       final body = jsonEncode({
-        "origin":      {"location": {"latLng": {"latitude": fromLat,  "longitude": fromLng}}},
-        "destination": {"location": {"latLng": {"latitude": endLat,   "longitude": endLng}}},
-        "travelMode":  _travelModeStr,
-        "routingPreference": travelMode == TravelMode.walk
-            ? "ROUTING_PREFERENCE_UNSPECIFIED" : "TRAFFIC_AWARE",
-        "computeAlternativeRoutes": false,
+        'origin':      {'location': {'latLng': {'latitude': fromLat, 'longitude': fromLng}}},
+        'destination': {'location': {'latLng': {'latitude': endLat,  'longitude': endLng}}},
+        'travelMode':  _travelModeStr,
+        'routingPreference': travelMode == TravelMode.walk
+            ? 'ROUTING_PREFERENCE_UNSPECIFIED' : 'TRAFFIC_AWARE',
+        'computeAlternativeRoutes': false,
         if (travelMode != TravelMode.walk)
-          "routeModifiers": {"avoidTolls": false, "avoidHighways": false},
-        "languageCode": "en-US",
-        "units": "METRIC",
+          'routeModifiers': {'avoidTolls': false, 'avoidHighways': false},
+        'languageCode': 'en-US',
+        'units': 'METRIC',
       });
 
-      final resp = await http.post(url, headers: {
-        'Content-Type':     'application/json',
-        'X-Goog-Api-Key':   _apiKey,
-        'X-Goog-FieldMask':
-            'routes.duration,routes.distanceMeters,'
-            'routes.legs.steps.navigationInstruction,'
-            'routes.legs.steps.distanceMeters,'
-            'routes.legs.steps.staticDuration,'
-            'routes.legs.steps.startLocation,'
-            'routes.legs.steps.endLocation,'
-            'routes.legs.steps.polyline,'
-            'routes.viewport',
-      }, body: body);
+      final resp = await http.post(
+        url,
+        headers: {
+          'Content-Type':     'application/json',
+          'X-Goog-Api-Key':   _apiKey,
+          'X-Goog-FieldMask':
+              'routes.duration,'
+              'routes.distanceMeters,'
+              'routes.legs.steps.navigationInstruction,'
+              'routes.legs.steps.distanceMeters,'
+              'routes.legs.steps.staticDuration,'
+              'routes.legs.steps.startLocation,'
+              'routes.legs.steps.endLocation,'
+              'routes.legs.steps.polyline,'
+              'routes.viewport',
+        },
+        body: body,
+      );
 
       if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
+
       final data   = json.decode(resp.body);
       final routes = data['routes'] as List?;
-      if (routes == null || routes.isEmpty) throw Exception('No routes');
+      if (routes == null || routes.isEmpty) throw Exception('No routes returned');
 
       final route    = routes[0];
       final legs     = route['legs'] as List;
-      final pts      = <LatLng>[];
+      final pts      = <LatLng>[];   // full route polyline
       final newSteps = <NavStep>[];
 
       for (final leg in legs) {
         for (final s in (leg['steps'] as List)) {
-          if (s['polyline']?['encodedPolyline'] != null) {
-            final sp = _decode(s['polyline']['encodedPolyline'] as String);
-            if (pts.isNotEmpty && sp.isNotEmpty) pts.addAll(sp.skip(1));
-            else pts.addAll(sp);
+
+          // ── Per-step polyline (for snap accuracy) ──
+          final stepPts = _decode(
+            s['polyline']?['encodedPolyline'] as String? ?? '',
+          );
+
+          // ── Stitch into full route polyline ──
+          if (pts.isNotEmpty && stepPts.isNotEmpty) {
+            pts.addAll(stepPts.skip(1)); // skip duplicate join point
+          } else {
+            pts.addAll(stepPts);
           }
+
+          // ── Navigation instruction ──
           final nav = s['navigationInstruction'] as Map<String, dynamic>? ?? {};
+
+          // FIX: correctly extract startLocation and endLocation
           newSteps.add(NavStep(
-            instruction:     _sanitizeInstruction(nav['instructions'] as String? ?? 'Continue'),
-            maneuver:        (nav['maneuver'] as String? ?? '').toLowerCase(),
-            distanceMeters:  (s['distanceMeters'] as num? ?? 0).toDouble(),
-            durationSeconds: _parseSecs(s['staticDuration'] as String? ?? '0s'),
+            instruction:    _sanitizeInstruction(
+                nav['instructions'] as String? ?? 'Continue'),
+            maneuver:       (nav['maneuver'] as String? ?? '').toLowerCase(),
+            distanceMeters: (s['distanceMeters'] as num? ?? 0).toDouble(),
+            durationSeconds: _parseSecs(
+                s['staticDuration'] as String? ?? '0s'),
             startLocation: LatLng(
               (s['startLocation']['latLng']['latitude']  as num).toDouble(),
               (s['startLocation']['latLng']['longitude'] as num).toDouble(),
@@ -290,15 +347,17 @@ class NavigationController extends ChangeNotifier {
               (s['endLocation']['latLng']['latitude']  as num).toDouble(),
               (s['endLocation']['latLng']['longitude'] as num).toDouble(),
             ),
+            polylinePoints: stepPts,
           ));
         }
       }
 
+      // ── Route bounds ──
       final vp = route['viewport'];
       routeBounds = LatLngBounds(
         southwest: LatLng(
-          (vp['low']['latitude']   as num).toDouble(),
-          (vp['low']['longitude']  as num).toDouble(),
+          (vp['low']['latitude']  as num).toDouble(),
+          (vp['low']['longitude'] as num).toDouble(),
         ),
         northeast: LatLng(
           (vp['high']['latitude']  as num).toDouble(),
@@ -306,6 +365,7 @@ class NavigationController extends ChangeNotifier {
         ),
       );
 
+      // ── Initial bearing from first two polyline points ──
       if (pts.length >= 2) bearing = _calcBearing(pts[0], pts[1]);
 
       polylinePoints     = pts;
@@ -325,6 +385,12 @@ class NavigationController extends ChangeNotifier {
       if (displayLatLng != null) _updateRouteProgress(displayLatLng!);
 
       notifyListeners();
+
+      // Announce first instruction
+      if (newSteps.isNotEmpty) {
+        _speak(newSteps[0].instruction);
+      }
+
       _startTracking();
 
     } catch (e) {
@@ -351,13 +417,13 @@ class NavigationController extends ChangeNotifier {
           enableWakeLock:    true,
         ),
       ),
-    ).listen((raw) {
+    ).listen((raw) async {
       if (raw.accuracy > 30) return;
 
       final rawLatLng = LatLng(raw.latitude, raw.longitude);
       final isMoving  = raw.speed > 0.5;
 
-      // ── FIX: wider search window so we don't lose the nearest index ──
+      // ── 1. Update nearest polyline index (wide search window) ──
       nearestIdx = _findNearestPolylineIndex(
         rawLatLng,
         polylinePoints,
@@ -365,29 +431,32 @@ class NavigationController extends ChangeNotifier {
         end:   (nearestIdx + 40).clamp(0, max(polylinePoints.length - 1, 0)),
       );
 
-      // Bearing from polyline look-ahead (only when moving)
+      // ── 2. Update bearing from polyline look-ahead (moving only) ──
       if (polylinePoints.isNotEmpty && isMoving) {
         final lookAhead = travelMode == TravelMode.walk ? 2 : 5;
-        final aheadIdx  = (nearestIdx + lookAhead).clamp(0, polylinePoints.length - 1);
+        final aheadIdx  = (nearestIdx + lookAhead)
+            .clamp(0, polylinePoints.length - 1);
         if (aheadIdx > nearestIdx) {
-          final newBearing = _calcBearing(polylinePoints[nearestIdx], polylinePoints[aheadIdx]);
+          final newBearing = _calcBearing(
+              polylinePoints[nearestIdx], polylinePoints[aheadIdx]);
           final t = travelMode == TravelMode.walk ? 0.16 : 0.32;
           bearing = _lerpBearing(bearing, newBearing, t);
         }
       }
 
-      // Arrived check
+      // ── 3. Arrived check ──
       final isLastStep = currentStepIndex >= steps.length - 1;
-      if (_dist(rawLatLng, LatLng(endLat, endLng)) <= _arrivedThresh &&
-          isLastStep && !hasArrived) {
+      if (_dist(rawLatLng, LatLng(endLat, endLng)) <= _arrivedThresh
+          && isLastStep && !hasArrived) {
         hasArrived = true;
         _positionSub?.cancel();
+        await _speak('You have arrived at your destination');
         onArrived?.call();
         notifyListeners();
         return;
       }
 
-      // Off-route
+      // ── 4. Off-route check ──
       if (isMoving && !isRerouting && polylinePoints.isNotEmpty) {
         final threshold = travelMode == TravelMode.walk ? 25.0 : _offRouteThresh;
         if (_minDistToRoute(rawLatLng) > threshold) {
@@ -395,6 +464,7 @@ class NavigationController extends ChangeNotifier {
           if (_offRouteCount >= _offRouteConfirm) {
             isRerouting = true;
             notifyListeners();
+            await _speak('Off route, recalculating');
             _loadRoute(raw.latitude, raw.longitude);
             return;
           }
@@ -403,13 +473,13 @@ class NavigationController extends ChangeNotifier {
         }
       }
 
-      // Step advancement
+      // ── 5. Step advancement ──
       if (steps.isNotEmpty && currentStepIndex < steps.length - 1) {
         final distToEnd         = _dist(rawLatLng, steps[currentStepIndex].endLocation);
         final currentStepEndIdx = stepEndPolylineIdx.isNotEmpty
             ? stepEndPolylineIdx[currentStepIndex] : -1;
-        final reachedByPolyline = currentStepEndIdx >= 0 &&
-            nearestIdx >= max(0, currentStepEndIdx - 1);
+        final reachedByPolyline = currentStepEndIdx >= 0
+            && nearestIdx >= max(0, currentStepEndIdx - 1);
         final reachedByDistance =
             distToEnd < (travelMode == TravelMode.walk ? 10 : 15);
 
@@ -419,11 +489,15 @@ class NavigationController extends ChangeNotifier {
             _stepConfirmForIndex = currentStepIndex;
           }
           _stepConfirmCount++;
+
           if (_stepConfirmCount >= _stepConfirm) {
             _stepConfirmCount    = 0;
             _stepConfirmForIndex = -1;
             currentStepIndex++;
             distToTurnEnd = steps[currentStepIndex].distanceMeters;
+
+            // FIX: speak AFTER advancing to the new step
+            await _speak(steps[currentStepIndex].instruction);
           }
         } else {
           if (_stepConfirmForIndex == currentStepIndex) {
@@ -433,23 +507,29 @@ class NavigationController extends ChangeNotifier {
         }
       }
 
-      // ETA
+      // ── 6. ETA update ──
       if (steps.isNotEmpty) {
         final step = steps[currentStepIndex];
         distToTurnEnd = _dist(rawLatLng, step.endLocation)
             .clamp(0.0, step.distanceMeters);
+
         double futureM = 0;
         int    futureS = 0;
         for (int i = currentStepIndex + 1; i < steps.length; i++) {
           futureM += steps[i].distanceMeters;
           futureS += steps[i].durationSeconds;
         }
-        final ratio      = step.distanceMeters > 0 ? distToTurnEnd / step.distanceMeters : 0.0;
+        final ratio      = step.distanceMeters > 0
+            ? distToTurnEnd / step.distanceMeters : 0.0;
         remainingMeters  = distToTurnEnd + futureM;
         remainingSeconds = (step.durationSeconds * ratio).toInt() + futureS;
+
+        // FIX: distance reminders with dedup per step
+        _maybeAnnounceDistance(
+            currentStepIndex, distToTurnEnd, step.instruction);
       }
 
-      // ── FIX: snap works for ALL modes, always project onto segment ──
+      // ── 7. Snap position to route ──
       final snapped = _snapToRoute(rawLatLng);
       lastPos       = raw;
       userLatLng    = snapped;
@@ -461,16 +541,14 @@ class NavigationController extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────────
-  // Route progress
+  // Route progress (walked vs remaining polyline)
   // ─────────────────────────────────────────────
 
   void _updateRouteProgress(LatLng snapped) {
     if (polylinePoints.isEmpty) return;
 
     final walked = <LatLng>[];
-    if (nearestIdx > 0) {
-      walked.addAll(polylinePoints.take(nearestIdx));
-    }
+    if (nearestIdx > 0) walked.addAll(polylinePoints.take(nearestIdx));
     walked.add(snapped);
 
     final remaining = <LatLng>[snapped];
@@ -483,42 +561,35 @@ class NavigationController extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────────
-  // FIXED: unified snap — works for walk, drive, any speed
+  // Snap to route — project onto nearest segment
   // ─────────────────────────────────────────────
 
   LatLng _snapToRoute(LatLng user) {
     if (polylinePoints.isEmpty) return user;
 
-    // Search window around nearest known index
     final start = (nearestIdx - 5).clamp(0, polylinePoints.length - 1);
     final end   = (nearestIdx + 15).clamp(0, polylinePoints.length - 1);
 
-    int    bestIdx      = nearestIdx;
-    double bestSegDist  = double.infinity;
+    int    bestIdx       = nearestIdx;
+    double bestSegDist   = double.infinity;
     LatLng bestProjected = user;
 
-    // FIX: iterate over SEGMENTS (not points) and project onto each segment
     for (int i = start; i < end && i < polylinePoints.length - 1; i++) {
-      final projected = _projectOntoSegment(user, polylinePoints[i], polylinePoints[i + 1]);
-      final d         = _dist(user, projected);
+      final projected = _projectOntoSegment(
+          user, polylinePoints[i], polylinePoints[i + 1]);
+      final d = _dist(user, projected);
       if (d < bestSegDist) {
-        bestSegDist  = d;
-        bestIdx      = i;
+        bestSegDist   = d;
+        bestIdx       = i;
         bestProjected = projected;
       }
     }
 
-    // Snap threshold:
-    // - walk: 15m  (tight, pedestrian lanes, indoor paths)
-    // - drive/motor: 30m (wider because GPS jitter on roads)
+    // Snap threshold: tighter for walk, wider for drive (GPS jitter)
     final threshold = travelMode == TravelMode.walk ? 15.0 : 30.0;
+    if (bestSegDist > threshold) return user; // off-route, return raw GPS
 
-    if (bestSegDist > threshold) {
-      // Too far from route — return raw GPS (off-route logic will handle reroute)
-      return user;
-    }
-
-    // Don't allow snapping backwards along the route
+    // Never snap backwards
     if (bestIdx < nearestIdx) bestIdx = nearestIdx;
     nearestIdx = bestIdx;
 
@@ -530,14 +601,15 @@ class NavigationController extends ChangeNotifier {
   // ─────────────────────────────────────────────
 
   double _dist(LatLng a, LatLng b) =>
-      Geolocator.distanceBetween(a.latitude, a.longitude, b.latitude, b.longitude);
+      Geolocator.distanceBetween(
+          a.latitude, a.longitude, b.latitude, b.longitude);
 
   double _calcBearing(LatLng from, LatLng to) {
     final dLng = (to.longitude - from.longitude) * pi / 180;
     final phi1 = from.latitude * pi / 180;
     final phi2 = to.latitude   * pi / 180;
-    final y = sin(dLng) * cos(phi2);
-    final x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLng);
+    final y    = sin(dLng) * cos(phi2);
+    final x    = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLng);
     return (atan2(y, x) * 180 / pi + 360) % 360;
   }
 
@@ -558,21 +630,17 @@ class NavigationController extends ChangeNotifier {
     return min;
   }
 
-  double _distToSeg(LatLng p, LatLng a, LatLng b) {
-    final projected = _projectOntoSegment(p, a, b);
-    return _dist(p, projected);
-  }
+  double _distToSeg(LatLng p, LatLng a, LatLng b) =>
+      _dist(p, _projectOntoSegment(p, a, b));
 
-  /// Projects point [p] onto the segment [a]→[b] and returns the clamped projection.
-  /// This is the core fix: used by both snapping and distance-to-route calculations.
   LatLng _projectOntoSegment(LatLng p, LatLng a, LatLng b) {
     final ax = a.longitude, ay = a.latitude;
     final bx = b.longitude, by = b.latitude;
     final px = p.longitude,  py = p.latitude;
     final dx = bx - ax, dy = by - ay;
     final lenSq = dx * dx + dy * dy;
-    if (lenSq == 0) return a; // Degenerate segment (same point)
-    final t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+    if (lenSq == 0) return a;
+    final t  = ((px - ax) * dx + (py - ay) * dy) / lenSq;
     final tc = t.clamp(0.0, 1.0);
     return LatLng(ay + tc * dy, ax + tc * dx);
   }
@@ -580,10 +648,10 @@ class NavigationController extends ChangeNotifier {
   int _findNearestPolylineIndex(LatLng point, List<LatLng> poly,
       {int? start, int? end}) {
     if (poly.isEmpty) return 0;
-    final from = (start ?? 0).clamp(0, poly.length - 1);
-    final to   = (end   ?? poly.length - 1).clamp(0, poly.length - 1);
-    var bestIdx  = from;
-    var bestDist = double.infinity;
+    final from    = (start ?? 0).clamp(0, poly.length - 1);
+    final to      = (end ?? poly.length - 1).clamp(0, poly.length - 1);
+    var bestIdx   = from;
+    var bestDist  = double.infinity;
     for (int i = from; i <= to; i++) {
       final d = _dist(point, poly[i]);
       if (d < bestDist) { bestDist = d; bestIdx = i; }
@@ -598,19 +666,30 @@ class NavigationController extends ChangeNotifier {
     var text = instruction.replaceAll(RegExp(r'<[^>]*>'), '');
     text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
     text = text.replaceFirst(RegExp(r'^Head\s+\w+\s+'), 'Go ');
-    text = text.replaceFirst('Your destination is on the left',  'Destination on the left');
-    text = text.replaceFirst('Your destination is on the right', 'Destination on the right');
+    text = text.replaceFirst(
+        'Your destination is on the left', 'Destination on the left');
+    text = text.replaceFirst(
+        'Your destination is on the right', 'Destination on the right');
     return text;
   }
 
   List<LatLng> _decode(String encoded) {
-    final pts = <LatLng>[]; int i = 0, lat = 0, lng = 0;
+    final pts = <LatLng>[];
+    int i = 0, lat = 0, lng = 0;
     while (i < encoded.length) {
       int b, shift = 0, result = 0;
-      do { b = encoded.codeUnitAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+      do {
+        b = encoded.codeUnitAt(i++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
       lat += (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
       shift = 0; result = 0;
-      do { b = encoded.codeUnitAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+      do {
+        b = encoded.codeUnitAt(i++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
       lng += (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
       pts.add(LatLng(lat / 1e5, lng / 1e5));
     }
@@ -618,7 +697,7 @@ class NavigationController extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────────
-  // Public helpers used by UI
+  // Public getters used by UI
   // ─────────────────────────────────────────────
 
   double get progress {
@@ -632,6 +711,7 @@ class NavigationController extends ChangeNotifier {
 
   NavStep? get nextStep {
     if (currentStep == null) return null;
+    // Show next step preview when approaching current turn
     final threshold = travelMode == TravelMode.walk ? 60.0 : 300.0;
     if (currentStepIndex < steps.length - 1 && distToTurnEnd < threshold) {
       return steps[currentStepIndex + 1];
@@ -639,7 +719,14 @@ class NavigationController extends ChangeNotifier {
     return null;
   }
 
-  double get cameraBearing => travelMode == TravelMode.walk
-      ? ((lastPos?.speed ?? 0) > 1.1 ? bearing : 0)
-      : bearing;
+  // FIX: cameraBearing
+  // - Walking + stationary → face north (bearing = 0) so map stays stable
+  // - Walking + moving     → face direction of travel
+  // - Driving/motor        → always face direction of travel
+  double get cameraBearing {
+    if (travelMode == TravelMode.walk) {
+      return (lastPos?.speed ?? 0) > 1.1 ? bearing : 0;
+    }
+    return bearing;
+  }
 }

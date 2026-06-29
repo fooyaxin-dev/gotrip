@@ -5,7 +5,6 @@ import 'login.dart';
 import '../main/homepage.dart';
 import '../main/onBoarding.dart';
 
-
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
 
@@ -17,13 +16,42 @@ class _SignupPageState extends State<SignupPage> {
   final _formKey = GlobalKey<FormState>();
 
   final TextEditingController usernameController = TextEditingController();
-  final TextEditingController emailController = TextEditingController();
-  final TextEditingController pwdController = TextEditingController();
-  final TextEditingController repwdController = TextEditingController();
+  final TextEditingController emailController    = TextEditingController();
+  final TextEditingController pwdController      = TextEditingController();
+  final TextEditingController repwdController    = TextEditingController();
 
-  bool isLoading = false;
-  bool _pwdVisible = false;
+  bool isLoading     = false;
+  bool _pwdVisible   = false;
   bool _repwdVisible = false;
+
+  // ── password rule states ──────────────────────────────────────────────────
+  bool _hasMinLength  = false;
+  bool _hasUppercase  = false;
+  bool _hasLowercase  = false;
+  bool _hasDigit      = false;
+  bool _hasSpecial    = false;
+  bool _showChecklist = false; // only show once user starts typing
+
+  @override
+  void initState() {
+    super.initState();
+    pwdController.addListener(_onPasswordChanged);
+  }
+
+  void _onPasswordChanged() {
+    final v = pwdController.text;
+    setState(() {
+      _showChecklist = v.isNotEmpty;
+      _hasMinLength  = v.length >= 8;
+      _hasUppercase  = v.contains(RegExp(r'[A-Z]'));
+      _hasLowercase  = v.contains(RegExp(r'[a-z]'));
+      _hasDigit      = v.contains(RegExp(r'[0-9]'));
+      _hasSpecial    = v.contains(RegExp(r'[!@#\$&*~%^()\-_=+]'));
+    });
+  }
+
+  bool get _passwordValid =>
+      _hasMinLength && _hasUppercase && _hasLowercase && _hasDigit && _hasSpecial;
 
   @override
   void dispose() {
@@ -34,27 +62,29 @@ class _SignupPageState extends State<SignupPage> {
     super.dispose();
   }
 
-  // ================= Username check =================
+  // ── username uniqueness ───────────────────────────────────────────────────
   Future<bool> isUsernameTaken(String username) async {
     final query = await FirebaseFirestore.instance
         .collection('users')
         .where('username', isEqualTo: username)
         .get();
-
     return query.docs.isNotEmpty;
   }
 
-  // ================= Signup Logic =================
+  // ── signup logic ──────────────────────────────────────────────────────────
   Future<void> createUserWithEmailAndPassword() async {
     if (!_formKey.currentState!.validate()) return;
+    if (!_passwordValid) {
+      _showError('Please meet all password requirements');
+      return;
+    }
 
     final username = usernameController.text.trim();
-    final email = emailController.text.trim();
+    final email    = emailController.text.trim();
     final password = pwdController.text.trim();
 
     setState(() => isLoading = true);
 
-    // check username
     if (await isUsernameTaken(username)) {
       _showError('Username already taken');
       setState(() => isLoading = false);
@@ -62,40 +92,58 @@ class _SignupPageState extends State<SignupPage> {
     }
 
     try {
-      UserCredential userCredential =
-          await FirebaseAuth.instance.createUserWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
+      final userCredential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(email: email, password: password);
 
       final uid = userCredential.user!.uid;
 
       await FirebaseFirestore.instance.collection('users').doc(uid).set({
-        'email': email,
-        'username': username,
-        'bio': 'Hello! I\'m new here 👋',
-        'profileImageUrl': '',
+        'email':              email,
+        'username':           username,
+        'bio':                'Hello! I\'m new here 👋',
+        'profileImageUrl':    '',
         'backgroundImageUrl': '',
-        'postCount': 0,
-        'favouriteCount': 0,
-        'routeCount': 0,
-        'onboardingDone': false,
+        'postCount':          0,
+        'favouriteCount':     0,
+        'routeCount':         0,
+        'onboardingDone':     false,
         'preferences': {
           'categories': [],
-          'cuisines': [],
+          'cuisines':   [],
           'travelMode': 'walk',
         },
       });
 
+      // Send email verification
+      await userCredential.user!.sendEmailVerification();
+
       if (mounted) {
+        // Show verification notice before navigating
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.mark_email_unread_outlined, color: Colors.white),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'A verification email has been sent. Please verify before logging in.',
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Color(0xFF7C4DFF),
+            duration: Duration(seconds: 4),
+          ),
+        );
+
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const OnboardingPage()),
+          MaterialPageRoute(builder: (_) => const LoginPage()),
         );
       }
     } on FirebaseAuthException catch (e) {
       String message;
-
       switch (e.code) {
         case 'email-already-in-use':
           message = 'This email is already registered';
@@ -112,9 +160,8 @@ class _SignupPageState extends State<SignupPage> {
         default:
           message = 'Signup failed. Please try again';
       }
-
       _showError(message);
-    } catch (e) {
+    } catch (_) {
       _showError('Something went wrong');
     } finally {
       if (mounted) setState(() => isLoading = false);
@@ -123,27 +170,19 @@ class _SignupPageState extends State<SignupPage> {
 
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.indigoAccent,
-      ),
+      SnackBar(content: Text(message), backgroundColor: Colors.indigoAccent),
     );
   }
 
-  // ================= Password Strength Helper =================
+  // ── form validator (kept for Form.validate() pass) ────────────────────────
   String? _validatePassword(String? value) {
     if (value == null || value.isEmpty) return 'Password is required';
-    if (value.length < 8) return 'At least 8 characters required';
-    if (!value.contains(RegExp(r'[A-Z]'))) return 'At least one uppercase letter (A-Z)';
-    if (!value.contains(RegExp(r'[a-z]'))) return 'At least one lowercase letter (a-z)';
-    if (!value.contains(RegExp(r'[0-9]'))) return 'At least one number (0-9)';
-    if (!value.contains(RegExp(r'[!@#\$&*~%^()\-_=+]'))) {
-      return 'At least one special character (!@#\$&*~)';
-    }
+    // detailed checks are shown in the checklist; just block submit if invalid
+    if (!_passwordValid) return 'Please meet all password requirements';
     return null;
   }
 
-  // ================= UI =================
+  // ── UI ────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -154,7 +193,7 @@ class _SignupPageState extends State<SignupPage> {
             key: _formKey,
             child: Column(
               children: [
-                // ===== Header =====
+                // ── header ──────────────────────────────────────────────────
                 Container(
                   height: 250,
                   width: double.infinity,
@@ -165,7 +204,7 @@ class _SignupPageState extends State<SignupPage> {
                       end: Alignment.bottomRight,
                     ),
                     borderRadius: BorderRadius.only(
-                      bottomLeft: Radius.circular(35),
+                      bottomLeft:  Radius.circular(35),
                       bottomRight: Radius.circular(35),
                     ),
                   ),
@@ -176,29 +215,14 @@ class _SignupPageState extends State<SignupPage> {
                         CircleAvatar(
                           radius: 40,
                           backgroundColor: Colors.white,
-                          child: Icon(
-                            Icons.person_add,
-                            size: 40,
-                            color: Color(0xFF7C4DFF),
-                          ),
+                          child: Icon(Icons.person_add, size: 40, color: Color(0xFF7C4DFF)),
                         ),
                         SizedBox(height: 15),
-                        Text(
-                          'Create Account',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+                        Text('Create Account',
+                            style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
                         SizedBox(height: 5),
-                        Text(
-                          'Join us and start exploring',
-                          style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 14,
-                          ),
-                        ),
+                        Text('Join us and start exploring',
+                            style: TextStyle(color: Colors.white70, fontSize: 14)),
                       ],
                     ),
                   ),
@@ -206,22 +230,22 @@ class _SignupPageState extends State<SignupPage> {
 
                 const SizedBox(height: 25),
 
-                // ===== Username =====
+                // ── username ─────────────────────────────────────────────────
                 _inputField(
                   controller: usernameController,
                   icon: Icons.person,
                   hint: 'Enter your username',
                   validator: (value) {
                     if (value == null || value.isEmpty) return 'Username is required';
-                    if (value.contains('@')) return 'Username cannot contain @';
-                    if (value.length < 3) return 'Username must be at least 3 characters';
+                    if (value.contains('@'))  return 'Username cannot contain @';
+                    if (value.length < 3)     return 'Username must be at least 3 characters';
                     return null;
                   },
                 ),
 
                 const SizedBox(height: 15),
 
-                // ===== Email =====
+                // ── email ────────────────────────────────────────────────────
                 _inputField(
                   controller: emailController,
                   icon: Icons.email,
@@ -229,57 +253,49 @@ class _SignupPageState extends State<SignupPage> {
                   keyboardType: TextInputType.emailAddress,
                   validator: (value) {
                     if (value == null || value.isEmpty) return 'Email is required';
-                    if (!value.contains('@')) return 'Invalid email';
+                    final emailRegex = RegExp(r'^[\w\.-]+@[\w\.-]+\.\w{2,}$');
+                    if (!emailRegex.hasMatch(value.trim())) return 'Please enter a valid email';
                     return null;
                   },
                 ),
 
                 const SizedBox(height: 15),
 
-                // ===== Password =====
+                // ── password + live checklist ─────────────────────────────
                 _inputField(
                   controller: pwdController,
                   icon: Icons.lock,
                   hint: 'Enter your password',
                   obscure: !_pwdVisible,
                   suffixIcon: IconButton(
-                    icon: Icon(
-                      _pwdVisible ? Icons.visibility_off : Icons.visibility,
-                      color: Colors.grey,
-                    ),
+                    icon: Icon(_pwdVisible ? Icons.visibility_off : Icons.visibility,
+                        color: Colors.grey),
                     onPressed: () => setState(() => _pwdVisible = !_pwdVisible),
                   ),
                   validator: _validatePassword,
                 ),
 
-                // ===== Password hint =====
-                Padding(
-                  padding: const EdgeInsets.only(left: 30, top: 6, right: 25),
-                  child: Row(
-                    children: const [
-                      Icon(Icons.info_outline, size: 13, color: Colors.grey),
-                      SizedBox(width: 5),
-                      Text(
-                        'Min 8 chars, uppercase, lowercase, number & symbol',
-                        style: TextStyle(fontSize: 11, color: Colors.grey),
-                      ),
-                    ],
-                  ),
+                // ── animated checklist ───────────────────────────────────
+                AnimatedCrossFade(
+                  duration: const Duration(milliseconds: 200),
+                  crossFadeState: _showChecklist
+                      ? CrossFadeState.showFirst
+                      : CrossFadeState.showSecond,
+                  firstChild: _buildPasswordChecklist(),
+                  secondChild: const SizedBox.shrink(),
                 ),
 
                 const SizedBox(height: 15),
 
-                // ===== Re-password =====
+                // ── confirm password ──────────────────────────────────────
                 _inputField(
                   controller: repwdController,
                   icon: Icons.lock_outline,
                   hint: 'Re-enter your password',
                   obscure: !_repwdVisible,
                   suffixIcon: IconButton(
-                    icon: Icon(
-                      _repwdVisible ? Icons.visibility_off : Icons.visibility,
-                      color: Colors.grey,
-                    ),
+                    icon: Icon(_repwdVisible ? Icons.visibility_off : Icons.visibility,
+                        color: Colors.grey),
                     onPressed: () => setState(() => _repwdVisible = !_repwdVisible),
                   ),
                   validator: (value) {
@@ -288,20 +304,19 @@ class _SignupPageState extends State<SignupPage> {
                   },
                 ),
 
-                const SizedBox(height: 20),
+                const SizedBox(height: 28),
 
-                // ===== Sign Up Button =====
+                // ── sign up button ────────────────────────────────────────
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 25),
                   child: SizedBox(
                     height: 55,
+                    width: double.infinity,
                     child: ElevatedButton(
                       onPressed: isLoading ? null : createUserWithEmailAndPassword,
                       style: ElevatedButton.styleFrom(
                         padding: EdgeInsets.zero,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         elevation: 10,
                         shadowColor: Colors.purple.withOpacity(0.4),
                         backgroundColor: Colors.transparent,
@@ -309,29 +324,18 @@ class _SignupPageState extends State<SignupPage> {
                       child: Ink(
                         decoration: BoxDecoration(
                           gradient: const LinearGradient(
-                            colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
-                          ),
+                              colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)]),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Container(
                           alignment: Alignment.center,
                           child: isLoading
                               ? const SizedBox(
-                                  height: 22,
-                                  width: 22,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
+                                  height: 22, width: 22,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                                 )
-                              : const Text(
-                                  'Sign Up',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
+                              : const Text('Sign Up',
+                                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
                         ),
                       ),
                     ),
@@ -340,25 +344,18 @@ class _SignupPageState extends State<SignupPage> {
 
                 const SizedBox(height: 40),
 
-                // ===== Go to Login =====
+                // ── go to login ───────────────────────────────────────────
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     const Text('Already have an account? '),
                     GestureDetector(
-                      onTap: () {
-                        Navigator.pushReplacement(
-                          context,
-                          MaterialPageRoute(builder: (_) => const LoginPage()),
-                        );
-                      },
-                      child: const Text(
-                        'Login',
-                        style: TextStyle(
-                          color: Color(0xFF7C4DFF),
-                          fontWeight: FontWeight.bold,
-                        ),
+                      onTap: () => Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (_) => const LoginPage()),
                       ),
+                      child: const Text('Login',
+                          style: TextStyle(color: Color(0xFF7C4DFF), fontWeight: FontWeight.bold)),
                     ),
                   ],
                 ),
@@ -372,7 +369,57 @@ class _SignupPageState extends State<SignupPage> {
     );
   }
 
-  // ================= Reusable Widgets =================
+  // ── password checklist widget ─────────────────────────────────────────────
+  Widget _buildPasswordChecklist() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(25, 10, 25, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2C2C3E),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _checkRow(_hasMinLength, 'At least 8 characters'),
+          const SizedBox(height: 6),
+          _checkRow(_hasDigit,     'At least one digit (0–9)'),
+          const SizedBox(height: 6),
+          _checkRow(_hasLowercase, 'At least one lower case character'),
+          const SizedBox(height: 6),
+          _checkRow(_hasUppercase, 'At least one upper case character'),
+          const SizedBox(height: 6),
+          _checkRow(_hasSpecial,   'At least one special character (i.e: ! \$ # % ...)'),
+        ],
+      ),
+    );
+  }
+
+  Widget _checkRow(bool passed, String label) {
+    return Row(
+      children: [
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 200),
+          child: Icon(
+            passed ? Icons.check_circle : Icons.radio_button_unchecked,
+            key: ValueKey(passed),
+            size: 18,
+            color: passed ? const Color(0xFF4CAF50) : Colors.grey.shade500,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            color: passed ? const Color(0xFF4CAF50) : Colors.grey.shade400,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── reusable input field ──────────────────────────────────────────────────
   Widget _inputField({
     required TextEditingController controller,
     required IconData icon,
@@ -408,11 +455,7 @@ class _SignupPageState extends State<SignupPage> {
       color: Colors.white,
       borderRadius: BorderRadius.circular(12),
       boxShadow: [
-        BoxShadow(
-          color: Colors.grey.withOpacity(0.25),
-          blurRadius: 8,
-          offset: const Offset(0, 4),
-        ),
+        BoxShadow(color: Colors.grey.withOpacity(0.25), blurRadius: 8, offset: const Offset(0, 4)),
       ],
     );
   }

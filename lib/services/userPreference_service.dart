@@ -26,7 +26,7 @@ extension BudgetTierX on BudgetTier {
     }
   }
 
-  String toJson() => name; // 'budget' | 'midRange' | 'premium'
+  String toJson() => name;
 
   static BudgetTier fromJson(String? s) {
     switch (s) {
@@ -43,7 +43,7 @@ class UserPreferences {
   final List<String> categories;
   final List<String> cuisines;
   final String       travelMode;
-  final BudgetTier   budgetTier; 
+  final BudgetTier   budgetTier;
   final bool         onboardingDone;
 
   UserPreferences({
@@ -142,15 +142,39 @@ class UserPreferenceService {
 
   final ValueNotifier<int> preferencesChanged = ValueNotifier(0);
 
-  final Map<String, int> _favouriteCount = {};
+  final Map<String, int>    _favouriteCount    = {};
+  final Map<String, double> _searchScoreBuffer = {}; // 小数累积 buffer
 
-  // Hard gate: category/cuisine must be favourited ≥3 times
-  // before it enters _prefs.categories / _prefs.cuisines.
-  // After that, the raw count still accumulates and boosts the score further.
   static const int _minCountToLearn = 3;
 
   // ─────────────────────────────────────────────
-  // Load
+  // shared tag/topic → category maps
+  // (defined once, reused across all update methods)
+  // ─────────────────────────────────────────────
+
+  static const _tagToCategory = <String, String>{
+    'food':        'restaurant',
+    'travel':      'tourist_attraction',
+    'photography': 'tourist_attraction',
+    'fitness':     'amusement_park',
+    'nature':      'park',
+    'shopping':    'shopping_mall',
+  };
+
+  static const _topicToCategory = <String, String>{
+    '#foodie':      'restaurant',
+    '#malaysia':    'tourist_attraction',
+    '#KLCC':        'tourist_attraction',
+    '#penang':      'tourist_attraction',
+    '#niceView':    'park',
+    '#happyTravel': 'tourist_attraction',
+    '#travelvlog':  'tourist_attraction',
+    '#journey':     'tourist_attraction',
+    '#transport':   'tourist_attraction',
+  };
+
+  // ─────────────────────────────────────────────
+  // Load  ← 现在同时加载 searchScoreBuffer
   // ─────────────────────────────────────────────
 
   Future<UserPreferences> load() async {
@@ -163,10 +187,17 @@ class UserPreferenceService {
 
       _prefs = UserPreferences.fromMap(doc.data()!);
 
+      // ── Load favouriteTypeCounts ──
       final countMap =
           doc.data()!['favouriteTypeCounts'] as Map<String, dynamic>? ?? {};
       _favouriteCount.clear();
       countMap.forEach((k, v) => _favouriteCount[k] = (v as num).toInt());
+
+      // ── Load searchScoreBuffer ── ← 新增，App 重启后 buffer 不会丢失
+      final bufferMap =
+          doc.data()!['searchScoreBuffer'] as Map<String, dynamic>? ?? {};
+      _searchScoreBuffer.clear();
+      bufferMap.forEach((k, v) => _searchScoreBuffer[k] = (v as num).toDouble());
 
       return _prefs;
     } catch (e) {
@@ -197,6 +228,7 @@ class UserPreferenceService {
     if (uid == null) return;
     _prefs = UserPreferences.empty().copyWith(onboardingDone: true);
     _favouriteCount.clear();
+    _searchScoreBuffer.clear(); // ← 同时清空 buffer
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
       'preferences': {
         'categories': [],
@@ -205,12 +237,14 @@ class UserPreferenceService {
         'budgetTier': 'budget',
       },
       'favouriteTypeCounts': {},
+      'searchScoreBuffer':   {}, // ← 同时清空 Firestore 里的 buffer
     });
     preferencesChanged.value++;
   }
 
   // ─────────────────────────────────────────────
-  // Update from favourite
+  // Update from favourite (place)
+  // 直接整数 +1 / -1，最强信号
   // ─────────────────────────────────────────────
 
   Future<void> updateFromFavourite({
@@ -262,14 +296,12 @@ class UserPreferenceService {
       }
     }
 
-    // ── Gate: only promote to _prefs once count >= 3 ──
     final updatedCategories = List<String>.from(_prefs.categories);
     final updatedCuisines   = List<String>.from(_prefs.cuisines);
 
     for (final entry in _favouriteCount.entries) {
       final key   = entry.key;
       final count = entry.value;
-
       if (key.startsWith('cat_')) {
         final cat = key.substring(4);
         if (count >= _minCountToLearn && !updatedCategories.contains(cat)) {
@@ -304,17 +336,240 @@ class UserPreferenceService {
     });
   }
 
-  // ═════════════════════════════════════════════════════════════════════════
+  // ─────────────────────────────────────────────
+  // Update from Post
+  // 发帖 = 直接整数 +1，删帖 = -1
+  // ─────────────────────────────────────────────
+
+  Future<void> updateFromPost({
+    required List<String> tags,
+    required String?      topic,
+    required String?      location,
+    required bool         isPosting,
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    if (location == null && tags.isEmpty && topic == null) return;
+
+    final List<String> involvedKeys = [];
+
+    for (final tag in tags) {
+      final cat = _tagToCategory[tag];
+      if (cat != null) involvedKeys.add('cat_$cat');
+    }
+    if (topic != null) {
+      final cat = _topicToCategory[topic];
+      if (cat != null) involvedKeys.add('cat_$cat');
+    }
+    if (location != null && location.isNotEmpty) {
+      involvedKeys.add('cat_tourist_attraction');
+    }
+
+    if (involvedKeys.isEmpty) return;
+
+    for (final key in involvedKeys) {
+      if (isPosting) {
+        _favouriteCount[key] = (_favouriteCount[key] ?? 0) + 1;
+      } else {
+        _favouriteCount[key] =
+            ((_favouriteCount[key] ?? 0) - 1).clamp(0, 999);
+      }
+    }
+
+    final updatedCategories = List<String>.from(_prefs.categories);
+    final updatedCuisines   = List<String>.from(_prefs.cuisines);
+
+    _applyGate(updatedCategories, updatedCuisines);
+
+    _prefs = _prefs.copyWith(
+      categories: updatedCategories,
+      cuisines:   updatedCuisines,
+    );
+
+    await FirebaseFirestore.instance.collection('users').doc(uid).update({
+      'preferences': {
+        'categories': updatedCategories,
+        'cuisines':   updatedCuisines,
+        'travelMode': _prefs.travelMode,
+        'budgetTier': _prefs.budgetTier.toJson(),
+      },
+      'favouriteTypeCounts': _favouriteCount,
+    });
+
+    print('✅ updateFromPost: keys=$involvedKeys isPosting=$isPosting');
+  }
+
+  // ─────────────────────────────────────────────
+  // Update from Like post  ← 新增
+  // Like = +0.7 via buffer，Unlike = -0.7
+  // 权重比搜索(0.5)强，比收藏地点(1.0整数)弱
+  // ─────────────────────────────────────────────
+
+  Future<void> updateFromLike({
+    required List<String> postTags,
+    required String?      postTopic,
+    required bool         isLiking, // true = like, false = unlike
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    if (postTags.isEmpty && postTopic == null) return;
+
+    // ── 收集 keys ──
+    final involvedKeys = <String>{};
+    for (final tag in postTags) {
+      final cat = _tagToCategory[tag.toLowerCase()];
+      if (cat != null) involvedKeys.add('cat_$cat');
+    }
+    if (postTopic != null) {
+      final cat = _topicToCategory[postTopic];
+      if (cat != null) involvedKeys.add('cat_$cat');
+    }
+
+    if (involvedKeys.isEmpty) return;
+
+    // ── 更新 buffer ──
+    // Like → +0.7，Unlike → -0.7
+    for (final key in involvedKeys) {
+      if (isLiking) {
+        _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) + 0.7;
+      } else {
+        _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) - 0.7;
+        // buffer 不能低于 0
+        if (_searchScoreBuffer[key]! < 0) _searchScoreBuffer[key] = 0.0;
+      }
+    }
+
+    await _flushBuffer(uid);
+
+    print('✅ updateFromLike: tags=$postTags topic=$postTopic isLiking=$isLiking');
+  }
+
+  // ─────────────────────────────────────────────
+  // Update from Search (点击搜索结果里的帖子)
+  // 最弱信号 +0.5 via buffer
+  // ─────────────────────────────────────────────
+
+  Future<void> updateFromSearch({
+    required List<String> postTags,
+    required String?      postTopic,
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    if (postTags.isEmpty && postTopic == null) return;
+
+    final involvedKeys = <String>{};
+    for (final tag in postTags) {
+      final cat = _tagToCategory[tag.toLowerCase()];
+      if (cat != null) involvedKeys.add('cat_$cat');
+    }
+    if (postTopic != null) {
+      final cat = _topicToCategory[postTopic];
+      if (cat != null) involvedKeys.add('cat_$cat');
+    }
+
+    if (involvedKeys.isEmpty) return;
+
+    // 点击帖子 +0.5
+    for (final key in involvedKeys) {
+      _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) + 0.5;
+    }
+
+    await _flushBuffer(uid);
+
+    print('✅ updateFromSearch: tags=$postTags topic=$postTopic');
+  }
+
+  // ─────────────────────────────────────────────
+  // _flushBuffer — 把 buffer 里达到整数的分数
+  // 转进 _favouriteCount，更新 Firestore
+  // 所有用到 buffer 的方法都调这个，避免重复代码
+  // ─────────────────────────────────────────────
+
+  Future<void> _flushBuffer(String uid) async {
+    final Map<String, dynamic> firestoreUpdates = {};
+    final updatedCategories = List<String>.from(_prefs.categories);
+    final updatedCuisines   = List<String>.from(_prefs.cuisines);
+
+    _searchScoreBuffer.forEach((key, score) {
+      final wholePoints = score.floor();
+      if (wholePoints > 0) {
+        _favouriteCount[key] = (_favouriteCount[key] ?? 0) + wholePoints;
+        _searchScoreBuffer[key] = score - wholePoints; // 只保留小数
+
+        firestoreUpdates['favouriteTypeCounts.$key'] = _favouriteCount[key];
+      }
+    });
+
+    // Gate 判断
+    _applyGate(updatedCategories, updatedCuisines);
+
+    // preferences 有变化才更新
+    if (updatedCategories.length != _prefs.categories.length ||
+        updatedCuisines.length   != _prefs.cuisines.length) {
+      _prefs = _prefs.copyWith(
+        categories: updatedCategories,
+        cuisines:   updatedCuisines,
+      );
+      firestoreUpdates['preferences.categories'] = updatedCategories;
+      firestoreUpdates['preferences.cuisines']   = updatedCuisines;
+      preferencesChanged.value++;
+    }
+
+    // 永远保存最新 buffer 状态
+    firestoreUpdates['searchScoreBuffer'] = _searchScoreBuffer;
+
+    if (firestoreUpdates.isNotEmpty) {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .update(firestoreUpdates);
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // _applyGate — 根据 _favouriteCount 更新
+  // categories 和 cuisines list
+  // ─────────────────────────────────────────────
+
+  void _applyGate(
+    List<String> updatedCategories,
+    List<String> updatedCuisines,
+  ) {
+    for (final entry in _favouriteCount.entries) {
+      final key   = entry.key;
+      final count = entry.value;
+
+      if (key.startsWith('cat_')) {
+        final cat = key.substring(4);
+        if (count >= _minCountToLearn && !updatedCategories.contains(cat)) {
+          updatedCategories.add(cat);
+        } else if (count < _minCountToLearn) {
+          updatedCategories.remove(cat);
+        }
+      }
+      if (key.startsWith('cui_')) {
+        final cui = key.substring(4);
+        if (count >= _minCountToLearn && !updatedCuisines.contains(cui)) {
+          updatedCuisines.add(cui);
+        } else if (count < _minCountToLearn) {
+          updatedCuisines.remove(cui);
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // RECOMMENDATION SCORE
   //
-  //  RECOMMENDATION SCORE
-  //
-  //  Score = 0.35 × InterestMatch
-  //        + 0.25 × DistanceScore
-  //        + 0.20 × RatingScore
-  //        + 0.10 × TimeSuitability
-  //        + 0.10 × BudgetSuitability
-  //
-  // ═════════════════════════════════════════════════════════════════════════
+  // Score = 0.35 × InterestMatch
+  //       + 0.25 × DistanceScore
+  //       + 0.20 × RatingScore
+  //       + 0.10 × TimeSuitability
+  //       + 0.10 × BudgetSuitability
+  // ═══════════════════════════════════════════════════════════════════
 
   RecommendationScore recommendationScore({
     required String?      primaryType,
@@ -336,7 +591,7 @@ class UserPreferenceService {
                  + 0.10 * budget).clamp(0.0, 1.0);
 
     return RecommendationScore(
-      total:             total, 
+      total:             total,
       interestMatch:     interest,
       distanceScore:     distance,
       ratingScore:       ratingS,
@@ -344,21 +599,6 @@ class UserPreferenceService {
       budgetSuitability: budget,
     );
   }
-
-  // ─────────────────────────────────────────────
-  // 1. Interest Match (0.35)
-  //
-  // Gate: category/cuisine must reach ≥3 favourites to unlock.
-  // Once unlocked, count continues to boost the score:
-  //
-  //   count < 3   → 0.0  (not unlocked yet)
-  //   count = 3   → 0.6  (just unlocked)
-  //   count = 5   → 0.8
-  //   count = 10+ → 1.0  (loyal fan)
-  //
-  // Also checks onboarding category/cuisine (binary 1.0 if match).
-  // Final score = average of all matched signals.
-  // ─────────────────────────────────────────────
 
   double _interestMatchScore(String? primaryType, List<String> allTypes) {
     const typeToCategory = {
@@ -384,30 +624,23 @@ class UserPreferenceService {
       'coffee_shop':          'cafe',
     };
 
-    // Converts a favourite count → 0.0–1.0
-    // Below gate → 0.0.  At gate → 0.6.  Max (10) → 1.0.
     double countToScore(int count) {
       if (count < _minCountToLearn) return 0.0;
-      // Linear from 0.6 at count=3 to 1.0 at count=10
       const maxCount = 10;
       final clamped  = count.clamp(_minCountToLearn, maxCount);
       return 0.6 + 0.4 * (clamped - _minCountToLearn) / (maxCount - _minCountToLearn);
     }
 
-    final scores  = <double>[];
+    final scores = <double>[];
 
-    // ── Category signal ──
     final category = typeToCategory[primaryType ?? ''];
     if (category != null) {
-      // Onboarding match
       if (_prefs.categories.contains(category)) scores.add(1.0);
-      // Favourite count boost (additive signal)
       final cnt = _favouriteCount['cat_$category'] ?? 0;
       final cs  = countToScore(cnt);
       if (cs > 0) scores.add(cs);
     }
 
-    // ── Cuisine signal ──
     for (final t in allTypes) {
       final cuisine = typeToCuisine[t];
       if (cuisine != null) {
@@ -415,40 +648,23 @@ class UserPreferenceService {
         final cnt = _favouriteCount['cui_$cuisine'] ?? 0;
         final cs  = countToScore(cnt);
         if (cs > 0) scores.add(cs);
-        break; // one cuisine signal per place
+        break;
       }
     }
 
-    if (scores.isEmpty) return 0.5; // no signal → neutral
+    if (scores.isEmpty) return 0.5;
     return (scores.reduce((a, b) => a + b) / scores.length).clamp(0.0, 1.0);
   }
-
-  // ─────────────────────────────────────────────
-  // 2. Distance Score (0.25)
-  //
-  // Linear decay:  0 m → 1.0,  15 km → 0.0
-  // ─────────────────────────────────────────────
 
   double _distanceScore(double? distanceMeters) {
     if (distanceMeters == null || distanceMeters <= 0) return 0.5;
     return (1.0 - distanceMeters / 15000.0).clamp(0.0, 1.0);
   }
 
-  // ─────────────────────────────────────────────
-  // 3. Rating Score (0.20)
-  //
-  // (rating - 2.0) / 3.0
-  // 2.0 → 0.0 | 3.5 → 0.50 | 4.5 → 0.83 | 5.0 → 1.0
-  // ─────────────────────────────────────────────
-
-  double _ratingScore(double? rating) { 
+  double _ratingScore(double? rating) {
     if (rating == null) return 0.5;
     return ((rating - 2.0) / 3.0).clamp(0.0, 1.0);
   }
-
-  // ─────────────────────────────────────────────
-  // 4. Time Suitability (0.10)
-  // ─────────────────────────────────────────────
 
   double _timeSuitabilityScore(String? primaryType, List<String> allTypes) {
     final hour = DateTime.now().hour;
@@ -476,35 +692,19 @@ class UserPreferenceService {
     return 0.3;
   }
 
-  // ─────────────────────────────────────────────
-  // 5. Budget Suitability (0.10)
-  //
-  // Uses user's budgetTier (set in onboarding) vs Google priceLevel 1–4
-  //
-  //              PL1   PL2   PL3   PL4
-  // budget       1.0   0.8   0.3   0.0
-  // mid-range    0.6   1.0   1.0   0.5
-  // premium      0.2   0.6   1.0   1.0
-  // ─────────────────────────────────────────────
-
   double _budgetSuitabilityScore(int? priceLevel) {
-    if (priceLevel == null) return 1.0; // unknown → don't penalize
+    if (priceLevel == null) return 1.0;
 
     const scores = <String, List<double>>{
-      //           PL1   PL2   PL3   PL4
-      'budget':   [1.0,  0.8,  0.3,  0.0],
-      'midRange': [0.6,  1.0,  1.0,  0.5],
-      'premium':  [0.2,  0.6,  1.0,  1.0],
+      'budget':   [1.0, 0.8, 0.3, 0.0],
+      'midRange': [0.6, 1.0, 1.0, 0.5],
+      'premium':  [0.2, 0.6, 1.0, 1.0],
     };
 
-    final tier = _prefs.budgetTier.toJson(); // 'budget' | 'midRange' | 'premium'
+    final tier = _prefs.budgetTier.toJson();
     final idx  = (priceLevel - 1).clamp(0, 3);
     return scores[tier]![idx];
   }
-
-  // ─────────────────────────────────────────────
-  // Legacy — keeps existing call sites working
-  // ─────────────────────────────────────────────
 
   double scorePlaceModel({
     required String?      primaryType,
@@ -521,10 +721,6 @@ class UserPreferenceService {
         priceLevel:     priceLevel,
       ).total;
 
-  // ─────────────────────────────────────────────
-  // Recommend reason  (unchanged)
-  // ─────────────────────────────────────────────
-
   String? getRecommendReason({
     required String?      primaryType,
     required List<String> allTypes,
@@ -537,7 +733,7 @@ class UserPreferenceService {
       'dessert_shop': 'Dessert', 'ice_cream_shop': 'Dessert',
       'bakery': 'Dessert', 'cafe': 'Cafe', 'coffee_shop': 'Cafe',
     };
-    const typeToCategory  = {
+    const typeToCategory = {
       'restaurant': 'restaurant', 'park': 'park',
       'tourist_attraction': 'tourist_attraction',
       'shopping_mall': 'shopping_mall', 'amusement_park': 'amusement_park',
@@ -549,7 +745,7 @@ class UserPreferenceService {
     };
 
     final hour = DateTime.now().hour;
-    if (hour >= 6  && hour < 11 &&
+    if (hour >= 6 && hour < 11 &&
         (primaryType == 'cafe' ||
          allTypes.any((t) => t == 'cafe' || t == 'coffee_shop'))) {
       return 'Good morning ☕ Start your day here';
@@ -576,5 +772,4 @@ class UserPreferenceService {
     }
     return null;
   }
-
 }
