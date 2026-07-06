@@ -85,7 +85,6 @@ class PlaceModel {
     );
   }
 
-  // ← 新增 copyWith，方便更新 allTypes
   PlaceModel copyWith({List<String>? allTypes}) {
     return PlaceModel(
       id:              id,
@@ -105,4 +104,5 @@ class PlaceModel {
       osmType:         osmType,
     );
   }
+  
 }

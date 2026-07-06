@@ -11,13 +11,17 @@ import '../../services/landmarkHistory_service.dart';
 import '../../modules/place/favouriteButton.dart';
 
 class ResultPage extends StatefulWidget {
-  final Uint8List imageBytes;
+  final Uint8List? imageBytes;       // null when opened from History (no original photo saved)
+  final String? fallbackImageUrl;    // Google Places photo, used when imageBytes is null
   final LandmarkResult landmarkResult;
+  final bool skipHistorySave;        // true when opened from History, to avoid re-saving a duplicate entry
 
   const ResultPage({
     super.key,
-    required this.imageBytes,
+    this.imageBytes,
+    this.fallbackImageUrl,
     required this.landmarkResult,
+    this.skipHistorySave = false,
   });
 
   @override
@@ -153,8 +157,16 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     );
 
     if (_isDetected) {
-      _fetchInfo();
-      _fetchPlaceDetails();
+      // ── FIX ────────────────────────────────────────────────
+      // 之前 _fetchInfo() / _fetchPlaceDetails() 各自内部在"成功路径"
+      // 里调用 _maybeSaveHistory()，导致任何一个提前 return 或抛异常
+      // 的分支都会让这次 scan 完全不落地到 history。
+      // 现在改为用 Future.wait 统一等两个请求都跑完（无论成功/失败，
+      // 因为两者内部 catch 都不会 rethrow），再调用一次
+      // _maybeSaveHistory()，保证"扫一次就存一条记录"。
+      Future.wait([_fetchInfo(), _fetchPlaceDetails()]).then((_) {
+        _maybeSaveHistory();
+      });
     } else {
       _infoLoading    = false;
       placeLoading    = false;
@@ -192,11 +204,14 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         if (mounted) setState(() => admissionInfo = admission);
       }
 
-      // ── Save to history once wiki info is ready ────────────
-      _maybeSaveHistory();
+      // ── FIX: 不再在这里调用 _maybeSaveHistory() ──────────────
+      // 保存检查统一交给 initState 里的 Future.wait().then() 收口，
+      // 避免这条成功路径是唯一触发保存的地方。
     } catch (e) {
+      debugPrint('⚠️ _fetchInfo error: $e');
       if (!mounted) return;
       setState(() { _infoLoading = false; admissionLoading = false; });
+      // 不 rethrow，保证 Future.wait 能继续走到收口逻辑
     }
   }
 
@@ -211,10 +226,19 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         maxResultCount: 1,
       );
 
-      if (results.isEmpty) { setState(() => placeLoading = false); return; }
+      if (results.isEmpty) {
+        // ── FIX: 之前这里只是 return，现在补上日志方便排查 ──────
+        debugPrint('⚠️ _fetchPlaceDetails: no nearby place matched "$_name"');
+        if (mounted) setState(() => placeLoading = false);
+        return;
+      }
 
       final placeId = results[0]['id'] as String?;
-      if (placeId == null) { setState(() => placeLoading = false); return; }
+      if (placeId == null) {
+        debugPrint('⚠️ _fetchPlaceDetails: matched place has no id');
+        if (mounted) setState(() => placeLoading = false);
+        return;
+      }
 
       final details    = await PlacesApiService.getPlaceDetails(placeId);
       final photosRaw  = details['photos'] as List?;
@@ -230,19 +254,25 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         if (placePhotos.isNotEmpty) displayImages = placePhotos;
       });
 
-      // ── Update history with richer data once place details arrive ──
-      _maybeSaveHistory();
+      // ── FIX: 不再在这里调用 _maybeSaveHistory() ──────────────
     } catch (e) {
-      if (!mounted) return;
-      setState(() => placeLoading = false);
+      debugPrint('⚠️ _fetchPlaceDetails error: $e');
+      if (mounted) setState(() => placeLoading = false);
+      // 不 rethrow
     }
   }
 
-  // ── Save to history (called after wiki AND place details) ──
+  // ── 统一收口：无论两个请求成功与否，扫一次就存一条记录 ──────
   void _maybeSaveHistory() {
+    if (widget.skipHistorySave) return; // opened from History page, don't create a duplicate entry
+    if (!mounted) return;
     if (_historySaved) return;
-    if (_infoLoading || placeLoading) return; // wait for both
     _historySaved = true;
+
+    debugPrint(
+      '📝 Saving history for "$_name" '
+      '(wiki: ${_wikiResult != null}, place: ${placeDetails != null})',
+    );
 
     LandmarkHistoryService.save(
       name:            _name,
@@ -386,7 +416,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           SizedBox(
             height: screenHeight * 0.45,
             width: double.infinity,
-            child: Image.memory(widget.imageBytes, fit: BoxFit.cover),
+            child: _buildHeroImage(),
           ),
           Positioned(
             top: 0, left: 0, right: 0,
@@ -464,6 +494,34 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             },
           ),
         ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // Hero image: real scan photo > Google Places photo > placeholder
+  // ============================================================
+
+  Widget _buildHeroImage() {
+    if (widget.imageBytes != null) {
+      return Image.memory(widget.imageBytes!, fit: BoxFit.cover);
+    }
+    if (widget.fallbackImageUrl != null && widget.fallbackImageUrl!.isNotEmpty) {
+      return Image.network(
+        widget.fallbackImageUrl!,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _heroPlaceholder(),
+      );
+    }
+    return _heroPlaceholder();
+  }
+
+  Widget _heroPlaceholder() {
+    return Container(
+      color: const Color(0xFFEDE7F6),
+      child: const Center(
+        child: Icon(Icons.location_on_rounded,
+            size: 64, color: Color(0xFF7C4DFF)),
       ),
     );
   }

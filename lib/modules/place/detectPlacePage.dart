@@ -18,7 +18,8 @@ import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
 import '../../services/itinerary_service.dart';
 import 'routeOptimizerPage.dart';
-import '../../services/userPreference_service.dart'; // ← NEW: for recommendation score
+import '../../services/userPreference_service.dart'; 
+import 'categoryImage_Helper.dart';
 
 // ── CHANGE 1: added 'recommended' sort mode ──────────────────────────────────
 enum SortMode { distance, rating, recommended }
@@ -49,7 +50,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   final Set<Marker> _markers = {};
   // ── CHANGE 2: default sort = recommended ────────────────────────────────────
   SortMode _sortMode = SortMode.recommended;
-  TravelMode _travelMode = TravelMode.walk;
+  TravelMode _travelMode = TravelMode.walk; // will be overridden in initState
   bool _isTravelModeExpanded = false;
 
   final List<PlaceModel> _displayedPlaces = [];
@@ -159,6 +160,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   @override
   void initState() {
     super.initState();
+
+    // ── Read travel mode from user preference before loading ────────────────
+    final savedMode = UserPreferenceService.instance.current.travelMode;
+    _travelMode = savedMode == 'drive'
+        ? TravelMode.drive
+        : savedMode == 'motor'
+            ? TravelMode.motor
+            : TravelMode.walk;
+
     _bootstrap();
 
     _searchFocus.addListener(() {
@@ -508,6 +518,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         );
       } else {
         NearbyPlacesService.instance.clearCache();
+        NearbyPlacesService.instance.clearSearchCache(); // ← also clear search cache
         await NearbyPlacesService.instance.loadNearbyPlacesOnce(
             categories, context, radius: _radiusFromTravelMode);
       }
@@ -1300,7 +1311,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 initialChildSize: 0.4,
                 minChildSize: 0.2,
                 maxChildSize: 0.85,
-                snap: true,
+                snap: false,
                 builder: (context, scrollController) {
                   return Container(
                     decoration: BoxDecoration(
@@ -1333,276 +1344,284 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // ─────────────────────────────────────────────
 
   Widget _buildPlaceListSheet(
-      ScrollController scrollController, List<PlaceModel> sortedPlaces) {
-    return ListView(
-      controller: scrollController,
-      padding: EdgeInsets.zero,
-      children: [
-        Center(child: Column(children: [
-          const SizedBox(height: 8),
-          Container(
-            width: 45, height: 5,
-            decoration: BoxDecoration(
-              color: Colors.grey[300],
-              borderRadius: BorderRadius.circular(10),
+    ScrollController scrollController, List<PlaceModel> sortedPlaces) {
+  return Stack(
+    children: [
+      ListView(
+        controller: scrollController,
+        padding: EdgeInsets.only(
+          bottom: _selectedPlaceIds.isNotEmpty ? 90 : 0,
+        ),
+        children: [
+          Center(child: Column(children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 45, height: 5,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            const SizedBox(height: 4),
+          ])),
+
+          if (_searchLocationName != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Row(children: [
+                const Icon(Icons.location_on_rounded,
+                    size: 14, color: Color(0xFF1A73E8)),
+                const SizedBox(width: 4),
+                Text(
+                  'Showing results near: $_searchLocationName',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF1A73E8),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const Spacer(),
+                GestureDetector(
+                  onTap: _clearSearch,
+                  child: const Icon(Icons.close_rounded,
+                      size: 16, color: Color(0xFF1A73E8)),
+                ),
+              ]),
+            ),
+
+          // Primary categories
+          SizedBox(
+            height: 95,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: categories.length,
+              itemBuilder: (context, index) {
+                final cat = categories[index];
+                final isSelected = cat['type'] == 'all'
+                    ? _selectedPrimary == null
+                    : _selectedPrimary == cat['type'];
+                return Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: GestureDetector(
+                    onTap: () => _onPrimaryTap(cat['type']),
+                    child: Column(children: [
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? cat['color']
+                              : Colors.grey[100],
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(cat['icon'],
+                            color: isSelected
+                                ? Colors.white
+                                : Colors.grey[600],
+                            size: 26),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(cat['name'], style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: isSelected
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                        color: isSelected
+                            ? cat['color']
+                            : Colors.grey[700],
+                      )),
+                    ]),
+                  ),
+                );
+              },
             ),
           ),
-          const SizedBox(height: 4),
-        ])),
 
-        if (_searchLocationName != null)
+          const Divider(height: 1, thickness: 0.5),
+
+          // Travel mode + radius picker on same row
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             child: Row(children: [
-              const Icon(Icons.location_on_rounded,
-                  size: 14, color: Color(0xFF1A73E8)),
-              const SizedBox(width: 4),
-              Text(
-                'Showing results near: $_searchLocationName',
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: Color(0xFF1A73E8),
-                  fontWeight: FontWeight.w500,
+              Text('Travel By:',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+              const SizedBox(width: 12),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.blue[200]!),
                 ),
-              ),
-              const Spacer(),
-              GestureDetector(
-                onTap: _clearSearch,
-                child: const Icon(Icons.close_rounded,
-                    size: 16, color: Color(0xFF1A73E8)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  GestureDetector(
+                    onTap: () => setState(
+                        () => _isTravelModeExpanded = !_isTravelModeExpanded),
+                    child: Row(children: [
+                      Icon(_getTravelIcon(_travelMode),
+                          color: Colors.blue[800], size: 20),
+                      const SizedBox(width: 4),
+                      Text(
+                        _radiusFromTravelMode >= 1000
+                            ? '${_radiusFromTravelMode ~/ 1000} km'
+                            : '${_radiusFromTravelMode} m',
+                        style: TextStyle(
+                            fontSize: 11, color: Colors.blue[700],
+                            fontWeight: FontWeight.w600),
+                      ),
+                      Icon(
+                        _isTravelModeExpanded
+                            ? Icons.arrow_left
+                            : Icons.arrow_drop_down,
+                        color: Colors.blue[800],
+                      ),
+                    ]),
+                  ),
+                  if (_isTravelModeExpanded)
+                    Row(children: [
+                      const VerticalDivider(width: 16),
+                      _buildMiniIconWithReload(TravelMode.walk, Icons.directions_walk),
+                      _buildMiniIconWithReload(TravelMode.motor, Icons.motorcycle),
+                      _buildMiniIconWithReload(TravelMode.drive, Icons.directions_car),
+                    ]),
+                ]),
               ),
             ]),
           ),
 
-        // Primary categories
-        SizedBox(
-          height: 95,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: categories.length,
-            itemBuilder: (context, index) {
-              final cat = categories[index];
-              final isSelected = cat['type'] == 'all'
-                  ? _selectedPrimary == null
-                  : _selectedPrimary == cat['type'];
-              return Padding(
-                padding: const EdgeInsets.only(right: 12),
-                child: GestureDetector(
-                  onTap: () => _onPrimaryTap(cat['type']),
-                  child: Column(children: [
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? cat['color']
-                            : Colors.grey[100],
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(cat['icon'],
-                          color: isSelected
-                              ? Colors.white
-                              : Colors.grey[600],
-                          size: 26),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(cat['name'], style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: isSelected
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                      color: isSelected
-                          ? cat['color']
-                          : Colors.grey[700],
-                    )),
-                  ]),
-                ),
-              );
-            },
+          // Sort + selected count
+Padding(
+  padding: const EdgeInsets.symmetric(vertical: 8),
+  child: SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    padding: const EdgeInsets.symmetric(horizontal: 16),
+    child: Row(children: [
+      _buildStyledFilterChip(
+        label: 'For You',
+        isSelected: _sortMode == SortMode.recommended,
+        onTap: () => setState(() => _sortMode = SortMode.recommended),
+        icon: Icons.auto_awesome_rounded,
+      ),
+      const SizedBox(width: 5),
+      _buildStyledFilterChip(
+        label: 'Nearest',
+        isSelected: _sortMode == SortMode.distance,
+        onTap: () => setState(() => _sortMode = SortMode.distance),
+        icon: Icons.near_me_outlined,
+      ),
+      const SizedBox(width: 5),
+      _buildStyledFilterChip(
+        label: 'High Rated',
+        isSelected: _sortMode == SortMode.rating,
+        onTap: () => setState(() => _sortMode = SortMode.rating),
+        icon: Icons.star_outline_rounded,
+      ),
+      if (_selectedPlaceIds.isNotEmpty) ...[
+        const SizedBox(width: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(
+              horizontal: 8, vertical: 6),
+          decoration: BoxDecoration(
+            color: const Color(0xFF7C4DFF).withOpacity(0.1),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+                color: const Color(0xFF7C4DFF).withOpacity(0.3)),
           ),
-        ),
-
-        const Divider(height: 1, thickness: 0.5),
-
-        // Travel mode + radius picker on same row
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(children: [
-            Text('Travel By:',
-                style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-            const SizedBox(width: 12),
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeInOut,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.blue[50],
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.blue[200]!),
-              ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                GestureDetector(
-                  onTap: () => setState(
-                      () => _isTravelModeExpanded = !_isTravelModeExpanded),
-                  child: Row(children: [
-                    Icon(_getTravelIcon(_travelMode),
-                        color: Colors.blue[800], size: 20),
-                    const SizedBox(width: 4),
-                    Text(
-                      _radiusFromTravelMode >= 1000
-                          ? '${_radiusFromTravelMode ~/ 1000} km'
-                          : '${_radiusFromTravelMode} m',
-                      style: TextStyle(
-                          fontSize: 11, color: Colors.blue[700],
-                          fontWeight: FontWeight.w600),
-                    ),
-                    Icon(
-                      _isTravelModeExpanded
-                          ? Icons.arrow_left
-                          : Icons.arrow_drop_down,
-                      color: Colors.blue[800],
-                    ),
-                  ]),
-                ),
-                if (_isTravelModeExpanded)
-                  Row(children: [
-                    const VerticalDivider(width: 16),
-                    _buildMiniIconWithReload(TravelMode.walk, Icons.directions_walk),
-                    _buildMiniIconWithReload(TravelMode.motor, Icons.motorcycle),
-                    _buildMiniIconWithReload(TravelMode.drive, Icons.directions_car),
-                  ]),
-              ]),
-            ),
-
-
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.check_circle_rounded,
+                size: 14, color: Color(0xFF7C4DFF)),
+            const SizedBox(width: 4),
+            Text('${_selectedPlaceIds.length}',
+                style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF7C4DFF),
+                    fontWeight: FontWeight.w600)),
           ]),
-        ),
-
-        // Sort + selected count
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(children: [
-            // ── NEW: For You chip ─────────────────────────────────────────
-            _buildStyledFilterChip(
-              label: 'For You',
-              isSelected: _sortMode == SortMode.recommended,
-              onTap: () => setState(() => _sortMode = SortMode.recommended),
-              icon: Icons.auto_awesome_rounded,
-            ),
-            const SizedBox(width: 5),
-            _buildStyledFilterChip(
-              label: 'Nearest',
-              isSelected: _sortMode == SortMode.distance,
-              onTap: () => setState(() => _sortMode = SortMode.distance),
-              icon: Icons.near_me_outlined,
-            ),
-            const SizedBox(width: 5),
-            _buildStyledFilterChip(
-              label: 'High Rated',
-              isSelected: _sortMode == SortMode.rating,
-              onTap: () => setState(() => _sortMode = SortMode.rating),
-              icon: Icons.star_outline_rounded,
-            ),
-            if (_selectedPlaceIds.isNotEmpty) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 8, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                      color: const Color(0xFF7C4DFF).withOpacity(0.3)),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  const Icon(Icons.check_circle_rounded,
-                      size: 14, color: Color(0xFF7C4DFF)),
-                  const SizedBox(width: 4),
-                  Text('${_selectedPlaceIds.length}',
-                      style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF7C4DFF),
-                          fontWeight: FontWeight.w600)),
-                ]),
-              ),
-            ],
-          ]),
-        ),
-
-        if (_selectedPrimary != null &&
-            subCategories.containsKey(_selectedPrimary))
-          _buildSecondaryBar(),
-
-        const Divider(height: 1, thickness: 0.5),
-
-        if (_displayedPlaces.isEmpty && !_isLoading)
-          SizedBox(height: 300, child: _buildEmptyState())
-        else
-          ...List.generate(
-            sortedPlaces.length,
-            (index) => Padding(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 16, vertical: 8),
-              child: _buildPlaceCard(sortedPlaces[index]),
-            ),
-          ),
-
-        // ── Plan Route button — lives inside the sheet, never overlaps ────
-        if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
-          Padding(
-            padding: EdgeInsets.fromLTRB(
-                16, 8, 16, 16 + MediaQuery.of(context).padding.bottom),
-            child: GestureDetector(
-              onTap: _viewSelectedItinerary,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 24, vertical: 16),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
-                  ),
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [BoxShadow(
-                    color: const Color(0xFF7C4DFF).withOpacity(0.4),
-                    blurRadius: 16,
-                    offset: const Offset(0, 8),
-                  )],
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.map_rounded,
-                        color: Colors.white, size: 20),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Plan Route (${_selectedPlaceIds.length})',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(width: 10),
-                    const Icon(Icons.arrow_forward_rounded,
-                        color: Colors.white70, size: 18),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-        SizedBox(
-          height: 24 +
-              MediaQuery.of(context).padding.bottom +
-              kBottomNavigationBarHeight,
         ),
       ],
-    );
-  }
+    ]),
+  ),
+),
+          
+          if (_selectedPrimary != null &&
+              subCategories.containsKey(_selectedPrimary))
+            _buildSecondaryBar(),
 
+          const Divider(height: 1, thickness: 0.5),
+
+          if (_displayedPlaces.isEmpty && !_isLoading)
+            SizedBox(height: 300, child: _buildEmptyState())
+          else
+            ...List.generate(
+              sortedPlaces.length,
+              (index) => Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 8),
+                child: _buildPlaceCard(sortedPlaces[index]),
+              ),
+            ),
+
+          SizedBox(
+            height: 24 +
+                MediaQuery.of(context).padding.bottom +
+                kBottomNavigationBarHeight,
+          ),
+        ],
+      ),
+
+      // ── 悬浮的 Plan Route 按钮 ──────────────────────────────
+      if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
+        Positioned(
+          left: 16,
+          right: 16,
+          bottom: 16 + MediaQuery.of(context).padding.bottom,
+          child: GestureDetector(
+            onTap: _viewSelectedItinerary,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 24, vertical: 16),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                ),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [BoxShadow(
+                  color: const Color(0xFF7C4DFF).withOpacity(0.4),
+                  blurRadius: 16,
+                  offset: const Offset(0, 8),
+                )],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.map_rounded,
+                      color: Colors.white, size: 20),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Plan Route (${_selectedPlaceIds.length})',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(width: 10),
+                  const Icon(Icons.arrow_forward_rounded,
+                      color: Colors.white70, size: 18),
+                ],
+              ),
+            ),
+          ),
+        ),
+    ],
+  );
+}
+  
   // ─────────────────────────────────────────────
   // Place Card
   // ─────────────────────────────────────────────
@@ -1668,12 +1687,24 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: place.photoUrl != null
-                      ? Image.network(
-                          place.photoUrl!, fit: BoxFit.cover,
-                          errorBuilder: (c, e, s) => const Icon(
-                              Icons.image_not_supported, size: 20))
-                      : Icon(Icons.location_on,
-                          color: Colors.blue[400], size: 24),
+                  ? Image.network(
+                      place.photoUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (c, e, s) => Image.asset(
+                        CategoryImageHelper.getAssetPath(
+                          place.primaryType,
+                          place.allTypes,
+                        ),
+                        fit: BoxFit.cover,
+                      ),
+                    )
+                  : Image.asset(
+                      CategoryImageHelper.getAssetPath(
+                        place.primaryType,
+                        place.allTypes,
+                      ),
+                      fit: BoxFit.cover,
+                    ),
                 ),
               ),
               const SizedBox(width: 12),

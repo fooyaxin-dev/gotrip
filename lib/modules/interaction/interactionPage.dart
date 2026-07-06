@@ -706,7 +706,7 @@ class _InteractionPageState extends State<InteractionPage> {
         }
   
         final isOwner = post.userId == _auth.currentUser?.uid;
-  
+
         return Row(children: [
           Container(
             padding: const EdgeInsets.all(2),
@@ -716,13 +716,22 @@ class _InteractionPageState extends State<InteractionPage> {
             child: _buildUserAvatar(userName, userPhoto, post.userId, post.isAnonymous),
           ),
           const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(post.isAnonymous ? 'Anonymous User' : userName,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-            const SizedBox(height: 2),
-            Text("${_formatTime(post.createdAt)} · GoTrip",
-                style: TextStyle(color: Colors.grey[500], fontSize: 11)),
-          ])),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              // ── Username + top badge (Weibo-style) ──
+              Row(children: [
+                Text(post.isAnonymous ? 'Anonymous User' : userName,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                if (!post.isAnonymous) ...[
+                  const SizedBox(width: 6),
+                  _buildBadgePillFromCache(snapshot.data),
+                ],
+              ]),
+              const SizedBox(height: 2),
+              Text("${_formatTime(post.createdAt)} · GoTrip",
+                  style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+            ]),
+          ),
   
           // ── 只有自己的帖子才显示三点菜单 ──
           if (isOwner)
@@ -753,6 +762,42 @@ class _InteractionPageState extends State<InteractionPage> {
             ),
         ]);
       },
+    );
+  }
+
+  // ── Badge pill from Firestore user cache ─────────────────────────────────
+  // Reads topBadgeEmoji / topBadgeLabel / topBadgeLevel stored in users/{uid}.
+  // Zero extra Firestore reads — data already fetched by _getUserInfo().
+
+  static const _tierColors = {
+    'bronze': Color(0xFFCD7F32),
+    'silver': Color(0xFFA8A9AD),
+    'gold':   Color(0xFFFFD700),
+  };
+
+  Widget _buildBadgePillFromCache(Map<String, dynamic>? userInfo) {
+    if (userInfo == null) return const SizedBox.shrink();
+    final emoji = userInfo['topBadgeEmoji'] as String?;
+    final label = userInfo['topBadgeLabel'] as String?;
+    final level = userInfo['topBadgeLevel'] as String?;
+    if (emoji == null || label == null || level == null) {
+      return const SizedBox.shrink();
+    }
+    final color = _tierColors[level] ?? const Color(0xFF6366F1);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.4), width: 1),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text(emoji, style: const TextStyle(fontSize: 11)),
+        const SizedBox(width: 3),
+        Text(label,
+            style: TextStyle(
+                fontSize: 9, fontWeight: FontWeight.bold, color: color)),
+      ]),
     );
   }
 

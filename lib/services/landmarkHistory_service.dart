@@ -81,9 +81,19 @@ class LandmarkHistoryService {
     String? photoUrl,
     required String detectionMethod,
   }) async {
-    if (_uid == null) return;
+    if (_uid == null) {
+      debugPrint('⚠️ LandmarkHistoryService.save skipped: user not logged in');
+      return;
+    }
+
+    // ── FIX ──────────────────────────────────────────────────
+    // 这段去重查询 (where + orderBy 不同字段) 需要 Firestore 复合索引。
+    // 如果索引缺失/还没建好，Firestore 会抛 FAILED_PRECONDITION。
+    // 之前这个异常会被外层 catch 吞掉，导致整次 save() 都失败、
+    // 一条 history 都存不进去。现在把这段去重检查单独包一层
+    // try-catch：查询失败就当作"没有重复"处理，不阻断真正的保存。
+    bool isDuplicate = false;
     try {
-      // Avoid duplicate: if same landmark scanned within last 10 minutes, skip
       final recent = await _col
           .where('name', isEqualTo: name)
           .orderBy('scannedAt', descending: true)
@@ -95,11 +105,22 @@ class LandmarkHistoryService {
             (recent.docs.first['scannedAt'] as Timestamp?)?.toDate();
         if (lastScanned != null &&
             DateTime.now().difference(lastScanned).inMinutes < 10) {
-          debugPrint('⏭️ Skipping duplicate history entry for "$name"');
-          return;
+          isDuplicate = true;
         }
       }
+    } catch (e) {
+      // 常见原因：缺少复合索引 (name + scannedAt)。
+      // 报错信息里会带一个可以直接建索引的链接，例如：
+      // https://console.firebase.google.com/.../firestore/indexes?create_composite=...
+      debugPrint('⚠️ Duplicate-check query failed (continuing to save anyway): $e');
+    }
 
+    if (isDuplicate) {
+      debugPrint('⏭️ Skipping duplicate history entry for "$name"');
+      return;
+    }
+
+    try {
       await _col.add({
         'name':            name,
         'imageBase64':     imageBase64Thumbnail,

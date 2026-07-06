@@ -9,6 +9,7 @@ import '../../services/history_service.dart';
 import '../../services/location_service.dart';
 import '../place/placeDetailPage.dart';
 import '../place/routePreviewPage.dart';
+import '../../services/achievement_service.dart';
 
 class ItineraryDetailPage extends StatefulWidget {
   final ItineraryModel itinerary;
@@ -73,10 +74,15 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   // ─────────────────────────────────────────────
-  // Mark visited — KEY CHANGE: pass placeId + primaryType to history
+  // Mark visited — with achievement unlock detection
   // ─────────────────────────────────────────────
 
-  void _markVisited(int dayIndex, int placeIndex) {
+  Future<void> _markVisited(int dayIndex, int placeIndex) async {
+    // ── Step 1: Snapshot achievements BEFORE the check-in ──
+    final statsBefore = await AchievementService.instance.fetchStats();
+    final groupsBefore = AchievementService.instance.buildGroups(statsBefore);
+
+    // ── Step 2: Update itinerary state ──
     final days   = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
 
@@ -96,7 +102,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       ItineraryService.instance.update(_itinerary);
     }
 
-    // ── Save to history with placeId + primaryType + city (auto-extracted) ──
+    // ── Step 3: Save to history ──
     HistoryService.instance.addEntry(
       placeName:      visited.name,
       address:        visited.address,
@@ -104,14 +110,46 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       visitedAt:      visited.visitedAt!,
       itineraryId:    _itinerary.id,
       itineraryTitle: _itinerary.title,
-      placeId:        visited.placeId,      // ← Google Place ID
-      primaryType:    visited.primaryType,  // ← e.g. 'restaurant', 'park'
+      placeId:        visited.placeId,
+      primaryType:    visited.primaryType,
     );
 
     _scrollToNextPlace(dayIndex);
 
     _cardKeys.removeWhere((key, _) =>
         !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key)));
+
+    // ── Step 4: Snapshot achievements AFTER the check-in ──
+    // Small delay to let Firestore writes propagate before re-fetching.
+    await Future.delayed(const Duration(milliseconds: 800));
+    if (!mounted) return;
+
+    final statsAfter  = await AchievementService.instance.fetchStats();
+    final groupsAfter = AchievementService.instance.buildGroups(statsAfter);
+
+    // ── Step 5: Detect new unlocks & show dialog ──
+    final newUnlocks = AchievementService.instance.checkForNewUnlocks(
+      oldGroups: groupsBefore,
+      newGroups: groupsAfter,
+    );
+
+    if (newUnlocks.isNotEmpty && mounted) {
+      // Persist the new top badge to Firestore so post cards can show it
+      await AchievementService.instance.saveTopBadgeToFirestore();
+      _showUnlockDialog(newUnlocks);
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Achievement unlock celebration dialog
+  // ─────────────────────────────────────────────
+
+  void _showUnlockDialog(List<NewUnlock> unlocks) {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => _AchievementUnlockedDialog(unlocks: unlocks),
+    );
   }
 
   void _scrollToNextPlace(int dayIndex) {
@@ -1107,6 +1145,148 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         }
       }
     });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Achievement unlocked celebration dialog
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _AchievementUnlockedDialog extends StatelessWidget {
+  final List<NewUnlock> unlocks;
+
+  const _AchievementUnlockedDialog({required this.unlocks});
+
+  static const _tierColors = {
+    'bronze': Color(0xFFCD7F32),
+    'silver': Color(0xFFA8A9AD),
+    'gold':   Color(0xFFFFD700),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // ── Trophy icon ──
+            Container(
+              width: 80, height: 80,
+              decoration: BoxDecoration(
+                color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Center(
+                child: Text('🏆', style: TextStyle(fontSize: 40)),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            const Text(
+              'Achievement Unlocked!',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              unlocks.length == 1
+                  ? 'You just earned a new badge!'
+                  : 'You just earned ${unlocks.length} new badges!',
+              style: TextStyle(fontSize: 13, color: Colors.grey[500]),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+
+            // ── Unlocked badges list ──
+            ...unlocks.map((u) {
+              final color = _tierColors[u.tier.level] ?? const Color(0xFF7C4DFF);
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: color.withOpacity(0.3)),
+                ),
+                child: Row(children: [
+                  // Badge circle
+                  Container(
+                    width: 48, height: 48,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: color.withOpacity(0.15),
+                      border: Border.all(color: color, width: 2),
+                    ),
+                    child: Center(
+                      child: Text(u.tier.emoji,
+                          style: const TextStyle(fontSize: 22)),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          Text(u.tier.label,
+                              style: const TextStyle(
+                                  fontSize: 14, fontWeight: FontWeight.bold)),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: color.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              u.tier.level.toUpperCase(),
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                                color: color,
+                              ),
+                            ),
+                          ),
+                        ]),
+                        const SizedBox(height: 2),
+                        Text(u.tier.desc,
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[600])),
+                      ],
+                    ),
+                  ),
+                ]),
+              );
+            }),
+
+            const SizedBox(height: 8),
+
+            // ── Close button ──
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF7C4DFF),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                child: const Text('Awesome! 🎉',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

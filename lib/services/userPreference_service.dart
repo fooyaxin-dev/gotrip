@@ -2,6 +2,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'sentiment_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Budget tier  (set during onboarding)
@@ -342,51 +343,110 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> updateFromPost({
-    required List<String> tags,
-    required String?      topic,
-    required String?      location,
-    required bool         isPosting,
+    required List<String> placeTypes,    // post.placeTypes（Google types）
+    required SentimentLabel sentimentLabel,
+    required int sentimentMatchedTokens, // 用来判断是否低置信度
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-
-    if (location == null && tags.isEmpty && topic == null) return;
-
+  
+    // 没挂地点 / 没有 types，没有学习的对象
+    if (placeTypes.isEmpty) return;
+  
+    // 只有正面情感才计入学习
+    if (sentimentLabel != SentimentLabel.positive) {
+      print('🧠 updateFromPost: skipped (sentiment=${sentimentLabel.toJson()}, '
+          'not positive — no learning signal)');
+      return;
+    }
+  
+    // 低置信度结果（命中词太少）不可靠，跳过
+    if (sentimentMatchedTokens < 2) {
+      print('🧠 updateFromPost: skipped (low confidence, '
+          'only $sentimentMatchedTokens sentiment words matched)');
+      return;
+    }
+  
+    // ── 复用跟 updateFromFavourite 完全一样的 type→category / type→cuisine 映射 ──
+    const typeToCategory = {
+      'restaurant':         'restaurant',
+      'park':               'park',
+      'tourist_attraction': 'tourist_attraction',
+      'shopping_mall':      'shopping_mall',
+      'amusement_park':     'amusement_park',
+    };
+    const typeToCuisine = {
+      'chinese_restaurant':   'chinese',
+      'malay_restaurant':     'malay',
+      'malaysian_restaurant': 'malay',
+      'indian_restaurant':    'indian',
+      'western_restaurant':   'western',
+      'american_restaurant':  'western',
+      'japanese_restaurant':  'japanese',
+      'korean_restaurant':    'korean',
+      'dessert_shop':         'dessert',
+      'ice_cream_shop':       'dessert',
+      'bakery':               'dessert',
+      'cafe':                 'cafe',
+      'coffee_shop':          'cafe',
+    };
+  
     final List<String> involvedKeys = [];
-
-    for (final tag in tags) {
-      final cat = _tagToCategory[tag];
-      if (cat != null) involvedKeys.add('cat_$cat');
-    }
-    if (topic != null) {
-      final cat = _topicToCategory[topic];
-      if (cat != null) involvedKeys.add('cat_$cat');
-    }
-    if (location != null && location.isNotEmpty) {
-      involvedKeys.add('cat_tourist_attraction');
-    }
-
-    if (involvedKeys.isEmpty) return;
-
-    for (final key in involvedKeys) {
-      if (isPosting) {
-        _favouriteCount[key] = (_favouriteCount[key] ?? 0) + 1;
-      } else {
-        _favouriteCount[key] =
-            ((_favouriteCount[key] ?? 0) - 1).clamp(0, 999);
+  
+    // primaryType 不直接给到这个方法（post 存的是 placeTypes 这个 List），
+    // 所以这里改成遍历 placeTypes 找第一个匹配的 category
+    for (final t in placeTypes) {
+      final category = typeToCategory[t];
+      if (category != null) {
+        involvedKeys.add('cat_$category');
+        break; // 一个 post 只算一次 category 信号，避免重复加权
       }
     }
-
+    for (final t in placeTypes) {
+      final cuisine = typeToCuisine[t];
+      if (cuisine != null) {
+        involvedKeys.add('cui_$cuisine');
+        break; // 一个 post 只算一次 cuisine 信号
+      }
+    }
+  
+    if (involvedKeys.isEmpty) {
+      print('🧠 updateFromPost: skipped (no recognized category/cuisine in placeTypes)');
+      return;
+    }
+  
+    // ── 用「post 正面体验」给计数 +1（跟 favourite 共用同一套 _favouriteCount） ──
+    for (final key in involvedKeys) {
+      _favouriteCount[key] = (_favouriteCount[key] ?? 0) + 1;
+    }
+  
+    // ── 重新跑一遍 gate 检查（跟 updateFromFavourite 同样的逻辑）──
     final updatedCategories = List<String>.from(_prefs.categories);
     final updatedCuisines   = List<String>.from(_prefs.cuisines);
-
-    _applyGate(updatedCategories, updatedCuisines);
-
+  
+    for (final entry in _favouriteCount.entries) {
+      final key   = entry.key;
+      final count = entry.value;
+  
+      if (key.startsWith('cat_')) {
+        final cat = key.substring(4);
+        if (count >= _minCountToLearn && !updatedCategories.contains(cat)) {
+          updatedCategories.add(cat);
+        }
+      }
+      if (key.startsWith('cui_')) {
+        final cui = key.substring(4);
+        if (count >= _minCountToLearn && !updatedCuisines.contains(cui)) {
+          updatedCuisines.add(cui);
+        }
+      }
+    }
+  
     _prefs = _prefs.copyWith(
       categories: updatedCategories,
       cuisines:   updatedCuisines,
     );
-
+  
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
       'preferences': {
         'categories': updatedCategories,
@@ -396,10 +456,11 @@ class UserPreferenceService {
       },
       'favouriteTypeCounts': _favouriteCount,
     });
-
-    print('✅ updateFromPost: keys=$involvedKeys isPosting=$isPosting');
+  
+    print('🧠 updateFromPost: learned from positive post — keys=$involvedKeys, '
+        'updated categories=$updatedCategories, cuisines=$updatedCuisines');
   }
-
+  
   // ─────────────────────────────────────────────
   // Update from Like post  ← 新增
   // Like = +0.7 via buffer，Unlike = -0.7

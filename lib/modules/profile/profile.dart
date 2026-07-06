@@ -12,6 +12,7 @@ import '../../models/postModel.dart';
 import '../../services/user_service.dart';
 import '../../services/post_service.dart';
 import '../../services/history_service.dart';
+import '../../services/achievement_service.dart';
 import '../interaction/editPost.dart';
 import 'editProfile.dart';
 
@@ -941,7 +942,8 @@ class _TripDetailPopup extends StatelessWidget {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class ProfilePage extends StatefulWidget {
-  const ProfilePage({super.key});
+  final int initialTab;
+  const ProfilePage({super.key, this.initialTab = 0});
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -951,8 +953,9 @@ class _ProfilePageState extends State<ProfilePage> {
   final UserService _userService = UserService();
   late final Stream<UserProfile?> _stream;
 
-  bool _showZoom = false;
-  int _currentIndex = 0;
+  bool _showZoom    = false;
+  int  _currentIndex = 0;
+  List<AchievementTier> _badges = [];
 
   static const List<Widget> _tabs = [_PostWidget(), _HistoryWidget()];
 
@@ -960,6 +963,13 @@ class _ProfilePageState extends State<ProfilePage> {
   void initState() {
     super.initState();
     _stream = _userService.getCurrentUserProfileStream();
+    _currentIndex = widget.initialTab;
+    _loadBadges();
+  }
+
+  Future<void> _loadBadges() async {
+    final badges = await AchievementService.instance.fetchUnlockedBadges();
+    if (mounted) setState(() => _badges = badges);
   }
 
   ImageProvider _getImageProvider(String imageUrl, String defaultAsset) {
@@ -1106,6 +1116,13 @@ class _ProfilePageState extends State<ProfilePage> {
             userProfile.username.isNotEmpty ? '@${userProfile.username}' : '@username',
             style: const TextStyle(fontSize: 16, color: Colors.grey),
           ),
+
+          // ── Badge row (like Weibo level badges) ──
+          if (_badges.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _buildBadgeRow(),
+          ],
+
           Padding(
             padding: const EdgeInsets.only(left: 30, right: 30, top: 10),
             child: Text(
@@ -1140,6 +1157,136 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
         ]);
       },
+    );
+  }
+
+  // ── Badge row — compact Weibo-style display ──────────────────────────────
+  static const _tierColors = {
+    'bronze': Color(0xFFCD7F32),
+    'silver': Color(0xFFA8A9AD),
+    'gold':   Color(0xFFFFD700),
+  };
+
+  Widget _buildBadgeRow() {
+    return GestureDetector(
+      // Tap to see full achievement breakdown tooltip
+      onTap: () => _showBadgeSheet(),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        alignment: WrapAlignment.center,
+        children: _badges.map((tier) {
+          final color = _tierColors[tier.level] ?? const Color(0xFF6366F1);
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: color.withOpacity(0.4), width: 1),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(tier.emoji, style: const TextStyle(fontSize: 13)),
+                const SizedBox(width: 3),
+                Text(
+                  tier.label,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  // Bottom sheet showing all badges on tap
+  void _showBadgeSheet() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Handle bar
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text('My Badges',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Text('${_badges.length} badge${_badges.length == 1 ? '' : 's'} earned',
+                style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+            const SizedBox(height: 20),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: _badges.map((tier) {
+                final color = _tierColors[tier.level] ?? const Color(0xFF6366F1);
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.10),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: color.withOpacity(0.4)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(tier.emoji, style: const TextStyle(fontSize: 20)),
+                      const SizedBox(width: 8),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(children: [
+                            Text(tier.label,
+                                style: const TextStyle(
+                                    fontSize: 13, fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: color.withOpacity(0.15),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(tier.level.toUpperCase(),
+                                  style: TextStyle(
+                                      fontSize: 8,
+                                      fontWeight: FontWeight.bold,
+                                      color: color)),
+                            ),
+                          ]),
+                          Text(tier.desc,
+                              style: TextStyle(
+                                  fontSize: 11, color: Colors.grey[600])),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
     );
   }
 

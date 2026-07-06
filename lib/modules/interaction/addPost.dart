@@ -5,11 +5,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
 import 'dart:async';
+import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import '../../services/post_service.dart';
 import '../../services/placesAPI_service.dart';
 import '../../services/userPreference_service.dart';
 import '../../services/algolia_service.dart';
+import '../../services/sentiment_service.dart';
+import '../../services/achievement_service.dart';
 
 class MediaItem {
   final File file;
@@ -40,10 +43,10 @@ class _PostingPageState extends State<PostingPage> {
   final FocusNode _contentFocus = FocusNode();
 
   // ── Location ──
-  double? selectedLat;
-  double? selectedLng;
   String? selectedCity;
   String? selectedLocation;
+  String? selectedPlaceId;              // Google Place ID（没选地点时为 null）
+  List<String> selectedPlaceTypes = []; // 该地点的 Google types
 
   List<String> selectedTags = [];
   List<String> mentionedFriends = [];
@@ -53,6 +56,9 @@ class _PostingPageState extends State<PostingPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final PostService _statsService = PostService();
+
+  // ── Top badge for current user ──
+  AchievementTier? _topBadge;
 
   // ── Tag ──
   final TextEditingController _tagController = TextEditingController();
@@ -72,10 +78,16 @@ class _PostingPageState extends State<PostingPage> {
     '#travelvlog', '#transport', '#journey', '#niceView', '#happyTravel',
   ];
 
+  Future<void> _loadTopBadge() async {
+    final tier = await AchievementService.instance.fetchTopBadge();
+    if (mounted) setState(() => _topBadge = tier);
+  }
+
   @override
   void initState() {
     super.initState();
     _loadPopularTags();
+    _loadTopBadge();
     _tagFocus.addListener(() {
       if (_tagFocus.hasFocus) {
         _updateTagSuggestions(_tagController.text);
@@ -181,7 +193,9 @@ class _PostingPageState extends State<PostingPage> {
     } catch (e) { throw Exception('Save media failed: $e'); }
   }
 
-  Future<void> _savePostToFirestore({
+  /// 保存帖子到 Firestore，返回新建文档的 ID
+  /// （用于发布后触发后台 sentiment 分析）
+  Future<String> _savePostToFirestore({
     required List<String> imagePaths,
     required List<String> videoPaths,
   }) async {
@@ -190,58 +204,100 @@ class _PostingPageState extends State<PostingPage> {
       if (currentUser == null) throw Exception('User not logged in');
 
       String userId = currentUser.uid;
-      DocumentSnapshot userDoc = await _firestore.collection('users').doc(userId).get();
+      DocumentSnapshot userDoc =
+          await _firestore.collection('users').doc(userId).get();
 
       String userName = 'Unknown User';
       String? userPhoto;
 
       if (userDoc.exists) {
-        Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
-        userName = userData['username'] ?? currentUser.displayName ??
-            currentUser.email?.split('@')[0] ?? 'User_${userId.substring(0, 8)}';
+        Map<String, dynamic> userData =
+            userDoc.data() as Map<String, dynamic>;
+        userName = userData['username'] ??
+            currentUser.displayName ??
+            currentUser.email?.split('@')[0] ??
+            'User_${userId.substring(0, 8)}';
         userPhoto = userData['profileImageUrl'];
       }
 
-      final String postType = (imagePaths.isEmpty && videoPaths.isEmpty) ? 'text' : 'media';
+      final String postType =
+          (imagePaths.isEmpty && videoPaths.isEmpty) ? 'text' : 'media';
 
       Map<String, dynamic> postData = {
-        'title':            _titleController.text.trim(),
-        'content':          _contentController.text.trim(),
-        'imagePaths':       imagePaths,
-        'videoPaths':       videoPaths,
-        'postType':         postType,
-        'rating':           rating,
-        'isAnonymous':      isAnonymous,
-        'allowComments':    allowComments,
-        'allowShare':       allowShare,
-        'city':             selectedCity,
-        'location':         selectedLocation,
-        'locationLat':      selectedLat,   // ← 存 lat
-        'locationLng':      selectedLng,   // ← 存 lng
-        'tags':             selectedTags,
+        'title': _titleController.text.trim(),
+        'content': _contentController.text.trim(),
+        'imagePaths': imagePaths,
+        'videoPaths': videoPaths,
+        'postType': postType,
+        'rating': rating,
+        'isAnonymous': isAnonymous,
+        'allowComments': allowComments,
+        'allowShare': allowShare,
+        'city': selectedCity,
+        'location': selectedLocation,
+        'placeId': selectedPlaceId,
+        'placeTypes': selectedPlaceTypes,
+        'tags': selectedTags,
         'mentionedFriends': mentionedFriends,
-        'topic':            selectedTopic,
-        'visibility':       selectedVisibility,
-        'createdAt':        FieldValue.serverTimestamp(),
-        'userId':           userId,
-        'userName':         userName,
-        'userPhoto':        userPhoto,
-        'userEmail':        currentUser.email,
-        'likes':            0,
-        'comments':         0,
-        'shares':           0,
+        'topic': selectedTopic,
+        'visibility': selectedVisibility,
+        'createdAt': FieldValue.serverTimestamp(),
+        'userId': userId,
+        'userName': userName,
+        'userPhoto': userPhoto,
+        'userEmail': currentUser.email,
+        'likes': 0,
+        'comments': 0,
+        'shares': 0,
+        // sentiment 字段暂时不写 —— 发布瞬间还没分析，
+        // 分析完成后用 .update() 单独补上
       };
 
       final docRef = await _firestore.collection('posts').add(postData);
+      return docRef.id;
+    } catch (e) {
+      throw Exception('Save post failed: $e');
+    }
+  }
 
-      if (selectedVisibility == 'public') {
-        await AlgoliaService.syncPost(docRef.id, postData);
-      }
+  /// Fire-and-forget：不阻塞用户发帖流程，在背景跑 sentiment 分析，
+  /// 完成后直接 .update() 该 post document。Firestore 的 StreamBuilder
+  /// （InteractionPage / postWidget）会自动因为这次 update 而刷新。
+  ///
+  /// 如果这篇帖子挂了真实地点（placeTypes 非空），分析完成后还会调用
+  /// UserPreferenceService.updateFromPost() 反哺推荐算法 —— 只有
+  /// sentiment 为 positive 时才会真正被学习进偏好（取代旧的用 likes
+  /// 判断的逻辑，因为 likes 高不代表体验正面）。
+  void _runSentimentAnalysisInBackground(
+    String postId,
+    String content, {
+    required List<String> placeTypes,
+  }) {
+    if (content.trim().isEmpty) return;
 
-      if (selectedTags.isNotEmpty) {
-        await _statsService.incrementTagCounts(selectedTags);
+    LexiconSentimentAnalyzer.instance.analyze(content).then((result) async {
+      try {
+        await _firestore.collection('posts').doc(postId).update({
+          'sentimentScore': result.score,
+          'sentimentLabel': result.label.toJson(),
+          'sentimentMatchedTokens': result.matchedTokenCount,
+          'sentimentAnalyzedAt': FieldValue.serverTimestamp(),
+        });
+        debugPrint('🧠 Sentiment analyzed for $postId: $result');
+
+        // 如果帖子挂了真实地点，把这次体验（只有 positive 才算）
+        // 反哺进推荐算法 —— 取代旧的用 likes 判断的逻辑
+        if (placeTypes.isNotEmpty) {
+          await UserPreferenceService.instance.updateFromPost(
+            placeTypes: placeTypes,
+            sentimentLabel: result.label,
+            sentimentMatchedTokens: result.matchedTokenCount,
+          );
+        }
+      } catch (e) {
+        debugPrint('⚠️ Sentiment update failed for $postId: $e');
       }
-    } catch (e) { throw Exception('Save post failed: $e'); }
+    });
   }
 
   Future<void> _pickImagesFromGallery() async {
@@ -325,14 +381,14 @@ class _PostingPageState extends State<PostingPage> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _LocationPickerSheet(
-        // ← 新签名，多了 lat/lng
-        onPlaceSelected: (String placeName, String address, double? lat, double? lng) {
+        // ★ 4 个参数：placeName, address, placeId(可为null), types
+        onPlaceSelected: (String placeName, String address, String? placeId, List<String> types) {
           final city = _extractCityFromAddress(address);
           setState(() {
             selectedLocation = placeName;
-            selectedCity     = city;
-            selectedLat      = lat;
-            selectedLng      = lng;
+            selectedCity = city;
+            selectedPlaceId = placeId;
+            selectedPlaceTypes = types;
           });
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text('Location: $placeName${city.isNotEmpty ? ' · $city' : ''}'),
@@ -407,6 +463,30 @@ class _PostingPageState extends State<PostingPage> {
     );
   }
 
+  Widget _buildBadgePill(AchievementTier tier) {
+    const tierColors = {
+      'bronze': Color(0xFFCD7F32),
+      'silver': Color(0xFFA8A9AD),
+      'gold':   Color(0xFFFFD700),
+    };
+    final color = tierColors[tier.level] ?? const Color(0xFF7C4DFF);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.4), width: 1),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text(tier.emoji, style: const TextStyle(fontSize: 11)),
+        const SizedBox(width: 3),
+        Text(tier.label,
+            style: TextStyle(
+                fontSize: 9, fontWeight: FontWeight.bold, color: color)),
+      ]),
+    );
+  }
+
   Widget _buildVisibilityOption(String value, String subtitle, IconData icon) {
     bool isSelected = selectedVisibility == value;
     return ListTile(
@@ -434,21 +514,23 @@ class _PostingPageState extends State<PostingPage> {
 
     try {
       Map<String, List<String>> savedPaths = {'imagePaths': [], 'videoPaths': []};
-      if (selectedMedia.isNotEmpty) savedPaths = await _saveMediaToLocal(selectedMedia);
 
-      await _savePostToFirestore(
+      if (selectedMedia.isNotEmpty) {
+        savedPaths = await _saveMediaToLocal(selectedMedia);
+      }
+
+      final newPostId = await _savePostToFirestore(
         imagePaths: savedPaths['imagePaths']!,
         videoPaths: savedPaths['videoPaths']!,
       );
-
       await _statsService.incrementPostCount();
 
-      if (selectedLocation != null || selectedTags.isNotEmpty || selectedTopic != null) {
-        await UserPreferenceService.instance.updateFromPost(
-          tags: selectedTags, topic: selectedTopic,
-          location: selectedLocation, isPosting: true,
-        );
-      }
+      // 触发后台 sentiment 分析 —— 不 await，不拖慢发布反馈
+      _runSentimentAnalysisInBackground(
+        newPostId,
+        _contentController.text.trim(),
+        placeTypes: selectedPlaceTypes,
+      );
 
       Navigator.pop(context);
       _showSuccessSnack('Post published successfully!');
@@ -513,7 +595,43 @@ class _PostingPageState extends State<PostingPage> {
           SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const SizedBox(height: 20),
+              const SizedBox(height: 12),
+              // ── Author info row (Weibo-style badge) ──
+              FutureBuilder<DocumentSnapshot>(
+                future: _firestore.collection('users').doc(_auth.currentUser?.uid).get(),
+                builder: (_, snap) {
+                  String userName = 'Me';
+                  String? photoUrl;
+                  if (snap.hasData && snap.data!.exists) {
+                    final d = snap.data!.data() as Map<String, dynamic>;
+                    userName = d['username'] as String? ?? 'Me';
+                    photoUrl = d['profileImageUrl'] as String?;
+                  }
+                  return Row(children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundColor: const Color(0xFF7C4DFF).withOpacity(0.2),
+                      backgroundImage: photoUrl != null && photoUrl.isNotEmpty
+                          ? (photoUrl.startsWith('data:image')
+                              ? MemoryImage(base64Decode(photoUrl.split(',')[1])) as ImageProvider
+                              : NetworkImage(photoUrl))
+                          : null,
+                      child: (photoUrl == null || photoUrl.isEmpty)
+                          ? Text(userName.isNotEmpty ? userName[0].toUpperCase() : '?',
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
+                          : null,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(isAnonymous ? 'Anonymous' : userName,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                    if (!isAnonymous && _topBadge != null) ...[
+                      const SizedBox(width: 6),
+                      _buildBadgePill(_topBadge!),
+                    ],
+                  ]);
+                },
+              ),
+              const SizedBox(height: 16),
               _buildMediaGrid(),
               const SizedBox(height: 30),
               TextField(
@@ -788,11 +906,11 @@ class _PostingPageState extends State<PostingPage> {
 }
 
 // =====================================================
-// Location Picker Sheet — 新签名传 lat/lng
+// Location Picker Sheet — placeId + types 版本
 // =====================================================
 class _LocationPickerSheet extends StatefulWidget {
-  // ← 新签名，多了 lat 和 lng
-  final void Function(String placeName, String address, double? lat, double? lng) onPlaceSelected;
+  // ★ 4 个参数：placeName, address, placeId(可为null), types
+  final void Function(String placeName, String address, String? placeId, List<String> types) onPlaceSelected;
   const _LocationPickerSheet({required this.onPlaceSelected});
 
   @override
@@ -819,20 +937,27 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
   }
 
   Future<void> _onSuggestionTap(Map<String, dynamic> suggestion) async {
-    final placeId   = suggestion['placeId'] as String;
-    final placeName = suggestion['mainText'] as String? ?? suggestion['description'] as String? ?? '';
+    final placeId = suggestion['placeId'] as String;
+    final placeName = suggestion['mainText'] as String? ??
+        suggestion['description'] as String? ??
+        '';
+
     setState(() => _fetchingDetail = true);
     try {
-      final detail  = await PlacesApiService.getPlaceLatLng(placeId);
-      final address = detail?['address'] as String? ?? suggestion['secondaryText'] as String? ?? '';
-      final lat     = detail?['lat'] as double?;  // ← 取 lat
-      final lng     = detail?['lng'] as double?;  // ← 取 lng
+      // getPlaceLatLng 需要是已经返回 'types' 字段的版本
+      // （第一层改动 1：placesAPI_service.dart）
+      final detail = await PlacesApiService.getPlaceLatLng(placeId);
+      final address = detail?['address'] as String? ??
+          suggestion['secondaryText'] as String? ??
+          '';
+      final types = (detail?['types'] as List?)?.cast<String>() ?? <String>[];
+
       Navigator.pop(context);
-      widget.onPlaceSelected(placeName, address, lat, lng);  // ← 传 lat/lng
+      widget.onPlaceSelected(placeName, address, placeId, types);
     } catch (_) {
       final address = suggestion['secondaryText'] as String? ?? '';
       Navigator.pop(context);
-      widget.onPlaceSelected(placeName, address, null, null);
+      widget.onPlaceSelected(placeName, address, placeId, <String>[]);
     } finally {
       if (mounted) setState(() => _fetchingDetail = false);
     }

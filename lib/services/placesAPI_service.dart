@@ -161,19 +161,29 @@ class PlacesApiService {
   }
 
   /// 🟡 searchNearby
+  ///
+  /// 📏 rankPreference defaults to DISTANCE (Google's own default is
+  /// POPULARITY). This matters because maxResultCount is hard-capped at 20
+  /// by Google — with POPULARITY ranking, a big/far-reaching `radius` can
+  /// let popular-but-far places take up slots in that top-20 and push out
+  /// closer-but-less-famous ones. DISTANCE guarantees the 20 returned are
+  /// always the 20 physically nearest to (lat, lng), so results stay
+  /// correct even when we intentionally fetch at a large radius (to cache
+  /// it once) and filter locally to a smaller radius afterwards.
   static Future<List<Map<String, dynamic>>> searchNearby({
     required double lat,
     required double lng,
     List<String>? types,
     int radius = 5000,
     int maxResultCount = 20,
+    String rankPreference = 'DISTANCE', // or 'POPULARITY'
   }) async {
     final startTime = DateTime.now();
     _totalApiCalls++;
     _searchNearbyCallCount++;
 
     final label = types == null ? 'ALL' : types.first;
-    print('🟡 API Call #$_totalApiCalls: searchNearby | $label');
+    print('🟡 API Call #$_totalApiCalls: searchNearby | $label | rank=$rankPreference');
 
     final Map<String, dynamic> bodyMap = {
       "locationRestriction": {
@@ -183,6 +193,7 @@ class PlacesApiService {
         }
       },
       "maxResultCount": maxResultCount,
+      "rankPreference": rankPreference,
     };
 
     if (types != null && types.isNotEmpty) {

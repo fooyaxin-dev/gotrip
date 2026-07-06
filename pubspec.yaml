@@ -76,3 +76,9 @@ flutter:
     - assets/images/longbg1.jpg
     - assets/Mobile Apps.json
     - assets/Map Location Pointer.json
+    - assets/images/category/food/
+    - assets/images/category/nature/
+    - assets/images/category/entertain/
+    - assets/images/category/shopping/
+    - assets/images/category/transport/
+    - assets/images/category/service/

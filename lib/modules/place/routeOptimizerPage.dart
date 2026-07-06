@@ -1,4 +1,5 @@
 import 'dart:ui' as ui;
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:geolocator/geolocator.dart';
@@ -37,6 +38,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   late List<PlaceModel> _orderedPlaces;
   bool _isAutoSorted   = true;
   bool _isSaving       = false;
+  Timer? _paddingDebounce;
 
   List<double> _legDistances   = [];
   List<int>    _legMinutes     = [];
@@ -102,6 +104,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     _mapController?.dispose();
     _sheetController.dispose();
     _sheetExtentNotifier.dispose();
+    _paddingDebounce?.cancel();
     super.dispose();
   }
 
@@ -469,7 +472,10 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           // ── Draggable sheet ──
           NotificationListener<DraggableScrollableNotification>(
             onNotification: (n) {
-              _sheetExtentNotifier.value = n.extent;
+              _paddingDebounce?.cancel();
+              _paddingDebounce = Timer(const Duration(milliseconds: 16), () {
+                if (mounted) _sheetExtentNotifier.value = n.extent;
+              });
               return false;
             },
             child: DraggableScrollableSheet(
@@ -477,8 +483,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
               initialChildSize: 0.45,
               minChildSize:     0.14, // just enough to show handle + summary
               maxChildSize:     0.85,
-              snap:             true,
-              snapSizes:        const [0.14, 0.45, 0.85],
+              snap:             false,
               builder: (context, scrollController) {
                 return Container(
                   decoration: BoxDecoration(
@@ -558,14 +563,22 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
                   ),
                 ),
               ]),
+              // ── FIX: header hint row now avoids overflow ──────────────
               Padding(
-                padding: const EdgeInsets.only(left: 16),
+                padding: const EdgeInsets.only(left: 16, right: 8),
                 child: Row(children: [
                   const Icon(Icons.info_outline_rounded,
                       color: Colors.white60, size: 13),
                   const SizedBox(width: 5),
-                  const Text('Drag stops to reorder • Tap × to remove',
-                      style: TextStyle(color: Colors.white60, fontSize: 12)),
+                  Flexible(
+                    child: Text(
+                      'Drag stops to reorder • Tap × to remove',
+                      style: const TextStyle(
+                          color: Colors.white60, fontSize: 12),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                   const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -613,94 +626,148 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // ─────────────────────────────────────────────
 
   Widget _buildSheetContent(ScrollController scrollController) {
-    return Column(
-      children: [
-
-        // ── FIX: large drag handle area with tap-to-cycle ──
-        GestureDetector(
-          onTap: () {
-            final current = _sheetExtentNotifier.value;
-            final next = current < 0.30
-                ? 0.45
-                : current < 0.65
-                    ? 0.85
-                    : 0.14;
-            _sheetController.animateTo(
-              next,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeInOut,
-            );
-          },
-          behavior: HitTestBehavior.translucent,
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Column(children: [
-              // Handle bar
-              Container(
-                width: 44, height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2),
+  return Column(
+    children: [
+      Expanded(
+        child: CustomScrollView(
+          controller: scrollController,
+          physics: const ClampingScrollPhysics(),
+          slivers: [
+            // ── 手柄区域,现在是可滚动内容的一部分,可以自由拖动 sheet ──
+            SliverToBoxAdapter(
+              child: GestureDetector(
+                onTap: () {
+                  final current = _sheetExtentNotifier.value;
+                  final next = current < 0.30
+                      ? 0.45
+                      : current < 0.65
+                          ? 0.85
+                          : 0.14;
+                  _sheetController.animateTo(
+                    next,
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOut,
+                  );
+                },
+                behavior: HitTestBehavior.translucent,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Column(children: [
+                    Container(
+                      width: 44, height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey[300],
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    ValueListenableBuilder<double>(
+                      valueListenable: _sheetExtentNotifier,
+                      builder: (_, extent, __) {
+                        final label = extent < 0.20
+                            ? '↑ Tap to expand'
+                            : extent > 0.70
+                                ? '↓ Tap to collapse'
+                                : 'Drag or tap to resize';
+                        return Text(label,
+                            style: TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey[400],
+                                letterSpacing: 0.3));
+                      },
+                    ),
+                  ]),
                 ),
               ),
-              const SizedBox(height: 6),
-              // FIX: hint text so user knows they can drag/tap
-              ValueListenableBuilder<double>(
-                valueListenable: _sheetExtentNotifier,
-                builder: (_, extent, __) {
-                  final label = extent < 0.20
-                      ? '↑ Tap to expand'
-                      : extent > 0.70
-                          ? '↓ Tap to collapse'
-                          : 'Drag or tap to resize';
-                  return Text(label,
-                      style: TextStyle(
-                          fontSize: 10,
-                          color: Colors.grey[400],
-                          letterSpacing: 0.3));
-                },
+            ),
+
+            // ── Summary bar 同样并入可滚动内容 ──
+            SliverToBoxAdapter(child: _buildSummaryBar()),
+            const SliverToBoxAdapter(
+              child: Divider(height: 1, thickness: 0.5),
+            ),
+
+            // ── Stop list ──
+            if (_orderedPlaces.isEmpty)
+              SliverToBoxAdapter(
+                child: SizedBox(
+                  height: 300,
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.playlist_remove_rounded,
+                            size: 56, color: Colors.grey[300]),
+                        const SizedBox(height: 12),
+                        Text('No stops left',
+                            style: TextStyle(
+                                fontSize: 15, color: Colors.grey[400])),
+                        const SizedBox(height: 6),
+                        Text('Go back to add more places',
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[400])),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            else
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                sliver: SliverReorderableList(
+                  itemCount: _orderedPlaces.length + 1,
+                  onReorder: _reorder,
+                  itemBuilder: (context, index) {
+                    if (index == 0) {
+                      return _buildStartNode(key: const ValueKey('__start__'));
+                    }
+                    final i = index - 1;
+                    return _buildStopItem(i,
+                        key: ValueKey(_orderedPlaces[i].id));
+                  },
+                ),
               ),
-            ]),
-          ),
+
+            const SliverToBoxAdapter(child: SizedBox(height: 16)),
+          ],
         ),
+      ),
 
-        // Summary
-        _buildSummaryBar(),
-        const Divider(height: 1, thickness: 0.5),
-
-        // Stop list
-        Expanded(child: _buildStopList(scrollController)),
-
-        // Bottom bar
-        _buildBottomBar(),
-      ],
-    );
-  }
-
+      // Bottom bar 保持固定,不参与滚动
+      _buildBottomBar(),
+    ],
+  );
+}
+  
   // ─────────────────────────────────────────────
   // Summary bar
   // ─────────────────────────────────────────────
 
+  // ── FIX: summary bar is now horizontally scrollable to avoid overflow ──
   Widget _buildSummaryBar() {
     final visitMin = _orderedPlaces.fold<int>(
         0, (s, p) => s + (p.primaryType == 'restaurant' ? 60 : 90));
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-      child: Row(children: [
-        _summaryChip(Icons.place_rounded,
-            '${_orderedPlaces.length} stops', const Color(0xFF7C4DFF)),
-        const SizedBox(width: 10),
-        _summaryChip(Icons.straighten_rounded,
-            '${_totalKm.toStringAsFixed(1)} km', Colors.blue),
-        const SizedBox(width: 10),
-        _summaryChip(_travelIcon,
-            '$_totalTravelMin min $_travelLabel', Colors.teal),
-        const SizedBox(width: 10),
-        _summaryChip(Icons.schedule_rounded,
-            '~${(visitMin / 60).toStringAsFixed(1)}h', Colors.orange),
-      ]),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Row(children: [
+          _summaryChip(Icons.place_rounded,
+              '${_orderedPlaces.length} stops', const Color(0xFF7C4DFF)),
+          const SizedBox(width: 10),
+          _summaryChip(Icons.straighten_rounded,
+              '${_totalKm.toStringAsFixed(1)} km', Colors.blue),
+          const SizedBox(width: 10),
+          _summaryChip(_travelIcon,
+              '$_totalTravelMin min $_travelLabel', Colors.teal),
+          const SizedBox(width: 10),
+          _summaryChip(Icons.schedule_rounded,
+              '~${(visitMin / 60).toStringAsFixed(1)}h', Colors.orange),
+        ]),
+      ),
     );
   }
 

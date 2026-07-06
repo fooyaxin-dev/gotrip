@@ -10,6 +10,7 @@ import '../dashboard/dashboard_page.dart';
 import '../profile/profile.dart';
 import '../interaction/interactionPage.dart';
 import '../landmark/landmarkFAB.dart';
+import '../landmark/landmarkHistory.dart';
 import '../login_logout/logout.dart';
 import '../settings/settingsPage.dart';
 import 'mainpage.dart';
@@ -279,11 +280,11 @@ class _HomePageState extends State<HomePage> {
 
           ListTile(
             leading: const Icon(Icons.location_on_sharp),
-            title: const Text("Landmark Recognition"),
+            title: const Text("Landmark Record"),
             onTap: () {
               Navigator.pop(context);
               Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const LandmarkFAB()));
+                  MaterialPageRoute(builder: (_) => const LandmarkHistoryPage()));
             },
           ),
           ListTile(

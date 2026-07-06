@@ -19,6 +19,18 @@ class ItineraryService {
       : _db.collection('users').doc(_uid).collection('itineraries');
 
   // ─────────────────────────────────────────────
+  // Default categories (fallback when user selects none)
+  // ─────────────────────────────────────────────
+
+  static const _defaultCategories = [
+    'restaurant',
+    'tourist_attraction',
+    'shopping_mall',
+    'amusement_park',
+    'park',
+  ];
+
+  // ─────────────────────────────────────────────
   // Blocked types
   // ─────────────────────────────────────────────
 
@@ -118,20 +130,21 @@ class ItineraryService {
   // ─────────────────────────────────────────────
   // Fetch places for itinerary generation
   // ─────────────────────────────────────────────
+  //
+  // FIX: now accepts `categories` so that the user's selection from
+  // GenerateItineraryPage (overrideCategories) actually controls which
+  // place types get queried. Falls back to the full default set if the
+  // user cleared every category, so generation never silently returns
+  // nothing.
 
   Future<Map<String, List<PlaceModel>>> _fetchPlacesForItinerary({
     required double lat,
     required double lng,
+    required List<String> categories,
   }) async {
-    const types = [
-      'restaurant',
-      'tourist_attraction',
-      'shopping_mall',
-      'amusement_park',
-      'park',
-    ];
+    final types = categories.isNotEmpty ? categories : _defaultCategories;
 
-    print('🗺️ Fetching itinerary candidates (10km radius)...');
+    print('🗺️ Fetching itinerary candidates (10km radius) for types: $types');
     final stopwatch = Stopwatch()..start();
 
     final entries = await Future.wait(
@@ -175,18 +188,28 @@ class ItineraryService {
   // ─────────────────────────────────────────────
   // Build balanced places with recommendation score
   // ─────────────────────────────────────────────
+  //
+  // FIX: now accepts `categories` and threads it through to
+  // _fetchPlacesForItinerary, and skips categories the user didn't select
+  // (via `wants`). `restaurant` is force-included regardless of selection
+  // because every itinerary needs somewhere to eat.
 
   Future<List<PlaceModel>> _buildBalancedPlaces(
     int totalDays, {
     required double lat,
     required double lng,
+    required List<String> categories,
   }) async {
     final prefs = UserPreferenceService.instance;
 
     final perCategory     = (totalDays + 1).clamp(2, 6);
     final restaurantCount = (totalDays * 2 + 1).clamp(3, 10);
 
-    final byType = await _fetchPlacesForItinerary(lat: lat, lng: lng);
+    final byType = await _fetchPlacesForItinerary(
+      lat: lat,
+      lng: lng,
+      categories: categories,
+    );
 
     double score(PlaceModel p) => prefs.recommendationScore(
       primaryType:    p.primaryType,
@@ -196,7 +219,16 @@ class ItineraryService {
       priceLevel:     p.priceLevel,
     ).total;
 
-    List<PlaceModel> topByType(String type, int count) {
+    // Empty selection == "no restriction", matches the fallback used above.
+    bool wants(String type) => categories.isEmpty || categories.contains(type);
+
+    List<PlaceModel> topByType(
+      String type,
+      int count, {
+      bool forceInclude = false,
+    }) {
+      if (!forceInclude && !wants(type)) return [];
+
       final list = (byType[type] ?? [])
           .where(_isSuitableForTravel)
           .toList()
@@ -217,7 +249,7 @@ class ItineraryService {
       return list.take(count).toList();
     }
 
-    final restaurants   = topByType('restaurant',         restaurantCount);
+    final restaurants   = topByType('restaurant', restaurantCount, forceInclude: true);
     final attractions   = topByType('tourist_attraction', perCategory);
     final malls         = topByType('shopping_mall',      perCategory);
     final entertainment = topByType('amusement_park',     perCategory);
@@ -248,6 +280,9 @@ class ItineraryService {
   // ─────────────────────────────────────────────
   // Generate — no Gemini, pure algorithm
   // ─────────────────────────────────────────────
+  //
+  // FIX: overrideCategories is now actually read and passed down to
+  // _buildBalancedPlaces instead of being ignored.
 
   Future<ItineraryModel?> generate({
     required String startDate,
@@ -262,6 +297,8 @@ class ItineraryService {
     try {
       final cuisines = overrideCuisines
           ?? UserPreferenceService.instance.current.cuisines;
+      final categories = overrideCategories
+          ?? UserPreferenceService.instance.current.categories;
 
       double? lat = overrideLat;
       double? lng = overrideLng;
@@ -280,6 +317,7 @@ class ItineraryService {
         totalDays,
         lat: lat,
         lng: lng,
+        categories: categories,
       );
 
       if (validPlaces.isEmpty) {
@@ -379,35 +417,99 @@ class ItineraryService {
   }
 
   // ─────────────────────────────────────────────
-  // Geo clustering — greedy one-pass k-means
-  // Groups nearby non-restaurant places into days
-  // so each day's stops are geographically close
+  // Geo clustering — farthest-point seeding + Lloyd refinement
+  // Groups nearby non-restaurant places into days so each day's
+  // stops are geographically close.
+  //
+  // FIX: the old version picked seeds by walking a *rating*-sorted list
+  // at fixed steps, which has nothing to do with where places actually
+  // are. Two top-rated places sitting right next to each other could
+  // both become seeds while a genuinely separate area got no seed at
+  // all, producing lopsided/overlapping day groups.
+  //
+  // This version:
+  //   1. Picks seeds by farthest-point sampling on real lat/lng, so
+  //      seeds start out spread across the whole area.
+  //   2. Runs a couple of Lloyd (k-means) refinement passes: recompute
+  //      each cluster's true centroid, then reassign every place to its
+  //      nearest centroid. This lets places near a cluster boundary
+  //      settle into whichever group actually fits them best.
+  //   3. Sorts each final cluster by rating, same as before, since
+  //      downstream scheduling picks the top-rated places per day.
   // ─────────────────────────────────────────────
 
   List<List<PlaceModel>> _geoClusters(List<PlaceModel> places, int k) {
     if (places.isEmpty) return List.generate(k, (_) => []);
 
-    // Spread seeds across rating-sorted list so every day gets quality options
-    final sorted = [...places]
-      ..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
+    final located = places.where((p) => p.lat != null && p.lng != null).toList();
+    if (located.isEmpty) return List.generate(k, (_) => []);
 
-    final seeds = <PlaceModel>[];
-    final step  = (sorted.length / k).ceil().clamp(1, sorted.length);
-    for (int i = 0; i < k; i++) {
-      seeds.add(sorted[(i * step).clamp(0, sorted.length - 1)]);
+    final seedCount = k.clamp(1, located.length);
+
+    // ── Step 1: farthest-point sampling for well-spread seeds ──
+    final seeds = <PlaceModel>[located.first];
+    while (seeds.length < seedCount) {
+      PlaceModel? farthest;
+      double      farthestDist = -1;
+
+      for (final p in located) {
+        if (seeds.contains(p)) continue;
+        // Distance to the *nearest* existing seed — we want to maximize this.
+        double minDistToSeeds = double.infinity;
+        for (final s in seeds) {
+          final d = _distSq(p.lat!, p.lng!, s.lat!, s.lng!);
+          if (d < minDistToSeeds) minDistToSeeds = d;
+        }
+        if (minDistToSeeds > farthestDist) {
+          farthestDist = minDistToSeeds;
+          farthest = p;
+        }
+      }
+
+      if (farthest == null) break; // no more candidates
+      seeds.add(farthest);
     }
 
-    final clusters = List.generate(k, (_) => <PlaceModel>[]);
+    // ── Step 2: initial assignment by nearest seed ──
+    List<({double lat, double lng})> centers =
+        seeds.map((s) => (lat: s.lat!, lng: s.lng!)).toList();
 
-    for (final p in places) {
-      if (p.lat == null || p.lng == null) continue;
-      int    bestIdx  = 0;
-      double bestDist = double.infinity;
-      for (int i = 0; i < seeds.length; i++) {
-        final d = _distSq(p.lat!, p.lng!, seeds[i].lat!, seeds[i].lng!);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
+    List<List<PlaceModel>> assign(List<({double lat, double lng})> centers) {
+      final clusters = List.generate(centers.length, (_) => <PlaceModel>[]);
+      for (final p in located) {
+        int    bestIdx  = 0;
+        double bestDist = double.infinity;
+        for (int i = 0; i < centers.length; i++) {
+          final d = _distSq(p.lat!, p.lng!, centers[i].lat, centers[i].lng);
+          if (d < bestDist) { bestDist = d; bestIdx = i; }
+        }
+        clusters[bestIdx].add(p);
       }
-      clusters[bestIdx].add(p);
+      return clusters;
+    }
+
+    var clusters = assign(centers);
+
+    // ── Step 3: Lloyd refinement — recompute centroids, reassign ──
+    // A couple of passes is enough for this dataset size; it converges
+    // fast and we don't need perfect optimality, just "good enough".
+    const refinementPasses = 2;
+    for (int pass = 0; pass < refinementPasses; pass++) {
+      final newCenters = <({double lat, double lng})>[];
+      for (int i = 0; i < clusters.length; i++) {
+        if (clusters[i].isEmpty) {
+          newCenters.add(centers[i]); // keep old center if cluster emptied out
+        } else {
+          newCenters.add(_centroid(clusters[i]));
+        }
+      }
+      centers  = newCenters;
+      clusters = assign(centers);
+    }
+
+    // ── Step 4: pad back up to k groups if fewer seeds than days ──
+    while (clusters.length < k) {
+      clusters.add(<PlaceModel>[]);
     }
 
     // Best-rated places come first within each cluster
@@ -517,6 +619,8 @@ class ItineraryService {
         photoUrl:        place.photoUrl,
         lat:             place.lat,
         lng:             place.lng,
+        primaryType:     place.primaryType, // FIX: was missing — History
+                                             // relied on this being set.
         suggestedTime:   slot.time,
         durationMinutes: slot.duration,
         notes:           _generateNote(place),

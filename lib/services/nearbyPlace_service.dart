@@ -1,13 +1,14 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../models/placeModal.dart';
 import 'placesAPI_service.dart';
 import 'geoapify_service.dart';
 import 'location_service.dart';
-import 'overpass_service.dart';
+import 'geoapifyEnrichment_service.dart';
 
 class NearbyPlacesService {
-  
+
   static final NearbyPlacesService instance = NearbyPlacesService._();
   NearbyPlacesService._();
 
@@ -15,9 +16,54 @@ class NearbyPlacesService {
   final Map<String, List<PlaceModel>> _placesByTypeCache = {};
   final Map<String, List<PlaceModel>> _searchCache = {};
   final Set<String> _loadingKeys = {};
-  
+
   bool _isLoading = false;
   bool _hasLoadedOnce = false;
+
+  // 💰 NEW: Google Places is the expensive API, so it is only ever called
+  // ONCE per location, always at `_googleMaxRadius`. Every subsequent
+  // radius change for the SAME location is served by filtering this cached
+  // list locally (haversine distance check) — zero extra Google calls.
+  //
+  // ⚠️ Tune `_googleMaxRadius` to match the largest radius option your UI
+  // offers (e.g. if your radius slider/chips go up to 8000m, set this to
+  // 8000). If a user later requests a radius LARGER than this constant,
+  // we transparently fall back to a fresh Google call at that larger
+  // radius (see `_fetchGoogleOnce`), so correctness is preserved either way
+  // — this constant is a cost/coverage tuning knob, not a hard cap.
+  static const int _googleMaxRadius = 5000;
+
+  // location-key ('lat,lng' rounded to 3dp ≈ 111m) → raw Google places
+  // (parsed, NOT filtered by radius) fetched at up to `_googleMaxRadius`.
+  final Map<String, List<PlaceModel>> _googleRawCache = {};
+  // tracks the actual radius each cache entry was fetched at, since we
+  // may occasionally need to widen it (see note above).
+  final Map<String, int> _googleRawCacheRadius = {};
+
+  // 🆓 NEW: same fetch-once-and-filter-locally pattern, applied to Geoapify.
+  // Even though Geoapify is "free", every radius change still meant a real
+  // network round-trip and (if the UI debounces radius changes poorly,
+  // e.g. a slider) wasted/duplicate in-flight requests. Caching it the same
+  // way as Google means shrinking the radius is instant (no network at
+  // all), and only widening beyond what's cached triggers a fresh call.
+  static const int _geoapifyMaxRadius = 5000; // tune independently of Google's
+  final Map<String, List<Map<String, dynamic>>> _geoapifyRawCache = {};
+  final Map<String, int> _geoapifyRawCacheRadius = {};
+
+  String _locKey(double lat, double lng) =>
+      '${lat.toStringAsFixed(3)},${lng.toStringAsFixed(3)}';
+
+  // 🔒 NEW: generation token — guards the shared cache (_allPlacesCache /
+  // _placesByTypeCache) against stale background (Geoapify) writes from a
+  // previous loadNearbyPlacesOnce() call that hasn't finished yet when a
+  // new one starts (e.g. user changes radius / location quickly).
+  int _currentGeneration = 0;
+
+  // 🔒 NEW: separate "background still working" flag, since _isLoading only
+  // reflects Phase 1 (Google). UI can use this to show a subtle
+  // "still finding more places…" indicator if it wants to.
+  bool _isBackgroundLoading = false;
+  bool get isBackgroundLoading => _isBackgroundLoading;
 
   List<PlaceModel> get cachedPlaces => _allPlacesCache;
   List<PlaceModel> get allPlaces => List.unmodifiable(_allPlacesCache);
@@ -74,79 +120,96 @@ class NearbyPlacesService {
     return r * 2 * atan2(sqrt(a), sqrt(1 - a));
   }
 
-  // ── Core fetch: Google + Geoapify, both using the same radius ──────────────
-  Future<void> _fetchAndStore({
-    required double lat,
-    required double lng,
-    required List<PlaceModel> targetList,
-    required Map<String, List<PlaceModel>> targetByType,
-    int radius = 5000, // ← NEW
-  }) async {
-    print('🌍 NearbyPlacesService: fetching with radius ${radius}m...');
+  // ─────────────────────────────────────────────────────────────────────────
+  // 💰 Get-or-fetch Google Places for a location, ONCE.
+  //
+  // - Cache hit (same location, cached radius already ≥ requested radius):
+  //   returns the cached list immediately, NO network call.
+  // - Cache miss (first time at this location, OR user requests a radius
+  //   bigger than what we originally cached): makes the 4 parallel Google
+  //   calls at max(requested radius, _googleMaxRadius) and caches the
+  //   result for next time.
+  //
+  // Returned list is UNFILTERED by radius — the caller (_fetchAndStore)
+  // does the cheap local distance filter for whatever radius it needs.
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<List<PlaceModel>> _fetchGoogleOnce(
+    double lat,
+    double lng,
+    int requestedRadius,
+  ) async {
+    final key = _locKey(lat, lng);
+    final cachedRadius = _googleRawCacheRadius[key];
 
-    final futures = await Future.wait([
-      // ── Google: 4 parallel calls, all using the same radius ──────────────
-      Future.wait([
-        PlacesApiService.searchNearby(
-          lat: lat, lng: lng,
-          types: [
-            'restaurant', 'cafe', 'coffee_shop', 'bakery', 'bar',
-            'fast_food_restaurant', 'food_court', 'dessert_shop',
-          ],
-          maxResultCount: 20,
-          radius: radius, // ← pass through
-        ),
-        PlacesApiService.searchNearby(
-          lat: lat, lng: lng,
-          types: [
-            'movie_theater', 'amusement_park', 'bowling_alley', 'karaoke',
-            'video_arcade', 'night_club', 'amusement_center', 'concert_hall',
-            'gym', 'fitness_center', 'spa',
-          ],
-          maxResultCount: 20,
-          radius: radius,
-        ),
-        PlacesApiService.searchNearby(
-          lat: lat, lng: lng,
-          types: [
-            'subway_station', 'bus_station', 'bus_stop', 'transit_station',
-            'light_rail_station', 'taxi_stand', 'train_station',
-            'hospital', 'doctor', 'medical_clinic', 'bank', 'atm', 'post_office',
-          ],
-          maxResultCount: 20,
-          radius: radius,
-        ),
-        PlacesApiService.searchNearby(
-          lat: lat, lng: lng,
-          types: [
-            'park', 'national_park', 'botanical_garden', 'hiking_area',
-            'beach', 'museum', 'art_gallery', 'tourist_attraction',
-            'historical_landmark', 'monument',
-            'shopping_mall', 'supermarket', 'grocery_store', 'department_store',
-            'clothing_store', 'electronics_store', 'pharmacy', 'book_store',
-            'convenience_store', 'market',
-          ],
-          maxResultCount: 20,
-          radius: radius,
-        ),
-      ]).then((r) => [...r[0], ...r[1], ...r[2], ...r[3]]),
+    if (_googleRawCache.containsKey(key) &&
+        cachedRadius != null &&
+        cachedRadius >= requestedRadius) {
+      print('🆓 Google raw cache HIT for $key '
+          '(cached at ${cachedRadius}m, need ${requestedRadius}m) — no API call');
+      return _googleRawCache[key]!;
+    }
 
-      // ── Geoapify: all categories in parallel, same radius ─────────────────
-      GeoapifyService.fetchNearby(
+    // Either first time here, or the user asked for a radius wider than
+    // what we cached before — fetch at whichever is larger so we don't
+    // have to widen again soon.
+    final fetchRadius = max(_googleMaxRadius, requestedRadius);
+
+    print('💰 Google raw cache MISS for $key — calling Google Places API '
+        'ONCE at radius ${fetchRadius}m (requested: ${requestedRadius}m)');
+
+    final googleRaw = await Future.wait([
+      PlacesApiService.searchNearby(
         lat: lat,
         lng: lng,
-        radius: radius, // ← pass through
+        types: [
+          'restaurant', 'cafe', 'coffee_shop', 'bakery', 'bar',
+          'fast_food_restaurant', 'food_court', 'dessert_shop',
+        ],
+        maxResultCount: 20,
+        radius: fetchRadius,
       ),
-    ]);
+      PlacesApiService.searchNearby(
+        lat: lat,
+        lng: lng,
+        types: [
+          'movie_theater', 'amusement_park', 'bowling_alley', 'karaoke',
+          'video_arcade', 'night_club', 'amusement_center', 'concert_hall',
+          'gym', 'fitness_center', 'spa',
+        ],
+        maxResultCount: 20,
+        radius: fetchRadius,
+      ),
+      PlacesApiService.searchNearby(
+        lat: lat,
+        lng: lng,
+        types: [
+          'subway_station', 'bus_station', 'bus_stop', 'transit_station',
+          'light_rail_station', 'taxi_stand', 'train_station',
+          'hospital', 'doctor', 'medical_clinic', 'bank', 'atm', 'post_office',
+        ],
+        maxResultCount: 20,
+        radius: fetchRadius,
+      ),
+      PlacesApiService.searchNearby(
+        lat: lat,
+        lng: lng,
+        types: [
+          'park', 'national_park', 'botanical_garden', 'hiking_area',
+          'beach', 'museum', 'art_gallery', 'tourist_attraction',
+          'historical_landmark', 'monument',
+          'shopping_mall', 'supermarket', 'grocery_store', 'department_store',
+          'clothing_store', 'electronics_store', 'pharmacy', 'book_store',
+          'convenience_store', 'market',
+        ],
+        maxResultCount: 20,
+        radius: fetchRadius,
+      ),
+    ]).then((r) => [...r[0], ...r[1], ...r[2], ...r[3]]);
 
-    final googleRaw   = futures[0] as List<Map<String, dynamic>>;
-    final geoapifyRaw = futures[1] as List<Map<String, dynamic>>;
+    print('📦 Google raw response: ${googleRaw.length} results');
 
-    print('📦 Google raw: ${googleRaw.length} | Geoapify raw: ${geoapifyRaw.length} (before dedup)');
-
-    // ── Step 1: Process Google results ────────────────────────────────────────
-    final seenIds    = <String>{};
-    final seenCoords = <({double lat, double lng})>[];
+    final seenIds = <String>{};
+    final places = <PlaceModel>[];
 
     for (final p in googleRaw) {
       final id = p['id'] as String? ?? '';
@@ -157,132 +220,360 @@ class NearbyPlacesService {
       final primaryType = _mapToPrimaryType(googleTypes);
       if (primaryType == 'other') continue;
 
-      try {
-        final place = PlaceModel.fromGoogle(p, primary: primaryType);
-        if (place.lat == null || place.lng == null) continue;
+      final place = PlaceModel.fromGoogle(p, primary: primaryType);
+      if (place.lat == null || place.lng == null) continue;
 
-        targetList.add(place);
-        targetByType.putIfAbsent(primaryType, () => []);
-        targetByType[primaryType]!.add(place);
-        seenCoords.add((lat: place.lat!, lng: place.lng!));
-      } catch (_) {}
+      places.add(place);
     }
 
-    print('✅ After Google: ${targetList.length} places');
+    _googleRawCache[key] = places;
+    _googleRawCacheRadius[key] = fetchRadius;
 
-    // ── Step 2: Process Geoapify results (supplementary) ─────────────────────
-    int geoAdded = 0;
-    int geoDuped = 0;
-    int geoTooFar = 0; // ← NEW
+    print('✅ Google raw cache STORED for $key: ${places.length} places @ ${fetchRadius}m '
+        '— will NOT call Google again for this location unless a radius > '
+        '${fetchRadius}m is requested.');
 
-    for (final p in geoapifyRaw) {
-      final id = p['id'] as String? ?? '';
+    return places;
+  }
+
+  // Explicit escape hatch — call this if you ever need to force a fresh
+  // (paid) Google call for a location, e.g. a manual "refresh" button.
+  void clearGoogleRawCache([double? lat, double? lng]) {
+    if (lat != null && lng != null) {
+      final key = _locKey(lat, lng);
+      _googleRawCache.remove(key);
+      _googleRawCacheRadius.remove(key);
+      print('♻️ Google raw cache cleared for $key');
+    } else {
+      _googleRawCache.clear();
+      _googleRawCacheRadius.clear();
+      print('♻️ Google raw cache cleared for ALL locations');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 🆓 Get-or-fetch Geoapify for a location, ONCE per radius-widening step.
+  // Same shape as _fetchGoogleOnce: cache hit → zero network calls; cache
+  // miss (first time, or requested radius wider than cached) → real fetch.
+  //
+  // Returns RAW (unfiltered by radius) normalized maps — same shape
+  // GeoapifyService.fetchNearby always returned — so the existing
+  // radius-filter / dedup / batching logic in _runGeoapifyPhase works
+  // completely unchanged.
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<List<Map<String, dynamic>>> _fetchGeoapifyOnce(
+    double lat,
+    double lng,
+    int requestedRadius,
+  ) async {
+    final key = _locKey(lat, lng);
+    final cachedRadius = _geoapifyRawCacheRadius[key];
+
+    if (_geoapifyRawCache.containsKey(key) &&
+        cachedRadius != null &&
+        cachedRadius >= requestedRadius) {
+      print('🆓 Geoapify raw cache HIT for $key '
+          '(cached at ${cachedRadius}m, need ${requestedRadius}m) — no API call');
+      return _geoapifyRawCache[key]!;
+    }
+
+    final fetchRadius = max(_geoapifyMaxRadius, requestedRadius);
+
+    print('🟣 Geoapify raw cache MISS for $key — calling Geoapify '
+        'ONCE at radius ${fetchRadius}m (requested: ${requestedRadius}m)');
+
+    final raw = await GeoapifyService.fetchNearby(
+      lat: lat,
+      lng: lng,
+      radius: fetchRadius,
+    );
+
+    _geoapifyRawCache[key] = raw;
+    _geoapifyRawCacheRadius[key] = fetchRadius;
+
+    print('✅ Geoapify raw cache STORED for $key: ${raw.length} places @ ${fetchRadius}m '
+        '— will NOT call Geoapify again for this location unless a radius > '
+        '${fetchRadius}m is requested.');
+
+    return raw;
+  }
+
+  // Explicit escape hatch for Geoapify's cache too.
+  void clearGeoapifyRawCache([double? lat, double? lng]) {
+    if (lat != null && lng != null) {
+      final key = _locKey(lat, lng);
+      _geoapifyRawCache.remove(key);
+      _geoapifyRawCacheRadius.remove(key);
+      print('♻️ Geoapify raw cache cleared for $key');
+    } else {
+      _geoapifyRawCache.clear();
+      _geoapifyRawCacheRadius.clear();
+      print('♻️ Geoapify raw cache cleared for ALL locations');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Core fetch — split into 2 phases:
+  //   Phase 1 (Google)    → awaited here, returned immediately to the caller
+  //   Phase 2 (Geoapify)  → fired via unawaited(), merges into targetList/
+  //                          targetByType in the background and reports
+  //                          new places through onGeoapifyBatchAdd (batched,
+  //                          throttled) so the UI doesn't rebuild on every
+  //                          single place.
+  //
+  //   `generation`: the token this call belongs to. Every write into the
+  //   shared targetList/targetByType is gated on
+  //   (generation == checkGeneration()) so a slow, stale Phase 2 from an
+  //   older call can never corrupt a newer call's cache.
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<List<PlaceModel>> _fetchAndStore({
+    required double lat,
+    required double lng,
+    required List<PlaceModel> targetList,
+    required Map<String, List<PlaceModel>> targetByType,
+    int radius = 5000,
+
+    // 🔒 generation guard (null = no guard needed, e.g. loadNearbyPlacesAt
+    // which uses a fresh local list per call instead of a shared cache)
+    int? generation,
+    bool Function()? isCurrentGeneration,
+
+    // 🔥 streaming callbacks
+    Function(List<PlaceModel>)? onGoogleReady,
+    Function(List<PlaceModel>)? onGeoapifyBatchAdd, // ← batched, not per-place
+    Function()? onGeoapifyDone,
+  }) async {
+
+    print('🌍 NearbyPlacesService: Phase 1 (Google) — get-or-fetch-once, then filter to ${radius}m...');
+
+    // ─────────────────────────────────────────────
+    // 💰 PHASE 1: GOOGLE — fetched at most ONCE per location (see
+    // _fetchGoogleOnce). Only this is awaited by the caller.
+    // ─────────────────────────────────────────────
+    final googleAll = await _fetchGoogleOnce(lat, lng, radius);
+
+    // 🔒 If a newer call has already superseded this one, bail out before
+    // touching the shared cache at all.
+    if (isCurrentGeneration != null && !isCurrentGeneration()) {
+      print('🚫 Phase 1 result discarded — stale generation ($generation)');
+      return [];
+    }
+
+    // Shared dedup state — both phases write into the SAME instances,
+    // so Phase 2 correctly skips anything Phase 1 already added.
+    // Seeded only with places that pass the CURRENT radius filter, since
+    // anything beyond `radius` shouldn't count as "already shown" (and
+    // Geoapify itself is radius-filtered to the same `radius` below).
+    final seenIds = <String>{};
+    final seenCoords = <({double lat, double lng})>[];
+
+    final googlePlaces = <PlaceModel>[];
+
+    for (final place in googleAll) {
+      if (place.lat == null || place.lng == null) continue;
+
+      // 📏 local filter — no network call, just a distance check
+      final dist = _haversineMetres(lat, lng, place.lat!, place.lng!);
+      if (dist > radius) continue;
+
+      final id = place.id; // ⚠️ assumes PlaceModel exposes `.id` — if your
+      // PlaceModel field is named differently, swap it in here and below.
       if (id.isEmpty || seenIds.contains(id)) continue;
+      seenIds.add(id);
 
-      final locMap = p['location'] as Map<String, dynamic>?;
-      final pLat   = (locMap?['latitude']  as num?)?.toDouble();
-      final pLng   = (locMap?['longitude'] as num?)?.toDouble();
-      if (pLat == null || pLng == null) continue;
-
-      // ── Strict distance filter — reject anything outside the radius ────────
-      final distToOrigin = _haversineMetres(lat, lng, pLat, pLng);
-      if (distToOrigin > radius) {
-        geoTooFar++;
-        continue;
-      }
-
-      bool tooClose = false;
-      for (final coord in seenCoords) {
-        if (_haversineMetres(coord.lat, coord.lng, pLat, pLng) < _dedupDistanceMetres) {
-          tooClose = true;
-          break;
-        }
-      }
-      if (tooClose) { geoDuped++; continue; }
-
-      final googleTypes = (p['types'] as List?)?.cast<String>() ?? [];
-      final primaryType = _mapToPrimaryType(googleTypes);
+      // PlaceModel doesn't expose the primary type it was tagged with, so
+      // recompute it from its raw Google types (same helper used elsewhere).
+      // Skip 'other' entirely, same as the original code did.
+      final primaryType = _mapToPrimaryType(place.allTypes);
       if (primaryType == 'other') continue;
 
-      seenIds.add(id);
-      seenCoords.add((lat: pLat, lng: pLng));
+      googlePlaces.add(place);
+      targetList.add(place);
+      targetByType.putIfAbsent(primaryType, () => []);
+      targetByType[primaryType]!.add(place);
 
-      try {
+      seenCoords.add((lat: place.lat!, lng: place.lng!));
+    }
+
+    print('⚡ Phase 1 done — Google filtered to ${radius}m: ${googlePlaces.length} places '
+        '(of ${googleAll.length} cached total)');
+    onGoogleReady?.call(List.unmodifiable(googlePlaces));
+
+    // ─────────────────────────────────────────────
+    // 🌍 PHASE 2: GEOAPIFY — fired in the background,
+    // does NOT block this function from returning.
+    // ─────────────────────────────────────────────
+    unawaited(_runGeoapifyPhase(
+      lat: lat,
+      lng: lng,
+      radius: radius,
+      targetList: targetList,
+      targetByType: targetByType,
+      seenIds: seenIds,
+      seenCoords: seenCoords,
+      isCurrentGeneration: isCurrentGeneration,
+      onGeoapifyBatchAdd: onGeoapifyBatchAdd,
+      onGeoapifyDone: onGeoapifyDone,
+    ));
+
+    // Phase 1 result is what the caller gets synchronously.
+    return googlePlaces;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Phase 2 — Geoapify, runs independently after Phase 1 has returned.
+  // Any failure here is swallowed so it never affects the Google results
+  // that are already showing on screen.
+  //
+  // 🔒 Every write is gated on isCurrentGeneration() so a slow response
+  // from an old (superseded) call can never leak into the current cache.
+  //
+  // 🔥 Additions are batched and flushed at most every 250ms (or every 8
+  // places, whichever comes first) instead of one callback per place, so
+  // the UI isn't forced to rebuild dozens of times in quick succession.
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> _runGeoapifyPhase({
+    required double lat,
+    required double lng,
+    required int radius,
+    required List<PlaceModel> targetList,
+    required Map<String, List<PlaceModel>> targetByType,
+    required Set<String> seenIds,
+    required List<({double lat, double lng})> seenCoords,
+    bool Function()? isCurrentGeneration,
+    Function(List<PlaceModel>)? onGeoapifyBatchAdd,
+    Function()? onGeoapifyDone,
+  }) async {
+    final pendingBatch = <PlaceModel>[];
+    Timer? flushTimer;
+
+    void flush() {
+      flushTimer?.cancel();
+      flushTimer = null;
+      if (pendingBatch.isEmpty) return;
+      // 🔒 don't deliver stale-generation updates to the UI either
+      if (isCurrentGeneration != null && !isCurrentGeneration()) {
+        pendingBatch.clear();
+        return;
+      }
+      onGeoapifyBatchAdd?.call(List.unmodifiable(pendingBatch));
+      pendingBatch.clear();
+    }
+
+    void scheduleFlush() {
+      if (pendingBatch.length >= 8) {
+        flush();
+        return;
+      }
+      flushTimer ??= Timer(const Duration(milliseconds: 250), flush);
+    }
+
+    try {
+      print('🟣 Phase 2 (Geoapify): get-or-fetch-once, then filter to ${radius}m...');
+      final geoapifyRaw = await _fetchGeoapifyOnce(lat, lng, radius);
+
+      print('📦 Geoapify raw (cached, unfiltered): ${geoapifyRaw.length}');
+
+      // 🔒 Bail before touching shared cache if a newer call has taken over.
+      if (isCurrentGeneration != null && !isCurrentGeneration()) {
+        print('🚫 Phase 2 result discarded entirely — stale generation');
+        return;
+      }
+
+      int geoAdded = 0;
+      int geoDuped = 0;
+      int geoTooFar = 0;
+
+      for (final p in geoapifyRaw) {
+        // 🔒 check on every iteration too — a newer call could start
+        // mid-loop since this runs across multiple await boundaries only
+        // at the top, but we still re-check defensively before each write.
+        if (isCurrentGeneration != null && !isCurrentGeneration()) {
+          print('🚫 Phase 2 aborted mid-loop — stale generation');
+          break;
+        }
+
+        final id = p['id'] as String? ?? '';
+        if (id.isEmpty || seenIds.contains(id)) continue;
+
+        final locMap = p['location'] as Map<String, dynamic>?;
+        final pLat = (locMap?['latitude'] as num?)?.toDouble();
+        final pLng = (locMap?['longitude'] as num?)?.toDouble();
+        if (pLat == null || pLng == null) continue;
+
+        // radius filter
+        final dist = _haversineMetres(lat, lng, pLat, pLng);
+        if (dist > radius) {
+          geoTooFar++;
+          continue;
+        }
+
+        // dedup distance (against everything Phase 1 + Phase 2-so-far added)
+        bool tooClose = false;
+        for (final c in seenCoords) {
+          if (_haversineMetres(c.lat, c.lng, pLat, pLng) < _dedupDistanceMetres) {
+            tooClose = true;
+            break;
+          }
+        }
+        if (tooClose) {
+          geoDuped++;
+          continue;
+        }
+
+        final googleTypes = (p['types'] as List?)?.cast<String>() ?? [];
+        final primaryType = _mapToPrimaryType(googleTypes);
+        if (primaryType == 'other') continue;
+
         final place = PlaceModel.fromGoogle(p, primary: primaryType);
         if (place.lat == null || place.lng == null) continue;
+
+        seenIds.add(id);
+        seenCoords.add((lat: pLat, lng: pLng));
 
         targetList.add(place);
         targetByType.putIfAbsent(primaryType, () => []);
         targetByType[primaryType]!.add(place);
+
         geoAdded++;
-      } catch (_) {}
-    }
 
-    print('🟣 Geoapify: +$geoAdded added, $geoDuped duplicates, $geoTooFar outside ${radius}m radius');
-    print('✅ Final total: ${targetList.length} places');
-    targetByType.forEach((type, places) => print('   $type: ${places.length}'));
-
-    // ── Step 3: Enrich Geoapify restaurants with OSM cuisine tags ────────────
-    final geoRestaurants = targetList
-        .where((p) => p.isGeoapify && p.primaryType == 'restaurant')
-        .toList();
-
-    if (geoRestaurants.isNotEmpty) {
-      print('🗺️ Enriching ${geoRestaurants.length} Geoapify restaurants with Overpass cuisine...');
-
-      final osmEntries   = <Map<String, String>>[];
-      final osmIdToIndex = <String, int>{};
-
-      for (final place in geoRestaurants) {
-        final osmId   = place.osmId   ?? '';
-        final osmType = place.osmType ?? 'node';
-
-        if (osmId.isNotEmpty) {
-          osmEntries.add({'osmId': osmId, 'osmType': osmType});
-          osmIdToIndex[osmId] = targetList.indexOf(place);
-        }
+        // 🔥 queue for batched delivery instead of firing immediately
+        pendingBatch.add(place);
+        scheduleFlush();
       }
 
-      if (osmEntries.isNotEmpty) {
-        final cuisineMap = await OverpassService.fetchCuisineTags(osmEntries);
+      // flush whatever's left over
+      flush();
 
-        for (final entry in cuisineMap.entries) {
-          final osmId       = entry.key;
-          final cuisineType = entry.value;
-          final idx         = osmIdToIndex[osmId];
-
-          if (idx != null && idx != -1) {
-            final oldPlace     = targetList[idx];
-            final updatedTypes = [...oldPlace.allTypes, cuisineType];
-
-            targetList[idx] = oldPlace.copyWith(allTypes: updatedTypes);
-
-            final primary  = oldPlace.primaryType ?? 'restaurant';
-            final typeList = targetByType[primary];
-            if (typeList != null) {
-              final typeIdx = typeList.indexWhere((p) => p.id == oldPlace.id);
-              if (typeIdx != -1) {
-                typeList[typeIdx] = targetList[idx];
-              }
-            }
-
-            print('✅ Enriched: ${oldPlace.name} → allTypes: $updatedTypes');
-          }
-        }
+      print('🟣 Phase 2 done: +$geoAdded added, $geoDuped duped, $geoTooFar filtered');
+      print('✅ Final total: ${targetList.length}');
+    } catch (e) {
+      flush();
+      print('⚠️ Geoapify phase failed (Google results unaffected): $e');
+    } finally {
+      flushTimer?.cancel();
+      if (isCurrentGeneration == null || isCurrentGeneration()) {
+        onGeoapifyDone?.call();
       }
     }
   }
-  
+
   // ── Public: load once (real-time GPS mode) ─────────────────────────────────
+  int _cachedRadius = 0; // track which radius the current cache was loaded with
+
   Future<List<PlaceModel>> loadNearbyPlacesOnce(
     List<Map<String, dynamic>> categories,
     BuildContext context, {
     double? lat,
     double? lng,
-    int radius = 5000, // ← NEW
+    int radius = 5000,
+    Function(PlaceModel)? onGeoapifyAdd,       // kept for backwards-compat (per-place)
+    Function(List<PlaceModel>)? onGeoapifyBatchAdd, // ← NEW: preferred, batched
+    Function()? onGeoapifyDone,
   }) async {
-    if (_hasLoadedOnce) {
-      print('🧠 NearbyPlacesService: using cache');
+    // Use cache only if radius matches — otherwise reload
+    if (_hasLoadedOnce && _cachedRadius == radius) {
+      print('🧠 NearbyPlacesService: using cache (radius ${radius}m)');
       return _allPlacesCache;
     }
     if (_isLoading) {
@@ -296,37 +587,79 @@ class NearbyPlacesService {
     final searchLat = lat ?? pos!.latitude;
     final searchLng = lng ?? pos!.longitude;
 
+    // 🔒 mint a new generation token for this call and invalidate any
+    // in-flight background phase from a previous call.
+    final myGeneration = ++_currentGeneration;
+    bool isCurrentGeneration() => myGeneration == _currentGeneration;
+
     _isLoading = true;
+    _isBackgroundLoading = true;
     _allPlacesCache.clear();
     _placesByTypeCache.clear();
 
     final stopwatch = Stopwatch()..start();
 
-    await _fetchAndStore(
+    final googlePlaces = await _fetchAndStore(
       lat:        searchLat,
       lng:        searchLng,
       targetList: _allPlacesCache,
       targetByType: _placesByTypeCache,
-      radius:     radius, // ← pass through
+      radius:     radius,
+      generation: myGeneration,
+      isCurrentGeneration: isCurrentGeneration,
+      onGeoapifyBatchAdd: (batch) {
+        // fan out to both the new batched callback and the legacy
+        // per-place callback, if callers still use it.
+        onGeoapifyBatchAdd?.call(batch);
+        if (onGeoapifyAdd != null) {
+          for (final place in batch) {
+            onGeoapifyAdd(place);
+          }
+        }
+      },
+      onGeoapifyDone: () {
+        print('🏁 Geoapify merge finished (background)');
+        _isBackgroundLoading = false;
+        onGeoapifyDone?.call();
+      },
     );
 
     stopwatch.stop();
-    _hasLoadedOnce = true;
-    _isLoading = false;
 
-    print('🏁 Total: ${_allPlacesCache.length} places in ${stopwatch.elapsedMilliseconds}ms');
+    // 🔒 Only commit "loaded" bookkeeping if we're still the latest call.
+    if (isCurrentGeneration()) {
+      _hasLoadedOnce = true;
+      _cachedRadius  = radius; // ← record which radius this cache was loaded with
+      _isLoading = false;
+    }
 
-    _precacheImages(context);
+    print('🏁 Phase 1 returned: ${googlePlaces.length} Google places in '
+        '${stopwatch.elapsedMilliseconds}ms (radius: ${radius}m)');
+
+    if (isCurrentGeneration()) {
+      _precacheImages(context);
+    }
+
+    // NOTE: this list is the SAME reference as _allPlacesCache, so it will
+    // keep growing as Phase 2 (Geoapify) adds more places in the background
+    // — as long as this call is still the current generation.
     return _allPlacesCache;
   }
 
   // ── Public: load at specific location (landmark / search mode) ─────────────
+  // Uses a fresh local `results`/`byType` list per call (keyed by cacheKey),
+  // so it does NOT share the generation-guarded singleton cache and doesn't
+  // need the same protection — concurrent calls with different cacheKeys
+  // simply write into different lists.
   Future<List<PlaceModel>> loadNearbyPlacesAt({
     required double lat,
     required double lng,
     required List<Map<String, dynamic>> categories,
     required BuildContext context,
-    int radius = 5000, // ← NEW
+    int radius = 5000,
+    Function(PlaceModel)? onGeoapifyAdd,
+    Function(List<PlaceModel>)? onGeoapifyBatchAdd, // ← NEW: preferred, batched
+    Function()? onGeoapifyDone,
   }) async {
     // Include radius in cache key so different radii don't share cache
     final cacheKey = '${lat.toStringAsFixed(3)},${lng.toStringAsFixed(3)},r$radius';
@@ -356,10 +689,21 @@ class NearbyPlacesService {
         lng:          lng,
         targetList:   results,
         targetByType: byType,
-        radius:       radius, // ← pass through
+        radius:       radius,
+        onGeoapifyBatchAdd: (batch) {
+          onGeoapifyBatchAdd?.call(batch);
+          if (onGeoapifyAdd != null) {
+            for (final place in batch) {
+              onGeoapifyAdd(place);
+            }
+          }
+        },
+        onGeoapifyDone: onGeoapifyDone,
       );
 
-      print('✅ loadNearbyPlacesAt: ${results.length} places');
+      print('✅ loadNearbyPlacesAt: ${results.length} places (Google phase)');
+      // Cached under the SAME reference — Phase 2 keeps appending to `results`
+      // in the background, so cache hits later will include the merged data.
       _searchCache[cacheKey] = results;
 
       if (context.mounted) _precacheImages(context);
@@ -411,8 +755,13 @@ class NearbyPlacesService {
 
   void clearCache() {
     print('♻️ NearbyPlacesService: cache cleared');
+    // 🔒 bump generation so any in-flight background phase from before the
+    // clear is treated as stale and won't repopulate the cache we just wiped.
+    _currentGeneration++;
     _hasLoadedOnce = false;
+    _cachedRadius  = 0;
     _isLoading = false;
+    _isBackgroundLoading = false;
     _allPlacesCache.clear();
     _placesByTypeCache.clear();
   }

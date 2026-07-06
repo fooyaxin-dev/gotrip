@@ -1,4 +1,5 @@
 // pages/itinerary/generate_itinerary_page.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../models/itineraryModel.dart';
@@ -37,6 +38,22 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   List<Map<String, dynamic>> _suggestions = [];
   bool _searchingLocation = false;
 
+  // ── Debounce for location autocomplete ──
+  Timer? _locationDebounce;
+  static const _locationDebounceDuration = Duration(milliseconds: 400);
+
+  // ── Step-based loading messages while generating ──
+  static const _generatingSteps = [
+    'Finding nearby places...',
+    'Filtering by your preferences...',
+    'Balancing categories...',
+    'Grouping places by area...',
+    'Building your daily schedule...',
+    'Almost done...',
+  ];
+  int _generatingStepIndex = 0;
+  Timer? _generatingStepTimer;
+
   static const _allCategories = [
     {'key': 'restaurant',         'label': 'Food',          'icon': '🍜'},
     {'key': 'park',               'label': 'Nature',        'icon': '🌿'},
@@ -70,6 +87,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     _locationController.dispose();
     _titleFocus.dispose();
     _locationFocus.dispose();
+    _locationDebounce?.cancel();
+    _generatingStepTimer?.cancel();
     super.dispose();
   }
 
@@ -82,11 +101,23 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   // Location search
   // ─────────────────────────────────────────────
 
-  Future<void> _onLocationTyped(String query) async {
+  // FIX: debounce so we don't fire an Autocomplete request on every
+  // keystroke. Cancels any pending request and waits for a short pause
+  // in typing before actually calling the API.
+  void _onLocationTyped(String query) {
+    _locationDebounce?.cancel();
+
     if (query.trim().length < 2) {
       setState(() => _suggestions = []);
       return;
     }
+
+    _locationDebounce = Timer(_locationDebounceDuration, () {
+      _fetchLocationSuggestions(query);
+    });
+  }
+
+  Future<void> _fetchLocationSuggestions(String query) async {
     setState(() => _searchingLocation = true);
     try {
       final pos = LocationService.instance.currentPosition;
@@ -106,6 +137,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     final name    = suggestion['mainText'] as String? ??
                     suggestion['description'] as String? ?? '';
     _dismissKeyboard();
+    _locationDebounce?.cancel();
     setState(() {
       _suggestions = [];
       _locationController.text = name;
@@ -128,6 +160,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
 
   void _resetToCurrentLocation() {
     _dismissKeyboard();
+    _locationDebounce?.cancel();
     setState(() {
       _useCurrentLocation   = true;
       _selectedLat          = null;
@@ -156,6 +189,27 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   // Generate
   // ─────────────────────────────────────────────
 
+  // FIX: cycles through _generatingSteps while the itinerary is being
+  // built so the user sees progress instead of a single static label.
+  // The underlying generate() call doesn't report real progress, so this
+  // advances on a timer; it stops as soon as generation finishes.
+  void _startGeneratingStepTimer() {
+    _generatingStepIndex = 0;
+    _generatingStepTimer?.cancel();
+    _generatingStepTimer = Timer.periodic(const Duration(milliseconds: 1400), (timer) {
+      if (!mounted || _generatingStepIndex >= _generatingSteps.length - 1) {
+        timer.cancel();
+        return;
+      }
+      setState(() => _generatingStepIndex++);
+    });
+  }
+
+  void _stopGeneratingStepTimer() {
+    _generatingStepTimer?.cancel();
+    _generatingStepTimer = null;
+  }
+
   Future<void> _generate() async {
     _dismissKeyboard();
 
@@ -173,6 +227,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     }
 
     setState(() => _isGenerating = true);
+    _startGeneratingStepTimer();
 
     try {
       final itinerary = await ItineraryService.instance.generate(
@@ -203,6 +258,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       if (saved == true && mounted) Navigator.pop(context);
 
     } finally {
+      _stopGeneratingStepTimer();
       if (mounted) setState(() => _isGenerating = false);
     }
   }
@@ -532,19 +588,24 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                         borderRadius: BorderRadius.circular(18)),
                   ),
                   child: _isGenerating
-                      ? const Row(
+                      ? Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            SizedBox(
+                            const SizedBox(
                               width: 20, height: 20,
                               child: CircularProgressIndicator(
                                   strokeWidth: 2, color: Colors.white),
                             ),
-                            SizedBox(width: 12),
-                            Text('Generating your trip...',
-                                style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 12),
+                            Flexible(
+                              child: Text(
+                                _generatingSteps[_generatingStepIndex],
+                                style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
                           ],
                         )
                       : const Row(

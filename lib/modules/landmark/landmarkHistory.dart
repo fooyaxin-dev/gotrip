@@ -1,8 +1,9 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../services/landmarkHistory_service.dart';
+import '../../services/vision_service.dart';
+import 'landmarkResult.dart';
 
 class LandmarkHistoryPage extends StatefulWidget {
   const LandmarkHistoryPage({super.key});
@@ -38,6 +39,44 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
         ),
       );
     }
+  }
+
+  // ── Reconstruct a LandmarkResult from a saved history entry ──
+  // and jump back into ResultPage to view the full info again.
+  void _openDetail(LandmarkHistoryEntry entry) {
+    final DetectionMethod method;
+    switch (entry.detectionMethod) {
+      case 'vision':
+        method = DetectionMethod.visionLandmark;
+        break;
+      case 'gemini':
+        method = DetectionMethod.geminiVision;
+        break;
+      default:
+        method = DetectionMethod.notDetected;
+    }
+
+    final result = LandmarkResult(
+      landmark: entry.name,
+      normalizedName: entry.name,
+      rawJson: '',
+      lat: entry.lat,
+      lng: entry.lng,
+      confidence: 1.0,
+      method: method,
+    );
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ResultPage(
+          imageBytes: null,               // original scan photo isn't stored
+          fallbackImageUrl: entry.photoUrl, // fall back to the Google Places photo
+          landmarkResult: result,
+          skipHistorySave: true,          // don't create a duplicate history entry
+        ),
+      ),
+    );
   }
 
   Future<void> _clearAll() async {
@@ -138,7 +177,13 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
         child: const Icon(Icons.delete_rounded, color: Colors.white),
       ),
       onDismissed: (_) => _delete(entry),
-      child: Container(
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => _openDetail(entry),
+          child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         decoration: BoxDecoration(
           color: Colors.white,
@@ -237,6 +282,8 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
                 ),
               ),
           ],
+        ),
+          ),
         ),
       ),
     );

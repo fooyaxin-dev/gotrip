@@ -4,25 +4,10 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../../models/itineraryModel.dart';
+import '../../services/achievement_service.dart';
 import '../itinerary/itineraryDetail.dart';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Achievement Model
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _Achievement {
-  final String emoji;
-  final String title;
-  final String desc;
-  final bool unlocked;
-
-  const _Achievement({
-    required this.emoji,
-    required this.title,
-    required this.desc,
-    required this.unlocked,
-  });
-}
+import '../itinerary/itineraryPage.dart';
+import '../profile/profile.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Data Models
@@ -33,23 +18,19 @@ class _DashboardData {
   final int citiesExplored;
   final int favPlaces;
   final int tripsTaken;
-  final Map<String, double> favCategoryDistribution;
-  final Map<String, int> visitedCategoryDistribution;
-  final List<_IncompleteTrip> incompleteTrips;      // ALL TIME
-  final List<_UnvisitedFav> unvisitedFavourites;    // ALL TIME
+  final Map<String, int> visitedCategoryDistribution; // FILTERED — by visitedAt
+  final List<_IncompleteTrip> incompleteTrips;         // ALL TIME
   final Map<String, int> monthlyActivityFull;
-  final double totalDistanceKm;                      // FILTERED
-  final List<_Achievement> achievements;             // FILTERED
+  final double totalDistanceKm;                         // FILTERED — by visitedAt
+  final List<AchievementGroup> achievements;           // ALL TIME — never affected by filter
 
   const _DashboardData({
     required this.placesVisited,
     required this.citiesExplored,
     required this.favPlaces,
     required this.tripsTaken,
-    required this.favCategoryDistribution,
     required this.visitedCategoryDistribution,
     required this.incompleteTrips,
-    required this.unvisitedFavourites,
     required this.monthlyActivityFull,
     required this.totalDistanceKm,
     required this.achievements,
@@ -74,22 +55,6 @@ class _IncompleteTrip {
   });
 
   double get progress => total == 0 ? 0 : visited / total;
-}
-
-class _UnvisitedFav {
-  final String placeId;
-  final String name;
-  final String address;
-  final String? photoUrl;
-  final double? rating;
-
-  const _UnvisitedFav({
-    required this.placeId,
-    required this.name,
-    required this.address,
-    this.photoUrl,
-    this.rating,
-  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,15 +123,43 @@ double _haversineKm(double lat1, double lng1, double lat2, double lng2) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Raw data — loaded once from Firestore
+//
+// Each visited place is flattened into a single "visit event" with its own
+// visitedAt timestamp + lat/lng + category. This lets every filtered metric
+// (distance, achievements, category bar, top card) use the SAME ground truth
+// — the actual moment the user visited that place — instead of mixing in
+// itinerary-level createdAt, which can be misleading.
 // ─────────────────────────────────────────────────────────────────────────────
 
+class _VisitEvent {
+  final DateTime visitedAt;
+  final String address;
+  final String? placeId;
+  final String placeName;
+  final String primaryType;
+  final double? lat;
+  final double? lng;
+  final String itineraryId; // '' if from plain history (no itinerary)
+
+  const _VisitEvent({
+    required this.visitedAt,
+    required this.address,
+    required this.placeId,
+    required this.placeName,
+    required this.primaryType,
+    required this.lat,
+    required this.lng,
+    required this.itineraryId,
+  });
+}
+
 class _RawData {
-  final List<({DateTime visitedAt, String address, String? placeId, String placeName})> historyEntries;
+  final List<_VisitEvent> visitEvents; // unified — from history + itineraries
   final List<({DateTime savedAt, String placeId, String name, String address, List<String> types, String? photoUrl, double? rating})> favouriteEntries;
   final List<ItineraryModel> itineraryModels;
 
   const _RawData({
-    required this.historyEntries,
+    required this.visitEvents,
     required this.favouriteEntries,
     required this.itineraryModels,
   });
@@ -219,21 +212,7 @@ class _DashboardPageState extends State<DashboardPage> {
       final favouritesSnap  = results[1] as QuerySnapshot;
       final itinerariesSnap = results[2] as QuerySnapshot;
 
-      // ── History ──
-      final historyEntries = <({DateTime visitedAt, String address, String? placeId, String placeName})>[];
-      for (final doc in historySnap.docs) {
-        final data      = doc.data() as Map<String, dynamic>;
-        final timestamp = data['visitedAt'] as Timestamp?;
-        if (timestamp == null) continue;
-        historyEntries.add((
-          visitedAt: timestamp.toDate(),
-          address:   data['address']   as String? ?? '',
-          placeId:   data['placeId']   as String?,
-          placeName: data['placeName'] as String? ?? '',
-        ));
-      }
-
-      // ── Favourites ──
+      // ── Favourites (for type lookup + wishlist) ──
       final favouriteEntries = <({DateTime savedAt, String placeId, String name, String address, List<String> types, String? photoUrl, double? rating})>[];
       for (final doc in favouritesSnap.docs) {
         final data    = doc.data() as Map<String, dynamic>;
@@ -249,15 +228,64 @@ class _DashboardPageState extends State<DashboardPage> {
         ));
       }
 
-      // ── Itineraries ──
+      // Build a quick placeId -> types lookup from favourites, used to infer
+      // primaryType for history entries that don't store it directly.
+      final typeByPlaceId = <String, List<String>>{};
+      for (final f in favouriteEntries) {
+        typeByPlaceId[f.placeId] = f.types;
+      }
+
+      // ── Itineraries (full models, also used to source visit events) ──
       final itineraryModels = itinerariesSnap.docs
           .map((doc) => ItineraryModel.fromMap(
                 doc.id, doc.data() as Map<String, dynamic>))
           .toList();
 
+      // ── Build unified visit events ──
+      final visitEvents = <_VisitEvent>[];
+
+      // 1) From plain history collection
+      for (final doc in historySnap.docs) {
+        final data      = doc.data() as Map<String, dynamic>;
+        final timestamp = data['visitedAt'] as Timestamp?;
+        if (timestamp == null) continue;
+        final placeId = data['placeId'] as String?;
+        final types    = placeId != null ? (typeByPlaceId[placeId] ?? []) : <String>[];
+        visitEvents.add(_VisitEvent(
+          visitedAt:   timestamp.toDate(),
+          address:     data['address']   as String? ?? '',
+          placeId:     placeId,
+          placeName:   data['placeName'] as String? ?? '',
+          primaryType: _mapTypeToCategory(types),
+          lat:         null, // plain history doesn't store coordinates
+          lng:         null,
+          itineraryId: data['itineraryId'] as String? ?? '',
+        ));
+      }
+
+      // 2) From itinerary visited places — these DO have lat/lng + primaryType,
+      //    which the distance calculation needs.
+      for (final model in itineraryModels) {
+        for (final day in model.days) {
+          for (final place in day.places) {
+            if (!place.isVisited || place.visitedAt == null) continue;
+            visitEvents.add(_VisitEvent(
+              visitedAt:   place.visitedAt!,
+              address:     place.address,
+              placeId:     place.placeId,
+              placeName:   place.name,
+              primaryType: _mapTypeToCategory([place.primaryType ?? '']),
+              lat:         place.lat,
+              lng:         place.lng,
+              itineraryId: model.id,
+            ));
+          }
+        }
+      }
+
       setState(() {
         _rawData = _RawData(
-          historyEntries:   historyEntries,
+          visitEvents:      visitEvents,
           favouriteEntries: favouriteEntries,
           itineraryModels:  itineraryModels,
         );
@@ -270,62 +298,67 @@ class _DashboardPageState extends State<DashboardPage> {
 
   // ─────────────────────────────────────────────
   // Compute in-memory — no extra Firestore calls
+  //
+  // ALL filtered metrics now use the SAME source of truth:
+  // raw.visitEvents filtered by visitedAt >= cutoff.
   // ─────────────────────────────────────────────
 
   _DashboardData _computeData(_RawData raw, int months) {
     final now    = DateTime.now();
     final cutoff = DateTime(now.year, now.month - months + 1, 1);
 
-    // ── Filtered by time range ──
-    final filteredHistory     = raw.historyEntries.where((e) => e.visitedAt.isAfter(cutoff)).toList();
-    final filteredFavourites  = raw.favouriteEntries.where((e) => e.savedAt.isAfter(cutoff)).toList();
-    final filteredItineraries = raw.itineraryModels.where((m) => m.createdAt.isAfter(cutoff)).toList();
+    // De-duplicate: a place visited via an itinerary AND logged in plain
+    // history would otherwise be double-counted. We dedupe by
+    // (placeId, day) when placeId is available; otherwise keep as-is.
+    final seenKeys = <String>{};
+    final dedupedEvents = <_VisitEvent>[];
+    for (final e in raw.visitEvents) {
+      final dayKey = '${e.visitedAt.year}-${e.visitedAt.month}-${e.visitedAt.day}';
+      final key = e.placeId != null && e.placeId!.isNotEmpty
+          ? '${e.placeId}_$dayKey'
+          : '${e.placeName}_$dayKey';
+      if (seenKeys.contains(key)) continue;
+      seenKeys.add(key);
+      dedupedEvents.add(e);
+    }
+
+    // ── Filtered visit events (by visitedAt) — single source of truth ──
+    final filteredEvents = dedupedEvents
+        .where((e) => e.visitedAt.isAfter(cutoff))
+        .toList();
+
+    // ── Filtered favourites (by savedAt) — only used for Top Card count ──
+    final filteredFavourites = raw.favouriteEntries
+        .where((e) => e.savedAt.isAfter(cutoff))
+        .toList();
 
     // ── Top Card ──
-    final placesVisited = filteredHistory.length;
+    final placesVisited = filteredEvents.length;
+
     final citySet = <String>{};
-    for (final e in filteredHistory) {
-      final city = _extractCity(e.address);
-      if (city.isNotEmpty) citySet.add(city);
-    }
-    for (final e in filteredFavourites) {
+    for (final e in filteredEvents) {
       final city = _extractCity(e.address);
       if (city.isNotEmpty) citySet.add(city);
     }
     final citiesExplored = citySet.length;
     final favPlaces      = filteredFavourites.length;
-    final tripsTaken     = filteredItineraries.length;
 
-    // ── Favourite Category Donut (filtered) ──
-    final favCatCount = <String, double>{};
-    for (final e in filteredFavourites) {
-      final cat = _mapTypeToCategory(e.types);
-      favCatCount[cat] = (favCatCount[cat] ?? 0) + 1;
-    }
-
-    // ── Visited Category Bar (filtered) ──
-    final visitedCatCount = <String, int>{};
-    final visitedPlaceIds = filteredHistory
-        .where((e) => e.placeId != null)
-        .map((e) => e.placeId!)
+    // "Active" trips: itineraries with at least one visit inside the filter
+    // window. Uses the same visitedAt-based truth as every other filtered
+    // metric — NOT itinerary.createdAt — so it lines up with Places Visited.
+    final activeItineraryIds = filteredEvents
+        .where((e) => e.itineraryId.isNotEmpty)
+        .map((e) => e.itineraryId)
         .toSet();
-    for (final e in raw.favouriteEntries) {
-      if (visitedPlaceIds.contains(e.placeId)) {
-        final cat = _mapTypeToCategory(e.types);
-        visitedCatCount[cat] = (visitedCatCount[cat] ?? 0) + 1;
-      }
-    }
-    for (final model in filteredItineraries) {
-      for (final day in model.days) {
-        for (final place in day.places) {
-          if (place.visitedAt == null || place.visitedAt!.isBefore(cutoff)) continue;
-          final cat = _mapTypeToCategory([place.primaryType ?? '']);
-          visitedCatCount[cat] = (visitedCatCount[cat] ?? 0) + 1;
-        }
-      }
+    final tripsTaken = activeItineraryIds.length;
+
+    // ── Visited Category Bar (filtered, replaces the old Donut too) ──
+    final visitedCatCount = <String, int>{};
+    for (final e in filteredEvents) {
+      visitedCatCount[e.primaryType] = (visitedCatCount[e.primaryType] ?? 0) + 1;
     }
 
-    // ── Incomplete Trips (ALL TIME) ──
+    // ── Incomplete Trips (ALL TIME — status-based, not time-based) ──
     final incompleteTrips = <_IncompleteTrip>[];
     for (final model in raw.itineraryModels) {
       if (model.totalPlaces > 0 && model.totalVisited < model.totalPlaces) {
@@ -341,23 +374,6 @@ class _DashboardPageState extends State<DashboardPage> {
     }
     incompleteTrips.sort((a, b) => a.progress.compareTo(b.progress));
 
-    // ── Unvisited Favourites (ALL TIME) ──
-    final historyPlaceNames = raw.historyEntries
-        .map((e) => e.placeName.toLowerCase())
-        .toSet();
-    final unvisitedFavs = <_UnvisitedFav>[];
-    for (final e in raw.favouriteEntries) {
-      if (!historyPlaceNames.contains(e.name.toLowerCase())) {
-        unvisitedFavs.add(_UnvisitedFav(
-          placeId:  e.placeId,
-          name:     e.name,
-          address:  e.address,
-          photoUrl: e.photoUrl,
-          rating:   e.rating,
-        ));
-      }
-    }
-
     // ── Monthly Activity (full 12 months, sliced by filter in UI) ──
     final monthNames   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     final monthMapFull = <String, int>{};
@@ -366,7 +382,7 @@ class _DashboardPageState extends State<DashboardPage> {
       final key = '${monthNames[m.month - 1]} ${m.year}';
       monthMapFull[key] = 0;
     }
-    for (final e in raw.historyEntries) {
+    for (final e in dedupedEvents) {
       final diff = (now.year - e.visitedAt.year) * 12 + (now.month - e.visitedAt.month);
       if (diff >= 0 && diff < 12) {
         final key = '${monthNames[e.visitedAt.month - 1]} ${e.visitedAt.year}';
@@ -374,114 +390,87 @@ class _DashboardPageState extends State<DashboardPage> {
       }
     }
 
-    // ── Total Travel Distance (FILTERED) ──
-    // Uses filteredItineraries — only itineraries created within the selected period
+    // ── Total Travel Distance (FILTERED — shown on the Distance Card) ──
+    // Group filtered events by itineraryId, sort each group chronologically,
+    // and sum the haversine distance between consecutive stops.
+    // Events without lat/lng (plain history) or without an itineraryId are
+    // skipped — there is no route to measure without coordinates.
+    final byItineraryFiltered = <String, List<_VisitEvent>>{};
+    for (final e in filteredEvents) {
+      if (e.itineraryId.isEmpty || e.lat == null || e.lng == null) continue;
+      byItineraryFiltered.putIfAbsent(e.itineraryId, () => []).add(e);
+    }
+
     double totalDistanceKm = 0;
-    for (final model in filteredItineraries) {
-      for (final day in model.days) {
-        final visitedPlaces = day.places
-            .where((p) =>
-                p.isVisited &&
-                p.lat != null &&
-                p.lng != null &&
-                (p.visitedAt == null || p.visitedAt!.isAfter(cutoff)))
-            .toList();
-        for (int i = 0; i < visitedPlaces.length - 1; i++) {
-          totalDistanceKm += _haversineKm(
-            visitedPlaces[i].lat!,
-            visitedPlaces[i].lng!,
-            visitedPlaces[i + 1].lat!,
-            visitedPlaces[i + 1].lng!,
-          );
-        }
+    for (final group in byItineraryFiltered.values) {
+      group.sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
+      for (int i = 0; i < group.length - 1; i++) {
+        totalDistanceKm += _haversineKm(
+          group[i].lat!, group[i].lng!,
+          group[i + 1].lat!, group[i + 1].lng!,
+        );
       }
     }
 
-    // ── Achievements (FILTERED) ──
-    // All based on filteredHistory + filteredItineraries within selected period
-    int foodVisits   = 0;
-    int natureVisits = 0;
-    int completedTrips = 0;
+    // ── Achievements (ALL TIME — delegated to AchievementService) ──
+    // The service uses its own Firestore fetch internally, completely
+    // independent of the filter. We pass in the cached raw data to avoid
+    // an extra network round-trip by building the stats inline and calling
+    // buildGroups() directly.
+    final allTimePlacesVisited = dedupedEvents.length;
 
-    for (final model in filteredItineraries) {
-      // Count completed itineraries
+    final allTimeCitySet = <String>{};
+    for (final e in dedupedEvents) {
+      final city = _extractCity(e.address);
+      if (city.isNotEmpty) allTimeCitySet.add(city);
+    }
+
+    final allTimeFoodVisits       = dedupedEvents.where((e) => e.primaryType == 'Food').length;
+    final allTimeNatureVisits     = dedupedEvents.where((e) => e.primaryType == 'Nature').length;
+    final allTimeAttractionVisits = dedupedEvents.where((e) => e.primaryType == 'Attraction').length;
+
+    int allTimeCompletedTrips = 0;
+    for (final model in raw.itineraryModels) {
       if (model.totalPlaces > 0 && model.totalVisited == model.totalPlaces) {
-        completedTrips++;
-      }
-      // Count food & nature visits
-      for (final day in model.days) {
-        for (final place in day.places) {
-          if (!place.isVisited) continue;
-          if (place.visitedAt != null && place.visitedAt!.isBefore(cutoff)) continue;
-          final cat = _mapTypeToCategory([place.primaryType ?? '']);
-          if (cat == 'Food')   foodVisits++;
-          if (cat == 'Nature') natureVisits++;
-        }
+        allTimeCompletedTrips++;
       }
     }
 
-    final filteredCities = citySet; // already computed above from filteredHistory
+    final byItineraryAllTime = <String, List<_VisitEvent>>{};
+    for (final e in dedupedEvents) {
+      if (e.itineraryId.isEmpty || e.lat == null || e.lng == null) continue;
+      byItineraryAllTime.putIfAbsent(e.itineraryId, () => []).add(e);
+    }
+    double allTimeDistanceKm = 0;
+    for (final group in byItineraryAllTime.values) {
+      group.sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
+      for (int i = 0; i < group.length - 1; i++) {
+        allTimeDistanceKm += _haversineKm(
+          group[i].lat!, group[i].lng!,
+          group[i + 1].lat!, group[i + 1].lng!,
+        );
+      }
+    }
 
-    final achievements = <_Achievement>[
-      _Achievement(
-        emoji:    '🗺️',
-        title:    'First Step',
-        desc:     'Complete your first itinerary',
-        unlocked: completedTrips >= 1,
-      ),
-      _Achievement(
-        emoji:    '📍',
-        title:    'Explorer',
-        desc:     'Visit 10 places',
-        unlocked: placesVisited >= 10,
-      ),
-      _Achievement(
-        emoji:    '🔥',
-        title:    'Adventurer',
-        desc:     'Visit 25 places',
-        unlocked: placesVisited >= 25,
-      ),
-      _Achievement(
-        emoji:    '🍜',
-        title:    'Foodie',
-        desc:     'Visit 5 food spots',
-        unlocked: foodVisits >= 5,
-      ),
-      _Achievement(
-        emoji:    '🌿',
-        title:    'Nature Lover',
-        desc:     'Visit 5 nature spots',
-        unlocked: natureVisits >= 5,
-      ),
-      _Achievement(
-        emoji:    '🏙️',
-        title:    'City Hopper',
-        desc:     'Explore 3 different cities',
-        unlocked: filteredCities.length >= 3,
-      ),
-      _Achievement(
-        emoji:    '✈️',
-        title:    'Traveller',
-        desc:     'Complete 3 itineraries',
-        unlocked: completedTrips >= 3,
-      ),
-      _Achievement(
-        emoji:    '🚀',
-        title:    'Road Warrior',
-        desc:     'Travel over 100 km',
-        unlocked: totalDistanceKm >= 100,
-      ),
-    ];
+    final allTimeStats = AchievementStats(
+      placesVisited:    allTimePlacesVisited,
+      citiesExplored:   allTimeCitySet.length,
+      tripsCompleted:   allTimeCompletedTrips,
+      foodVisits:       allTimeFoodVisits,
+      natureVisits:     allTimeNatureVisits,
+      attractionVisits: allTimeAttractionVisits,
+      totalDistanceKm:  allTimeDistanceKm,
+    );
+
+    final achievements = AchievementService.instance.buildGroups(allTimeStats);
 
     return _DashboardData(
       placesVisited:               placesVisited,
       citiesExplored:              citiesExplored,
       favPlaces:                   favPlaces,
       tripsTaken:                  tripsTaken,
-      favCategoryDistribution:     favCatCount,
       visitedCategoryDistribution: visitedCatCount,
       incompleteTrips:             incompleteTrips,
-      unvisitedFavourites:         unvisitedFavs,
       monthlyActivityFull:         monthMapFull,
       totalDistanceKm:             totalDistanceKm,
       achievements:                achievements,
@@ -556,32 +545,22 @@ class _DashboardPageState extends State<DashboardPage> {
             _buildDistanceCard(data),
             const SizedBox(height: 24),
 
-            // ── 3. Favourite Categories (filtered) ──
-            _sectionHeader('Favourite Categories', 'What you saved • filtered'),
-            _buildFavDonutChart(data),
-            const SizedBox(height: 24),
-
-            // ── 4. Places Explored (filtered) ──
+            // ── 3. Places Explored — single category section (filtered) ──
             _sectionHeader('Places You\'ve Explored', 'By category • filtered'),
             _buildVisitedBarChart(data),
             const SizedBox(height: 24),
 
-            // ── 5. Achievements (filtered) ──
+            // ── 4. Achievements (filtered) ──
             _sectionHeader('Achievements', 'Your travel milestones • filtered'),
             _buildAchievements(data),
             const SizedBox(height: 24),
 
-            // ── 6. Incomplete Trips (ALL TIME) ──
-            _sectionHeaderWithBadge('Continue Your Trips', 'Itineraries in progress', allTime: true),
+            // ── 5. Incomplete Trips (ALL TIME) ──
+            _sectionHeaderWithBadge('Continue Journey', '', allTime: true),
             _buildIncompleteTrips(data),
             const SizedBox(height: 24),
 
-            // ── 7. Unvisited Favourites (ALL TIME) ──
-            _sectionHeaderWithBadge('Still on Your Wishlist', 'Saved but not yet visited', allTime: true),
-            _buildUnvisitedFavourites(data),
-            const SizedBox(height: 24),
-
-            // ── 8. Monthly Activity (filtered) ──
+            // ── 6. Monthly Activity (filtered) ──
             _buildMonthlyHeader(),
             _buildMonthlyChart(data),
             const SizedBox(height: 32),
@@ -615,33 +594,42 @@ class _DashboardPageState extends State<DashboardPage> {
             const Text('Time Range',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.black87)),
             const Spacer(),
-            Text('Showing past $_selectedMonths months',
-                style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+            Flexible(
+              child: Text('Showing past $_selectedMonths months',
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+            ),
           ]),
           const SizedBox(height: 12),
           Row(
             children: [3, 6, 12].map((months) {
               final selected = _selectedMonths == months;
-              return Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: GestureDetector(
-                  onTap: () => setState(() => _selectedMonths = months),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: selected ? const Color(0xFF6366F1) : Colors.grey[100],
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: selected ? const Color(0xFF6366F1) : Colors.grey[300]!,
+              return Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: GestureDetector(
+                    onTap: () => setState(() => _selectedMonths = months),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      decoration: BoxDecoration(
+                        color: selected ? const Color(0xFF6366F1) : Colors.grey[100],
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: selected ? const Color(0xFF6366F1) : Colors.grey[300]!,
+                        ),
                       ),
-                    ),
-                    child: Text(
-                      months == 3 ? '3 Months' : months == 6 ? '6 Months' : '12 Months',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: selected ? Colors.white : Colors.grey[600],
+                      child: Center(
+                        child: Text(
+                          months == 3 ? '3 Months' : months == 6 ? '6 Months' : '12 Months',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: selected ? Colors.white : Colors.grey[600],
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -677,11 +665,43 @@ class _DashboardPageState extends State<DashboardPage> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _topStatItem('Places\nVisited', '${data.placesVisited}', isMain: true),
+          // Places Visited → Profile History tab
+          Expanded(
+            child: GestureDetector(
+              onTap: () => Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const ProfilePage(initialTab: 1),
+              )),
+              child: _topStatItem('Places\nVisited', '${data.placesVisited}', isMain: true),
+            ),
+          ),
           Container(width: 1, height: 40, color: Colors.white24),
-          _topStatItem('Cities\nExplored', '${data.citiesExplored}'),
-          _topStatItem('Favourites', '${data.favPlaces}'),
-          _topStatItem('Trips\nTaken', '${data.tripsTaken}'),
+          // Cities Explored → Profile History tab
+          Expanded(
+            child: GestureDetector(
+              onTap: () => Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const ProfilePage(initialTab: 1),
+              )),
+              child: _topStatItem('Cities\nExplored', '${data.citiesExplored}'),
+            ),
+          ),
+          // Favourites → Profile Post tab
+          Expanded(
+            child: GestureDetector(
+              onTap: () => Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const ProfilePage(initialTab: 0),
+              )),
+              child: _topStatItem('Favourites', '${data.favPlaces}'),
+            ),
+          ),
+          // Trips Taken → Itinerary page
+          Expanded(
+            child: GestureDetector(
+              onTap: () => Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const ItineraryPage(),
+              )),
+              child: _topStatItem('Trips\nTaken', '${data.tripsTaken}'),
+            ),
+          ),
         ],
       ),
     );
@@ -689,15 +709,21 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Widget _topStatItem(String label, String value, {bool isMain = false}) {
     return Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: isMain ? CrossAxisAlignment.start : CrossAxisAlignment.center,
       children: [
-        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 11)),
+        Text(label,
+            textAlign: isMain ? TextAlign.left : TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.white70, fontSize: 11)),
         const SizedBox(height: 4),
-        Text(value, style: TextStyle(
-          color: Colors.white,
-          fontSize: isMain ? 22 : 16,
-          fontWeight: FontWeight.bold,
-        )),
+        Text(value,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: isMain ? 22 : 16,
+              fontWeight: FontWeight.bold,
+            )),
       ],
     );
   }
@@ -746,14 +772,18 @@ class _DashboardPageState extends State<DashboardPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('Total Travel Distance • past $_selectedMonths months',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 2,
                   style: const TextStyle(fontSize: 12, color: Colors.grey)),
               const SizedBox(height: 4),
               Text(display,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                       fontSize: 28, fontWeight: FontWeight.bold,
                       color: Color(0xFF6366F1))),
               const SizedBox(height: 4),
               Text(comparison,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 12, color: Colors.grey[500])),
             ],
           ),
@@ -763,70 +793,7 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   // ─────────────────────────────────────────────
-  // 3. Favourite Category Donut
-  // ─────────────────────────────────────────────
-
-  Widget _buildFavDonutChart(_DashboardData data) {
-    final dist = data.favCategoryDistribution;
-    if (dist.isEmpty) {
-      return _emptyState(
-        icon: Icons.favorite_border_rounded,
-        message: 'No favourites saved in the past $_selectedMonths months',
-      );
-    }
-    final total = dist.values.fold(0.0, (a, b) => a + b);
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: _cardStyle(),
-      child: Row(children: [
-        SizedBox(
-          height: 130, width: 130,
-          child: Stack(children: [
-            PieChart(PieChartData(
-              sectionsSpace: 2,
-              centerSpaceRadius: 40,
-              sections: dist.entries.map((e) {
-                final color = _kCategoryColors[e.key] ?? const Color(0xFFBDC3C7);
-                return PieChartSectionData(
-                    color: color, value: e.value, radius: 16, showTitle: false);
-              }).toList(),
-            )),
-            Center(
-              child: Text('${dist.length}\nTypes',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontWeight: FontWeight.bold,
-                      fontSize: 12, color: Colors.black87)),
-            ),
-          ]),
-        ),
-        const SizedBox(width: 20),
-        Expanded(
-          child: Column(
-            children: dist.entries.map((e) {
-              final color   = _kCategoryColors[e.key] ?? const Color(0xFFBDC3C7);
-              final percent = total > 0
-                  ? '${(e.value / total * 100).toStringAsFixed(0)}%' : '0%';
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 5),
-                child: Row(children: [
-                  Container(width: 8, height: 8,
-                      decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text(e.key,
-                      style: const TextStyle(fontSize: 12, color: Colors.black87))),
-                  Text(percent,
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-                ]),
-              );
-            }).toList(),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  // ─────────────────────────────────────────────
-  // 4. Visited Category Bar
+  // 3. Visited Category Bar (the single remaining category section)
   // ─────────────────────────────────────────────
 
   Widget _buildVisitedBarChart(_DashboardData data) {
@@ -851,6 +818,7 @@ class _DashboardPageState extends State<DashboardPage> {
             child: Row(children: [
               SizedBox(width: 72,
                   child: Text(e.key,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 12, color: Colors.black87))),
               Expanded(
                 child: ClipRRect(
@@ -863,8 +831,9 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
               const SizedBox(width: 10),
-              SizedBox(width: 24,
+              SizedBox(width: 28,
                   child: Text('${e.value}',
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(fontSize: 12,
                           fontWeight: FontWeight.bold, color: color))),
             ]),
@@ -875,12 +844,21 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   // ─────────────────────────────────────────────
-  // 5. Achievements (FILTERED)
+  // 4. Achievements — tiered (ALL TIME)
   // ─────────────────────────────────────────────
 
+  static const _kTierColors = {
+    'bronze': Color(0xFFCD7F32),
+    'silver': Color(0xFFA8A9AD),
+    'gold':   Color(0xFFFFD700),
+  };
+
   Widget _buildAchievements(_DashboardData data) {
-    final achievements = data.achievements;
-    final unlocked     = achievements.where((a) => a.unlocked).length;
+    final groups  = data.achievements;
+    // Count total tiers unlocked across all groups
+    final totalTiers    = groups.length * 3;
+    final unlockedTiers = groups.fold<int>(
+        0, (sum, g) => sum + g.tiers.where((t) => t.unlocked).length);
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -888,13 +866,16 @@ class _DashboardPageState extends State<DashboardPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Progress summary
+          // ── Overall progress ──
           Row(children: [
-            Text('$unlocked / ${achievements.length} unlocked',
-                style: const TextStyle(fontSize: 13,
-                    fontWeight: FontWeight.w600, color: Colors.black87)),
+            Flexible(
+              child: Text('$unlockedTiers / $totalTiers tiers unlocked',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13,
+                      fontWeight: FontWeight.w600, color: Colors.black87)),
+            ),
             const Spacer(),
-            Text('${achievements.isEmpty ? 0 : (unlocked / achievements.length * 100).toStringAsFixed(0)}%',
+            Text('${totalTiers == 0 ? 0 : (unlockedTiers / totalTiers * 100).toStringAsFixed(0)}%',
                 style: const TextStyle(fontSize: 13,
                     fontWeight: FontWeight.bold, color: Color(0xFF6366F1))),
           ]),
@@ -902,7 +883,7 @@ class _DashboardPageState extends State<DashboardPage> {
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
-              value: achievements.isEmpty ? 0 : unlocked / achievements.length,
+              value: totalTiers == 0 ? 0 : unlockedTiers / totalTiers,
               minHeight: 6,
               backgroundColor: Colors.grey[100],
               valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF6366F1)),
@@ -910,71 +891,147 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
           const SizedBox(height: 20),
 
-          // Achievement grid
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 4,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 0.75,
-            ),
-            itemCount: achievements.length,
-            itemBuilder: (_, i) {
-              final a = achievements[i];
-              return Tooltip(
-                message: a.desc,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 56, height: 56,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: a.unlocked
-                            ? const Color(0xFF6366F1).withOpacity(0.12)
-                            : Colors.grey[100],
-                        border: Border.all(
-                          color: a.unlocked
-                              ? const Color(0xFF6366F1)
-                              : Colors.grey[300]!,
-                          width: a.unlocked ? 2 : 1,
-                        ),
-                      ),
-                      child: Center(
-                        child: a.unlocked
-                            ? Text(a.emoji, style: const TextStyle(fontSize: 24))
-                            : const Icon(Icons.lock_rounded,
-                                size: 20, color: Colors.grey),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      a.title,
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: a.unlocked
-                            ? const Color(0xFF6366F1)
-                            : Colors.grey[400],
-                      ),
-                    ),
-                  ],
+          // ── Achievement group list ──
+          ...groups.map((group) => _buildAchievementGroupRow(group)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAchievementGroupRow(AchievementGroup group) {
+    final highest = group.highestUnlocked;
+    final next    = group.nextTier;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Group title + highest badge ──
+          Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+            // Badge circle — shows highest unlocked or locked
+            Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: highest != null
+                    ? (_kTierColors[highest.level] ?? const Color(0xFF6366F1)).withOpacity(0.12)
+                    : Colors.grey[100],
+                border: Border.all(
+                  color: highest != null
+                      ? (_kTierColors[highest.level] ?? const Color(0xFF6366F1))
+                      : Colors.grey[300]!,
+                  width: highest != null ? 2 : 1,
                 ),
-              );
-            },
-          ),
+              ),
+              child: Center(
+                child: highest != null
+                    ? Text(highest.emoji, style: const TextStyle(fontSize: 20))
+                    : Text(group.baseEmoji,
+                        style: TextStyle(fontSize: 20, color: Colors.grey[400])),
+              ),
+            ),
+            const SizedBox(width: 12),
+
+            // Title + current tier label + next tier hint
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    Flexible(
+                      child: Text(group.title,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13,
+                              fontWeight: FontWeight.bold, color: Colors.black87)),
+                    ),
+                    if (highest != null) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: (_kTierColors[highest.level] ?? const Color(0xFF6366F1)).withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(highest.level.toUpperCase(),
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              color: _kTierColors[highest.level] ?? const Color(0xFF6366F1),
+                            )),
+                      ),
+                    ],
+                  ]),
+                  const SizedBox(height: 2),
+                  if (next != null)
+                    Text(
+                      '${next.remaining} more to ${next.label}',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                    )
+                  else
+                    Text('All tiers unlocked! 🎉',
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11, color: Colors.green[600])),
+                ],
+              ),
+            ),
+
+            // Tier dots (bronze / silver / gold)
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: group.tiers.map((t) {
+                final color = _kTierColors[t.level] ?? Colors.grey;
+                return Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Container(
+                    width: 12, height: 12,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: t.unlocked ? color : Colors.grey[200],
+                      border: Border.all(
+                        color: t.unlocked ? color : Colors.grey[300]!,
+                        width: 1,
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ]),
+
+          // ── Progress bar towards next tier ──
+          if (next != null) ...[
+            const SizedBox(height: 8),
+            Row(children: [
+              const SizedBox(width: 56), // align with text above
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: next.progress,
+                    minHeight: 5,
+                    backgroundColor: Colors.grey[100],
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                        _kTierColors[next.level] ?? const Color(0xFF6366F1)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${next.currentValue}/${next.threshold}',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 10, color: Colors.grey[500]),
+              ),
+            ]),
+          ],
         ],
       ),
     );
   }
 
   // ─────────────────────────────────────────────
-  // 6. Incomplete Trips (ALL TIME) — tappable
+  // 5. Incomplete Trips (ALL TIME) — tappable
   // ─────────────────────────────────────────────
 
   Widget _buildIncompleteTrips(_DashboardData data) {
@@ -1007,9 +1064,11 @@ class _DashboardPageState extends State<DashboardPage> {
                 Row(children: [
                   Expanded(
                     child: Text(trip.title,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontSize: 14,
                             fontWeight: FontWeight.bold, color: Colors.black87)),
                   ),
+                  const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
@@ -1017,6 +1076,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text('${trip.visited}/${trip.total} places',
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontSize: 11,
                             color: Color(0xFF6366F1), fontWeight: FontWeight.w600)),
                   ),
@@ -1026,6 +1086,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 ]),
                 const SizedBox(height: 4),
                 Text(trip.startDate,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 11, color: Colors.grey[500])),
                 const SizedBox(height: 10),
                 ClipRRect(
@@ -1038,6 +1099,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(height: 6),
                 Text('${(trip.progress * 100).toStringAsFixed(0)}% completed — tap to continue',
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 11, color: Colors.grey[500])),
               ],
             ),
@@ -1048,94 +1110,7 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   // ─────────────────────────────────────────────
-  // 7. Unvisited Favourites (ALL TIME)
-  // ─────────────────────────────────────────────
-
-  Widget _buildUnvisitedFavourites(_DashboardData data) {
-    if (data.unvisitedFavourites.isEmpty) {
-      return _emptyState(
-        icon: Icons.favorite_rounded,
-        message: 'You\'ve visited all your saved places!',
-        isPositive: true,
-      );
-    }
-    return SizedBox(
-      height: 160,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        itemCount: data.unvisitedFavourites.length > 10
-            ? 10 : data.unvisitedFavourites.length,
-        itemBuilder: (context, index) {
-          final fav = data.unvisitedFavourites[index];
-          return Container(
-            width: 140,
-            margin: const EdgeInsets.only(right: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: [BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 8, offset: const Offset(0, 3),
-              )],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: Stack(fit: StackFit.expand, children: [
-                fav.photoUrl != null
-                    ? Image.network(fav.photoUrl!, fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _favPlaceholder(fav.name))
-                    : _favPlaceholder(fav.name),
-                Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                      colors: [Colors.transparent, Colors.black.withOpacity(0.7)],
-                    ),
-                  ),
-                ),
-                Positioned(
-                  bottom: 10, left: 10, right: 10,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(fav.name, maxLines: 2, overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white,
-                              fontSize: 12, fontWeight: FontWeight.bold)),
-                      if (fav.rating != null) ...[
-                        const SizedBox(height: 3),
-                        Row(children: [
-                          const Icon(Icons.star_rounded, color: Colors.amber, size: 11),
-                          const SizedBox(width: 2),
-                          Text(fav.rating!.toStringAsFixed(1),
-                              style: const TextStyle(color: Colors.white70, fontSize: 10)),
-                        ]),
-                      ],
-                    ],
-                  ),
-                ),
-              ]),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _favPlaceholder(String name) {
-    return Container(
-      color: const Color(0xFF6366F1).withOpacity(0.15),
-      child: Center(
-        child: Text(
-          name.isNotEmpty ? name[0].toUpperCase() : '?',
-          style: const TextStyle(fontSize: 32,
-              fontWeight: FontWeight.bold, color: Color(0xFF6366F1)),
-        ),
-      ),
-    );
-  }
-
-  // ─────────────────────────────────────────────
-  // 8. Monthly Activity
+  // 6. Monthly Activity
   // ─────────────────────────────────────────────
 
   Widget _buildMonthlyHeader() {
@@ -1145,8 +1120,11 @@ class _DashboardPageState extends State<DashboardPage> {
         const Text('Monthly Activity',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         const SizedBox(width: 8),
-        Text('Past $_selectedMonths months',
-            style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        Flexible(
+          child: Text('Past $_selectedMonths months',
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        ),
         const Spacer(),
         Container(
           decoration: BoxDecoration(
@@ -1332,9 +1310,15 @@ class _DashboardPageState extends State<DashboardPage> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-        Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        Text(title,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         const SizedBox(width: 8),
-        Text(sub, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        Expanded(
+          child: Text(sub,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        ),
       ]),
     );
   }
@@ -1343,11 +1327,19 @@ class _DashboardPageState extends State<DashboardPage> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-        Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        Flexible(
+          child: Text(title,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        ),
         const SizedBox(width: 8),
-        Text(sub, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        Expanded(
+          child: Text(sub,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        ),
         if (allTime) ...[
-          const Spacer(),
+          const SizedBox(width: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
@@ -1367,7 +1359,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _emptyState({required IconData icon, required String message, bool isPositive = false}) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 28),
+      padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
       decoration: _cardStyle(),
       child: Column(children: [
         Icon(icon, size: 40,

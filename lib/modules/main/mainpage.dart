@@ -1,5 +1,3 @@
-
-
 import 'package:flutter/material.dart';
 import 'dart:math';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -12,7 +10,9 @@ import '../../services/route_service.dart';
 import '../../services/location_service.dart';
 import '../../models/placeModal.dart';
 import '../../services/nearbyPlace_service.dart';
-import '../../services/userPreference_service.dart'; 
+import '../../services/userPreference_service.dart';
+import '../../services/achievement_service.dart';
+import '../dashboard/dashboard_page.dart';
 
 class MainPage extends StatefulWidget {
   final dynamic username;
@@ -26,8 +26,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
 
   late PageController _pageController;
   List<PlaceModel> _nearbyPlaces    = [];
-  List<PlaceModel> _forYouPlaces    = []; 
+  List<PlaceModel> _forYouPlaces    = [];
   bool _loadingNearby               = true;
+
+  // ── Achievement banner ──
+  AchievementTier? _latestBadge;
 
   final String _weatherCondition    = "sunny";
   final int _temperature            = 19;
@@ -43,6 +46,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     _initAndLoad();
     LocationService.instance.addListener(_onLocationChanged);
     UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged);
+    _loadTopBadge();
+  }
+
+  Future<void> _loadTopBadge() async {
+    final tier = await AchievementService.instance.fetchTopBadge();
+    if (mounted && tier != null) {
+      setState(() => _latestBadge = tier);
+    }
   }
 
   void _onLocationChanged() {
@@ -365,7 +376,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
           child: Column(
             children: [
               _buildHeader(),
-              const SizedBox(height: 25),
+              const SizedBox(height: 50),
+
+              // ── Achievement pill (lightweight, gamification cue) ──
+              // Sits right under the search bar with extra horizontal
+              // indent so it doesn't line up flush with the search bar's
+              // own edges — reads as a secondary, tucked-in element.
+              if (_latestBadge != null)
+                _buildAchievementBanner(_latestBadge!),
+
               const SizedBox(height: 20),
 
               // ── 1. For You ──────────────────────
@@ -754,6 +773,73 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
         child: const Text("Open App Settings"),
       )],
     ));
+  }
+
+  // ─────────────────────────────────────────────
+  // Achievement pill — compact, gamification cue
+  //
+  // Kept lightweight on purpose: no full-width card, no multi-line text.
+  // Just emoji + tier label + level chip + short desc, left-aligned so it
+  // doesn't compete with For You / Recommended Places for attention.
+  // Tapping still goes to the full Dashboard, where the real progress
+  // (tiers, percentages, next-tier thresholds) lives.
+  // ─────────────────────────────────────────────
+
+  Widget _buildAchievementBanner(AchievementTier tier) {
+    const tierColors = {
+      'bronze': Color(0xFFCD7F32),
+      'silver': Color(0xFFA8A9AD),
+      'gold':   Color(0xFFFFD700),
+    };
+    final color = tierColors[tier.level] ?? const Color(0xFF6366F1);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: GestureDetector(
+          onTap: () => Navigator.push(context, MaterialPageRoute(
+            builder: (_) => const DashboardPage(),
+          )),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.10),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: color.withOpacity(0.35), width: 1),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(tier.emoji, style: const TextStyle(fontSize: 14)),
+                const SizedBox(width: 6),
+                Text(tier.label,
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.18),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(tier.level.toUpperCase(),
+                      style: TextStyle(
+                          fontSize: 8, fontWeight: FontWeight.bold, color: color)),
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text('• ${tier.desc}',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+                ),
+                const SizedBox(width: 4),
+                Icon(Icons.chevron_right_rounded, size: 14, color: Colors.grey[500]),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildHeader() {

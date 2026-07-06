@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 class GeoapifyService {
   static const String _apiKey  = '-';
   static const String _baseUrl = 'https://api.geoapify.com/v2/places';
+  static const String _detailsUrl = 'https://api.geoapify.com/v2/place-details'; // ← 新增
   static const int _limit    = 100;
   static const int _maxPages = 1;
 
@@ -72,6 +73,14 @@ class GeoapifyService {
         '$_baseUrl'
         '?categories=$categories'
         '&filter=circle:$lng,$lat,$radius' // ← uses dynamic radius
+        // 📏 NEW: sort results by distance to (lat,lng). Without this,
+        // Geoapify doesn't guarantee distance ordering within the filter
+        // circle — which matters now that we sometimes fetch at a large
+        // radius and cache it, filtering locally for smaller radii later.
+        // With bias=proximity, the closest places are guaranteed to be
+        // among the first `_limit` (100) returned, same idea as
+        // rankPreference:DISTANCE on the Google side.
+        '&bias=proximity:$lng,$lat'
         '&limit=$_limit'
         '&offset=$offset'
         '&apiKey=$_apiKey',
@@ -166,4 +175,27 @@ class GeoapifyService {
 
     return parts.join(', ');
   }
+
+  // ── Place Details — fetch full OSM tags for a single place ───────────────
+  static Future<Map<String, dynamic>?> fetchPlaceDetails(String placeId) async {
+    final uri = Uri.parse('$_detailsUrl?id=$placeId&apiKey=$_apiKey');
+
+    try {
+      final response = await http.get(uri);
+      if (response.statusCode != 200) {
+        print('🟣 Geoapify place-details failed for $placeId: ${response.statusCode}');
+        return null;
+      }
+
+      final data = jsonDecode(response.body);
+      final features = data['features'] as List?;
+      if (features == null || features.isEmpty) return null;
+
+      return features[0]['properties'] as Map<String, dynamic>?;
+    } catch (e) {
+      print('🟣 Geoapify place-details exception for $placeId: $e');
+      return null;
+    }
+  }
+
 }
