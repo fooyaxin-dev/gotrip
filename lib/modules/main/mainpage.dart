@@ -13,6 +13,7 @@ import '../../services/nearbyPlace_service.dart';
 import '../../services/userPreference_service.dart';
 import '../../services/achievement_service.dart';
 import '../dashboard/dashboard_page.dart';
+import '../place/categoryImage_Helper.dart';
 
 class MainPage extends StatefulWidget {
   final dynamic username;
@@ -676,31 +677,12 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   }
 
   Widget _buildPlaceholderBg(PlaceModel place) {
-    
-    const typeConfig = {
-      'restaurant':    {'color': Color(0xFFFFE4E6), 'icon': Icons.restaurant_rounded},
-      'park':          {'color': Color(0xFFDCFCE7), 'icon': Icons.park_rounded},
-      'entertainment': {'color': Color(0xFFF3E8FF), 'icon': Icons.local_activity_rounded},
-      'shopping_mall': {'color': Color(0xFFE0E7FF), 'icon': Icons.shopping_bag_rounded},
-      'transit':       {'color': Color(0xFFDBEAFE), 'icon': Icons.directions_transit},
-      'service':       {'color': Color(0xFFCCFBF1), 'icon': Icons.miscellaneous_services},
-    };
-
-    final config = typeConfig[place.primaryType] ?? 
-        {'color': const Color(0xFFE8E8E8), 'icon': Icons.location_on_rounded};
-
-    return Container(
-      color: config['color'] as Color,
-      child: Center(
-        child: Icon(
-          config['icon'] as IconData,
-          size: 48,
-          color: (config['color'] as Color).withOpacity(0.5),  // 淡淡的图标
-        ),
-      ),
+    return Image.asset(
+      CategoryImageHelper.getAssetPath(place.primaryType, place.allTypes),
+      fit: BoxFit.cover,
     );
   }
-
+  
   // ─────────────────────────────────────────────
   // Helper: open place detail
   // ─────────────────────────────────────────────
@@ -1089,9 +1071,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
           child: Stack(
             children: [
               Positioned.fill(
-                child: place.photoUrl != null
-                    ? Image.network(place.photoUrl!, fit: BoxFit.cover)
-                    : Container(color: Colors.indigo.shade50),
+                child: (place.photoUrl != null && place.photoUrl!.isNotEmpty)
+                    ? Image.network(
+                        place.photoUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _buildPlaceholderBg(place),
+                      )
+                    : _buildPlaceholderBg(place),
               ),
               Positioned.fill(child: DecoratedBox(
                 decoration: BoxDecoration(
@@ -1158,7 +1144,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            if (isEven) _buildImage(place.photoUrl ?? "", place.id),
+            if (isEven) _buildImage(place),
             Expanded(
               child: Padding(
                 padding: EdgeInsets.only(
@@ -1187,16 +1173,16 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                 ),
               ),
             ),
-            if (!isEven) _buildImage(place.photoUrl ?? "", place.id),
+            if (!isEven) _buildImage(place),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildImage(String url, String placeId) {
+  Widget _buildImage(PlaceModel place) {
     return Hero(
-      tag: 'place-img-$placeId',
+      tag: 'place-img-${place.id}',
       child: Container(
         width: 140, height: 180,
         decoration: BoxDecoration(
@@ -1208,12 +1194,16 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(20),
-          child: url.isNotEmpty
-              ? Image.network(url, fit: BoxFit.cover)
-              : Container(color: Colors.grey[200],
-                  child: const Icon(Icons.broken_image)),
+          child: (place.photoUrl != null && place.photoUrl!.isNotEmpty)
+              ? Image.network(
+                  place.photoUrl!,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => _buildPlaceholderBg(place),
+                )
+              : _buildPlaceholderBg(place),
         ),
       ),
     );
   }
+
 }

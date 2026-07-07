@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
 import 'routePreviewPage.dart';
+import '../place/categoryImage_Helper.dart';
 
 class PlaceDetailPage extends StatefulWidget {
   final String placeId;        // Google ID for google places, 'geo_xxx' for geoapify
@@ -48,6 +49,52 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   String? _resolvedGooglePlaceId;
 
   bool get _isGeoapify => widget.source == 'geoapify';
+
+  // ── Reviews: filter + sort ─────────────────────────────────
+  // NOTE: Google Places Details API only ever returns up to 5 reviews
+  // per place, regardless of how many the place actually has. Filtering
+  // and sorting here only operate on that small sample — never the full
+  // review count — so the UI is careful to say "sample", not "all
+  // reviews".
+  int? _reviewFilterStars;        // null = All
+  String _reviewSort = 'relevant'; // 'relevant' | 'highest' | 'lowest'
+
+  List<dynamic> get _allReviews =>
+      (placeDetail?['reviews'] as List?) ?? [];
+
+  List<dynamic> get _filteredReviews {
+    var list = List<dynamic>.from(_allReviews);
+
+    if (_reviewFilterStars != null) {
+      list = list.where((r) =>
+          (r['rating'] as num?)?.toInt() == _reviewFilterStars).toList();
+    }
+
+    switch (_reviewSort) {
+      case 'highest':
+        list.sort((a, b) =>
+            ((b['rating'] as num?) ?? 0).compareTo((a['rating'] as num?) ?? 0));
+        break;
+      case 'lowest':
+        list.sort((a, b) =>
+            ((a['rating'] as num?) ?? 0).compareTo((b['rating'] as num?) ?? 0));
+        break;
+      default:
+        break; // keep Google's original "most relevant" order
+    }
+    return list;
+  }
+
+  Map<int, int> get _ratingCounts {
+    final counts = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0};
+    for (final r in _allReviews) {
+      final stars = (r['rating'] as num?)?.toInt();
+      if (stars != null && counts.containsKey(stars)) {
+        counts[stars] = counts[stars]! + 1;
+      }
+    }
+    return counts;
+  }
 
   @override
   void initState() {
@@ -146,6 +193,9 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
         _photoUrls     = urls;
         _firstPhotoUrl = firstUrl;
         loading        = false;
+        // Reset review filter/sort whenever a new place is loaded
+        _reviewFilterStars = null;
+        _reviewSort = 'relevant';
       });
 
       if (urls.length > 1) {
@@ -261,6 +311,9 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
         ?.map((e) => e.toString())
         .toList() ?? [];
 
+    final primaryType = placeDetail?['primaryType'] as String?
+      ?? (types.isNotEmpty ? types.first : null);
+
     // For FavouriteButton: Geoapify places now have a resolved Google Place ID
     // so we pass that instead of the internal geo_ id
     final favPlaceId = _resolvedGooglePlaceId ?? widget.placeId;
@@ -269,7 +322,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildPhotoCarousel(_photoUrls),
+          _buildPhotoCarousel(_photoUrls, primaryType, types),
 
           Padding(
             padding: const EdgeInsets.all(20),
@@ -375,16 +428,43 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
 
                 const Text("Reviews",
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
 
-                if (placeDetail?['reviews'] != null)
-                  ...((placeDetail!['reviews'] as List).map((r) => _buildReviewItem(r)))
-                else
+                if (_allReviews.isEmpty)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 20),
                     child: Text("No reviews yet",
                         style: TextStyle(color: Colors.grey)),
+                  )
+                else ...[
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      'Showing ${_allReviews.length} review${_allReviews.length == 1 ? '' : 's'} '
+                      'returned by Google for this place.',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey[400],
+                          fontStyle: FontStyle.italic),
+                    ),
                   ),
+                  _buildReviewFilterChips(_ratingCounts, _allReviews.length),
+                  const SizedBox(height: 10),
+                  _buildReviewSortButton(),
+                  const SizedBox(height: 16),
+                  if (_filteredReviews.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Center(
+                        child: Text(
+                          'No ${_reviewFilterStars ?? ''}★ reviews in this sample.',
+                          style: TextStyle(color: Colors.grey[500], fontSize: 13),
+                        ),
+                      ),
+                    )
+                  else
+                    ..._filteredReviews.map((r) => _buildReviewItem(r)),
+                ],
               ],
             ),
           ),
@@ -393,19 +473,15 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     );
   }
 
-  Widget _buildPhotoCarousel(List<String> photoUrls) {
+  Widget _buildPhotoCarousel(List<String> photoUrls, String? primaryType, List<String> types) {
+
     if (photoUrls.isEmpty) {
-      return Container(
+      return SizedBox(
         height: 250,
-        color: Colors.grey[100],
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.image_not_supported_rounded, size: 48, color: Colors.grey[400]),
-            const SizedBox(height: 8),
-            Text('No photos available',
-                style: TextStyle(color: Colors.grey[500], fontSize: 13)),
-          ],
+        width: double.infinity,
+        child: Image.asset(
+          CategoryImageHelper.getAssetPath(primaryType, types),
+          fit: BoxFit.cover,
         ),
       );
     }
@@ -565,6 +641,79 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // ── Review filter chips ──────────────────────────────────────
+  // Options are built from the small sample Google returns (max 5),
+  // so counts here reflect that sample, not the place's true rating
+  // distribution.
+  Widget _buildReviewFilterChips(Map<int, int> counts, int total) {
+    final options = <int?>[null, 5, 4, 3, 2, 1];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: options.map((star) {
+          final isSelected = _reviewFilterStars == star;
+          final count = star == null ? total : (counts[star] ?? 0);
+          final label = star == null ? 'All ($total)' : '$star★ ($count)';
+          final disabled = star != null && count == 0;
+
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: Text(label, style: const TextStyle(fontSize: 12)),
+              selected: isSelected,
+              onSelected: disabled
+                  ? null
+                  : (_) => setState(() => _reviewFilterStars = star),
+              selectedColor: Colors.black,
+              labelStyle: TextStyle(
+                color: isSelected
+                    ? Colors.white
+                    : (disabled ? Colors.grey[300] : Colors.black87),
+              ),
+              backgroundColor: Colors.grey[100],
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+                side: BorderSide.none,
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildReviewSortButton() {
+    const labels = {
+      'relevant': 'Most relevant',
+      'highest':  'Highest rated',
+      'lowest':   'Lowest rated',
+    };
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: PopupMenuButton<String>(
+        initialValue: _reviewSort,
+        onSelected: (v) => setState(() => _reviewSort = v),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        itemBuilder: (_) => labels.entries
+            .map((e) => PopupMenuItem(value: e.key, child: Text(e.value)))
+            .toList(),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.sort_rounded, size: 16, color: Colors.grey[600]),
+            const SizedBox(width: 4),
+            Text(labels[_reviewSort]!,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[700],
+                    fontWeight: FontWeight.w600)),
+            Icon(Icons.arrow_drop_down_rounded, color: Colors.grey[600]),
+          ],
+        ),
       ),
     );
   }

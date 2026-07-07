@@ -15,6 +15,7 @@ import '../../services/placesAPI_service.dart';
 import '../profile/profile.dart';
 import '../../services/algolia_service.dart';
 import '../../services/userPreference_service.dart';
+import '../../services/sentiment_service.dart';
 import '../../modules/place/detectPlacePage.dart';
 import 'editPost.dart';
 import 'postDetailPage.dart';
@@ -270,6 +271,34 @@ class _InteractionPageState extends State<InteractionPage> {
           Icon(Icons.arrow_forward_ios, size: 14, color: color),
         ]),
       ),
+    );
+  }
+
+  // ── Sentiment badge ──────────────────────────────────────────────────────
+  // 只在后台情感分析已完成时（post.hasSentimentResult）显示。
+  // 颜色随情感极性变化，直接反映社区对这个地点/体验的整体感受。
+
+  static const Map<SentimentLabel, Color> _sentimentColors = {
+    SentimentLabel.positive: Color(0xFF2E7D32),
+    SentimentLabel.neutral:  Color(0xFF757575),
+    SentimentLabel.negative: Color(0xFFC62828),
+  };
+
+  Widget _buildSentimentBadge(SentimentLabel label) {
+    final color = _sentimentColors[label]!;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text(label.emoji, style: const TextStyle(fontSize: 11)),
+        const SizedBox(width: 4),
+        Text(label.displayLabel,
+            style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color)),
+      ]),
     );
   }
 
@@ -547,35 +576,47 @@ class _InteractionPageState extends State<InteractionPage> {
             _buildUserInfo(post),
             const SizedBox(height: 12),
 
-            // ── Location chip ──
+            // ── Location chip + Sentiment badge（同一行，地点 + 大家的感受）──
             if ((post.city != null && post.city!.isNotEmpty) ||
-                (post.location != null && post.location!.isNotEmpty))
+                (post.location != null && post.location!.isNotEmpty) ||
+                post.hasSentimentResult)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: GestureDetector(
-                  onTap: () => _onLocationTap(post),
-                  child: Row(children: [
-                    const Icon(Icons.location_on, size: 13, color: Color(0xFFD35D3E)),
-                    const SizedBox(width: 3),
-                    Text(
-                      [
-                        if (post.city != null && post.city!.isNotEmpty) post.city!,
-                        if (post.location != null &&
-                            post.location!.isNotEmpty &&
-                            post.location != post.city)
-                          post.location!,
-                      ].join(' · '),
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Color(0xFFD35D3E),
-                        fontWeight: FontWeight.w500,
-                        decoration: TextDecoration.underline,
+                child: Row(children: [
+                  if ((post.city != null && post.city!.isNotEmpty) ||
+                      (post.location != null && post.location!.isNotEmpty))
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () => _onLocationTap(post),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.location_on, size: 13, color: Color(0xFFD35D3E)),
+                          const SizedBox(width: 3),
+                          Flexible(
+                            child: Text(
+                              [
+                                if (post.city != null && post.city!.isNotEmpty) post.city!,
+                                if (post.location != null &&
+                                    post.location!.isNotEmpty &&
+                                    post.location != post.city)
+                                  post.location!,
+                              ].join(' · '),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFFD35D3E),
+                                fontWeight: FontWeight.w500,
+                                decoration: TextDecoration.underline,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.arrow_forward_ios, size: 10, color: Color(0xFFD35D3E)),
+                        ]),
                       ),
                     ),
-                    const SizedBox(width: 4),
-                    const Icon(Icons.arrow_forward_ios, size: 10, color: Color(0xFFD35D3E)),
-                  ]),
-                ),
+                  if (post.hasSentimentResult) _buildSentimentBadge(post.sentimentLabel!),
+                ]),
               ),
 
             // ── Title ──

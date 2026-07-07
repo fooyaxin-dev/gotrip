@@ -377,7 +377,7 @@ class PlacesApiService {
       final response = await http.get(
         url,
         headers: _headers(
-          'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,location',
+          'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,primaryType,location',
         ),
       );
 

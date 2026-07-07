@@ -59,6 +59,56 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // ── History saved flag (avoid saving twice) ───────────────
   bool _historySaved = false;
 
+  // ── Reviews: filter + sort ─────────────────────────────────
+  // NOTE: Google Places Details API only ever returns up to 5 reviews
+  // per place, regardless of how many the place actually has. Filtering
+  // and sorting here only operate on that small sample — never the full
+  // review count — so the UI is careful to say "sample", not "all
+  // reviews".
+  int? _reviewFilterStars;         // null = All
+  String _reviewSort = 'relevant';  // 'relevant' | 'highest' | 'lowest'
+
+  List<dynamic> get _allReviews =>
+      (placeDetails?['reviews'] as List?) ?? [];
+
+  List<dynamic> get _filteredReviews {
+    var list = List<dynamic>.from(_allReviews);
+
+    if (_reviewFilterStars != null) {
+      list = list.where((r) =>
+          (r['rating'] as num?)?.toInt() == _reviewFilterStars).toList();
+    }
+
+    switch (_reviewSort) {
+      case 'highest':
+        list.sort((a, b) =>
+            ((b['rating'] as num?) ?? 0).compareTo((a['rating'] as num?) ?? 0));
+        break;
+      case 'lowest':
+        list.sort((a, b) =>
+            ((a['rating'] as num?) ?? 0).compareTo((b['rating'] as num?) ?? 0));
+        break;
+      default:
+        break; // keep Google's original "most relevant" order
+    }
+    return list;
+  }
+
+  Map<int, int> get _ratingCounts {
+    final counts = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0};
+    for (final r in _allReviews) {
+      final stars = (r['rating'] as num?)?.toInt();
+      if (stars != null && counts.containsKey(stars)) {
+        counts[stars] = counts[stars]! + 1;
+      }
+    }
+    return counts;
+  }
+
+  // Used only when opened from History (no DraggableScrollableSheet,
+  // so there's no scrollController coming from its builder).
+  final ScrollController _fallbackScrollController = ScrollController();
+
   static const _languages = [
     {'code': 'en',    'label': '🇬🇧 English'},
     {'code': 'zh',    'label': '🇨🇳 中文（简体）'},
@@ -179,6 +229,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     _tabController.dispose();
     _pageController.dispose();
     _shimmerController.dispose();
+    _fallbackScrollController.dispose();
     super.dispose();
   }
 
@@ -252,6 +303,9 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         placeDetails = details;
         placeLoading = false;
         if (placePhotos.isNotEmpty) displayImages = placePhotos;
+        // Reset review filter/sort whenever new place details are loaded
+        _reviewFilterStars = null;
+        _reviewSort = 'relevant';
       });
 
       // ── FIX: 不再在这里调用 _maybeSaveHistory() ──────────────
@@ -355,143 +409,196 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     final screenHeight = MediaQuery.of(context).size.height;
     final pos = LocationService.instance.currentPosition;
 
+    // Opened from History → no original photo to show, skip the hero
+    // image section entirely and let the sheet content fill the screen.
+    final bool showHeroImage = !widget.skipHistorySave;
+
     return Scaffold(
-      extendBodyBehindAppBar: true,
+      extendBodyBehindAppBar: showHeroImage,
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
+        backgroundColor: showHeroImage ? Colors.transparent : Colors.white,
+        foregroundColor: showHeroImage ? null : Colors.black,
         elevation: 0,
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 12, top: 8),
-          child: CircleAvatar(
-            backgroundColor: Colors.white.withAlpha(200),
-            child: IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new,
-                  color: Colors.black, size: 18),
-              onPressed: () => Navigator.pop(context),
-            ),
-          ),
-        ),
+        leading: showHeroImage
+            ? Padding(
+                padding: const EdgeInsets.only(left: 12, top: 8),
+                child: CircleAvatar(
+                  backgroundColor: Colors.white.withAlpha(200),
+                  child: IconButton(
+                    icon: const Icon(Icons.arrow_back_ios_new,
+                        color: Colors.black, size: 18),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ),
+              )
+            : IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new, size: 18),
+                onPressed: () => Navigator.pop(context),
+              ),
         // ── Action buttons: Share + Favourite ────────────────
         actions: _isDetected
             ? [
                 // Share button
                 Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: CircleAvatar(
-                    backgroundColor: Colors.white.withAlpha(200),
-                    child: IconButton(
-                      icon: const Icon(Icons.share_rounded,
-                          color: Colors.black, size: 20),
-                      onPressed: _shareLandmark,
-                      tooltip: 'Share',
-                    ),
-                  ),
+                  padding: EdgeInsets.only(top: showHeroImage ? 8 : 0),
+                  child: showHeroImage
+                      ? CircleAvatar(
+                          backgroundColor: Colors.white.withAlpha(200),
+                          child: IconButton(
+                            icon: const Icon(Icons.share_rounded,
+                                color: Colors.black, size: 20),
+                            onPressed: _shareLandmark,
+                            tooltip: 'Share',
+                          ),
+                        )
+                      : IconButton(
+                          icon: const Icon(Icons.share_rounded, size: 22),
+                          onPressed: _shareLandmark,
+                          tooltip: 'Share',
+                        ),
                 ),
                 const SizedBox(width: 8),
                 // Favourite button
                 Padding(
-                  padding: const EdgeInsets.only(top: 8, right: 12),
-                  child: CircleAvatar(
-                    backgroundColor: Colors.white.withAlpha(200),
-                    child: FavouriteButton(
-                      placeId:  _placeId,
-                      name:     _name,
-                      address:  _placeAddress,
-                      rating:   _placeRating,
-                      photoUrl: _placePhoto ?? displayImages.firstOrNull,
-                      lat:      _lat,
-                      lng:      _lng,
-                      types:    const ['tourist_attraction'],
-                      iconSize: 20,
-                      activeColor:   Colors.red,
-                      inactiveColor: Colors.black,
-                    ),
-                  ),
+                  padding: EdgeInsets.only(
+                      top: showHeroImage ? 8 : 0,
+                      right: showHeroImage ? 12 : 4),
+                  child: showHeroImage
+                      ? CircleAvatar(
+                          backgroundColor: Colors.white.withAlpha(200),
+                          child: FavouriteButton(
+                            placeId:  _placeId,
+                            name:     _name,
+                            address:  _placeAddress,
+                            rating:   _placeRating,
+                            photoUrl: _placePhoto ?? displayImages.firstOrNull,
+                            lat:      _lat,
+                            lng:      _lng,
+                            types:    const ['tourist_attraction'],
+                            iconSize: 20,
+                            activeColor:   Colors.red,
+                            inactiveColor: Colors.black,
+                          ),
+                        )
+                      : FavouriteButton(
+                          placeId:  _placeId,
+                          name:     _name,
+                          address:  _placeAddress,
+                          rating:   _placeRating,
+                          photoUrl: _placePhoto ?? displayImages.firstOrNull,
+                          lat:      _lat,
+                          lng:      _lng,
+                          types:    const ['tourist_attraction'],
+                          iconSize: 24,
+                          activeColor:   Colors.red,
+                          inactiveColor: Colors.black,
+                        ),
                 ),
               ]
             : null,
       ),
-      body: Stack(
-        children: [
-          SizedBox(
-            height: screenHeight * 0.45,
-            width: double.infinity,
-            child: _buildHeroImage(),
-          ),
-          Positioned(
-            top: 0, left: 0, right: 0,
-            child: Container(
-              height: 100,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.black.withOpacity(0.3), Colors.transparent],
+      body: showHeroImage
+          ? Stack(
+              children: [
+                SizedBox(
+                  height: screenHeight * 0.45,
+                  width: double.infinity,
+                  child: _buildHeroImage(),
                 ),
+                Positioned(
+                  top: 0, left: 0, right: 0,
+                  child: Container(
+                    height: 100,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.black.withOpacity(0.3), Colors.transparent],
+                      ),
+                    ),
+                  ),
+                ),
+                DraggableScrollableSheet(
+                  initialChildSize: 0.55,
+                  minChildSize: 0.55,
+                  maxChildSize: 0.95,
+                  snap: true,
+                  snapSizes: const [0.55, 0.95],
+                  builder: (context, scrollController) =>
+                      _buildSheetContent(scrollController, pos),
+                ),
+              ],
+            )
+          // No hero image → sheet content fills the whole body directly,
+          // no drag handle needed since there's nothing to reveal below it.
+          : SafeArea(
+              child: _buildSheetContent(
+                _fallbackScrollController,
+                pos,
+                showDragHandle: false,
               ),
             ),
+    );
+  }
+
+  // ── Shared sheet content, used both with and without the hero image ──
+  Widget _buildSheetContent(
+    ScrollController scrollController,
+    dynamic pos, {
+    bool showDragHandle = true,
+  }) {
+    return Container(
+      decoration: showDragHandle
+          ? BoxDecoration(
+              color: Colors.white,
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(30)),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10),
+              ],
+            )
+          : const BoxDecoration(color: Colors.white),
+      child: Column(
+        children: [
+          if (showDragHandle)
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 12),
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(10),
+              ),
+            )
+          else
+            const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: TabBar(
+              controller: _tabController,
+              labelColor: Colors.black,
+              unselectedLabelColor: Colors.grey[400],
+              indicatorColor: Colors.black,
+              indicatorWeight: 3,
+              indicatorSize: TabBarIndicatorSize.label,
+              labelStyle: const TextStyle(
+                  fontWeight: FontWeight.bold, fontSize: 16),
+              tabs: const [
+                Tab(text: 'Overview'),
+                Tab(text: 'Info'),
+                Tab(text: 'Reviews'),
+              ],
+            ),
           ),
-          DraggableScrollableSheet(
-            initialChildSize: 0.55,
-            minChildSize: 0.55,
-            maxChildSize: 0.95,
-            snap: true,
-            snapSizes: const [0.55, 0.95],
-            builder: (context, scrollController) {
-              return Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius:
-                      const BorderRadius.vertical(top: Radius.circular(30)),
-                  boxShadow: [
-                    BoxShadow(
-                        color: Colors.black.withOpacity(0.05),
-                        blurRadius: 10),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    Container(
-                      margin: const EdgeInsets.symmetric(vertical: 12),
-                      width: 40, height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.grey[300],
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: TabBar(
-                        controller: _tabController,
-                        labelColor: Colors.black,
-                        unselectedLabelColor: Colors.grey[400],
-                        indicatorColor: Colors.black,
-                        indicatorWeight: 3,
-                        indicatorSize: TabBarIndicatorSize.label,
-                        labelStyle: const TextStyle(
-                            fontWeight: FontWeight.bold, fontSize: 16),
-                        tabs: const [
-                          Tab(text: 'Overview'),
-                          Tab(text: 'Info'),
-                          Tab(text: 'Reviews'),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Expanded(
-                      child: TabBarView(
-                        controller: _tabController,
-                        children: [
-                          _buildOverviewTab(scrollController, pos),
-                          _buildInfoTabWrapper(scrollController),
-                          _buildReviewsTabWrapper(scrollController),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
+          const SizedBox(height: 10),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _buildOverviewTab(scrollController, pos),
+                _buildInfoTabWrapper(scrollController),
+                _buildReviewsTabWrapper(scrollController),
+              ],
+            ),
           ),
         ],
       ),
@@ -1054,19 +1161,20 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   }
 
   // ============================================================
-  // Reviews Tab (unchanged from your original)
+  // Reviews Tab
   // ============================================================
 
   Widget _buildReviewsTab() {
-    if (placeDetails == null ||
-        (placeDetails!['reviews'] as List?)?.isEmpty == true) {
+    if (placeDetails == null || _allReviews.isEmpty) {
       return _buildEmptyReviews();
     }
 
     final d               = placeDetails!;
     final rating          = (d['rating'] as num?)?.toDouble() ?? 0.0;
     final userRatingCount = d['userRatingCount'] as int? ?? 0;
-    final reviewsRaw      = d['reviews'] as List;
+    final counts          = _ratingCounts;
+    final sampleTotal     = _allReviews.length;
+    final filtered        = _filteredReviews;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1100,40 +1208,152 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             const SizedBox(width: 32),
             Expanded(
                 child: Column(
-              children: [5, 4, 3, 2, 1]
-                  .map((star) => Padding(
-                        padding:
-                            const EdgeInsets.symmetric(vertical: 2),
-                        child: Row(children: [
-                          Text('$star',
-                              style: const TextStyle(fontSize: 10)),
-                          const SizedBox(width: 8),
-                          Expanded(
-                              child: ClipRRect(
-                            borderRadius: BorderRadius.circular(4),
-                            child: LinearProgressIndicator(
-                              value: star == 5
-                                  ? 0.8
-                                  : (star == 4 ? 0.4 : 0.1),
-                              backgroundColor: Colors.grey[100],
-                              color: Colors.amber[600],
-                              minHeight: 6,
-                            ),
-                          )),
-                        ]),
-                      ))
-                  .toList(),
+              children: [5, 4, 3, 2, 1].map((star) {
+                final count = counts[star] ?? 0;
+                final ratio = sampleTotal > 0 ? count / sampleTotal : 0.0;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(children: [
+                    Text('$star', style: const TextStyle(fontSize: 10)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                        child: ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: ratio,
+                        backgroundColor: Colors.grey[100],
+                        color: Colors.amber[600],
+                        minHeight: 6,
+                      ),
+                    )),
+                    const SizedBox(width: 6),
+                    SizedBox(
+                      width: 16,
+                      child: Text('$count',
+                          style: TextStyle(
+                              fontSize: 10, color: Colors.grey[500])),
+                    ),
+                  ]),
+                );
+              }).toList(),
             )),
           ]),
         ),
-        const SizedBox(height: 32),
+        if (sampleTotal > 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              'Based on the $sampleTotal review${sampleTotal == 1 ? '' : 's'} '
+              'Google returns for this place — not the full $userRatingCount.',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey[400],
+                  fontStyle: FontStyle.italic),
+            ),
+          ),
+        const SizedBox(height: 24),
+
         _sectionHeader(
             Icons.chat_bubble_outline_rounded, 'Community Voice'),
-        const SizedBox(height: 16),
-        ...reviewsRaw
-            .map((r) => _buildReviewCard(r as Map<String, dynamic>)),
+        const SizedBox(height: 12),
+
+        if (sampleTotal > 0) ...[
+          _buildReviewFilterChips(counts, sampleTotal),
+          const SizedBox(height: 12),
+          _buildReviewSortButton(),
+          const SizedBox(height: 16),
+        ],
+
+        if (filtered.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Center(
+              child: Text(
+                _reviewFilterStars == null
+                    ? 'No reviews to show.'
+                    : 'No $_reviewFilterStars★ reviews in this sample.',
+                style: TextStyle(color: Colors.grey[500], fontSize: 13),
+              ),
+            ),
+          )
+        else
+          ...filtered.map((r) => _buildReviewCard(r as Map<String, dynamic>)),
+
         const SizedBox(height: 20),
       ],
+    );
+  }
+
+  // ── Review filter chips ──────────────────────────────────────
+  // Options are built from the small sample Google returns (max 5),
+  // so counts here reflect that sample, not the place's true rating
+  // distribution.
+  Widget _buildReviewFilterChips(Map<int, int> counts, int total) {
+    final options = <int?>[null, 5, 4, 3, 2, 1];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: options.map((star) {
+          final isSelected = _reviewFilterStars == star;
+          final count = star == null ? total : (counts[star] ?? 0);
+          final label = star == null ? 'All ($total)' : '$star★ ($count)';
+          final disabled = star != null && count == 0;
+
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: Text(label, style: const TextStyle(fontSize: 12)),
+              selected: isSelected,
+              onSelected: disabled
+                  ? null
+                  : (_) => setState(() => _reviewFilterStars = star),
+              selectedColor: Colors.black,
+              labelStyle: TextStyle(
+                color: isSelected
+                    ? Colors.white
+                    : (disabled ? Colors.grey[300] : Colors.black87),
+              ),
+              backgroundColor: Colors.grey[100],
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+                side: BorderSide.none,
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildReviewSortButton() {
+    const labels = {
+      'relevant': 'Most relevant',
+      'highest':  'Highest rated',
+      'lowest':   'Lowest rated',
+    };
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: PopupMenuButton<String>(
+        initialValue: _reviewSort,
+        onSelected: (v) => setState(() => _reviewSort = v),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        itemBuilder: (_) => labels.entries
+            .map((e) => PopupMenuItem(value: e.key, child: Text(e.value)))
+            .toList(),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.sort_rounded, size: 16, color: Colors.grey[600]),
+            const SizedBox(width: 4),
+            Text(labels[_reviewSort]!,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[700],
+                    fontWeight: FontWeight.w600)),
+            Icon(Icons.arrow_drop_down_rounded, color: Colors.grey[600]),
+          ],
+        ),
+      ),
     );
   }
 

@@ -1,5 +1,14 @@
 // ===== postDetailPage.dart =====
 // 放在 lib/modules/interaction/ 目录下
+//
+// 改动说明（这一版针对"看起来一块一块很丑"的问题）：
+// 1. 整篇帖子现在是一张连续的白色卡片（顶部圆角，贴着灰色背景浮起来），
+//    不再是好几个各自独立、中间露出灰缝的 Container 拼接。
+// 2. 媒体（单图/单视频/多图）统一用圆角，风格一致，靠卡片自身的
+//    clipBehavior 裁剪，不用每个媒体单独处理圆角。
+// 3. 用户信息 / 媒体 / 正文 / Like·Comment 全部在同一个卡片里，
+//    section 之间用细 Divider 分隔，而不是整块整块地断开。
+// 4. 依然保留 StreamBuilder 实时监听 doc —— 编辑保存后自动刷新。
 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -11,8 +20,10 @@ import '../../models/postModel.dart';
 import '../../services/like_service.dart';
 import '../../services/post_service.dart';
 import '../../services/userPreference_service.dart';
+import '../../services/sentiment_service.dart';
 import '../profile/profile.dart';
 import 'editPost.dart';
+
 
 class PostDetailPage extends StatefulWidget {
   final Post post;
@@ -28,15 +39,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  late Post _post;
-
-  @override
-  void initState() {
-    super.initState();
-    _post = widget.post;
-  }
-
-  bool get _isOwner => _post.userId == _auth.currentUser?.uid;
+  static const double _mediaHeight = 300;
+  static const Color _cardBg = Colors.white;
+  static const Color _pageBg = Color(0xFFF3F4F6);
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -72,7 +77,33 @@ class _PostDetailPageState extends State<PostDetailPage> {
             style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)));
   }
 
-  void _handleDelete() {
+  // ── Sentiment badge ──────────────────────────────────────────────────────
+  // 跟 interactionPage.dart 用同一套配色，视觉保持一致。
+  static const Map<SentimentLabel, Color> _sentimentColors = {
+    SentimentLabel.positive: Color(0xFF2E7D32),
+    SentimentLabel.neutral:  Color(0xFF757575),
+    SentimentLabel.negative: Color(0xFFC62828),
+  };
+
+  Widget _buildSentimentBadge(SentimentLabel label) {
+    final color = _sentimentColors[label]!;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text(label.emoji, style: const TextStyle(fontSize: 11)),
+        const SizedBox(width: 4),
+        Text(label.displayLabel,
+            style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color)),
+      ]),
+    );
+  }
+
+  void _handleDelete(String postId) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -84,8 +115,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
             onPressed: () async {
               Navigator.pop(context);
               try {
-                await _postService.deletePost(_post.id!);
-                if (mounted) Navigator.pop(context); // 返回上一页
+                await _postService.deletePost(postId);
+                if (mounted) Navigator.pop(context);
               } catch (e) {
                 if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
               }
@@ -101,11 +132,31 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: _firestore.collection('posts').doc(widget.post.id).snapshots(),
+      builder: (context, snapshot) {
+        Post post = widget.post;
+        if (snapshot.hasData && snapshot.data!.exists) {
+          post = Post.fromFirestore(snapshot.data!);
+        } else if (snapshot.hasData && !snapshot.data!.exists) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) Navigator.pop(context);
+          });
+        }
+        return _buildScaffold(context, post);
+      },
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context, Post post) {
+    final isOwner = post.userId == _auth.currentUser?.uid;
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FA),
+      backgroundColor: _pageBg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: _pageBg,
         elevation: 0,
+        surfaceTintColor: Colors.transparent,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: Colors.black87),
           onPressed: () => Navigator.pop(context),
@@ -113,14 +164,14 @@ class _PostDetailPageState extends State<PostDetailPage> {
         title: const Text('Post', style: TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [
-          if (_isOwner)
+          if (isOwner)
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_horiz, color: Colors.black87),
               onSelected: (value) {
                 if (value == 'edit') {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => EditPostPage(post: _post)));
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => EditPostPage(post: post)));
                 }
-                if (value == 'delete') _handleDelete();
+                if (value == 'delete') _handleDelete(post.id!);
               },
               itemBuilder: (_) => [
                 const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 20), SizedBox(width: 12), Text('Edit')])),
@@ -131,190 +182,219 @@ class _PostDetailPageState extends State<PostDetailPage> {
         ],
       ),
       body: SingleChildScrollView(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-          // ── User info ──
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-            child: StreamBuilder<DocumentSnapshot>(
-              stream: _firestore.collection('users').doc(_post.userId).snapshots(),
-              builder: (context, snapshot) {
-                String userName   = _post.userName;
-                String? userPhoto = _post.userPhoto;
-                if (snapshot.hasData && snapshot.data!.exists) {
-                  final data = snapshot.data!.data() as Map<String, dynamic>;
-                  userName  = data['username']        ?? userName;
-                  userPhoto = data['profileImageUrl'] ?? userPhoto;
-                }
-                return Row(children: [
-                  Container(
-                    padding: const EdgeInsets.all(2),
-                    decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.orange.withOpacity(0.5), width: 1.5)),
-                    child: _buildUserAvatar(userName, userPhoto, _post.userId, _post.isAnonymous),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(_post.isAnonymous ? 'Anonymous User' : userName,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                    const SizedBox(height: 2),
-                    Text("${_formatTime(_post.createdAt)} · GoTrip",
-                        style: TextStyle(color: Colors.grey[500], fontSize: 11)),
-                  ])),
-                ]);
-              },
-            ),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+        child: Container(
+          decoration: BoxDecoration(
+            color: _cardBg,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 16, offset: const Offset(0, 4)),
+            ],
           ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-          // ── Media ──
-          if (_post.images.isNotEmpty || _post.videoPaths.isNotEmpty)
-            _buildMediaSection(),
-
-          // ── Content ──
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-              // Location
-              if ((_post.city != null && _post.city!.isNotEmpty) ||
-                  (_post.location != null && _post.location!.isNotEmpty))
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Row(children: [
-                    const Icon(Icons.location_on, size: 14, color: Color(0xFFD35D3E)),
-                    const SizedBox(width: 4),
-                    Text(
-                      [
-                        if (_post.city != null && _post.city!.isNotEmpty) _post.city!,
-                        if (_post.location != null && _post.location!.isNotEmpty && _post.location != _post.city) _post.location!,
-                      ].join(' · '),
-                      style: const TextStyle(fontSize: 13, color: Color(0xFFD35D3E), fontWeight: FontWeight.w500),
-                    ),
-                  ]),
-                ),
-
-              // Title
-              Text(_post.title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87, height: 1.3)),
-              const SizedBox(height: 12),
-
-              // Content — 完整显示，不截断
-              Text(_post.content, style: TextStyle(fontSize: 15, color: Colors.grey[800], height: 1.6)),
-              const SizedBox(height: 16),
-
-              // Rating
-              if (_post.rating > 0)
-                Row(children: [
-                  ...List.generate(5, (index) => Icon(
-                    index < _post.rating ? Icons.star_rounded : Icons.star_outline_rounded,
-                    size: 20,
-                    color: index < _post.rating ? Colors.orange : Colors.grey[300],
-                  )),
-                  const SizedBox(width: 8),
-                  Text('${_post.rating}/5', style: TextStyle(fontSize: 13, color: Colors.grey[600])),
-                ]),
-
-              if (_post.rating > 0) const SizedBox(height: 16),
-
-              // Tags
-              if (_post.tags.isNotEmpty) ...[
-                Wrap(
-                  spacing: 8, runSpacing: 8,
-                  children: _post.tags.map((tag) => Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                        color: const Color(0xFFD35D3E).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(16)),
-                    child: Text('#$tag', style: const TextStyle(color: Color(0xFFD35D3E), fontSize: 13, fontWeight: FontWeight.w500)),
-                  )).toList(),
-                ),
-                const SizedBox(height: 16),
-              ],
-            ]),
-          ),
-
-          const SizedBox(height: 8),
-
-          // ── Like & Comment ──
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            child: Row(children: [
-              // Like button
-              StreamBuilder<bool>(
-                stream: _likeService.likeStatusStream(_post.id!),
-                initialData: false,
+            // ── User info ──
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+              child: StreamBuilder<DocumentSnapshot>(
+                stream: _firestore.collection('users').doc(post.userId).snapshots(),
                 builder: (context, snapshot) {
-                  final isLiked = snapshot.data ?? false;
-                  return StreamBuilder<int>(
-                    stream: _likeService.likeCountStream(_post.id!),
-                    initialData: _post.likes,
-                    builder: (context, countSnapshot) {
-                      final likeCount = countSnapshot.data ?? _post.likes;
-                      return GestureDetector(
-                        onTap: () async {
-                          final liked = await _likeService.toggleLike(_post.id!);
-                          UserPreferenceService.instance.updateFromLike(
-                            postTags: _post.tags,
-                            postTopic: _post.topic,
-                            isLiking: liked,
-                          );
-                        },
-                        child: Row(children: [
-                          AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 200),
-                            child: Icon(
-                              isLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
-                              key: ValueKey(isLiked),
-                              size: 24,
-                              color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700],
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            likeCount > 0 ? '$likeCount' : 'Like',
-                            style: TextStyle(
-                              fontSize: 15,
-                              color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700],
-                              fontWeight: isLiked ? FontWeight.bold : FontWeight.normal,
-                            ),
-                          ),
-                        ]),
-                      );
-                    },
-                  );
+                  String userName   = post.userName;
+                  String? userPhoto = post.userPhoto;
+                  if (snapshot.hasData && snapshot.data!.exists) {
+                    final data = snapshot.data!.data() as Map<String, dynamic>;
+                    userName  = data['username']        ?? userName;
+                    userPhoto = data['profileImageUrl'] ?? userPhoto;
+                  }
+                  return Row(children: [
+                    Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.orange.withOpacity(0.5), width: 1.5)),
+                      child: _buildUserAvatar(userName, userPhoto, post.userId, post.isAnonymous),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(post.isAnonymous ? 'Anonymous User' : userName,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                      const SizedBox(height: 2),
+                      Text("${_formatTime(post.createdAt)} · GoTrip",
+                          style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+                    ])),
+                  ]);
                 },
               ),
+            ),
 
-              const SizedBox(width: 24),
+            // ── Media（贴着卡片边缘，靠外层圆角裁剪，不用自己单独处理）──
+            if (post.images.isNotEmpty || post.videoPaths.isNotEmpty)
+              _buildMediaSection(post),
 
-              // Comment button
-              GestureDetector(
-                onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Comment feature under development...'))),
-                child: Row(children: [
-                  Icon(Icons.chat_bubble_outline, size: 24, color: Colors.grey[700]),
-                  const SizedBox(width: 8),
-                  Text(
-                    _post.comments > 0 ? '${_post.comments}' : 'Comment',
-                    style: TextStyle(fontSize: 15, color: Colors.grey[700]),
+            // ── Content ──
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+                // Location + Sentiment badge（地点 + 大家对这里的感受）
+                if ((post.city != null && post.city!.isNotEmpty) ||
+                    (post.location != null && post.location!.isNotEmpty) ||
+                    post.hasSentimentResult)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Row(children: [
+                      if ((post.city != null && post.city!.isNotEmpty) ||
+                          (post.location != null && post.location!.isNotEmpty)) ...[
+                        const Icon(Icons.location_on, size: 14, color: Color(0xFFD35D3E)),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            [
+                              if (post.city != null && post.city!.isNotEmpty) post.city!,
+                              if (post.location != null && post.location!.isNotEmpty && post.location != post.city) post.location!,
+                            ].join(' · '),
+                            style: const TextStyle(fontSize: 13, color: Color(0xFFD35D3E), fontWeight: FontWeight.w500),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                      if (post.hasSentimentResult) ...[
+                        const SizedBox(width: 8),
+                        _buildSentimentBadge(post.sentimentLabel!),
+                      ],
+                    ]),
                   ),
-                ]),
-              ),
-            ]),
-          ),
 
-          const SizedBox(height: 32),
-        ]),
+                // Title
+                Text(post.title, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.bold, color: Colors.black87, height: 1.3)),
+                const SizedBox(height: 10),
+
+                // Content
+                Text(post.content, style: TextStyle(fontSize: 15, color: Colors.grey[800], height: 1.6)),
+                const SizedBox(height: 14),
+
+                // Rating
+                if (post.rating > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Row(children: [
+                      ...List.generate(5, (index) => Icon(
+                        index < post.rating ? Icons.star_rounded : Icons.star_outline_rounded,
+                        size: 20,
+                        color: index < post.rating ? Colors.orange : Colors.grey[300],
+                      )),
+                      const SizedBox(width: 8),
+                      Text('${post.rating}/5', style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+                    ]),
+                  ),
+
+                // Tags
+                if (post.tags.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Wrap(
+                      spacing: 8, runSpacing: 8,
+                      children: post.tags.map((tag) => Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                            color: const Color(0xFFD35D3E).withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(16)),
+                        child: Text('#$tag', style: const TextStyle(color: Color(0xFFD35D3E), fontSize: 13, fontWeight: FontWeight.w500)),
+                      )).toList(),
+                    ),
+                  ),
+              ]),
+            ),
+
+            // ── 细分隔线，代替以前整块断开的白 Container ──
+            Divider(height: 1, thickness: 1, color: Colors.grey[100]),
+
+            // ── Like & Comment ──
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Row(children: [
+                Expanded(
+                  child: StreamBuilder<bool>(
+                    stream: _likeService.likeStatusStream(post.id!),
+                    initialData: false,
+                    builder: (context, snapshot) {
+                      final isLiked = snapshot.data ?? false;
+                      return StreamBuilder<int>(
+                        stream: _likeService.likeCountStream(post.id!),
+                        initialData: post.likes,
+                        builder: (context, countSnapshot) {
+                          final likeCount = countSnapshot.data ?? post.likes;
+                          return InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () async {
+                              final liked = await _likeService.toggleLike(post.id!);
+                              UserPreferenceService.instance.updateFromLike(
+                                postTags: post.tags,
+                                postTopic: post.topic,
+                                isLiking: liked,
+                              );
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                                AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 200),
+                                  child: Icon(
+                                    isLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
+                                    key: ValueKey(isLiked),
+                                    size: 20,
+                                    color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  likeCount > 0 ? '$likeCount' : 'Like',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700],
+                                    fontWeight: isLiked ? FontWeight.bold : FontWeight.normal,
+                                  ),
+                                ),
+                              ]),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                Container(width: 1, height: 20, color: Colors.grey[200]),
+                Expanded(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Comment feature under development...'))),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        Icon(Icons.chat_bubble_outline, size: 20, color: Colors.grey[700]),
+                        const SizedBox(width: 8),
+                        Text(
+                          post.comments > 0 ? '${post.comments}' : 'Comment',
+                          style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+                        ),
+                      ]),
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+          ]),
+        ),
       ),
     );
   }
 
   // ── Media Section ──────────────────────────────────────────────────────────
 
-  Widget _buildMediaSection() {
-    final images = _post.images;
-    final videos = _post.videoPaths;
+  Widget _buildMediaSection(Post post) {
+    final images = post.images;
+    final videos = post.videoPaths;
 
     final List<(String path, bool isVideo)> allMedia = [
       ...images.map((p) => (p, false)),
@@ -325,24 +405,30 @@ class _PostDetailPageState extends State<PostDetailPage> {
       return _buildSingleMedia(allMedia[0].$1, allMedia[0].$2);
     }
 
-    // Multiple media — horizontal scrollable
     return SizedBox(
-      height: 280,
+      height: _mediaHeight,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         itemCount: allMedia.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
           final (path, isVideo) = allMedia[index];
           return ClipRRect(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(14),
             child: SizedBox(
-              width: 260,
+              width: 240,
+              height: _mediaHeight,
               child: isVideo
                   ? LocalVideoPlayer(path: path)
-                  : Image.file(File(path), fit: BoxFit.cover,
-                      errorBuilder: (c, e, s) => Container(color: Colors.grey[300], child: const Icon(Icons.broken_image, color: Colors.grey, size: 40))),
+                  : Image.file(
+                      File(path),
+                      fit: BoxFit.cover,
+                      errorBuilder: (c, e, s) => Container(
+                        color: Colors.grey[300],
+                        child: const Icon(Icons.broken_image, color: Colors.grey, size: 40),
+                      ),
+                    ),
             ),
           );
         },
@@ -351,16 +437,21 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Widget _buildSingleMedia(String path, bool isVideo) {
-    return isVideo
-        ? SizedBox(height: 300, child: LocalVideoPlayer(path: path))
-        : Image.file(
-            File(path),
-            width: double.infinity,
-            fit: BoxFit.cover,
-            errorBuilder: (c, e, s) => Container(
-              height: 200, color: Colors.grey[300],
-              child: const Icon(Icons.broken_image, color: Colors.grey, size: 40),
+    return SizedBox(
+      width: double.infinity,
+      height: _mediaHeight,
+      child: isVideo
+          ? LocalVideoPlayer(path: path)
+          : Image.file(
+              File(path),
+              width: double.infinity,
+              height: _mediaHeight,
+              fit: BoxFit.cover,
+              errorBuilder: (c, e, s) => Container(
+                color: Colors.grey[300],
+                child: const Icon(Icons.broken_image, color: Colors.grey, size: 40),
+              ),
             ),
-          );
+    );
   }
 }

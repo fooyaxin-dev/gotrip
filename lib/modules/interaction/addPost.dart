@@ -254,6 +254,13 @@ class _PostingPageState extends State<PostingPage> {
       };
 
       final docRef = await _firestore.collection('posts').add(postData);
+
+      // ★ 同步到 Algolia —— 之前漏掉的一步，只有 public 帖子才建索引
+      // （跟 editPost.dart 的逻辑保持一致）
+      if (selectedVisibility == 'public') {
+        await AlgoliaService.syncPost(docRef.id, postData);
+      }
+
       return docRef.id;
     } catch (e) {
       throw Exception('Save post failed: $e');

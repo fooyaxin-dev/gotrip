@@ -1,33 +1,39 @@
 // services/sentiment_service.dart
 //
 // ═══════════════════════════════════════════════════════════════════════════
-// Lexicon-Based Sentiment Analysis Engine
+// Sentiment Analysis Engine — Lexicon + Gemini-backed implementations
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Pure local algorithm — no external AI API calls. Designed to be a clean,
-// explainable, and replaceable backend algorithm for the GoTrip Interaction
-// Module.
+// This file ships THREE implementations of the same `SentimentAnalyzer`
+// interface:
 //
-// PIPELINE:
-//   1. Preprocessing      — lowercase, strip punctuation, tokenize
-//   2. Lexicon Matching   — match each token against polarity dictionaries
-//   3. Negation Handling  — flips polarity within a negation window
-//      (e.g. "not good" → negative, not positive)
-//   4. Intensity Modifier — booster/diminisher words scale the score
-//      (e.g. "very good" > "good" > "slightly good")
-//   5. Aggregation        — sum token contributions
-//   6. Normalization      — squash raw score into [0.0, 1.0] via a
-//      saturating function so long posts don't blow past the scale
-//   7. Classification     — map normalized score to positive/neutral/negative
-//      using configurable thresholds
+//   1. LexiconSentimentAnalyzer   — original rule/dictionary-based engine.
+//                                   Fast, offline, fully explainable, but
+//                                   blind to anything outside its word lists.
 //
-// The interface is async (`Future<SentimentResult>`) even though the current
-// implementation is synchronous string processing. This keeps the call site
-// (addPost.dart) stable if the underlying engine is ever swapped for a
-// heavier model later — no caller code would need to change.
+//   2. GeminiSentimentAnalyzer    — delegates to the Gemini API
+//                                   (generateContent). Understands context,
+//                                   sarcasm, slang, mixed languages, etc.
+//                                   Requires network + API key, has
+//                                   latency/cost per call (free tier
+//                                   available with rate limits).
+//
+//   3. HybridSentimentAnalyzer    — tries Gemini first; if the call fails
+//                                   (no network, API error, timeout, bad
+//                                   JSON, rate limit, etc.) it transparently
+//                                   falls back to the lexicon engine so the
+//                                   app never breaks and always returns
+//                                   *something*.
+//
+// Because every caller only ever depends on the abstract `SentimentAnalyzer`
+// interface (see addPost.dart), swapping which concrete class gets
+// constructed is a one-line change — no call-site changes needed.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import 'dart:convert';
 import 'dart:math' as math;
+
+import 'package:http/http.dart' as http;
 
 enum SentimentLabel { positive, neutral, negative }
 
@@ -59,7 +65,7 @@ extension SentimentLabelX on SentimentLabel {
   }
 }
 
-/// Result object returned by the sentiment engine.
+/// Result object returned by any sentiment engine.
 class SentimentResult {
   /// Normalized score in [0.0, 1.0]. 0.0 = most negative, 1.0 = most positive,
   /// ~0.5 = neutral. This continuous value is what the recommendation
@@ -69,19 +75,27 @@ class SentimentResult {
   /// Discretized 3-class label derived from [score] using threshold rules.
   final SentimentLabel label;
 
-  /// Raw (pre-normalization) aggregate lexicon score — useful for debugging
-  /// and for the FYP report to show the algorithm's intermediate output.
+  /// Raw (pre-normalization) aggregate lexicon score. Only meaningful for
+  /// the lexicon engine — Gemini-backed results leave this at 0.0.
   final double rawScore;
 
-  /// How many sentiment-bearing tokens were matched. Used as a lightweight
-  /// confidence proxy — a post with 0 matched tokens is unreliable.
+  /// For the lexicon engine: number of sentiment-bearing tokens matched.
+  /// For the Gemini engine: repurposed as a 0–10 confidence proxy
+  /// (confidence * 10, rounded) since there's no "token count" concept.
   final int matchedTokenCount;
+
+  /// Which concrete engine actually produced this result ('gemini' or
+  /// 'lexicon'). Useful for debugging/logging when using
+  /// HybridSentimentAnalyzer, since you can't otherwise tell whether a
+  /// fallback happened.
+  final String source;
 
   const SentimentResult({
     required this.score,
     required this.label,
     required this.rawScore,
     required this.matchedTokenCount,
+    this.source = 'lexicon',
   });
 
   /// True when the engine found too few sentiment cues to trust the result.
@@ -94,12 +108,13 @@ class SentimentResult {
     'sentimentLabel': label.toJson(),
     'sentimentRawScore': rawScore,
     'sentimentMatchedTokens': matchedTokenCount,
+    'sentimentSource': source,
   };
 
   @override
   String toString() =>
       'SentimentResult(label=${label.toJson()}, score=${score.toStringAsFixed(3)}, '
-      'raw=${rawScore.toStringAsFixed(2)}, matched=$matchedTokenCount)';
+      'raw=${rawScore.toStringAsFixed(2)}, matched=$matchedTokenCount, source=$source)';
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -112,31 +127,22 @@ abstract class SentimentAnalyzer {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Concrete implementation: Lexicon-Based Sentiment Analyzer
+// Implementation 1: Lexicon-Based Sentiment Analyzer (original engine)
 // ═════════════════════════════════════════════════════════════════════════
 
 class LexiconSentimentAnalyzer implements SentimentAnalyzer {
   static final LexiconSentimentAnalyzer instance = LexiconSentimentAnalyzer._();
   LexiconSentimentAnalyzer._();
 
-  // ── Classification thresholds ─────────────────────────────────────────
-  // Applied to the normalized [0,1] score.
   static const double _positiveThreshold = 0.60;
   static const double _negativeThreshold = 0.40;
-
-  // ── Negation window ────────────────────────────────────────────────────
-  // A negation word flips the polarity of up to this many following tokens.
-  // e.g. "not very good food" → "not" flips "very"(intensity) + "good"(polarity)
   static const int _negationWindow = 3;
-
-  // ═══════════════════════════════════════════════════════════════════
-  // LEXICON: General-purpose polarity words
-  // ═══════════════════════════════════════════════════════════════════
 
   static const Map<String, double> _generalPositive = {
     'good': 1.0, 'great': 1.5, 'excellent': 2.0, 'amazing': 2.0,
     'awesome': 2.0, 'wonderful': 1.8, 'fantastic': 2.0, 'love': 1.8,
-    'loved': 1.8, 'best': 1.8, 'happy': 1.3, 'beautiful': 1.5,
+    'loved': 1.8, 'like': 1.0, 'likes': 1.0, 'liked': 1.0,
+    'best': 1.8, 'happy': 1.3, 'beautiful': 1.5,
     'nice': 1.0, 'perfect': 2.0, 'enjoy': 1.3, 'enjoyed': 1.3,
     'enjoyable': 1.3, 'recommend': 1.5, 'recommended': 1.5,
     'impressive': 1.5, 'satisfied': 1.2, 'satisfying': 1.2,
@@ -146,11 +152,13 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
     'superb': 1.8, 'outstanding': 1.8, 'delightful': 1.5,
     'smooth': 0.9, 'helpful': 1.1, 'friendly': 1.2, 'welcoming': 1.2,
     'fresh': 0.9, 'cozy': 1.0, 'relaxing': 1.2, 'peaceful': 1.1,
+    'okay': 0.5, 'ok': 0.5, 'fine': 0.6, 'decent': 0.7, 'solid': 0.9,
   };
 
   static const Map<String, double> _generalNegative = {
     'bad': 1.0, 'terrible': 2.0, 'awful': 2.0, 'horrible': 2.0,
-    'worst': 2.0, 'hate': 1.8, 'hated': 1.8, 'disappointing': 1.5,
+    'worst': 2.0, 'hate': 1.8, 'hated': 1.8, 'dislike': 1.2, 'disliked': 1.2,
+    'disappointing': 1.5,
     'disappointed': 1.5, 'poor': 1.2, 'sad': 1.0, 'annoying': 1.2,
     'frustrating': 1.4, 'frustrated': 1.4, 'boring': 1.1, 'bored': 1.1,
     'unpleasant': 1.3, 'uncomfortable': 1.1, 'waste': 1.4,
@@ -160,11 +168,6 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
     'overpriced': 1.0, 'expensive': 0.5, 'rip-off': 1.6, 'scam': 1.8,
     'mediocre': 0.9, 'mess': 1.0, 'broken': 1.1, 'lacking': 0.8,
   };
-
-  // ═══════════════════════════════════════════════════════════════════
-  // LEXICON: Travel/F&B domain-specific words
-  // (Tailored to GoTrip's domain: restaurants, attractions, hotels, etc.)
-  // ═══════════════════════════════════════════════════════════════════
 
   static const Map<String, double> _travelPositive = {
     'delicious': 1.8, 'tasty': 1.5, 'yummy': 1.5, 'flavorful': 1.4,
@@ -190,10 +193,6 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
     'avoid': 1.5, 'skip': 1.0, 'underwhelming': 1.2,
   };
 
-  // ═══════════════════════════════════════════════════════════════════
-  // LEXICON: Negation & intensity modifiers
-  // ═══════════════════════════════════════════════════════════════════
-
   static const Set<String> _negationWords = {
     'not', 'no', "n't", 'never', 'none', 'nobody', 'nothing',
     'neither', 'nor', 'without', "isn't", "wasn't", "aren't",
@@ -201,7 +200,6 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
     "can't", "couldn't", "shouldn't",
   };
 
-  // Multiplicative intensity modifiers applied to the NEXT polarity word.
   static const Map<String, double> _intensifiers = {
     'very': 1.5, 'extremely': 1.8, 'super': 1.6, 'really': 1.4,
     'so': 1.3, 'incredibly': 1.7, 'absolutely': 1.7, 'totally': 1.5,
@@ -213,12 +211,6 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
     'fairly': 0.7, 'rather': 0.7,
   };
 
-  // ═══════════════════════════════════════════════════════════════════
-  // LEXICON: Multi-word phrases (checked as bigrams before single-token
-  // scoring, since "hidden gem" / "tourist trap" etc. only carry meaning
-  // as a pair — splitting them into single tokens loses the signal).
-  // ═══════════════════════════════════════════════════════════════════
-
   static const Map<String, double> _phrasePositive = {
     'hidden gem': 1.8,
   };
@@ -227,17 +219,12 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
     'tourist trap': 1.8,
     'long queue': 0.9,
     'long wait': 0.9,
-    'rip off': 1.6, // hyphen stripped during tokenization → "rip off"
+    'rip off': 1.6,
   };
 
-  // Multi-word intensity modifiers (also bigrams).
   static const Map<String, double> _phraseDiminishers = {
     'a bit': 0.6, 'a little': 0.6, 'kind of': 0.6,
   };
-
-  // ═══════════════════════════════════════════════════════════════════
-  // PUBLIC ENTRY POINT
-  // ═══════════════════════════════════════════════════════════════════
 
   @override
   Future<SentimentResult> analyze(String text) async {
@@ -247,6 +234,7 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
         label: SentimentLabel.neutral,
         rawScore: 0.0,
         matchedTokenCount: 0,
+        source: 'lexicon',
       );
     }
 
@@ -261,35 +249,18 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
       label: label,
       rawScore: scoring.rawScore,
       matchedTokenCount: scoring.matchedCount,
+      source: 'lexicon',
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════════
-  // STEP 1: Preprocessing — lowercase, strip punctuation, tokenize
-  // ═══════════════════════════════════════════════════════════════════
-
   List<String> _tokenize(String text) {
     final lower = text.toLowerCase();
-
-    // Preserve apostrophes inside contractions (don't, can't) but strip
-    // other punctuation so "good!!" matches "good".
     final cleaned = lower.replaceAll(RegExp(r"[^\w\s']"), ' ');
-
     return cleaned
         .split(RegExp(r'\s+'))
         .where((t) => t.trim().isNotEmpty)
         .toList();
   }
-
-  // ═══════════════════════════════════════════════════════════════════
-  // STEP 2-4: Phrase + lexicon matching, negation handling, intensity
-  // ═══════════════════════════════════════════════════════════════════
-  //
-  // Phrase-level matching runs first: at each position we check whether
-  // the current token + next token form a known bigram (e.g. "hidden gem").
-  // If so, both tokens are consumed together and treated as ONE unit.
-  // Otherwise we fall back to single-token lexicon lookup.
-  // ═══════════════════════════════════════════════════════════════════
 
   ({double rawScore, int matchedCount}) _scoreTokens(List<String> tokens) {
     double total = 0.0;
@@ -303,7 +274,6 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
       final token = tokens[i];
       final bigram = (i + 1 < tokens.length) ? '$token ${tokens[i + 1]}' : null;
 
-      // ── Bigram phrase check (consumes 2 tokens at once) ──
       if (bigram != null) {
         final phrasePolarity = _phrasePositive[bigram] ?? _phraseNegative[bigram];
         if (phrasePolarity != null) {
@@ -317,7 +287,7 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
           pendingMultiplier = 1.0;
           if (negationCountdown > 0) negationCountdown--;
 
-          i += 2; // consumed both tokens
+          i += 2;
           continue;
         }
 
@@ -328,14 +298,12 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
         }
       }
 
-      // ── Negation trigger ──
       if (_negationWords.contains(token)) {
         negationCountdown = _negationWindow;
         i++;
         continue;
       }
 
-      // ── Single-word intensity modifiers ──
       if (_intensifiers.containsKey(token)) {
         pendingMultiplier *= _intensifiers[token]!;
         i++;
@@ -347,8 +315,6 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
         continue;
       }
 
-      // ── Single-word polarity lookup (domain-specific lexicon checked
-      //    first, so travel-specific meaning takes priority over generic) ──
       double? polarity = _travelPositive[token] ?? _generalPositive[token];
       bool isPositive = polarity != null;
 
@@ -373,29 +339,11 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
     return (rawScore: total, matchedCount: matched);
   }
 
-  // ═══════════════════════════════════════════════════════════════════
-  // STEP 5-6: Normalization — saturating squash into [0.0, 1.0]
-  // ═══════════════════════════════════════════════════════════════════
-  //
-  // Uses a scaled logistic-like curve so a handful of strong words don't
-  // immediately max out the scale, but the score still saturates smoothly
-  // for very long, heavily one-sided posts.
-  //
-  //   rawScore = 0   → normalized = 0.5 (neutral)
-  //   rawScore = +3  → normalized ≈ 0.73
-  //   rawScore = +6  → normalized ≈ 0.88
-  //   rawScore = -3  → normalized ≈ 0.27
-  // ═══════════════════════════════════════════════════════════════════
-
   double _normalize(double rawScore) {
-    const double steepness = 0.45; // controls how quickly it saturates
+    const double steepness = 0.45;
     final double squashed = 1.0 / (1.0 + math.exp(-steepness * rawScore));
     return squashed.clamp(0.0, 1.0);
   }
-
-  // ═══════════════════════════════════════════════════════════════════
-  // STEP 7: Classification
-  // ═══════════════════════════════════════════════════════════════════
 
   SentimentLabel _classify(double normalizedScore) {
     if (normalizedScore >= _positiveThreshold) return SentimentLabel.positive;
@@ -403,3 +351,207 @@ class LexiconSentimentAnalyzer implements SentimentAnalyzer {
     return SentimentLabel.neutral;
   }
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// Implementation 2: Gemini-Based Sentiment Analyzer
+// ═════════════════════════════════════════════════════════════════════════
+//
+// Delegates the actual judgment to Gemini instead of a fixed dictionary.
+// This handles sarcasm, mixed languages, slang, and anything not covered
+// by a hand-written word list — at the cost of needing network access,
+// an API key, and per-call latency. Gemini's free tier (with rate limits)
+// makes this cheap for FYP-scale usage.
+//
+// Follows the same generateContent + responseMimeType: application/json
+// pattern already used in VisionService, so the calling style should look
+// familiar.
+//
+// IMPORTANT: never hardcode the API key in the app for production/shared
+// repos. Inject it via --dart-define, a secrets manager, or a backend
+// proxy so it isn't shipped inside the compiled app binary or committed
+// to version control.
+// ═════════════════════════════════════════════════════════════════════════
+
+class GeminiSentimentAnalyzer implements SentimentAnalyzer {
+  final String apiKey;
+  final String model;
+  final Duration timeout;
+  final http.Client _client;
+
+  GeminiSentimentAnalyzer({
+    required this.apiKey,
+    this.model = 'gemini-2.5-flash',
+    this.timeout = const Duration(seconds: 15),
+    http.Client? client,
+  }) : _client = client ?? http.Client();
+
+  @override
+  Future<SentimentResult> analyze(String text) async {
+    if (text.trim().isEmpty) {
+      return const SentimentResult(
+        score: 0.5,
+        label: SentimentLabel.neutral,
+        rawScore: 0.0,
+        matchedTokenCount: 0,
+        source: 'gemini',
+      );
+    }
+
+    final uri = Uri.parse(
+      'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey',
+    );
+
+    final body = {
+      'contents': [
+        {
+          'parts': [
+            {'text': _buildPrompt(text)},
+          ],
+        }
+      ],
+      'generationConfig': {
+        'temperature': 0.1,
+        'maxOutputTokens': 200,
+        'responseMimeType': 'application/json',
+      },
+    };
+
+    final response = await _client
+        .post(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(timeout);
+
+    if (response.statusCode != 200) {
+      throw SentimentAnalysisException(
+        'Gemini API returned ${response.statusCode}: ${response.body}',
+      );
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final rawText = data['candidates']?[0]?['content']?['parts']?[0]?['text'] as String?;
+    if (rawText == null || rawText.trim().isEmpty) {
+      throw const SentimentAnalysisException('Gemini response missing text');
+    }
+
+    final parsed = _extractJson(rawText);
+
+    final score = (parsed['score'] as num?)?.toDouble();
+    final labelStr = parsed['label'] as String?;
+    final confidence = (parsed['confidence'] as num?)?.toDouble() ?? 0.5;
+
+    if (score == null || labelStr == null) {
+      throw const SentimentAnalysisException('Gemini response missing required fields');
+    }
+
+    return SentimentResult(
+      score: score.clamp(0.0, 1.0),
+      label: SentimentLabelX.fromJson(labelStr),
+      rawScore: 0.0,
+      matchedTokenCount: (confidence.clamp(0.0, 1.0) * 10).round(),
+      source: 'gemini',
+    );
+  }
+
+  String _buildPrompt(String text) {
+    return '''
+You are a sentiment classifier for travel and F&B (food & beverage) reviews.
+Analyze the sentiment of the review below, accounting for context, sarcasm,
+negation, mixed languages, and slang.
+
+Respond with ONLY a raw JSON object, no markdown fences, no extra text:
+{"score": <float 0.0-1.0, 0.0=very negative, 0.5=neutral, 1.0=very positive>, "label": "positive"|"neutral"|"negative", "confidence": <float 0.0-1.0>}
+
+Review: "${text.replaceAll('"', "'")}"
+''';
+  }
+
+  /// Strips markdown code fences if the model added them despite
+  /// `responseMimeType: application/json`, and parses the remaining text.
+  Map<String, dynamic> _extractJson(String rawText) {
+    var cleaned = rawText.replaceAll(RegExp(r'```json|```'), '').trim();
+
+    final start = cleaned.indexOf('{');
+    final end = cleaned.lastIndexOf('}');
+    if (start == -1 || end == -1 || end <= start) {
+      throw SentimentAnalysisException('No valid JSON bounds in Gemini response: $cleaned');
+    }
+
+    try {
+      return jsonDecode(cleaned.substring(start, end + 1)) as Map<String, dynamic>;
+    } catch (e) {
+      throw SentimentAnalysisException('Failed to parse Gemini JSON response: $e');
+    }
+  }
+
+  void dispose() => _client.close();
+}
+
+class SentimentAnalysisException implements Exception {
+  final String message;
+  const SentimentAnalysisException(this.message);
+  @override
+  String toString() => 'SentimentAnalysisException: $message';
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Implementation 3: Hybrid — Gemini primary, lexicon as automatic fallback
+// ═════════════════════════════════════════════════════════════════════════
+//
+// This is the one you should actually construct and use in the app.
+// It tries the Gemini engine first (best quality, handles context/sarcasm).
+// If anything goes wrong — no network, API error, timeout, malformed
+// response, rate limit — it silently falls back to the offline lexicon
+// engine so `addPost.dart` (or any other caller) NEVER sees a thrown
+// exception and NEVER blocks the user's post from being submitted.
+//
+// Check `result.source` ('gemini' vs 'lexicon') if you want to log/monitor
+// how often the fallback is triggered (e.g. hitting Gemini's free-tier
+// rate limit).
+// ═════════════════════════════════════════════════════════════════════════
+
+class HybridSentimentAnalyzer implements SentimentAnalyzer {
+  final GeminiSentimentAnalyzer _primary;
+  final LexiconSentimentAnalyzer _fallback;
+  final void Function(Object error, StackTrace stack)? onFallback;
+
+  HybridSentimentAnalyzer({
+    required GeminiSentimentAnalyzer primary,
+    LexiconSentimentAnalyzer? fallback,
+    this.onFallback,
+  }) : _primary = primary,
+       _fallback = fallback ?? LexiconSentimentAnalyzer.instance;
+
+  @override
+  Future<SentimentResult> analyze(String text) async {
+    try {
+      return await _primary.analyze(text);
+    } catch (e, st) {
+      // Network failure, API error, timeout, bad JSON, rate limit, etc.
+      // Log it (e.g. via your crash-reporting tool) and degrade gracefully.
+      onFallback?.call(e, st);
+      return await _fallback.analyze(text);
+    }
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Example wiring (put this where you currently construct the analyzer,
+// e.g. in addPost.dart or a service locator / DI setup):
+// ═════════════════════════════════════════════════════════════════════════
+//
+//   final analyzer = HybridSentimentAnalyzer(
+//     primary: GeminiSentimentAnalyzer(
+//       apiKey: const String.fromEnvironment('GEMINI_API_KEY'),
+//     ),
+//     onFallback: (e, st) => debugPrint('Sentiment fallback triggered: $e'),
+//   );
+//
+//   final result = await analyzer.analyze(postText);
+//
+// No other call site needs to change — `result` is still a SentimentResult
+// with the same fields as before, just with `source` telling you which
+// engine actually produced it.
+// ═════════════════════════════════════════════════════════════════════════
