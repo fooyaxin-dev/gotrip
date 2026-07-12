@@ -1,18 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:gotrip/models/postModel.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
-import 'package:path_provider/path_provider.dart';
 import '../../services/post_service.dart';
 import '../../services/placesAPI_service.dart';
 import '../../services/userPreference_service.dart';
 import '../../services/algolia_service.dart';
 import '../../services/sentiment_service.dart';
 import '../../services/achievement_service.dart';
+import '../../services/apps_Loading.dart';
+import '../../services/storage_service.dart';
 
 class MediaItem {
   final File file;
@@ -174,25 +174,31 @@ class _PostingPageState extends State<PostingPage> {
     return parts.first;
   }
 
-  Future<Map<String, List<String>>> _saveMediaToLocal(List<MediaItem> media) async {
-    List<String> imagePaths = [];
-    List<String> videoPaths = [];
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      final postsDir = Directory('${directory.path}/posts');
-      if (!await postsDir.exists()) await postsDir.create(recursive: true);
-      for (int i = 0; i < media.length; i++) {
-        final item = media[i];
-        final ext = item.isVideo ? 'mp4' : 'jpg';
-        final fileName = '${DateTime.now().millisecondsSinceEpoch}_$i.$ext';
-        final filePath = '${postsDir.path}/$fileName';
-        await item.file.copy(filePath);
-        if (item.isVideo) { videoPaths.add(filePath); } else { imagePaths.add(filePath); }
-      }
-      return {'imagePaths': imagePaths, 'videoPaths': videoPaths};
-    } catch (e) { throw Exception('Save media failed: $e'); }
-  }
+  Future<Map<String, List<String>>> _uploadMediaToCloud(
+    List<MediaItem> media,
+  ) async {
+    if (media.isEmpty) {
+      return {'imagePaths': [], 'videoPaths': []};
+    }
+    final items = media
+        .map((m) => (file: m.file, isVideo: m.isVideo))
+        .toList();
 
+    final result = await StorageService.uploadPostMediaBatch(items);
+
+    if (result.imageUrls.isEmpty &&
+        result.videoUrls.isEmpty &&
+        media.isNotEmpty) {
+      // 全部上传失败 —— 明确告诉用户，而不是静默发一个没有媒体的帖子
+      throw Exception('Failed to upload media. Please check your connection and try again.');
+    }
+
+    return {
+      'imagePaths': result.imageUrls,
+      'videoPaths': result.videoUrls,
+    };
+  }
+  
   /// 保存帖子到 Firestore，返回新建文档的 ID
   /// （用于发布后触发后台 sentiment 分析）
   Future<String> _savePostToFirestore({
@@ -515,7 +521,7 @@ class _PostingPageState extends State<PostingPage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const Center(child: CircularProgressIndicator(color: Color(0xFF7C4DFF))),
+      builder: (context) => const Center(child: TravelLoadingIndicator()),
     );
     setState(() => isUploading = true);
 
@@ -523,7 +529,7 @@ class _PostingPageState extends State<PostingPage> {
       Map<String, List<String>> savedPaths = {'imagePaths': [], 'videoPaths': []};
 
       if (selectedMedia.isNotEmpty) {
-        savedPaths = await _saveMediaToLocal(selectedMedia);
+        savedPaths = await _uploadMediaToCloud(selectedMedia);
       }
 
       final newPostId = await _savePostToFirestore(
@@ -997,7 +1003,7 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
               decoration: InputDecoration(
                 hintText: 'Search for attractions, restaurants, landmarks...',
                 prefixIcon: _loading
-                    ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF7C4DFF))))
+                    ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 20, height: 20, child: TravelLoadingIndicator()))
                     : const Icon(Icons.search, color: Color(0xFF7C4DFF)),
                 suffixIcon: _ctrl.text.isNotEmpty
                     ? IconButton(icon: const Icon(Icons.close, size: 18), onPressed: () { _ctrl.clear(); setState(() => _suggestions = []); })
@@ -1034,7 +1040,7 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
           ),
         ]),
         if (_fetchingDetail)
-          Container(color: Colors.black.withOpacity(0.25), child: const Center(child: CircularProgressIndicator(color: Color(0xFF7C4DFF)))),
+          Container(color: Colors.black.withOpacity(0.25), child: const Center(child: TravelLoadingIndicator())),
       ]),
     );
   }

@@ -8,6 +8,7 @@ import '../../services/location_service.dart';
 import '../../services/placesAPI_service.dart';
 import '../../services/userPreference_service.dart';
 import 'itineraryDetail.dart';
+import '../../services/apps_Loading.dart';
 
 class GenerateItineraryPage extends StatefulWidget {
   const GenerateItineraryPage({super.key});
@@ -593,8 +594,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                           children: [
                             const SizedBox(
                               width: 20, height: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white),
+                              child: TravelLoadingIndicator(),
                             ),
                             const SizedBox(width: 12),
                             Flexible(
@@ -759,9 +759,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                                 padding: EdgeInsets.all(12),
                                 child: SizedBox(
                                   width: 16, height: 16,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Color(0xFF7C4DFF)),
+                                  child: TravelLoadingIndicator(),
                                 ),
                               )
                             : Icon(Icons.place_rounded,

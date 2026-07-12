@@ -6,7 +6,7 @@
       "request": "launch",
       "type": "dart",
       "args": [
-        "--dart-define=GOOGLE_API_KEY=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc"
+        "--dart-define=GOOGLE_API_KEY=AIzaSyCI3lqv4krDti77H8UgGo7Kog4kecaeCXw"
       ]
     }
   ]

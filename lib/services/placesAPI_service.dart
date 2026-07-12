@@ -1,9 +1,10 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'api_Keys.dart';
 
 class PlacesApiService {
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
+  static const String _apiKey = ApiKeys.googlePlacesNew;
   static const String _baseUrl = 'https://places.googleapis.com/v1';
 
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -203,7 +204,7 @@ class PlacesApiService {
     final response = await http.post(
       Uri.parse('$_baseUrl/places:searchNearby'),
       headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos,places.priceLevel',
+        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
       ),
       body: jsonEncode(bodyMap),
     );
@@ -248,7 +249,7 @@ class PlacesApiService {
     final response = await http.post(
       url,
       headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos,places.priceLevel',
+        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
       ),
       body: body,
     );
@@ -454,6 +455,7 @@ class PlacesApiService {
       'rating':     (p['rating'] as num?)?.toDouble(),
       'photos':     photoList,
       'priceLevel': p['priceLevel'],
+      'isOpenNow':  p['regularOpeningHours']?['openNow'] as bool?, 
       'source':     'google',
     };
   }

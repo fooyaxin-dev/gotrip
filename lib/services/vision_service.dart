@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
+import 'api_Keys.dart';
 
 class LandmarkResult {
   final String landmark;       // display name (with confidence if from Vision)
@@ -31,7 +32,7 @@ enum DetectionMethod {
 }
 
 class VisionService {
-  static const String _apiKey = 'AQ.Ab8RN6IzpDwG-M2jWuXySJCvcywHMj7VBftYmPUkwaF2Cv77TA';
+  static const String _apiKey = ApiKeys.googleVision;
   static const double _highConfidenceThreshold = 0.70;
 
   // ─────────────────────────────────────────────────────────────

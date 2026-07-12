@@ -7,6 +7,7 @@ import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
 import 'routePreviewPage.dart';
 import '../place/categoryImage_Helper.dart';
+import '../../services/apps_Loading.dart';
 
 class PlaceDetailPage extends StatefulWidget {
   final String placeId;        // Google ID for google places, 'geo_xxx' for geoapify
@@ -262,7 +263,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const CircularProgressIndicator(),
+          const TravelLoadingIndicator(),
           const SizedBox(height: 16),
           Text(
             _isGeoapify ? 'Fetching place details...' : 'Loading...',

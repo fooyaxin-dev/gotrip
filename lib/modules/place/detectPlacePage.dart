@@ -3,23 +3,20 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:intl/intl.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'placeDetailPage.dart';
 import '../../services/route_service.dart';
 import '../../services/location_service.dart';
-import '../../models/placeModal.dart';
+import '../../models/placeModel.dart';
 import '../../services/nearbyPlace_service.dart';
-import '../../models/itineraryModel.dart';
-import '../../modules/itinerary/itineraryDetail.dart';
 import 'routePreviewPage.dart';
 import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
-import '../../services/itinerary_service.dart';
 import 'routeOptimizerPage.dart';
 import '../../services/userPreference_service.dart'; 
 import 'categoryImage_Helper.dart';
+import '../../services/weather_service.dart';
+import '../../services/apps_Loading.dart';
 
 // ── CHANGE 1: added 'recommended' sort mode ──────────────────────────────────
 enum SortMode { distance, rating, recommended }
@@ -63,6 +60,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   // ── New nearby badge ──────────────────────────────────────────────────────
   bool _hasNewNearby = false;
+  WeatherCondition? _currentWeather;
   static const double _badgeThresholdMetres = 500;
   double? _lastLoadedLat;
   double? _lastLoadedLng;
@@ -206,6 +204,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
 
+  Future<void> _refreshWeather() async {
+    if (_currentPosition == null) return;
+    final w = await WeatherService.instance.getCurrentCondition(
+      lat: _currentPosition!.latitude,
+      lng: _currentPosition!.longitude,
+    );
+    if (mounted) setState(() => _currentWeather = w);
+  }
+
   @override
   void dispose() {
     LocationService.instance.removeListener(_onLocationChanged);
@@ -288,6 +295,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
 
     _applyFilter();
+    _refreshWeather();
 
     // Record where we loaded from so _onLocationChanged can detect 500m+ moves
     _lastLoadedLat = _currentPosition?.latitude;
@@ -381,6 +389,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       });
 
       _applyFilter();
+      _refreshWeather();
       _animateToFitMarkers(keepZoom: false);
 
     } catch (e) {
@@ -528,6 +537,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
 
     _applyFilter();
+    _refreshWeather();
 
     // Update last loaded position so badge resets correctly
     _lastLoadedLat = _currentPosition?.latitude;
@@ -991,8 +1001,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
 
-    // ── CHANGE 4: sort by recommendation score ────────────────────────────────
-    final List<PlaceModel> sortedPlaces = List.from(_displayedPlaces);
+    // ── CHANGE 4: hard-filter closed places, then sort by recommendation score ──
+    // isOpenNow == false → definitely closed, exclude.
+    // isOpenNow == null  → unknown (e.g. Geoapify places don't carry this field),
+    //                      don't penalize — we simply don't know.
+    final List<PlaceModel> openPlaces =
+        _displayedPlaces.where((p) => p.isOpenNow != false).toList();
+
+    final List<PlaceModel> sortedPlaces = List.from(openPlaces);
     sortedPlaces.sort((a, b) {
       switch (_sortMode) {
         case SortMode.recommended:
@@ -1015,6 +1031,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             distanceMeters: effectiveDistA,
             rating:         a.rating,
             priceLevel:     a.priceLevel,
+            weather:        _currentWeather,
           );
           final bScore = UserPreferenceService.instance.scorePlaceModel(
             primaryType:    b.primaryType,
@@ -1022,6 +1039,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             distanceMeters: effectiveDistB,
             rating:         b.rating,
             priceLevel:     b.priceLevel,
+            weather:        _currentWeather,
           );
           return bScore.compareTo(aScore);
         case SortMode.distance:
@@ -1034,7 +1052,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     });
 
     if (_initialCameraPosition == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(body: Center(child: TravelLoadingIndicator()));
     }
 
     return Scaffold(
@@ -1283,9 +1301,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                               children: [
                                 SizedBox(
                                   width: 16, height: 16,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Color(0xFF1A73E8)),
+                                  child: TravelLoadingIndicator(),
                                 ),
                                 SizedBox(width: 10),
                                 Text('Searching nearby...',
@@ -1331,8 +1347,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
             if (_isLoading)
               const Center(
-                  child: CircularProgressIndicator(
-                      color: Colors.blueAccent)),
+                  child: TravelLoadingIndicator()),
           ],
         ),
       ),
@@ -1494,58 +1509,58 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           ),
 
           // Sort + selected count
-Padding(
-  padding: const EdgeInsets.symmetric(vertical: 8),
-  child: SingleChildScrollView(
-    scrollDirection: Axis.horizontal,
-    padding: const EdgeInsets.symmetric(horizontal: 16),
-    child: Row(children: [
-      _buildStyledFilterChip(
-        label: 'For You',
-        isSelected: _sortMode == SortMode.recommended,
-        onTap: () => setState(() => _sortMode = SortMode.recommended),
-        icon: Icons.auto_awesome_rounded,
-      ),
-      const SizedBox(width: 5),
-      _buildStyledFilterChip(
-        label: 'Nearest',
-        isSelected: _sortMode == SortMode.distance,
-        onTap: () => setState(() => _sortMode = SortMode.distance),
-        icon: Icons.near_me_outlined,
-      ),
-      const SizedBox(width: 5),
-      _buildStyledFilterChip(
-        label: 'High Rated',
-        isSelected: _sortMode == SortMode.rating,
-        onTap: () => setState(() => _sortMode = SortMode.rating),
-        icon: Icons.star_outline_rounded,
-      ),
-      if (_selectedPlaceIds.isNotEmpty) ...[
-        const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(
-              horizontal: 8, vertical: 6),
-          decoration: BoxDecoration(
-            color: const Color(0xFF7C4DFF).withOpacity(0.1),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-                color: const Color(0xFF7C4DFF).withOpacity(0.3)),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(children: [
+                _buildStyledFilterChip(
+                  label: 'For You',
+                  isSelected: _sortMode == SortMode.recommended,
+                  onTap: () => setState(() => _sortMode = SortMode.recommended),
+                  icon: Icons.auto_awesome_rounded,
+                ),
+                const SizedBox(width: 5),
+                _buildStyledFilterChip(
+                  label: 'Nearest',
+                  isSelected: _sortMode == SortMode.distance,
+                  onTap: () => setState(() => _sortMode = SortMode.distance),
+                  icon: Icons.near_me_outlined,
+                ),
+                const SizedBox(width: 5),
+                _buildStyledFilterChip(
+                  label: 'High Rated',
+                  isSelected: _sortMode == SortMode.rating,
+                  onTap: () => setState(() => _sortMode = SortMode.rating),
+                  icon: Icons.star_outline_rounded,
+                ),
+                if (_selectedPlaceIds.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: const Color(0xFF7C4DFF).withOpacity(0.3)),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.check_circle_rounded,
+                          size: 14, color: Color(0xFF7C4DFF)),
+                      const SizedBox(width: 4),
+                      Text('${_selectedPlaceIds.length}',
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF7C4DFF),
+                              fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                ],
+              ]),
+            ),
           ),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            const Icon(Icons.check_circle_rounded,
-                size: 14, color: Color(0xFF7C4DFF)),
-            const SizedBox(width: 4),
-            Text('${_selectedPlaceIds.length}',
-                style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFF7C4DFF),
-                    fontWeight: FontWeight.w600)),
-          ]),
-        ),
-      ],
-    ]),
-  ),
-),
           
           if (_selectedPrimary != null &&
               subCategories.containsKey(_selectedPrimary))
@@ -1553,7 +1568,7 @@ Padding(
 
           const Divider(height: 1, thickness: 0.5),
 
-          if (_displayedPlaces.isEmpty && !_isLoading)
+          if (sortedPlaces.isEmpty && !_isLoading)
             SizedBox(height: 300, child: _buildEmptyState())
           else
             ...List.generate(
@@ -1641,6 +1656,7 @@ Padding(
                 : null,
             rating:         place.rating,
             priceLevel:     place.priceLevel,
+            weather:        _currentWeather, 
           )
         : 0.0;
     final reason = isForYouMode

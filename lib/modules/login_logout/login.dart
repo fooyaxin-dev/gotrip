@@ -7,6 +7,7 @@ import '../main/onBoarding.dart';
 import '../../services/userPreference_service.dart';
 import 'signup.dart';
 import '../main/homepage.dart';
+import '../../services/apps_Loading.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -243,10 +244,7 @@ class _LoginPageState extends State<LoginPage> {
                         ? const SizedBox(
                             height: 18,
                             width: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
+                            child: TravelLoadingIndicator(),
                           )
                         : const Text('Send Link'),
                   ),
@@ -467,10 +465,7 @@ class _LoginPageState extends State<LoginPage> {
                               ? const SizedBox(
                                   height: 22,
                                   width: 22,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
+                                    child: TravelLoadingIndicator(),
                                 )
                               : const Text(
                                   'Login',

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import '../models/placeModal.dart';
+import '../models/placeModel.dart';
 import 'placesAPI_service.dart';
 import 'geoapify_service.dart';
 import 'location_service.dart';
@@ -31,7 +31,7 @@ class NearbyPlacesService {
   // we transparently fall back to a fresh Google call at that larger
   // radius (see `_fetchGoogleOnce`), so correctness is preserved either way
   // — this constant is a cost/coverage tuning knob, not a hard cap.
-  static const int _googleMaxRadius = 5000;
+  static const int _googleMaxRadius = 15000;
 
   // location-key ('lat,lng' rounded to 3dp ≈ 111m) → raw Google places
   // (parsed, NOT filtered by radius) fetched at up to `_googleMaxRadius`.
@@ -46,7 +46,7 @@ class NearbyPlacesService {
   // e.g. a slider) wasted/duplicate in-flight requests. Caching it the same
   // way as Google means shrinking the radius is instant (no network at
   // all), and only widening beyond what's cached triggers a fresh call.
-  static const int _geoapifyMaxRadius = 5000; // tune independently of Google's
+  static const int _geoapifyMaxRadius = 15000; // tune independently of Google's
   final Map<String, List<Map<String, dynamic>>> _geoapifyRawCache = {};
   final Map<String, int> _geoapifyRawCacheRadius = {};
 
@@ -236,6 +236,17 @@ class NearbyPlacesService {
     return places;
   }
 
+  
+  /// 🔗 全 app 共享入口——Home、Nearby、行程生成，现在都从这里拿原始 Google 数据。
+  /// 同一个位置只会真正打一次 Google Places API，之后谁来调用都直接吃缓存。
+  Future<List<PlaceModel>> getOrFetchGooglePlaces({
+    required double lat,
+    required double lng,
+    int radius = 10000,
+  }) {
+    return _fetchGoogleOnce(lat, lng, radius);
+  }
+  
   // Explicit escape hatch — call this if you ever need to force a fresh
   // (paid) Google call for a location, e.g. a manual "refresh" button.
   void clearGoogleRawCache([double? lat, double? lng]) {

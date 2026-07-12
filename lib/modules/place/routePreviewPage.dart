@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../services/route_service.dart';
 import 'guidePage.dart';
+import '../../services/apps_Loading.dart';
 
 // ─────────────────────────────────────────────────────────
 // Per-mode summary state
@@ -358,7 +359,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                       if (selected.loading)
                         const SizedBox(
                           width: 20, height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                          child: TravelLoadingIndicator(),
                         )
                       else if (selected.error != null)
                         const Text('Route unavailable',
@@ -490,13 +491,9 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                       ? const Color(0xFF1A73E8) : Colors.grey[600]),
               const SizedBox(height: 4),
               if (summary.loading)
-                SizedBox(
+                const SizedBox(
                   width: 14, height: 14,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 1.5,
-                    color: isSelected
-                        ? const Color(0xFF1A73E8) : Colors.grey,
-                  ),
+                  child: TravelLoadingIndicator(),
                 )
               else if (summary.error != null)
                 Text('N/A',

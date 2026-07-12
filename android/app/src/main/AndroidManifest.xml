@@ -13,7 +13,7 @@
     <application
         android:label="gotrip"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"> 
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -38,7 +38,7 @@
             android:value="2" />
 
         <meta-data android:name="com.google.android.geo.API_KEY"
-           android:value="AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc"/>
+           android:value="AIzaSyCI3lqv4krDti77H8UgGo7Kog4kecaeCXw"/>
     </application>
 
     <queries>

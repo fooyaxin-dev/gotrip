@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../../services/landmarkHistory_service.dart';
 import '../../services/vision_service.dart';
 import 'landmarkResult.dart';
+import '../../services/apps_Loading.dart';
 
 class LandmarkHistoryPage extends StatefulWidget {
   const LandmarkHistoryPage({super.key});
@@ -129,7 +130,7 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: Color(0xFF7C4DFF)))
+          ? const Center(child: TravelLoadingIndicator())
           : _entries.isEmpty
               ? _buildEmpty()
               : RefreshIndicator(

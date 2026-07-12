@@ -1,8 +1,9 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'api_Keys.dart';
 
 class GeoapifyService {
-  static const String _apiKey  = '-';
+  static const String _apiKey  = ApiKeys.geoapify;
   static const String _baseUrl = 'https://api.geoapify.com/v2/places';
   static const String _detailsUrl = 'https://api.geoapify.com/v2/place-details'; // ← 新增
   static const int _limit    = 100;

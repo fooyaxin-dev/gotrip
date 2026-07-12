@@ -9,6 +9,8 @@ import '../../services/vision_service.dart';
 import '../../services/placesAPI_service.dart';
 import '../../services/landmarkHistory_service.dart';
 import '../../modules/place/favouriteButton.dart';
+import '../../services/api_Keys.dart';
+import '../../services/apps_Loading.dart';
 
 class ResultPage extends StatefulWidget {
   final Uint8List? imageBytes;       // null when opened from History (no original photo saved)
@@ -738,7 +740,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               child: _translating
                   ? const SizedBox(
                       width: 20, height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2))
+                      child: TravelLoadingIndicator())
                   : Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 4),
@@ -894,7 +896,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
   Widget _buildMapSection(dynamic pos) {
     if (pos == null) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(child: TravelLoadingIndicator());
     }
     final lat = _lat ?? pos.latitude;
     final lng = _lng ?? pos.longitude;
@@ -919,7 +921,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             '?center=$lat,$lng&zoom=15&size=600x300'
             '&markers=color:red%7Clabel:L%7C$lat,$lng'
             '&markers=color:blue%7Clabel:U%7C${pos.latitude},${pos.longitude}'
-            '&key=AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc',
+            '&key=${ApiKeys.googleMaps}',
             fit: BoxFit.cover,
             width: double.infinity,
             height: double.infinity,

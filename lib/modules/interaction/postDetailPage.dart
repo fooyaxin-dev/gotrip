@@ -23,6 +23,7 @@ import '../../services/userPreference_service.dart';
 import '../../services/sentiment_service.dart';
 import '../profile/profile.dart';
 import 'editPost.dart';
+import 'postMedia.dart';
 
 
 class PostDetailPage extends StatefulWidget {
@@ -331,7 +332,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
                               UserPreferenceService.instance.updateFromLike(
                                 postTags: post.tags,
                                 postTopic: post.topic,
-                                isLiking: liked,
+                                isLiking: isLiked,
+                                sentimentLabel: post.sentimentLabel ?? SentimentLabel.neutral,
+                                sentimentMatchedTokens: post.sentimentMatchedTokens ?? 0,
                               );
                             },
                             child: Padding(
@@ -421,14 +424,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
               height: _mediaHeight,
               child: isVideo
                   ? LocalVideoPlayer(path: path)
-                  : Image.file(
-                      File(path),
-                      fit: BoxFit.cover,
-                      errorBuilder: (c, e, s) => Container(
-                        color: Colors.grey[300],
-                        child: const Icon(Icons.broken_image, color: Colors.grey, size: 40),
-                      ),
-                    ),
+                  : buildPostImage(path, fit: BoxFit.cover),
             ),
           );
         },
@@ -442,16 +438,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
       height: _mediaHeight,
       child: isVideo
           ? LocalVideoPlayer(path: path)
-          : Image.file(
-              File(path),
-              width: double.infinity,
-              height: _mediaHeight,
-              fit: BoxFit.cover,
-              errorBuilder: (c, e, s) => Container(
-                color: Colors.grey[300],
-                child: const Icon(Icons.broken_image, color: Colors.grey, size: 40),
-              ),
-            ),
+          : buildPostImage(path, width: double.infinity, height: _mediaHeight, fit: BoxFit.cover),
     );
   }
 }

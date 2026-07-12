@@ -10,6 +10,7 @@ import '../../services/location_service.dart';
 import '../place/placeDetailPage.dart';
 import '../place/routePreviewPage.dart';
 import '../../services/achievement_service.dart';
+import '../../services/apps_Loading.dart';
 
 class ItineraryDetailPage extends StatefulWidget {
   final ItineraryModel itinerary;
@@ -133,9 +134,15 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       newGroups: groupsAfter,
     );
 
-    if (newUnlocks.isNotEmpty && mounted) {
-      // Persist the new top badge to Firestore so post cards can show it
+    // Always persist the current top badge to Firestore after a check-in,
+    // regardless of whether THIS check-in unlocked something new. This keeps
+    // users/{uid}.topBadge* in sync even if a threshold was already crossed
+    // before this write existed, or if a previous check-in's write was missed.
+    if (mounted) {
       await AchievementService.instance.saveTopBadgeToFirestore();
+    }
+
+    if (newUnlocks.isNotEmpty && mounted) {
       _showUnlockDialog(newUnlocks);
     }
   }
@@ -991,8 +998,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
           child: _isSaving
               ? const SizedBox(
                   width: 20, height: 20,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.white))
+                  child: TravelLoadingIndicator())
               : const Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [

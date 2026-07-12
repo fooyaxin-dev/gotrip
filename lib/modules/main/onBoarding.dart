@@ -1,7 +1,10 @@
 // pages/onboarding/onboarding_page.dart
 import 'package:flutter/material.dart';
 import '../../services/userPreference_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../main/homepage.dart';
+import '../../services/apps_Loading.dart';
+import 'package:firebase_auth/firebase_auth.dart';  
 
 class OnboardingPage extends StatefulWidget {
   final bool isEditing;
@@ -148,26 +151,42 @@ class _OnboardingPageState extends State<OnboardingPage>
   Future<void> _finish() async {
     setState(() => _isSaving = true);
 
-    final prefs = UserPreferences(
-      categories:     _selectedCategories.toList(),
-      cuisines:       _selectedCuisines.toList(),
-      travelMode:     _selectedTravelMode,
-      budgetTier:     _selectedBudget,       // ← now included
-      onboardingDone: true,
-    );
-
-    await UserPreferenceService.instance.save(prefs);
-
-    if (!mounted) return;
-
-    if (widget.isEditing) {
-      widget.onDone?.call();
-      Navigator.pop(context);
-    } else {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomePage()),
+    try {
+      final prefs = UserPreferences(
+        categories:     _selectedCategories.toList(),
+        cuisines:       _selectedCuisines.toList(),
+        travelMode:     _selectedTravelMode,
+        budgetTier:     _selectedBudget,
+        onboardingDone: true,
       );
+
+      await UserPreferenceService.instance.save(prefs);
+
+      // ★ 按 uid 缓存，避免共享设备/多账号切换时互相污染
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid != null) {
+        final sp = await SharedPreferences.getInstance();
+        await sp.setBool('cached_onboarding_done_$uid', true);
+      }
+
+      if (!mounted) return;
+
+      if (widget.isEditing) {
+        widget.onDone?.call();
+        Navigator.pop(context);
+      } else {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const HomePage()),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isSaving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save preferences: $e')),
+        );
+      }
     }
   }
 
@@ -655,8 +674,7 @@ class _OnboardingPageState extends State<OnboardingPage>
                 ),
                 child: _isSaving
                     ? const SizedBox(width: 22, height: 22,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white))
+                        child: TravelLoadingIndicator())
                     : Text(
                         isLast
                             ? (widget.isEditing ? 'Save Changes ✓' : "Let's Go! 🚀")

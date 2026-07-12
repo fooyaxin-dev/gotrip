@@ -2,12 +2,13 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'geoapify_service.dart';
+import 'api_Keys.dart';
 
 class GeoapifyEnrichmentService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static const String _cacheCollection = 'geoapify_enrichment';
 
-  static const String _geminiApiKey = '-'; // ← 换成你的 key
+  static const String _geminiApiKey = ApiKeys.gemini;
   static const String _geminiUrl =
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$_geminiApiKey';
 

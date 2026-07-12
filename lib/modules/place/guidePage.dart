@@ -3,11 +3,11 @@ import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:compassx/compassx.dart';
-import 'package:geolocator/geolocator.dart';
+
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../services/route_service.dart';
-import 'navigateController.dart';
+import '../../services/navigate_service.dart';
+import '../../services/apps_Loading.dart';
 
 class GuidePage extends StatefulWidget {
   final double startLat;
@@ -297,7 +297,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const CircularProgressIndicator(),
+              const TravelLoadingIndicator(),
               const SizedBox(height: 16),
               Text(
                 _nav.isRerouting ? 'Recalculating...' : 'Calculating route...',

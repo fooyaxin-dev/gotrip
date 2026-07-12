@@ -2,10 +2,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/itineraryModel.dart';
-import '../models/placeModal.dart';
-import '../services/placesAPI_service.dart';
+import '../models/placeModel.dart';
 import '../services/location_service.dart';
 import '../services/userPreference_service.dart';
+import '../services/nearbyPlace_service.dart'; 
 
 class ItineraryService {
   static final ItineraryService instance = ItineraryService._();
@@ -144,47 +144,60 @@ class ItineraryService {
   }) async {
     final types = categories.isNotEmpty ? categories : _defaultCategories;
 
-    print('🗺️ Fetching itinerary candidates (10km radius) for types: $types');
+    print('🗺️ Fetching itinerary candidates — reusing shared NearbyPlacesService cache');
     final stopwatch = Stopwatch()..start();
 
-    final entries = await Future.wait(
-      types.map((type) async {
-        try {
-          final raw = await PlacesApiService.searchNearby(
-            lat:            lat,
-            lng:            lng,
-            types:          [type],
-            radius:         10000,
-            maxResultCount: 20,
-          );
-
-          final places = raw
-              .map((p) {
-                try {
-                  final place = PlaceModel.fromGoogle(p, primary: type);
-                  if (place.lat == null || place.lng == null) return null;
-                  return place;
-                } catch (_) {
-                  return null;
-                }
-              })
-              .whereType<PlaceModel>()
-              .toList();
-
-          print('  ✅ $type: ${places.length} fetched');
-          return MapEntry(type, places);
-        } catch (e) {
-          print('  ⚠️ $type failed: $e');
-          return MapEntry(type, <PlaceModel>[]);
-        }
-      }),
+    // 🔗 跟 Home / Nearby 用的是同一份原始 Google 数据。
+    // 如果用户之前已经在这个位置浏览过 Home 或 Nearby，这次调用是零成本的——
+    // 不会再产生额外的 Google Places API 计费。
+    final allPlaces = await NearbyPlacesService.instance.getOrFetchGooglePlaces(
+      lat: lat,
+      lng: lng,
+      radius: 10000,
     );
 
     stopwatch.stop();
-    print('🗺️ Done in ${stopwatch.elapsedMilliseconds}ms');
-    return Map.fromEntries(entries);
-  }
+    print('🗺️ Got ${allPlaces.length} candidate places in ${stopwatch.elapsedMilliseconds}ms');
 
+    // 本地内存分组，不再有任何网络请求。
+    // NearbyPlacesService 给每个地点标的 primaryType 比较粗（restaurant / park /
+    // entertainment / shopping_mall / transit / service），跟行程这边要的分类
+    // 粒度不一样，所以改成直接看原始的 allTypes 列表来匹配。
+    const categoryTypeMap = <String, List<String>>{
+      'restaurant': [
+        'restaurant', 'cafe', 'coffee_shop', 'bakery', 'bar',
+        'fast_food_restaurant', 'food_court', 'dessert_shop',
+      ],
+      'tourist_attraction': [
+        'tourist_attraction', 'historical_landmark', 'monument',
+        'museum', 'art_gallery',
+      ],
+      'shopping_mall': [
+        'shopping_mall', 'supermarket', 'grocery_store',
+        'department_store', 'clothing_store',
+      ],
+      'amusement_park': [
+        'amusement_park', 'movie_theater', 'bowling_alley',
+        'karaoke', 'video_arcade', 'amusement_center',
+      ],
+      'park': [
+        'park', 'national_park', 'botanical_garden',
+        'garden', 'hiking_area', 'beach',
+      ],
+    };
+
+    final Map<String, List<PlaceModel>> byType = {};
+    for (final type in types) {
+      final matchTypes = categoryTypeMap[type] ?? [type];
+      byType[type] = allPlaces
+          .where((p) => p.allTypes.any((t) => matchTypes.contains(t)))
+          .toList();
+      print('  ✅ $type: ${byType[type]!.length} candidates');
+    }
+
+    return byType;
+  }
+  
   // ─────────────────────────────────────────────
   // Build balanced places with recommendation score
   // ─────────────────────────────────────────────

@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'login.dart';
-import '../main/homepage.dart';
-import '../main/onBoarding.dart';
+import '../../services/apps_Loading.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -332,7 +331,7 @@ class _SignupPageState extends State<SignupPage> {
                           child: isLoading
                               ? const SizedBox(
                                   height: 22, width: 22,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                  child: TravelLoadingIndicator(),
                                 )
                               : const Text('Sign Up',
                                   style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),

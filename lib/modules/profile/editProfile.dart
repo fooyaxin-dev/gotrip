@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../models/userModel.dart';
 import '../../services/user_service.dart';
+import '../../services/apps_Loading.dart';
 
 class EditProfilePage extends StatefulWidget {
   final UserProfile userProfile;
@@ -224,7 +225,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 ? const SizedBox(
                     width: 20,
                     height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: TravelLoadingIndicator(),
                   )
                 : const Text(
                     'Save',

@@ -6,8 +6,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
-import '../../models/placeModal.dart';
+import '../../services/apps_Loading.dart';
+import '../../models/placeModel.dart';
 import '../../models/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
 import '../itinerary/itineraryDetail.dart';
@@ -1120,8 +1120,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
               child: _isSaving
                   ? const SizedBox(
                       width: 20, height: 20,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white))
+                      child: TravelLoadingIndicator())
                   : const Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [

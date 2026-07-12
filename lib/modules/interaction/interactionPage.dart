@@ -11,7 +11,6 @@ import 'addPost.dart';
 import '../../models/postModel.dart';
 import '../../services/post_service.dart';
 import '../../services/like_service.dart';
-import '../../services/placesAPI_service.dart';
 import '../profile/profile.dart';
 import '../../services/algolia_service.dart';
 import '../../services/userPreference_service.dart';
@@ -19,16 +18,9 @@ import '../../services/sentiment_service.dart';
 import '../../modules/place/detectPlacePage.dart';
 import 'editPost.dart';
 import 'postDetailPage.dart';
+import '../../services/apps_Loading.dart';
+import 'postMedia.dart';
 
-enum SearchResultType { city, post }
-
-class SearchResult {
-  final SearchResultType type;
-  final String title;
-  final String subtitle;
-  final dynamic data;
-  const SearchResult({required this.type, required this.title, required this.subtitle, required this.data});
-}
 
 class InteractionPage extends StatefulWidget {
   const InteractionPage({super.key});
@@ -44,11 +36,17 @@ class _InteractionPageState extends State<InteractionPage> {
 
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
+
+  // ── Dropdown（打字过程中的即时建议）──
   bool _showSuggestions = false;
   bool _isSearching = false;
-
-  List<Map<String, dynamic>> _citySuggestions = [];
   List<Post> _postSuggestions = [];
+
+  // ── Committed search（按下搜索/回车后，主列表被替换成的结果）──
+  bool _isSearchActive = false;
+  bool _isSearchLoading = false;
+  List<Post> _searchResultPosts = [];
+  String _lastSearchQuery = '';
 
   String? _selectedCity;
   String? _selectedCityLabel;
@@ -89,12 +87,20 @@ class _InteractionPageState extends State<InteractionPage> {
     return {};
   }
 
+  // ─── 打字时的即时建议（dropdown，小数量）────────────────────────────────
+
   void _onSearchChanged(String query) {
     _debounce?.cancel();
+
+    // 一旦用户重新开始打字，说明离开了"已提交搜索"的结果视图，
+    // 回到"输入中 → 显示 dropdown"的状态
+    if (_isSearchActive) {
+      setState(() => _isSearchActive = false);
+    }
+
     if (query.trim().isEmpty) {
       setState(() {
         _showSuggestions = false;
-        _citySuggestions = [];
         _postSuggestions = [];
         _isSearching = false;
       });
@@ -104,14 +110,10 @@ class _InteractionPageState extends State<InteractionPage> {
     _debounce = Timer(const Duration(milliseconds: 400), () async {
       if (!mounted) return;
       try {
-        final results = await Future.wait([
-          PlacesApiService.autocomplete(input: query),
-          AlgoliaService.searchPosts(query),
-        ]);
+        final results = await AlgoliaService.searchPosts(query, hitsPerPage: 5);
         if (!mounted) return;
         setState(() {
-          _citySuggestions = (results[0] as List).cast<Map<String, dynamic>>();
-          _postSuggestions = (results[1] as List).cast<Post>();
+          _postSuggestions = results;
           _showSuggestions = true;
           _isSearching = false;
         });
@@ -122,19 +124,37 @@ class _InteractionPageState extends State<InteractionPage> {
     });
   }
 
-  void _selectCity(Map<String, dynamic> place) {
-    final mainText = place['mainText'] as String? ?? '';
-    final secondaryText = place['secondaryText'] as String? ?? '';
-    final displayLabel = secondaryText.isNotEmpty ? '$mainText, $secondaryText' : mainText;
-    setState(() {
-      _selectedCity = mainText;
-      _selectedCityLabel = displayLabel;
-      _searchController.text = displayLabel;
-      _showSuggestions = false;
-      _citySuggestions = [];
-      _postSuggestions = [];
-    });
+  // ─── 提交搜索（按回车 / 点搜索键 / 点建议项）→ 替换主列表 ──────────────────
+
+  Future<void> _performSearch(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return;
+
+    _debounce?.cancel();
     _searchFocus.unfocus();
+
+    setState(() {
+      _showSuggestions = false;
+      _isSearchActive = true;
+      _isSearchLoading = true;
+      _lastSearchQuery = trimmed;
+    });
+
+    try {
+      // hitsPerPage 不要超过 10 —— Firestore whereIn 硬性上限就是 10
+      final results = await AlgoliaService.searchPosts(trimmed, hitsPerPage: 10);
+      if (!mounted) return;
+      setState(() {
+        _searchResultPosts = results;
+        _isSearchLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _searchResultPosts = [];
+        _isSearchLoading = false;
+      });
+    }
   }
 
   void _clearSearch() {
@@ -142,9 +162,12 @@ class _InteractionPageState extends State<InteractionPage> {
       _selectedCity = null;
       _selectedCityLabel = null;
       _showSuggestions = false;
-      _citySuggestions = [];
       _postSuggestions = [];
       _isSearching = false;
+      _isSearchActive = false;
+      _isSearchLoading = false;
+      _searchResultPosts = [];
+      _lastSearchQuery = '';
     });
     _searchController.clear();
     _searchFocus.unfocus();
@@ -157,6 +180,7 @@ class _InteractionPageState extends State<InteractionPage> {
     if (post.locationLat == null || post.locationLng == null) {
       if (post.city != null && post.city!.isNotEmpty) {
         setState(() {
+          _isSearchActive = false;
           _selectedCity      = post.city;
           _selectedCityLabel = post.city;
           _searchController.text = post.city!;
@@ -226,6 +250,7 @@ class _InteractionPageState extends State<InteractionPage> {
                 Navigator.pop(context);
                 if (post.city != null && post.city!.isNotEmpty) {
                   setState(() {
+                    _isSearchActive = false;
                     _selectedCity      = post.city;
                     _selectedCityLabel = post.city;
                     _searchController.text = post.city!;
@@ -336,44 +361,83 @@ class _InteractionPageState extends State<InteractionPage> {
           bottom: PreferredSize(preferredSize: const Size.fromHeight(56), child: _buildSearchBar()),
         ),
         body: Stack(children: [
-          StreamBuilder<List<Post>>(
-            stream: _selectedCity != null
-                ? _postService.getPostsByCity(_selectedCity!)
-                : _postService.getPublicPosts(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator(color: Color(0xFF7C4DFF)));
-              }
-              if (snapshot.hasError) {
-                return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  const Icon(Icons.error_outline, size: 64, color: Colors.red),
-                  const SizedBox(height: 16),
-                  Text('Failed to load: ${snapshot.error}', style: const TextStyle(color: Colors.red)),
-                  const SizedBox(height: 16),
-                  ElevatedButton(onPressed: () => setState(() {}), child: const Text('Retry')),
-                ]));
-              }
-              if (!snapshot.hasData || snapshot.data!.isEmpty) return _buildEmptyState();
-              return RefreshIndicator(
-                onRefresh: () async {
-                  _userCache.clear();
-                  setState(() {});
-                },
-                color: const Color(0xFF7C4DFF),
-                child: ListView.builder(
-                  key: const PageStorageKey('post_list'),
-                  physics: const BouncingScrollPhysics(),
-                  itemCount: snapshot.data!.length,
-                  padding: const EdgeInsets.only(top: 10, bottom: 90),
-                  itemBuilder: (context, index) => _buildPostCard(snapshot.data![index]),
-                ),
-              );
-            },
-          ),
-          if (_showSuggestions)
+          _isSearchActive ? _buildSearchResultsList() : _buildFeedStream(),
+          if (_showSuggestions && !_isSearchActive)
             Positioned(top: 0, left: 0, right: 0, child: _buildSearchDropdown()),
         ]),
       ),
+    );
+  }
+
+  // ── 原本的公开 feed / 按城市筛选的 feed（未搜索时展示）──
+  Widget _buildFeedStream() {
+    return StreamBuilder<List<Post>>(
+      stream: _selectedCity != null
+          ? _postService.getPostsByCity(_selectedCity!)
+          : _postService.getPublicPosts(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: TravelLoadingIndicator());
+        }
+        if (snapshot.hasError) {
+          return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.error_outline, size: 64, color: Colors.red),
+            const SizedBox(height: 16),
+            Text('Failed to load: ${snapshot.error}', style: const TextStyle(color: Colors.red)),
+            const SizedBox(height: 16),
+            ElevatedButton(onPressed: () => setState(() {}), child: const Text('Retry')),
+          ]));
+        }
+        if (!snapshot.hasData || snapshot.data!.isEmpty) return _buildEmptyState();
+        return RefreshIndicator(
+          onRefresh: () async {
+            _userCache.clear();
+            setState(() {});
+          },
+          color: const Color(0xFF7C4DFF),
+          child: ListView.builder(
+            key: const PageStorageKey('post_list'),
+            physics: const BouncingScrollPhysics(),
+            itemCount: snapshot.data!.length,
+            padding: const EdgeInsets.only(top: 10, bottom: 90),
+            itemBuilder: (context, index) => _buildPostCard(snapshot.data![index]),
+          ),
+        );
+      },
+    );
+  }
+
+  // ── 已提交搜索后的结果列表（主体区域被完全替换）──
+  Widget _buildSearchResultsList() {
+    if (_isSearchLoading) {
+      return const Center(child: TravelLoadingIndicator());
+    }
+    if (_searchResultPosts.isEmpty) {
+      return Center(
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(Icons.search_off, size: 80, color: Colors.grey[400]),
+          const SizedBox(height: 16),
+          Text('No results for "$_lastSearchQuery"',
+              style: TextStyle(color: Colors.grey[600], fontSize: 16, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center),
+          const SizedBox(height: 8),
+          Text('Try a different keyword',
+              style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+          const SizedBox(height: 20),
+          TextButton.icon(
+            onPressed: _clearSearch,
+            icon: const Icon(Icons.arrow_back, size: 18),
+            label: const Text('Back to all posts'),
+          ),
+        ]),
+      );
+    }
+    return ListView.builder(
+      key: const PageStorageKey('search_result_list'),
+      physics: const BouncingScrollPhysics(),
+      itemCount: _searchResultPosts.length,
+      padding: const EdgeInsets.only(top: 10, bottom: 90),
+      itemBuilder: (context, index) => _buildPostCard(_searchResultPosts[index]),
     );
   }
 
@@ -385,14 +449,18 @@ class _InteractionPageState extends State<InteractionPage> {
         controller: _searchController,
         focusNode: _searchFocus,
         onChanged: _onSearchChanged,
+        onSubmitted: _performSearch,
+        textInputAction: TextInputAction.search,
         onTap: () {
-          if (_searchController.text.isNotEmpty) setState(() => _showSuggestions = true);
+          if (_searchController.text.isNotEmpty && !_isSearchActive) {
+            setState(() => _showSuggestions = true);
+          }
         },
         decoration: InputDecoration(
-          hintText: 'Search cities, posts, tags...',
+          hintText: 'Search posts, tags...',
           hintStyle: TextStyle(color: Colors.grey[400], fontSize: 13),
-          prefixIcon: _isSearching
-              ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF7C4DFF))))
+          prefixIcon: (_isSearching || _isSearchLoading)
+              ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: TravelLoadingIndicator()))
               : const Icon(Icons.search, color: Color(0xFF7C4DFF), size: 20),
           suffixIcon: _searchController.text.isNotEmpty
               ? IconButton(icon: const Icon(Icons.close, size: 18, color: Colors.grey), onPressed: _clearSearch)
@@ -408,9 +476,7 @@ class _InteractionPageState extends State<InteractionPage> {
   }
 
   Widget _buildSearchDropdown() {
-    final hasCities = _citySuggestions.isNotEmpty;
     final hasPosts = _postSuggestions.isNotEmpty;
-    final hasAnything = hasCities || hasPosts;
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
@@ -422,19 +488,25 @@ class _InteractionPageState extends State<InteractionPage> {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
-        child: !hasAnything
+        child: !hasPosts
             ? _buildNoResults()
             : SingleChildScrollView(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  if (hasCities) ...[
-                    _buildSectionHeader(Icons.location_on, 'Cities', const Color(0xFFD35D3E)),
-                    ...(_citySuggestions.length > 3 ? _citySuggestions.sublist(0, 3) : _citySuggestions).map((place) => _buildCityTile(place)),
-                  ],
-                  if (hasCities && hasPosts) const Divider(height: 1, thickness: 1, indent: 16),
-                  if (hasPosts) ...[
-                    _buildSectionHeader(Icons.article_outlined, 'Posts', const Color(0xFF7C4DFF)),
-                    ...(_postSuggestions.length > 4 ? _postSuggestions.sublist(0, 4) : _postSuggestions).map((post) => _buildPostTile(post)),
-                  ],
+                  _buildSectionHeader(Icons.article_outlined, 'Posts', const Color(0xFF7C4DFF)),
+                  ..._postSuggestions.map((post) => _buildPostTile(post)),
+                  const Divider(height: 1, indent: 16),
+                  InkWell(
+                    onTap: () => _performSearch(_searchController.text),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: Row(children: [
+                        const Icon(Icons.search, size: 16, color: Color(0xFF7C4DFF)),
+                        const SizedBox(width: 8),
+                        Text('See all results for "${_searchController.text}"',
+                            style: const TextStyle(fontSize: 13, color: Color(0xFF7C4DFF), fontWeight: FontWeight.w600)),
+                      ]),
+                    ),
+                  ),
                   const SizedBox(height: 6),
                 ]),
               ),
@@ -448,7 +520,7 @@ class _InteractionPageState extends State<InteractionPage> {
       child: Row(children: [
         Icon(Icons.search_off, color: Colors.grey),
         SizedBox(width: 12),
-        Text('No cities or posts found', style: TextStyle(color: Colors.grey, fontSize: 14)),
+        Text('No posts found', style: TextStyle(color: Colors.grey, fontSize: 14)),
       ]),
     );
   }
@@ -464,42 +536,13 @@ class _InteractionPageState extends State<InteractionPage> {
     );
   }
 
-  Widget _buildCityTile(Map<String, dynamic> place) {
-    final mainText = place['mainText'] as String? ?? '';
-    final secondaryText = place['secondaryText'] as String? ?? '';
-    final isSelected = _selectedCity == mainText;
-    return InkWell(
-      onTap: () => _selectCity(place),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        child: Row(children: [
-          Container(width: 36, height: 36, decoration: BoxDecoration(color: const Color(0xFFD35D3E).withOpacity(0.1), shape: BoxShape.circle), child: const Icon(Icons.location_city, color: Color(0xFFD35D3E), size: 18)),
-          const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(mainText, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: isSelected ? const Color(0xFFD35D3E) : Colors.black87)),
-            if (secondaryText.isNotEmpty) Text(secondaryText, style: TextStyle(fontSize: 12, color: Colors.grey[500])),
-          ])),
-          if (isSelected) const Icon(Icons.check_circle, color: Color(0xFFD35D3E), size: 18),
-        ]),
-      ),
-    );
-  }
-
+  // ── Dropdown 里的建议项：点击 = 直接提交完整搜索，展示替换后的结果列表 ──
   Widget _buildPostTile(Post post) {
     return InkWell(
       onTap: () {
-        setState(() {
-          _showSuggestions = false;
-          if (post.city != null && post.city!.isNotEmpty) {
-            _selectedCity = post.city;
-            _selectedCityLabel = post.city;
-            _searchController.text = post.city!;
-          } else {
-            _searchController.text = post.title;
-          }
-        });
-        _searchFocus.unfocus();
+        _searchController.text = post.title;
         UserPreferenceService.instance.updateFromSearch(postTags: post.tags, postTopic: post.topic);
+        _performSearch(post.title);
       },
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -507,8 +550,8 @@ class _InteractionPageState extends State<InteractionPage> {
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: post.images.isNotEmpty
-                ? Image.file(File(post.images.first), width: 44, height: 44, fit: BoxFit.cover, errorBuilder: (_, __, ___) => _postIconBox())
-                : _postIconBox(),
+              ? buildPostImage(post.images.first, width: 44, height: 44, fit: BoxFit.cover, errorBuilder: (_, __, ___) => _postIconBox())
+              : _postIconBox(),
           ),
           const SizedBox(width: 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -643,8 +686,7 @@ class _InteractionPageState extends State<InteractionPage> {
                 children: post.tags.map((tag) => GestureDetector(
                   onTap: () {
                     _searchController.text = tag;
-                    _onSearchChanged(tag);
-                    setState(() => _showSuggestions = true);
+                    _performSearch(tag);
                   },
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -877,9 +919,8 @@ class _InteractionPageState extends State<InteractionPage> {
 
   Widget _buildSingleMediaTile(String path, bool isVideo, {double? height}) {
     if (isVideo) return SizedBox(height: height ?? 200, child: LocalVideoPlayer(path: path));
-    return Image.file(File(path), height: height, fit: BoxFit.cover,
-        errorBuilder: (c, e, s) => Container(height: height, color: Colors.grey[300], child: const Icon(Icons.broken_image, color: Colors.grey)));
-  }
+      return buildPostImage(path, height: height, fit: BoxFit.cover);
+    }
 
   Widget _buildLikeButton(Post post, bool isLiked) {
     return StreamBuilder<int>(
@@ -927,6 +968,8 @@ class _InteractionPageState extends State<InteractionPage> {
         postTags: post.tags,
         postTopic: post.topic,
         isLiking: isLiked,
+        sentimentLabel: post.sentimentLabel ?? SentimentLabel.neutral,
+        sentimentMatchedTokens: post.sentimentMatchedTokens ?? 0,
       );
     } catch (e) {
       // 出错才提示

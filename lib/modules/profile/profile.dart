@@ -15,11 +15,12 @@ import '../../services/history_service.dart';
 import '../../services/achievement_service.dart';
 import '../interaction/editPost.dart';
 import 'editProfile.dart';
+import '../../services/apps_Loading.dart';
+import '../interaction/postMedia.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOCAL VIDEO PLAYER
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// ════
 class LocalVideoPlayer extends StatefulWidget {
   final String path;
   final bool autoPlay;
@@ -42,16 +43,19 @@ class _LocalVideoPlayerState extends State<LocalVideoPlayer> {
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.file(File(widget.path))
-      ..initialize().then((_) {
-        if (mounted) {
-          setState(() => _initialized = true);
-          if (widget.autoPlay) {
-            _controller.play();
-            _isPlaying = true;
+    _controller = widget.path.startsWith('http')
+      ? VideoPlayerController.networkUrl(Uri.parse(widget.path))
+      : VideoPlayerController.file(File(widget.path));
+    _controller
+        ..initialize().then((_) {
+          if (mounted) {
+            setState(() => _initialized = true);
+            if (widget.autoPlay) {
+              _controller.play();
+              _isPlaying = true;
+            }
           }
-        }
-      });
+        });
     _controller.addListener(() {
       if (mounted) setState(() => _isPlaying = _controller.value.isPlaying);
     });
@@ -69,7 +73,7 @@ class _LocalVideoPlayerState extends State<LocalVideoPlayer> {
       return Container(
         color: Colors.grey[900],
         child: const Center(
-          child: CircularProgressIndicator(color: Colors.white70),
+          child: TravelLoadingIndicator(),
         ),
       );
     }
@@ -236,7 +240,7 @@ class _PostWidgetState extends State<_PostWidget> {
       stream: _postService.getUserPosts(currentUserId),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator(color: Color(0xFFD35D3E)));
+          return const Center(child: TravelLoadingIndicator());
         }
         if (snapshot.hasError) {
           return Center(child: Text('Load failed: \${snapshot.error}'));
@@ -323,8 +327,8 @@ class _PostWidgetState extends State<_PostWidget> {
         borderRadius: BorderRadius.circular(16),
         child: Stack(fit: StackFit.expand, children: [
           if (hasImage)
-            Image.file(File(post.images.first), fit: BoxFit.cover,
-                errorBuilder: (c, e, s) => _greyPlaceholder())
+            buildPostImage(post.images.first, fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => _greyPlaceholder())
           else
             LocalVideoPlayer(path: post.videoPaths.first),
           Positioned(
@@ -501,9 +505,7 @@ class _PostWidgetState extends State<_PostWidget> {
                       separatorBuilder: (_, __) => const SizedBox(width: 8),
                       itemBuilder: (context, index) => ClipRRect(
                         borderRadius: BorderRadius.circular(12),
-                        child: Image.file(File(post.images[index]), width: 220, fit: BoxFit.cover,
-                            errorBuilder: (c, e, s) => Container(width: 220, color: Colors.grey[300],
-                                child: const Icon(Icons.broken_image, color: Colors.grey))),
+                        child: buildPostImage(post.images[index], width: 220, fit: BoxFit.cover),
                       ),
                     ),
                   ),
@@ -666,7 +668,7 @@ class _HistoryWidgetState extends State<_HistoryWidget> {
         if (snap.connectionState == ConnectionState.waiting) {
           return const SizedBox(
             height: 240,
-            child: Center(child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4DB6AC))),
+            child: Center(child: TravelLoadingIndicator()),
           );
         }
         final trips = snap.data ?? [];
@@ -1092,7 +1094,7 @@ class _ProfilePageState extends State<ProfilePage> {
       stream: _stream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const SizedBox(height: 200, child: Center(child: CircularProgressIndicator()));
+          return const SizedBox(height: 200, child: Center(child: TravelLoadingIndicator()));
         }
         final userProfile = snapshot.data;
         if (userProfile == null) return const SizedBox();

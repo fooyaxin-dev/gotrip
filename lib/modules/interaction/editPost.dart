@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
 import '../../models/postModel.dart';
 import '../../services/algolia_service.dart';
+import '../../services/apps_Loading.dart';
 
 class EditPostPage extends StatefulWidget {
   final Post post;
@@ -210,7 +211,7 @@ class _EditPostPageState extends State<EditPostPage> {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: _isSaving
-                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    ? const SizedBox(width: 14, height: 14, child: TravelLoadingIndicator())
                     : const Text('Save', style: TextStyle(color: Colors.white, fontSize: 14)),
               ),
             ),

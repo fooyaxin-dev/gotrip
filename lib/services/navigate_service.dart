@@ -9,7 +9,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_tts/flutter_tts.dart';
-import '../../services/route_service.dart';
+import 'route_service.dart';
+import 'api_Keys.dart';
 
 class NavigationController extends ChangeNotifier {
 
@@ -30,7 +31,7 @@ class NavigationController extends ChangeNotifier {
     this.travelMode = TravelMode.drive,
   });
 
-  static const String _apiKey = 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc';
+  static const String _apiKey = ApiKeys.googleMaps;
 
   static const double _offRouteThresh  = 50.0;
   static const double _arrivedThresh   = 30.0;

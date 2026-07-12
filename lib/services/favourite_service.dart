@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
+import 'api_Keys.dart';
 
 class FavouriteService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -9,7 +10,7 @@ class FavouriteService {
 
  
 
-  static const String _apiKey = 'AIzaSyB2fqEyndn2Z8d6YM38p1ZbmEADQJimBtI'; // String.fromEnvironment('GOOGLE_API_KEY');
+  static const String _apiKey = ApiKeys.googlePlacesNew;
   static const String _baseUrl = 'https://places.googleapis.com/v1';
 
   static String? get _userId => _auth.currentUser?.uid;

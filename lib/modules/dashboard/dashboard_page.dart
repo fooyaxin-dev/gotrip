@@ -8,6 +8,7 @@ import '../../services/achievement_service.dart';
 import '../itinerary/itineraryDetail.dart';
 import '../itinerary/itineraryPage.dart';
 import '../profile/profile.dart';
+import '../../services/apps_Loading.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Data Models
@@ -498,7 +499,7 @@ class _DashboardPageState extends State<DashboardPage> {
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Color(0xFF6366F1)))
+          ? const TravelLoadingIndicator()
           : _errorMsg != null || _rawData == null
               ? _buildError()
               : _buildBody(),

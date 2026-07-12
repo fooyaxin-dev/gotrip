@@ -14,6 +14,7 @@ class PlaceModel {
   final String? geoapifyPlaceId;
   final String? osmId;   // ← 新增
   final String? osmType; // ← 新增
+  final bool? isOpenNow;  
 
   PlaceModel({
     required this.id,
@@ -31,6 +32,7 @@ class PlaceModel {
     this.geoapifyPlaceId,
     this.osmId,   // ← 新增
     this.osmType, // ← 新增
+    this.isOpenNow,
   });
 
   List<String> get types {
@@ -82,6 +84,7 @@ class PlaceModel {
       geoapifyPlaceId:  g['geoapifyPlaceId'] as String?,
       osmId:            g['osmId']   as String?, // ← 新增
       osmType:          g['osmType'] as String?, // ← 新增
+      isOpenNow:        g['isOpenNow'] as bool?, // ← 新增
     );
   }
 
@@ -102,6 +105,7 @@ class PlaceModel {
       geoapifyPlaceId: geoapifyPlaceId,
       osmId:           osmId,
       osmType:         osmType,
+      isOpenNow:       isOpenNow
     );
   }
   

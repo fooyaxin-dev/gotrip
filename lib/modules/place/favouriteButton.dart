@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/favourite_service.dart';
 import '../../services/userPreference_service.dart';
+import '../../services/apps_Loading.dart';
 
 /// ❤️ 可复用的收藏按钮
 /// showBackground: true  → 白色圆形背景（用于 PlaceCard 图片浮层）
@@ -125,10 +126,7 @@ class _FavouriteButtonState extends State<FavouriteButton>
               ? SizedBox(
                   width: widget.iconSize,
                   height: widget.iconSize,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: widget.activeColor,
-                  ),
+                  child: TravelLoadingIndicator(),
                 )
               : Icon(
                   isFav ? Icons.favorite : Icons.favorite_border,

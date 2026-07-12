@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'api_Keys.dart';
 
 enum TravelMode { walk, drive, motor }
 
@@ -10,7 +11,7 @@ enum TravelMode { walk, drive, motor }
 
 class NavStep {
   final String instruction;
-  final String maneuver;
+  final String maneuver; 
   final double distanceMeters;
   final int durationSeconds;
   final LatLng startLocation;
@@ -69,7 +70,7 @@ class RouteService {
   // Move key to --dart-define=GOOGLE_MAPS_KEY=xxx at build time.
   // Falls back to the literal string only for development.
   static const String _apiKey =
-      String.fromEnvironment('GOOGLE_MAPS_KEY', defaultValue: 'AIzaSyBWodBoara2qnvRA_3TuYTFmHG9xngQwdc');
+      String.fromEnvironment('GOOGLE_MAPS_KEY', defaultValue: ApiKeys.googleMaps);
 
   static const String _routesUrl =
       'https://routes.googleapis.com/directions/v2:computeRoutes';

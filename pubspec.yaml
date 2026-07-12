@@ -11,6 +11,7 @@ dependencies:
 
   firebase_core: ^3.15.2
   cloud_firestore: ^5.6.11
+  firebase_storage: ^12.3.2
   firebase_auth: ^5.7.0
   google_sign_in: ^6.1.0
   flutter_tts: ^4.0.2
@@ -33,6 +34,7 @@ dependencies:
   http: ^1.2.0
   intl: ^0.19.0
   image_picker: ^0.8.7+4
+  path: ^1.9.0 
   path_provider: ^2.1.1  
   image: ^4.1.7
   video_player: ^2.9.2
@@ -74,6 +76,7 @@ flutter:
     - assets/images/planess.jpg
     - assets/images/longbg.jpg
     - assets/images/longbg1.jpg
+    - assets/travelLoading.json  
     - assets/Mobile Apps.json
     - assets/Map Location Pointer.json
     - assets/images/category/food/

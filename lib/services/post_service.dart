@@ -4,6 +4,9 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../models/postModel.dart';
 import 'algolia_service.dart';
+import '../services/sentiment_service.dart';
+import '../services/userPreference_service.dart';
+import 'storage_service.dart';
 
 class PostService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -220,11 +223,26 @@ class PostService {
     }
   }
 
-  Future<void> toggleLike(String postId, bool isLiked) async {
+  Future<void> toggleLike(
+    String postId,
+    bool isLiked, {
+    required List<String>   postTags,
+    String?                 postTopic,
+    required SentimentLabel sentimentLabel,
+    required int             sentimentMatchedTokens,
+  }) async {
     try {
       await _firestore.collection('posts').doc(postId).update({
         'likes': FieldValue.increment(isLiked ? 1 : -1),
       });
+
+      await UserPreferenceService.instance.updateFromLike(
+        postTags:               postTags,
+        postTopic:              postTopic,
+        isLiking:               isLiked,
+        sentimentLabel:         sentimentLabel,
+        sentimentMatchedTokens: sentimentMatchedTokens,
+      );
     } catch (e) {
       throw Exception('Failed to toggle like: $e');
     }
@@ -258,27 +276,18 @@ class PostService {
 
   Future<void> deletePost(String postId) async {
     try {
-      DocumentSnapshot doc =
-          await _firestore.collection('posts').doc(postId).get();
+      DocumentSnapshot doc = await _firestore.collection('posts').doc(postId).get();
       if (doc.exists) {
         Post post = Post.fromFirestore(doc);
 
-        // ── 删本地图片 ──
-        for (String imagePath in post.images) {
-          try {
-            File imageFile = File(imagePath);
-            if (await imageFile.exists()) await imageFile.delete();
-          } catch (e) {
-            print('Failed to delete local image: $e');
-          }
-        }
+        // ★ 新增：清理 Storage 里的图片/视频（旧本地路径会被自动跳过）
+        await StorageService.deletePostMedia([...post.images, ...post.videoPaths]);
 
-        // ── 删 Firestore ──
+        // 原来「删本地图片」那段可以保留（针对老帖子），也可以删掉，
+        // 因为新帖子已经不存本地路径了。
+
         await _firestore.collection('posts').doc(postId).delete();
-
-        // ── 同步删 Algolia ──
         await AlgoliaService.deletePost(postId);
-
         await decrementPostCount();
       }
     } catch (e) {

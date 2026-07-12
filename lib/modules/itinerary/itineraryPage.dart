@@ -6,6 +6,7 @@ import '../../services/itinerary_service.dart';
 import '../../services/userPreference_service.dart';
 import '../itinerary/itineraryGeneratePage.dart';
 import 'itineraryDetail.dart';
+import '../../services/apps_Loading.dart';
 
 class ItineraryPage extends StatefulWidget {
   final VoidCallback? onBack;
@@ -75,7 +76,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: TravelLoadingIndicator())
           : _itineraries.isEmpty
               ? _buildEmpty()
               : _buildList(),

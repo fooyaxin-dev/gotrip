@@ -8,12 +8,13 @@ import '../place/placeDetailPage.dart';
 import 'package:geocoding/geocoding.dart';
 import '../../services/route_service.dart';
 import '../../services/location_service.dart';
-import '../../models/placeModal.dart';
+import '../../models/placeModel.dart';
 import '../../services/nearbyPlace_service.dart';
 import '../../services/userPreference_service.dart';
 import '../../services/achievement_service.dart';
 import '../dashboard/dashboard_page.dart';
 import '../place/categoryImage_Helper.dart';
+import '../../services/apps_Loading.dart';
 
 class MainPage extends StatefulWidget {
   final dynamic username;
@@ -55,6 +56,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     if (mounted && tier != null) {
       setState(() => _latestBadge = tier);
     }
+    // Fallback sync: ensure users/{uid}.topBadge* in Firestore always
+    // matches the current fetchTopBadge() result. This covers accounts
+    // whose thresholds were already crossed before the check-in write
+    // existed, or where a previous check-in's write was missed — those
+    // cases never trigger via checkForNewUnlocks(), since nothing "new"
+    // is detected on the next check-in either.
+    AchievementService.instance.saveTopBadgeToFirestore();
   }
 
   void _onLocationChanged() {
@@ -243,10 +251,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     } catch (e) {
       if (!mounted) return;
       setState(() => _loadingNearby = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to load nearby places: $e'),
-            backgroundColor: Colors.red[400]),
-      );
+      print('🚨🚨🚨:Failed to load nearby places: $e');
     }
   }
 
@@ -416,7 +421,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               SizedBox(
                 height: 320,
                 child: _loadingNearby
-                    ? const Center(child: CircularProgressIndicator())
+                    ? const Center(child: TravelLoadingIndicator())
                     : _placeByCategory[_selectedCategory]?.isEmpty ?? true
                         ? Center(child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -460,7 +465,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 25),
                 child: _loadingNearby
-                    ? const Center(child: CircularProgressIndicator())
+                    ? const Center(child: TravelLoadingIndicator())
                     : Column(
                         children: List.generate(_nearbyTrending.length, (i) =>
                             _buildSpecialAsymmetricCard(_nearbyTrending[i], i)),
@@ -483,7 +488,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
       if (_loadingNearby) {
         return const SizedBox(
           height: 200,
-          child: Center(child: CircularProgressIndicator()),
+          child: Center(child: TravelLoadingIndicator()),
         );
       }
 

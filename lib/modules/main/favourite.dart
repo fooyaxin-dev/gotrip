@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../services/favourite_service.dart';
 import '../place/favouriteButton.dart';
 import '../place/placeDetailPage.dart';
+import '../../services/apps_Loading.dart';
 
 // ─────────────────────────────────────────────
 // 📌 Google Places API types → 自定义分类映射
@@ -210,7 +211,7 @@ class _FavouritePageState extends State<FavouritePage> with TickerProviderStateM
               // 加载中
               if (snapshot.connectionState == ConnectionState.waiting)
                 const SliverFillRemaining(
-                  child: Center(child: CircularProgressIndicator()),
+                  child: Center(child: TravelLoadingIndicator()),
                 )
 
               // 空状态

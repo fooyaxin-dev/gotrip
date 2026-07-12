@@ -7,8 +7,19 @@
 //   - itineraryDetail.dart  (unlock detection on check-in)
 //   - interactionPage.dart  (badge next to username in posts)
 //   - addPost.dart          (badge next to username when posting)
+//
+// ── CHANGE LOG (bug fix pass) ──────────────────────────────────────────────
+// 1. saveTopBadgeToFirestore() now uses set(merge: true) instead of update().
+//    update() throws if the users/{uid} document doesn't exist yet (e.g. a
+//    brand-new account whose profile doc hasn't been created), which was
+//    silently failing and leaving topBadgeEmoji/Label/Level permanently
+//    missing from Firestore.
+// 2. Wrapped the write in try/catch with a debug print so failures are no
+//    longer silent.
+// -----------------------------------------------------------------------------
 
 import 'dart:math';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
@@ -418,28 +429,46 @@ class AchievementService {
 
   // ─────────────────────────────────────────────
   // Save top badge to Firestore users/{uid}
-  // Called after every check-in so post cards can
-  // display the badge without extra Firestore reads.
+  //
+  // Called after every check-in (regardless of whether that specific
+  // check-in unlocked something new) so post cards can display the badge
+  // without extra Firestore reads.
+  //
+  // FIX: previously used .update(), which throws if the users/{uid}
+  // document doesn't exist yet — that failure was silent (no try/catch),
+  // so topBadgeEmoji/Label/Level could end up permanently missing.
+  // Now uses set(merge: true), which creates-or-merges safely, and any
+  // unexpected error is at least logged instead of swallowed.
   // ─────────────────────────────────────────────
 
   Future<void> saveTopBadgeToFirestore() async {
     final uid = _uid;
     if (uid == null) return;
 
-    final tier = await fetchTopBadge();
-    final data = tier == null
-        ? {
-            'topBadgeEmoji': null,
-            'topBadgeLabel': null,
-            'topBadgeLevel': null,
-          }
-        : {
-            'topBadgeEmoji': tier.emoji,
-            'topBadgeLabel': tier.label,
-            'topBadgeLevel': tier.level,
-          };
+    try {
+      final tier = await fetchTopBadge();
+      final data = tier == null
+          ? {
+              'topBadgeEmoji': null,
+              'topBadgeLabel': null,
+              'topBadgeLevel': null,
+            }
+          : {
+              'topBadgeEmoji': tier.emoji,
+              'topBadgeLabel': tier.label,
+              'topBadgeLevel': tier.level,
+            };
 
-    await _db.collection('users').doc(uid).update(data);
+      await _db
+          .collection('users')
+          .doc(uid)
+          .set(data, SetOptions(merge: true));
+    } catch (e) {
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('AchievementService.saveTopBadgeToFirestore failed: $e');
+      }
+    }
   }
 
   // ─────────────────────────────────────────────

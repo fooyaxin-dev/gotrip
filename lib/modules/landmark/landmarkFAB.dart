@@ -5,6 +5,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
+import '../../services/apps_Loading.dart';
 
 import '../../services/vision_service.dart';
 import 'landmarkResult.dart'; // your ResultPage lives here
@@ -150,7 +151,7 @@ class _LandmarkFABState extends State<LandmarkFAB>
           ? Image.memory(_previewBytes!, fit: BoxFit.cover)
           : CameraPreview(_cameraController!);
     }
-    return const Center(child: CircularProgressIndicator(color: Colors.white));
+    return const Center(child: TravelLoadingIndicator());
   }
 
   Widget _buildTopGradient() {
@@ -273,7 +274,7 @@ class _LandmarkFABState extends State<LandmarkFAB>
                     child: _loading
                         ? const Padding(
                             padding: EdgeInsets.all(15),
-                            child: CircularProgressIndicator(strokeWidth: 3),
+                            child: TravelLoadingIndicator(),
                           )
                         : const Icon(Icons.camera_alt, color: Colors.black, size: 30),
                   ),

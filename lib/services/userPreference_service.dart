@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'sentiment_service.dart';
+import 'weather_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Budget tier  (set during onboarding)
@@ -110,6 +111,7 @@ class RecommendationScore {
   final double ratingScore;
   final double timeSuitability;
   final double budgetSuitability;
+  final double weatherScore; 
 
   const RecommendationScore({
     required this.total,
@@ -118,6 +120,7 @@ class RecommendationScore {
     required this.ratingScore,
     required this.timeSuitability,
     required this.budgetSuitability,
+    required this.weatherScore,
   });
 
   String get percentage => '${(total * 100).toStringAsFixed(1)}%';
@@ -468,16 +471,27 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> updateFromLike({
-    required List<String> postTags,
-    required String?      postTopic,
-    required bool         isLiking, // true = like, false = unlike
+    required List<String>   postTags,
+    required String?        postTopic,
+    required bool           isLiking,
+    required SentimentLabel sentimentLabel,       // ← 新增
+    required int             sentimentMatchedTokens, // ← 新增
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
     if (postTags.isEmpty && postTopic == null) return;
 
-    // ── 收集 keys ──
+    // 只有 positive 且置信度够高才计入学习，跟 updateFromPost 一致
+    if (sentimentLabel != SentimentLabel.positive) {
+      print('🧠 updateFromLike: skipped (sentiment=${sentimentLabel.toJson()}, not positive)');
+      return;
+    }
+    if (sentimentMatchedTokens < 2) {
+      print('🧠 updateFromLike: skipped (low confidence, only $sentimentMatchedTokens words)');
+      return;
+    }
+
     final involvedKeys = <String>{};
     for (final tag in postTags) {
       final cat = _tagToCategory[tag.toLowerCase()];
@@ -490,21 +504,19 @@ class UserPreferenceService {
 
     if (involvedKeys.isEmpty) return;
 
-    // ── 更新 buffer ──
-    // Like → +0.7，Unlike → -0.7
     for (final key in involvedKeys) {
       if (isLiking) {
         _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) + 0.7;
       } else {
         _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) - 0.7;
-        // buffer 不能低于 0
         if (_searchScoreBuffer[key]! < 0) _searchScoreBuffer[key] = 0.0;
       }
     }
 
     await _flushBuffer(uid);
 
-    print('✅ updateFromLike: tags=$postTags topic=$postTopic isLiking=$isLiking');
+    print('✅ updateFromLike: tags=$postTags topic=$postTopic isLiking=$isLiking '
+        '(sentiment gate passed)');
   }
 
   // ─────────────────────────────────────────────
@@ -622,14 +634,19 @@ class UserPreferenceService {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════
+  /// ═══════════════════════════════════════════════════════════════════
   // RECOMMENDATION SCORE
   //
-  // Score = 0.35 × InterestMatch
-  //       + 0.25 × DistanceScore
-  //       + 0.20 × RatingScore
+  // Score = 0.30 × InterestMatch
+  //       + 0.20 × DistanceScore
+  //       + 0.15 × WeatherScore
+  //       + 0.15 × RatingScore
   //       + 0.10 × TimeSuitability
   //       + 0.10 × BudgetSuitability
+  //
+  // Open/Close is NOT part of this formula — it's a hard filter applied
+  // before scoring (closed places should be excluded from the candidate
+  // list entirely, not merely down-weighted).
   // ═══════════════════════════════════════════════════════════════════
 
   RecommendationScore recommendationScore({
@@ -638,18 +655,21 @@ class UserPreferenceService {
     required double?      rating,
     required double?      distanceMeters,
     required int?         priceLevel,
+    WeatherCondition?     weather,   // ← 新增，nullable = 没拿到天气数据时不惩罚
   }) {
     final interest = _interestMatchScore(primaryType, allTypes);
     final distance = _distanceScore(distanceMeters);
     final ratingS  = _ratingScore(rating);
     final time     = _timeSuitabilityScore(primaryType, allTypes);
     final budget   = _budgetSuitabilityScore(priceLevel);
+    final weatherS = _weatherScore(weather, primaryType, allTypes);
 
-    final total = (0.35 * interest
-                 + 0.25 * distance
-                 + 0.20 * ratingS
-                 + 0.10 * time
-                 + 0.10 * budget).clamp(0.0, 1.0);
+    final total = (0.30 * interest
+                + 0.20 * distance
+                + 0.15 * weatherS
+                + 0.15 * ratingS
+                + 0.10 * time
+                + 0.10 * budget).clamp(0.0, 1.0);
 
     return RecommendationScore(
       total:             total,
@@ -658,9 +678,37 @@ class UserPreferenceService {
       ratingScore:       ratingS,
       timeSuitability:   time,
       budgetSuitability: budget,
+      weatherScore:      weatherS,
     );
   }
 
+  double _weatherScore(
+    WeatherCondition? weather,
+    String? primaryType,
+    List<String> allTypes,
+  ) {
+    // No weather data available → neutral-high, don't penalize
+    if (weather == null) return 0.8;
+
+    const outdoorTypes = {
+      'park', 'tourist_attraction', 'amusement_park',
+    };
+    final isOutdoor = (primaryType != null && outdoorTypes.contains(primaryType))
+        || allTypes.any((t) => outdoorTypes.contains(t));
+
+    switch (weather) {
+      case WeatherCondition.rain:
+      case WeatherCondition.storm:
+        return isOutdoor ? 0.2 : 1.0;
+      case WeatherCondition.extreme:
+        return isOutdoor ? 0.1 : 0.9;
+      case WeatherCondition.cloudy:
+        return isOutdoor ? 0.8 : 0.9;
+      case WeatherCondition.clear:
+        return isOutdoor ? 1.0 : 0.8;
+    }
+  }
+  
   double _interestMatchScore(String? primaryType, List<String> allTypes) {
     const typeToCategory = {
       'restaurant':         'restaurant',
@@ -773,6 +821,7 @@ class UserPreferenceService {
     double?               distanceMeters,
     double?               rating,
     int?                  priceLevel,
+    WeatherCondition?     weather,
   }) =>
       recommendationScore(
         primaryType:    primaryType,
@@ -780,6 +829,7 @@ class UserPreferenceService {
         rating:         rating,
         distanceMeters: distanceMeters,
         priceLevel:     priceLevel,
+        weather:        weather,
       ).total;
 
   String? getRecommendReason({
