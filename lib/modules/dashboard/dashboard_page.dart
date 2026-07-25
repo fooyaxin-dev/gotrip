@@ -9,6 +9,8 @@ import '../itinerary/itineraryDetail.dart';
 import '../itinerary/itineraryPage.dart';
 import '../profile/profile.dart';
 import '../../services/apps_Loading.dart';
+import '../../services/userActivity_service.dart';
+import '../../services/category_mapper.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Data Models
@@ -99,14 +101,6 @@ const _kCategoryColors = {
   'Others':     Color(0xFFBDC3C7),
 };
 
-String _mapTypeToCategory(List<String> types) {
-  for (final entry in _kCategoryLabels.entries) {
-    for (final t in types) {
-      if (entry.value.contains(t)) return entry.key;
-    }
-  }
-  return 'Others';
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Haversine distance helper (km)
@@ -195,28 +189,29 @@ class _DashboardPageState extends State<DashboardPage> {
   // Load raw data ONCE from Firestore
   // ─────────────────────────────────────────────
 
-  Future<void> _loadRawData() async {
+    
+  Future<void> _loadRawData({bool forceRefresh = false}) async {
     setState(() { _isLoading = true; _errorMsg = null; });
-
+  
     try {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       if (uid == null) { setState(() => _isLoading = false); return; }
-
-      final db      = FirebaseFirestore.instance;
-      final results = await Future.wait([
-        db.collection('users').doc(uid).collection('history').get(),
-        db.collection('users').doc(uid).collection('favourites').get(),
-        db.collection('users').doc(uid).collection('itineraries').get(),
-      ]);
-
-      final historySnap     = results[0] as QuerySnapshot;
-      final favouritesSnap  = results[1] as QuerySnapshot;
-      final itinerariesSnap = results[2] as QuerySnapshot;
-
-      // ── Favourites (for type lookup + wishlist) ──
+  
+      // ★ 改动：不再自己 Future.wait 三个 collection().get()，
+      // 改成调用共享的 UserActivityDataService —— 跟 Achievement 读的是
+      // 完全同一份原始数据（同一次 .get() 结果，缓存也共用）
+      final activity = await UserActivityDataService.instance.getAll(
+        forceRefresh: forceRefresh,
+      );
+  
+      final historySnap     = activity.history;
+      final favouritesSnap  = activity.favourites;
+      final itinerariesSnap = activity.itineraries;
+  
+      // ── Favourites（ActivityDoc 用法：doc.data 不是 doc.data()）──
       final favouriteEntries = <({DateTime savedAt, String placeId, String name, String address, List<String> types, String? photoUrl, double? rating})>[];
-      for (final doc in favouritesSnap.docs) {
-        final data    = doc.data() as Map<String, dynamic>;
+      for (final doc in favouritesSnap) {
+        final data    = doc.data;
         final savedAt = (data['savedAt'] as Timestamp?)?.toDate() ?? DateTime(2000);
         favouriteEntries.add((
           savedAt:  savedAt,
@@ -228,44 +223,50 @@ class _DashboardPageState extends State<DashboardPage> {
           rating:   (data['rating']  as num?)?.toDouble(),
         ));
       }
-
-      // Build a quick placeId -> types lookup from favourites, used to infer
-      // primaryType for history entries that don't store it directly.
+  
       final typeByPlaceId = <String, List<String>>{};
       for (final f in favouriteEntries) {
         typeByPlaceId[f.placeId] = f.types;
       }
-
-      // ── Itineraries (full models, also used to source visit events) ──
-      final itineraryModels = itinerariesSnap.docs
-          .map((doc) => ItineraryModel.fromMap(
-                doc.id, doc.data() as Map<String, dynamic>))
+  
+      // ── Itineraries（同样用 doc.data / doc.id，ItineraryModel.fromMap 用法不变）──
+      final itineraryModels = itinerariesSnap
+          .map((doc) => ItineraryModel.fromMap(doc.id, doc.data))
           .toList();
-
-      // ── Build unified visit events ──
+  
+      // ── 构建统一的 visit events ──
       final visitEvents = <_VisitEvent>[];
-
-      // 1) From plain history collection
-      for (final doc in historySnap.docs) {
-        final data      = doc.data() as Map<String, dynamic>;
+  
+      // 1) 来自 plain history collection
+      for (final doc in historySnap) {
+        final data      = doc.data;
         final timestamp = data['visitedAt'] as Timestamp?;
         if (timestamp == null) continue;
         final placeId = data['placeId'] as String?;
         final types    = placeId != null ? (typeByPlaceId[placeId] ?? []) : <String>[];
+  
+        // ★ 改动：优先用 history 自己存的 primaryType（我们之前已经
+        // 确认它有存），没有的话才退回用 favourites 的 types 猜分类
+        final storedPrimaryType = data['primaryType'] as String?;
+        final category = storedPrimaryType != null && storedPrimaryType.isNotEmpty
+            ? CategoryMapper.toDisplayCategory(storedPrimaryType)
+            : CategoryMapper.toDisplayCategory(
+                types.isNotEmpty ? types.first : '');
+  
         visitEvents.add(_VisitEvent(
           visitedAt:   timestamp.toDate(),
           address:     data['address']   as String? ?? '',
           placeId:     placeId,
           placeName:   data['placeName'] as String? ?? '',
-          primaryType: _mapTypeToCategory(types),
-          lat:         null, // plain history doesn't store coordinates
-          lng:         null,
+          primaryType: category,
+          // ★ 改动：history 现在存了坐标，不用再是 null
+          lat:         (data['lat'] as num?)?.toDouble(),
+          lng:         (data['lng'] as num?)?.toDouble(),
           itineraryId: data['itineraryId'] as String? ?? '',
         ));
       }
-
-      // 2) From itinerary visited places — these DO have lat/lng + primaryType,
-      //    which the distance calculation needs.
+  
+      // 2) 来自 itinerary 里已打卡的地点
       for (final model in itineraryModels) {
         for (final day in model.days) {
           for (final place in day.places) {
@@ -275,7 +276,7 @@ class _DashboardPageState extends State<DashboardPage> {
               address:     place.address,
               placeId:     place.placeId,
               placeName:   place.name,
-              primaryType: _mapTypeToCategory([place.primaryType ?? '']),
+              primaryType: CategoryMapper.toDisplayCategory(place.primaryType ?? ''),
               lat:         place.lat,
               lng:         place.lng,
               itineraryId: model.id,
@@ -283,7 +284,7 @@ class _DashboardPageState extends State<DashboardPage> {
           }
         }
       }
-
+  
       setState(() {
         _rawData = _RawData(
           visitEvents:      visitEvents,
@@ -296,7 +297,7 @@ class _DashboardPageState extends State<DashboardPage> {
       setState(() { _isLoading = false; _errorMsg = e.toString(); });
     }
   }
-
+  
   // ─────────────────────────────────────────────
   // Compute in-memory — no extra Firestore calls
   //
@@ -494,15 +495,15 @@ class _DashboardPageState extends State<DashboardPage> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Colors.black54),
-            onPressed: _loadRawData,
+            onPressed: () => _loadRawData(forceRefresh: true),
           ),
         ],
       ),
       body: _isLoading
-          ? const TravelLoadingIndicator()
-          : _errorMsg != null || _rawData == null
-              ? _buildError()
-              : _buildBody(),
+      ? const Center(child: TravelLoadingIndicator())
+      : _errorMsg != null || _rawData == null
+          ? _buildError()
+          : _buildBody(),
     );
   }
 
@@ -515,7 +516,7 @@ class _DashboardPageState extends State<DashboardPage> {
           const SizedBox(height: 12),
           Text('Failed to load dashboard', style: TextStyle(color: Colors.grey[600])),
           const SizedBox(height: 12),
-          ElevatedButton(onPressed: _loadRawData, child: const Text('Retry')),
+          ElevatedButton(onPressed: () => _loadRawData(forceRefresh: true), child: const Text('Retry')),
         ],
       ),
     );

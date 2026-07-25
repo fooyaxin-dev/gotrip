@@ -3,6 +3,7 @@ class ApiKeys {
   static const String googlePlacesNew = String.fromEnvironment('GOOGLE_PLACES_NEW_KEY');
   static const String googleVision = String.fromEnvironment('GOOGLE_VISION_KEY');
   static const String gemini = String.fromEnvironment('GEMINI_API_KEY');
+  static const String geminiEnrichment = String.fromEnvironment('GEMINI_ENRICHMENT_KEY');
   static const String geoapify = String.fromEnvironment('GEOAPIFY_KEY');
   static const String algoliaAppId = String.fromEnvironment('ALGOLIA_APP_ID');
   static const String algoliaSearchKey = String.fromEnvironment('ALGOLIA_SEARCH_KEY');

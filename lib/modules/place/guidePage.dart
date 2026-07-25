@@ -16,6 +16,7 @@ class GuidePage extends StatefulWidget {
   final double endLng;
   final String? destinationName;
   final TravelMode travelMode;
+  final RouteResult? initialRoute;  
 
   const GuidePage({
     super.key,
@@ -25,6 +26,7 @@ class GuidePage extends StatefulWidget {
     required this.endLng,
     this.destinationName,
     this.travelMode = TravelMode.drive,
+    this.initialRoute,  
   });
 
   @override
@@ -36,7 +38,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   late NavigationController _nav;
 
   GoogleMapController? _mapController;
-
+ 
   // Camera follow state
   bool _isFollowing = true;
   bool _isOverview  = false;
@@ -57,6 +59,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       endLng:          widget.endLng,
       destinationName: widget.destinationName,
       travelMode:      widget.travelMode,
+      initialRoute:    widget.initialRoute,
     );
 
     // Wire arrived callback
@@ -373,12 +376,14 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
               });
             },
             onCameraMoveStarted: () {
-              // Only treat as user gesture if we didn't move it ourselves
+              // 只要不是我们自己代码触发的移动（_isProgrammaticMove），
+              // 就认定是用户手指主动拖动/缩放/旋转，立刻退出跟随模式。
+              // 之前用「距离上次自动跟随移动是否超过 1 秒」来判断，
+              // 但导航过程中 GPS 每 200ms 就会自动跟随一次，_lastCameraMove
+              // 几乎从不超过 1 秒没更新过，导致这个条件永远不成立、
+              // 用户永远退不出跟随模式，感觉整个地图像是拖不动。
               if (!_isProgrammaticMove) {
-                final now = DateTime.now();
-                if (now.difference(_lastCameraMove).inMilliseconds > 1000) {
-                  setState(() => _isFollowing = false);
-                }
+                setState(() => _isFollowing = false);
               }
             },
             padding: EdgeInsets.only(

@@ -282,7 +282,7 @@ class PostService {
 
         // ★ 新增：清理 Storage 里的图片/视频（旧本地路径会被自动跳过）
         await StorageService.deletePostMedia([...post.images, ...post.videoPaths]);
-
+ 
         // 原来「删本地图片」那段可以保留（针对老帖子），也可以删掉，
         // 因为新帖子已经不存本地路径了。
 

@@ -9,6 +9,8 @@ import '../../services/history_service.dart';
 import '../../services/location_service.dart';
 import '../place/placeDetailPage.dart';
 import '../place/routePreviewPage.dart';
+import '../place/routeOptimizerPage.dart';
+import '../../services/route_service.dart';
 import '../../services/achievement_service.dart';
 import '../../services/apps_Loading.dart';
 
@@ -25,7 +27,6 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
   late ItineraryModel _itinerary;
   late TabController  _tabController;
-  bool _isSaving = false;
 
   final Map<String, GlobalKey> _cardKeys = {};
   StreamSubscription<PlaceArrivalEvent>? _arrivalSub;
@@ -99,6 +100,9 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     LocationService.instance.markArrived(visited.placeId);
     LocationService.instance.watchItinerary(_itinerary);
 
+    // Itinerary is always already saved (non-empty id) by the time it
+    // reaches this page — RouteOptimizerPage handles the initial save.
+    // Every check-in just keeps Firestore in sync from here on.
     if (_itinerary.id.isNotEmpty) {
       ItineraryService.instance.update(_itinerary);
     }
@@ -125,6 +129,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     await Future.delayed(const Duration(milliseconds: 800));
     if (!mounted) return;
 
+    AchievementService.instance.invalidateStatsCache(); 
     final statsAfter  = await AchievementService.instance.fetchStats();
     final groupsAfter = AchievementService.instance.buildGroups(statsAfter);
 
@@ -178,232 +183,6 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   // ─────────────────────────────────────────────
-  // CRUD helpers
-  // ─────────────────────────────────────────────
-
-  Future<void> _save() async {
-    setState(() => _isSaving = true);
-
-    String? savedId;
-
-    if (_itinerary.id.isEmpty) {
-      savedId = await ItineraryService.instance.save(_itinerary);
-      if (savedId != null) {
-        setState(() => _itinerary = _itinerary.copyWith(id: savedId!));
-      }
-    } else {
-      await ItineraryService.instance.update(_itinerary);
-      savedId = _itinerary.id;
-    }
-
-    if (mounted) {
-      setState(() => _isSaving = false);
-      if (savedId != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('✅ Itinerary saved!'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        Navigator.pop(context, true);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('❌ Save failed'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    }
-  }
-
-  void _removePlace(int dayIndex, int placeIndex) {
-    final days   = List<ItineraryDay>.from(_itinerary.days);
-    final places = List<ItineraryPlace>.from(days[dayIndex].places);
-    places.removeAt(placeIndex);
-    days[dayIndex] = days[dayIndex].copyWith(places: places);
-    setState(() => _itinerary = _itinerary.copyWith(days: days));
-    LocationService.instance.watchItinerary(_itinerary);
-
-    _cardKeys.removeWhere((key, _) =>
-        !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key)));
-  }
-
-  void _reorderPlaces(int dayIndex, int oldIndex, int newIndex) {
-    final days   = List<ItineraryDay>.from(_itinerary.days);
-    final places = List<ItineraryPlace>.from(days[dayIndex].places);
-    if (newIndex > oldIndex) newIndex--;
-    final item = places.removeAt(oldIndex);
-    places.insert(newIndex, item);
-    days[dayIndex] = days[dayIndex].copyWith(places: places);
-    setState(() => _itinerary = _itinerary.copyWith(days: days));
-
-    _cardKeys.removeWhere((key, _) =>
-        !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key)));
-  }
-
-  void _updatePlace(int dayIndex, int placeIndex, ItineraryPlace updated) {
-    final days   = List<ItineraryDay>.from(_itinerary.days);
-    final places = List<ItineraryPlace>.from(days[dayIndex].places);
-    places[placeIndex] = updated;
-    places.sort((a, b) => a.suggestedTime.compareTo(b.suggestedTime));
-    days[dayIndex] = days[dayIndex].copyWith(places: places);
-    setState(() => _itinerary = _itinerary.copyWith(days: days));
-  }
-
-  // ─────────────────────────────────────────────
-  // Time / Duration editing
-  // ─────────────────────────────────────────────
-
-  TimeOfDay _parseTime(String t) {
-    try {
-      final parts = t.split(':');
-      return TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
-    } catch (_) {
-      return const TimeOfDay(hour: 9, minute: 0);
-    }
-  }
-
-  Future<void> _pickTime(
-      int dayIndex, int placeIndex, ItineraryPlace place) async {
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: _parseTime(place.suggestedTime),
-      builder: (context, child) => Theme(
-        data: Theme.of(context).copyWith(
-          colorScheme: const ColorScheme.light(
-            primary: Color(0xFF7C4DFF),
-            onPrimary: Colors.white,
-          ),
-        ),
-        child: child!,
-      ),
-    );
-    if (picked != null && mounted) {
-      final hh = picked.hour.toString().padLeft(2, '0');
-      final mm = picked.minute.toString().padLeft(2, '0');
-      _updatePlace(dayIndex, placeIndex,
-          place.copyWith(suggestedTime: '$hh:$mm'));
-    }
-  }
-
-  Future<void> _pickDuration(
-      int dayIndex, int placeIndex, ItineraryPlace place) async {
-    const presets = [15, 30, 45, 60, 90, 120, 150, 180, 240];
-    int selected  = place.durationMinutes;
-
-    await showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => StatefulBuilder(builder: (ctx, setSheet) {
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(
-                child: Container(
-                  width: 40, height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[300],
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text('Visit Duration',
-                  style: TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 4),
-              Text('Select how long you plan to stay',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[500])),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8, runSpacing: 8,
-                children: presets.map((mins) {
-                  final isSelected = selected == mins;
-                  final label = mins < 60
-                      ? '$mins min'
-                      : mins % 60 == 0
-                          ? '${mins ~/ 60}h'
-                          : '${mins ~/ 60}h ${mins % 60}min';
-                  return ChoiceChip(
-                    label: Text(label),
-                    selected: isSelected,
-                    onSelected: (_) => setSheet(() => selected = mins),
-                    selectedColor: const Color(0xFF7C4DFF),
-                    labelStyle: TextStyle(
-                      color: isSelected ? Colors.white : Colors.black87,
-                      fontWeight: isSelected
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 20),
-              Row(children: [
-                const Text('Custom:', style: TextStyle(fontSize: 13)),
-                Expanded(
-                  child: Slider(
-                    value: selected.toDouble(),
-                    min: 10, max: 480, divisions: 47,
-                    activeColor: const Color(0xFF7C4DFF),
-                    label: selected < 60
-                        ? '$selected min'
-                        : '${selected ~/ 60}h ${selected % 60 == 0 ? "" : "${selected % 60}min"}',
-                    onChanged: (v) => setSheet(() => selected = v.round()),
-                  ),
-                ),
-                SizedBox(
-                  width: 60,
-                  child: Text(
-                    selected < 60
-                        ? '$selected min'
-                        : selected % 60 == 0
-                            ? '${selected ~/ 60}h'
-                            : '${selected ~/ 60}h ${selected % 60}m',
-                    style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF7C4DFF)),
-                    textAlign: TextAlign.end,
-                  ),
-                ),
-              ]),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity, height: 48,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF7C4DFF),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                  child: const Text('Confirm',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold)),
-                ),
-              ),
-            ],
-          ),
-        );
-      }),
-    );
-
-    if (selected != place.durationMinutes && mounted) {
-      _updatePlace(dayIndex, placeIndex,
-          place.copyWith(durationMinutes: selected));
-    }
-  }
-
-  // ─────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────
 
@@ -428,7 +207,6 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
           ],
         ),
       ),
-      bottomNavigationBar: _buildBottomBar(),
     );
   }
 
@@ -452,7 +230,13 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       ),
       actions: [
         IconButton(
+          icon: const Icon(Icons.edit_road_rounded, color: Colors.white),
+          tooltip: 'Edit itinerary',
+          onPressed: _editItinerary,
+        ),
+        IconButton(
           icon: const Icon(Icons.edit_outlined, color: Colors.white),
+          tooltip: 'Edit title',
           onPressed: _editTitle,
         ),
       ],
@@ -473,10 +257,10 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   const Row(children: [
-                    Icon(Icons.auto_awesome_rounded,
+                    Icon(Icons.map_rounded,
                         color: Colors.white70, size: 14),
                     SizedBox(width: 6),
-                    Text('AI Generated Itinerary',
+                    Text('Your Trip',
                         style: TextStyle(
                             color: Colors.white70, fontSize: 12)),
                   ]),
@@ -571,7 +355,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
             Icon(Icons.add_location_alt_outlined,
                 size: 48, color: Colors.grey[300]),
             const SizedBox(height: 12),
-            Text('No places yet',
+            Text('No places for this day',
                 style: TextStyle(color: Colors.grey[500])),
           ],
         ),
@@ -580,9 +364,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
     final nextPlace = day.nextPlace;
 
-    return ReorderableListView.builder(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 100),
-      onReorder: (old, neo) => _reorderPlaces(dayIndex, old, neo),
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
       itemCount: day.places.length,
       itemBuilder: (_, i) {
         final place     = day.places[i];
@@ -694,95 +477,52 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                 ]),
               ),
 
-            // Top row: time + duration + delete + drag
+            // Top row: time + duration (display only, not editable here)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
               child: Row(children: [
                 // Time chip
-                GestureDetector(
-                  onTap: isVisited
-                      ? null
-                      : () => _pickTime(dayIndex, placeIndex, place),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color:
-                          const Color(0xFF7C4DFF).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: const Color(0xFF7C4DFF)
-                              .withOpacity(0.3)),
-                    ),
-                    child: Row(children: [
-                      const Icon(Icons.access_time_rounded,
-                          size: 12, color: Color(0xFF7C4DFF)),
-                      const SizedBox(width: 4),
-                      Text(place.suggestedTime,
-                          style: const TextStyle(
-                              fontSize: 12,
-                              color: Color(0xFF7C4DFF),
-                              fontWeight: FontWeight.bold)),
-                      if (!isVisited) ...[
-                        const SizedBox(width: 4),
-                        const Icon(Icons.edit_rounded,
-                            size: 10, color: Color(0xFF7C4DFF)),
-                      ],
-                    ]),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color:
+                            const Color(0xFF7C4DFF).withOpacity(0.3)),
                   ),
+                  child: Row(children: [
+                    const Icon(Icons.access_time_rounded,
+                        size: 12, color: Color(0xFF7C4DFF)),
+                    const SizedBox(width: 4),
+                    Text(place.suggestedTime,
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF7C4DFF),
+                            fontWeight: FontWeight.bold)),
+                  ]),
                 ),
                 const SizedBox(width: 8),
 
                 // Duration chip
-                GestureDetector(
-                  onTap: isVisited
-                      ? null
-                      : () =>
-                          _pickDuration(dayIndex, placeIndex, place),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.grey[100],
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.grey[300]!),
-                    ),
-                    child: Row(children: [
-                      Icon(Icons.timelapse_rounded,
-                          size: 11, color: Colors.grey[600]),
-                      const SizedBox(width: 3),
-                      Text(_formatDuration(place.durationMinutes),
-                          style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.grey[700])),
-                      if (!isVisited) ...[
-                        const SizedBox(width: 3),
-                        Icon(Icons.edit_rounded,
-                            size: 10, color: Colors.grey[500]),
-                      ],
-                    ]),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey[300]!),
                   ),
+                  child: Row(children: [
+                    Icon(Icons.timelapse_rounded,
+                        size: 11, color: Colors.grey[600]),
+                    const SizedBox(width: 3),
+                    Text(_formatDuration(place.durationMinutes),
+                        style: TextStyle(
+                            fontSize: 11, color: Colors.grey[700])),
+                  ]),
                 ),
-                const Spacer(),
-
-                if (!isVisited) ...[
-                  GestureDetector(
-                    onTap: () =>
-                        _confirmRemove(dayIndex, placeIndex),
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: Colors.red[50],
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(Icons.delete_outline_rounded,
-                          size: 16, color: Colors.red[400]),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  const Icon(Icons.drag_handle_rounded,
-                      color: Colors.grey, size: 20),
-                ],
               ]),
             ),
 
@@ -968,90 +708,88 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   // ─────────────────────────────────────────────
-  // Bottom Bar
+  // Edit itinerary — re-opens RouteOptimizerPage on this already-saved
+  // itinerary so the user can still reorder/remove/move places or change
+  // times mid-trip, not just at the moment it was first generated.
   // ─────────────────────────────────────────────
 
-  Widget _buildBottomBar() {
-    return Container(
-      padding: EdgeInsets.fromLTRB(
-          20, 12, 20, 12 + MediaQuery.of(context).padding.bottom),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 12,
-              offset: const Offset(0, -4))
-        ],
-      ),
-      child: SizedBox(
-        height: 52,
-        child: ElevatedButton(
-          onPressed: _isSaving ? null : _save,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF7C4DFF),
-            foregroundColor: Colors.white,
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16)),
-          ),
-          child: _isSaving
-              ? const SizedBox(
-                  width: 20, height: 20,
-                  child: TravelLoadingIndicator())
-              : const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.save_rounded, size: 18),
-                    SizedBox(width: 8),
-                    Text('Save Itinerary',
-                        style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold)),
-                  ],
-                ),
+  Future<void> _editItinerary() async {
+    double startLat;
+    double startLng;
+    String? startName;
+
+    final hasStoredOrigin =
+        _itinerary.originLat != null && _itinerary.originLng != null;
+
+    if (hasStoredOrigin && _itinerary.isOriginCurrentLocation) {
+      final pos = LocationService.instance.currentPosition;
+      if (pos != null) {
+        startLat  = pos.latitude;
+        startLng  = pos.longitude;
+        startName = 'Your Location';
+      } else {
+        startLat  = _itinerary.originLat!;
+        startLng  = _itinerary.originLng!;
+        startName = _itinerary.originName;
+      }
+    } else if (hasStoredOrigin) {
+      startLat  = _itinerary.originLat!;
+      startLng  = _itinerary.originLng!;
+      startName = _itinerary.originName;
+    } else {
+      final pos = LocationService.instance.currentPosition;
+      if (pos != null) {
+        startLat  = pos.latitude;
+        startLng  = pos.longitude;
+        startName = 'Your Location';
+      } else {
+        final fallback = _itinerary.days
+            .expand((d) => d.places)
+            .where((p) => p.lat != null && p.lng != null)
+            .toList();
+        if (fallback.isEmpty) return;
+        startLat  = fallback.first.lat!;
+        startLng  = fallback.first.lng!;
+        startName = null;
+      }
+    }
+
+    // 🔧 不再写死 TravelMode.walk —— 读回当初存的出行方式，
+    // 这样 signature 里的 travelMode 才能跟当初生成时一致，缓存才可能命中
+    final resolvedTravelMode = travelModeFromString(_itinerary.travelMode);
+
+    final updated = await Navigator.push<ItineraryModel>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RouteOptimizerPage(
+          itinerary: _itinerary,
+          startLat: startLat,
+          startLng: startLng,
+          startLocationName: startName,
+          travelMode: resolvedTravelMode,   // 🔧 CHANGED
+          isEditingExisting: true,
         ),
       ),
     );
+
+    if (updated == null || !mounted) return;
+
+    final daysChanged = updated.days.length != _itinerary.days.length;
+    setState(() => _itinerary = updated);
+
+    if (daysChanged) {
+      _tabController.dispose();
+      _tabController = TabController(length: _itinerary.days.length, vsync: this);
+    }
+
+    LocationService.instance.watchItinerary(_itinerary);
+    _cardKeys.removeWhere((key, _) =>
+        !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key)));
   }
 
   // ─────────────────────────────────────────────
   // Dialog helpers
   // ─────────────────────────────────────────────
-
-  void _confirmRemove(int dayIndex, int placeIndex) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20)),
-        title: const Text('Remove Place',
-            style: TextStyle(fontWeight: FontWeight.bold)),
-        content:
-            const Text('Remove this place from your itinerary?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel',
-                style: TextStyle(color: Colors.grey[600])),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _removePlace(dayIndex, placeIndex);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
-            child: const Text('Remove',
-                style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
 
   void _editTitle() {
     final ctrl = TextEditingController(text: _itinerary.title);
@@ -1080,8 +818,12 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
             onPressed: () {
               Navigator.pop(context);
               if (ctrl.text.trim().isNotEmpty) {
-                setState(() => _itinerary =
-                    _itinerary.copyWith(title: ctrl.text.trim()));
+                final updated =
+                    _itinerary.copyWith(title: ctrl.text.trim());
+                setState(() => _itinerary = updated);
+                if (_itinerary.id.isNotEmpty) {
+                  ItineraryService.instance.update(_itinerary);
+                }
               }
             },
             style: ElevatedButton.styleFrom(

@@ -1,24 +1,32 @@
 // services/storage_service.dart
 //
-// 负责把发帖时选中的图片/视频上传到 Firebase Storage，
-// 返回可公开访问的下载 URL，存进 Firestore 的 post 文档里。
+// 负责两件事：
+//   1. 发帖时把图片/视频上传到 Firebase Storage，返回下载 URL
+//      （解决：别人刷到你的帖子时图片是空的，因为原来存的是本地路径）
+//   2. 行程生成/保存时，把 Google Places 返回的、会过期的临时图片链接
+//      下载下来重新上传到 Storage，换成永久链接
+//      （解决：行程里的地点照片过几天就变成占位符）
 //
-// 之前的问题：addPost.dart 只把媒体存到手机本地
-// (path_provider)，然后把「本地路径」写进 Firestore。
-// 别人刷到你的帖子时，Image.file(那个本地路径) 在他们手机上
-// 根本不存在 —— 图片对所有人（除了发帖者自己）都是坏的。
-//
-// 现在改成：先传到 Storage，拿到 https:// 开头的下载链接，
-// 再把链接存进 Firestore —— 所有人都能通过网络加载到同一张图。
+// 第 2 点用 placeId 做缓存 key —— 同一个地点在不同用户/不同行程里
+// 出现，只会真正下载/上传一次，之后全部复用同一张图。
 
 import 'dart:io';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
 class StorageService {
   static final FirebaseStorage _storage = FirebaseStorage.instance;
+  static final FirebaseFirestore _db = FirebaseFirestore.instance;
   static String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+
+  static const String _photoCacheCollection = 'place_photo_cache';
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 1. 帖子图片/视频上传（发帖用）
+  // ═══════════════════════════════════════════════════════════════════
 
   /// 上传单个文件到 posts/{uid}/{timestamp}_{原文件名}.{ext}
   /// 成功返回下载 URL，失败返回 null（不会抛异常中断发帖流程）。
@@ -98,6 +106,75 @@ class StorageService {
       } catch (e) {
         print('⚠️ Failed to delete storage file ($url): $e');
       }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 2. 行程地点照片「永久化」（行程生成/保存用）
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// 把 [sourceUrl]（Google Places 返回的、可能几天后就过期的图片链接）
+  /// 下载下来重新上传到 Firebase Storage，返回一个不会过期的永久链接。
+  ///
+  /// 用 [placeId] 做缓存 key —— 同一个地点只会真正下载/上传一次，
+  /// 后续调用直接命中缓存，零网络开销。
+  ///
+  /// 任何环节失败（没网、下载超时、上传失败）都会 fallback 返回
+  /// [sourceUrl] 本身 —— 保证调用方永远拿到一个可用的 URL（哪怕只是
+  /// 「暂时可用」），不会因为这一步失败就让整个行程生成/保存中断。
+  static Future<String> resolvePermanentPlacePhoto({
+    required String placeId,
+    required String sourceUrl,
+  }) async {
+    if (placeId.isEmpty || sourceUrl.isEmpty) return sourceUrl;
+
+    // ── 先查缓存：这个地点是不是已经有人转存过了 ──
+    try {
+      final cached =
+          await _db.collection(_photoCacheCollection).doc(placeId).get();
+      if (cached.exists) {
+        final url = cached.data()?['storageUrl'] as String?;
+        if (url != null && url.isNotEmpty) {
+          print('🧠 resolvePermanentPlacePhoto: cache hit for $placeId');
+          return url;
+        }
+      }
+    } catch (e) {
+      print('⚠️ resolvePermanentPlacePhoto: cache check failed: $e');
+      // 查缓存失败不致命，继续往下走，当作没缓存处理
+    }
+
+    // ── 没缓存：下载 Google 图片 → 上传到 Storage → 写缓存 ──
+    try {
+      final response = await http
+          .get(Uri.parse(sourceUrl))
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode != 200) {
+        print('⚠️ resolvePermanentPlacePhoto: download failed '
+            '(${response.statusCode}) for $placeId');
+        return sourceUrl; // 至少眼下这个 URL 还能用，先用着
+      }
+
+      final ref = _storage.ref().child('place_photos/$placeId.jpg');
+      await ref.putData(
+        response.bodyBytes,
+        SettableMetadata(contentType: 'image/jpeg'),
+      );
+      final permanentUrl = await ref.getDownloadURL();
+
+      // 写缓存 —— 之后任何行程/任何用户引用同一个 placeId 都直接复用
+      await _db.collection(_photoCacheCollection).doc(placeId).set({
+        'storageUrl': permanentUrl,
+        'cachedAt': FieldValue.serverTimestamp(),
+      });
+
+      print('✅ resolvePermanentPlacePhoto: cached permanent photo for $placeId');
+      return permanentUrl;
+    } catch (e) {
+      print('⚠️ resolvePermanentPlacePhoto failed for $placeId: $e '
+          '— falling back to source URL');
+      return sourceUrl;
     }
   }
 }

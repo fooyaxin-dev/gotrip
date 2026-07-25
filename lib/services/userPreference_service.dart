@@ -364,7 +364,7 @@ class UserPreferenceService {
     }
   
     // 低置信度结果（命中词太少）不可靠，跳过
-    if (sentimentMatchedTokens < 2) {
+    if (sentimentMatchedTokens < 2) { 
       print('🧠 updateFromPost: skipped (low confidence, '
           'only $sentimentMatchedTokens sentiment words matched)');
       return;

@@ -45,6 +45,8 @@ class HistoryEntry {
   final String? placeId;      // ← 新增：Google Place ID
   final String? primaryType;  // ← 新增：e.g. 'restaurant', 'park'
   final String? city;         // ← 新增：extracted from address
+  final double? lat;   // ★ 新增
+  final double? lng;   // ★ 新增
 
   HistoryEntry({
     required this.id,
@@ -57,6 +59,8 @@ class HistoryEntry {
     this.placeId,
     this.primaryType,
     this.city,
+    this.lat,   // ★ 新增
+    this.lng,   // ★ 新增
   });
 
   factory HistoryEntry.fromMap(String id, Map<String, dynamic> m) =>
@@ -71,6 +75,8 @@ class HistoryEntry {
         placeId:        m['placeId'],
         primaryType:    m['primaryType'],
         city:           m['city'],
+        lat:            (m['lat'] as num?)?.toDouble(),  // ★ 新增
+        lng:            (m['lng'] as num?)?.toDouble(),  // ★ 新增
       );
 
   Map<String, dynamic> toMap() => {
@@ -83,6 +89,8 @@ class HistoryEntry {
     'placeId':        placeId,
     'primaryType':    primaryType,
     'city':           city,
+    'lat':            lat,
+    'lng':            lng,
   };
 }
 
@@ -133,6 +141,8 @@ class HistoryService {
     required String itineraryTitle,
     String? placeId,      // ← 新增
     String? primaryType,  // ← 新增
+    double? lat,   // ★ 新增
+    double? lng,   // ★ 新增
   }) async {
     if (_col == null) return;
 
@@ -151,6 +161,8 @@ class HistoryService {
         placeId:        placeId,
         primaryType:    primaryType,
         city:           city.isNotEmpty ? city : null,
+        lat:            lat,   // ★ 新增
+        lng:            lng,   // ★ 新增
       ).toMap());
     } catch (e) {
       print('❌ HistoryService.addEntry: $e');

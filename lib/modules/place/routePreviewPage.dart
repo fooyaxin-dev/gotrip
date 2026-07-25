@@ -64,10 +64,22 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
     TravelMode.walk:  _ModeSummary(mode: TravelMode.walk),
   };
 
-  final Map<TravelMode, RouteSummary?> _routeData = {
+  final Map<TravelMode, RouteResult?> _routeData = {   // ← 类型改成 RouteResult?
     TravelMode.drive: null,
     TravelMode.motor: null,
     TravelMode.walk:  null,
+  };
+
+  // ⚠️ motor 目前是借用 drive 的数据做 ETA 近似展示（下面 _fetchMode 里),
+  // 不是针对 TWO_WHEELER 真正请求过的路线。这个标记决定了：用户点 Start
+  // 时，这个模式能不能直接复用预览页的数据、跳过第二次 API 调用。
+  // drive / walk 是"真的请求过"，可以跳过；motor 不行，必须让
+  // NavigationController 自己用正确的 TWO_WHEELER 模式重新请求一次，
+  // 不然摩托车实际导航时会错误地套用汽车路线。
+  final Map<TravelMode, bool> _isRealFetch = {
+    TravelMode.drive: false,
+    TravelMode.motor: false,
+    TravelMode.walk:  false,
   };
 
   bool _trafficEnabled = false;
@@ -122,7 +134,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   // ── Fetch ──
   Future<void> _fetchMode(TravelMode mode) async {
     try {
-      final summary = await _svc.fetchRouteSummary(
+      final result = await RouteService.instance.fetchNavigationRoute(
         fromLat: widget.startLat, fromLng: widget.startLng,
         toLat:   widget.endLat,   toLng:   widget.endLng,
         mode:    mode,
@@ -132,24 +144,28 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
 
       setState(() {
         _summaries[mode]!
-          ..durationSeconds = summary.durationSeconds
-          ..distanceMeters  = summary.distanceMeters
+          ..durationSeconds = result.durationSeconds
+          ..distanceMeters  = result.distanceMeters
           ..loading         = false;
-        _routeData[mode] = summary;
+        _routeData[mode]   = result;
+        _isRealFetch[mode] = true;   // ← 这个模式是真的请求过
 
-        // Motor reuses drive result
+        // Motor 借用 drive 的数字做 ETA 近似展示（跟原来行为一致）——
+        // 但这不是真正的 TWO_WHEELER 请求，所以 motor 的 _isRealFetch
+        // 保持 false，不会被标记成"可以跳过第二次请求"。
         if (mode == TravelMode.drive) {
           _summaries[TravelMode.motor]!
-            ..durationSeconds = summary.durationSeconds
-            ..distanceMeters  = summary.distanceMeters
+            ..durationSeconds = result.durationSeconds
+            ..distanceMeters  = result.distanceMeters
             ..loading         = false;
-            _routeData[TravelMode.motor] = summary;
+          _routeData[TravelMode.motor] = result;
         }
       });
 
       if (mode == _selectedMode) _renderPolyline(mode);
 
     } catch (e) {
+      print('❌ _fetchMode error for $mode: $e');
       if (!mounted) return;
       setState(() {
         _summaries[mode]!
@@ -163,7 +179,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
       });
     }
   }
-
+  
   // ── Render polyline for selected mode ──
   void _renderPolyline(TravelMode mode) {
     final data = _routeData[mode];
@@ -423,22 +439,30 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                       16, 0, 16, 16 + mq.padding.bottom),
                   child: SizedBox(
                     width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: selected.loading || selected.error != null
-                          ? null
-                          : () => Navigator.pushReplacement(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => GuidePage(
-                                    startLat:        widget.startLat,
-                                    startLng:        widget.startLng,
-                                    endLat:          widget.endLat,
-                                    endLng:          widget.endLng,
-                                    destinationName: widget.destinationName,
-                                    travelMode:      _selectedMode,
-                                  ),
-                                ),
+                  child: ElevatedButton.icon(
+                  onPressed: selected.loading || selected.error != null
+                      ? null
+                      : () => Navigator.pushReplacement(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => GuidePage(
+                                startLat:        widget.startLat,
+                                startLng:        widget.startLng,
+                                endLat:          widget.endLat,
+                                endLng:          widget.endLng,
+                                destinationName: widget.destinationName,
+                                travelMode:      _selectedMode,
+                                // 🔗 drive / walk：复用预览页已经拿到的
+                                // 数据，不再重复打一次 Google Routes API。
+                                // motor：传 null，让 NavigationController
+                                // 自己用正确的 TWO_WHEELER 模式重新请求，
+                                // 保证摩托车导航路线是真实、正确的。
+                                initialRoute: _isRealFetch[_selectedMode] == true
+                                    ? _routeData[_selectedMode]
+                                    : null,
                               ),
+                            ),
+                          ),
                       icon:  const Icon(Icons.navigation_rounded, size: 18),
                       label: const Text('Start',
                           style: TextStyle(
@@ -462,7 +486,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
       ]),
     );
   }
-
+ 
   Widget _modeTab(TravelMode mode, IconData icon) {
     final summary    = _summaries[mode]!;
     final isSelected = _selectedMode == mode;

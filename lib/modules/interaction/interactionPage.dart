@@ -37,16 +37,17 @@ class _InteractionPageState extends State<InteractionPage> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
 
-  // ── Dropdown（打字过程中的即时建议）──
-  bool _showSuggestions = false;
-  bool _isSearching = false;
-  List<Post> _postSuggestions = [];
-
   // ── Committed search（按下搜索/回车后，主列表被替换成的结果）──
   bool _isSearchActive = false;
   bool _isSearchLoading = false;
   List<Post> _searchResultPosts = [];
   String _lastSearchQuery = '';
+
+  // ── 关键词建议下拉（只在输入框 focus 时出现，纯文字）──
+  bool _showSuggestions = false;
+  bool _isSearching = false;
+  List<String> _keywordSuggestions = [];
+
 
   String? _selectedCity;
   String? _selectedCityLabel;
@@ -60,10 +61,12 @@ class _InteractionPageState extends State<InteractionPage> {
   void initState() {
     super.initState();
     _searchFocus.addListener(() {
-      if (_searchFocus.hasFocus && _searchController.text.isNotEmpty) {
-        setState(() => _showSuggestions = true);
-      }
-    });
+    if (_searchFocus.hasFocus && _searchController.text.trim().isNotEmpty) {
+      setState(() => _showSuggestions = _keywordSuggestions.isNotEmpty);
+    } else if (!_searchFocus.hasFocus) {
+      setState(() => _showSuggestions = false);
+    }
+  });
   }
 
   @override
@@ -91,62 +94,85 @@ class _InteractionPageState extends State<InteractionPage> {
 
   void _onSearchChanged(String query) {
     _debounce?.cancel();
+    final trimmed = query.trim();
 
-    // 一旦用户重新开始打字，说明离开了"已提交搜索"的结果视图，
-    // 回到"输入中 → 显示 dropdown"的状态
-    if (_isSearchActive) {
-      setState(() => _isSearchActive = false);
-    }
-
-    if (query.trim().isEmpty) {
+    if (trimmed.isEmpty) {
       setState(() {
+        _isSearchActive = false;
+        _searchResultPosts = [];
+        _keywordSuggestions = [];
         _showSuggestions = false;
-        _postSuggestions = [];
-        _isSearching = false;
+        _isSearchLoading = false;
       });
       return;
     }
-    setState(() => _isSearching = true);
+
+    setState(() {
+      _isSearchActive = true;   // ← 主列表立刻切换成"搜索模式"
+      _isSearchLoading = true;
+    });
+
     _debounce = Timer(const Duration(milliseconds: 400), () async {
       if (!mounted) return;
       try {
-        final results = await AlgoliaService.searchPosts(query, hitsPerPage: 5);
+        final results = await AlgoliaService.searchPosts(trimmed, hitsPerPage: 10);
         if (!mounted) return;
         setState(() {
-          _postSuggestions = results;
-          _showSuggestions = true;
-          _isSearching = false;
+          _searchResultPosts = results;
+          _lastSearchQuery = trimmed;
+          _isSearchLoading = false;
+          _keywordSuggestions = _buildKeywordSuggestions(results, trimmed);
+          // 只有 focus 还在输入框上时才继续显示下拉
+          _showSuggestions = _searchFocus.hasFocus && _keywordSuggestions.isNotEmpty;
         });
       } catch (_) {
         if (!mounted) return;
-        setState(() => _isSearching = false);
+        setState(() {
+          _searchResultPosts = [];
+          _isSearchLoading = false;
+        });
       }
     });
   }
 
+  /// 从搜索结果里提炼出「关键词」文字建议：命中的标题 + 命中的标签，去重取前 6 个
+  List<String> _buildKeywordSuggestions(List<Post> results, String query) {
+    final qLower = query.toLowerCase();
+    final set = <String>{};
+    for (final p in results) {
+      if (p.title.toLowerCase().contains(qLower)) set.add(p.title);
+      for (final t in p.tags) {
+        if (t.toLowerCase().contains(qLower)) set.add(t);
+      }
+      if (set.length >= 6) break;
+    }
+    return set.take(6).toList();
+  }
+  
   // ─── 提交搜索（按回车 / 点搜索键 / 点建议项）→ 替换主列表 ──────────────────
 
   Future<void> _performSearch(String query) async {
     final trimmed = query.trim();
-    if (trimmed.isEmpty) return;
-
     _debounce?.cancel();
-    _searchFocus.unfocus();
+    if (trimmed.isEmpty) {
+      _clearSearch();
+      return;
+    }
 
     setState(() {
-      _showSuggestions = false;
       _isSearchActive = true;
       _isSearchLoading = true;
       _lastSearchQuery = trimmed;
+      _showSuggestions = false;
     });
 
     try {
-      // hitsPerPage 不要超过 10 —— Firestore whereIn 硬性上限就是 10
       final results = await AlgoliaService.searchPosts(trimmed, hitsPerPage: 10);
       if (!mounted) return;
       setState(() {
         _searchResultPosts = results;
         _isSearchLoading = false;
+        _keywordSuggestions = _buildKeywordSuggestions(results, trimmed);
       });
     } catch (_) {
       if (!mounted) return;
@@ -157,13 +183,21 @@ class _InteractionPageState extends State<InteractionPage> {
     }
   }
 
+  void _selectKeyword(String keyword) {
+    _searchController.text = keyword;
+    _searchController.selection =
+        TextSelection.fromPosition(TextPosition(offset: keyword.length));
+    _searchFocus.unfocus();
+    setState(() => _showSuggestions = false);
+    _performSearch(keyword);
+  }
+
   void _clearSearch() {
     setState(() {
       _selectedCity = null;
       _selectedCityLabel = null;
       _showSuggestions = false;
-      _postSuggestions = [];
-      _isSearching = false;
+      _keywordSuggestions = [];
       _isSearchActive = false;
       _isSearchLoading = false;
       _searchResultPosts = [];
@@ -452,16 +486,16 @@ class _InteractionPageState extends State<InteractionPage> {
         onSubmitted: _performSearch,
         textInputAction: TextInputAction.search,
         onTap: () {
-          if (_searchController.text.isNotEmpty && !_isSearchActive) {
+          if (_searchController.text.trim().isNotEmpty && _keywordSuggestions.isNotEmpty) {
             setState(() => _showSuggestions = true);
           }
         },
         decoration: InputDecoration(
           hintText: 'Search posts, tags...',
           hintStyle: TextStyle(color: Colors.grey[400], fontSize: 13),
-          prefixIcon: (_isSearching || _isSearchLoading)
-              ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: TravelLoadingIndicator()))
-              : const Icon(Icons.search, color: Color(0xFF7C4DFF), size: 20),
+          prefixIcon: _isSearchLoading
+            ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: TravelLoadingIndicator()))
+            : const Icon(Icons.search, color: Color(0xFF7C4DFF), size: 20),
           suffixIcon: _searchController.text.isNotEmpty
               ? IconButton(icon: const Icon(Icons.close, size: 18, color: Colors.grey), onPressed: _clearSearch)
               : null,
@@ -476,11 +510,11 @@ class _InteractionPageState extends State<InteractionPage> {
   }
 
   Widget _buildSearchDropdown() {
-    final hasPosts = _postSuggestions.isNotEmpty;
+    if (_keywordSuggestions.isEmpty) return const SizedBox.shrink();
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
-      constraints: const BoxConstraints(maxHeight: 420),
+      constraints: const BoxConstraints(maxHeight: 300),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
@@ -488,32 +522,40 @@ class _InteractionPageState extends State<InteractionPage> {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
-        child: !hasPosts
-            ? _buildNoResults()
-            : SingleChildScrollView(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  _buildSectionHeader(Icons.article_outlined, 'Posts', const Color(0xFF7C4DFF)),
-                  ..._postSuggestions.map((post) => _buildPostTile(post)),
-                  const Divider(height: 1, indent: 16),
-                  InkWell(
-                    onTap: () => _performSearch(_searchController.text),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      child: Row(children: [
-                        const Icon(Icons.search, size: 16, color: Color(0xFF7C4DFF)),
-                        const SizedBox(width: 8),
-                        Text('See all results for "${_searchController.text}"',
-                            style: const TextStyle(fontSize: 13, color: Color(0xFF7C4DFF), fontWeight: FontWeight.w600)),
-                      ]),
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                ]),
-              ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildSectionHeader(Icons.search, 'Suggestions', const Color(0xFF7C4DFF)),
+              ..._keywordSuggestions.map(_buildKeywordTile),
+              const SizedBox(height: 6),
+            ],
+          ),
+        ),
       ),
     );
   }
 
+  Widget _buildKeywordTile(String keyword) {
+    return InkWell(
+      onTap: () => _selectKeyword(keyword),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(children: [
+          Icon(Icons.search, size: 16, color: Colors.grey[400]),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(keyword,
+                style: const TextStyle(fontSize: 14, color: Colors.black87),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          Icon(Icons.north_west_rounded, size: 14, color: Colors.grey[400]),
+        ]),
+      ),
+    );
+  }
+    
   Widget _buildNoResults() {
     return const Padding(
       padding: EdgeInsets.symmetric(vertical: 24, horizontal: 16),

@@ -6,6 +6,23 @@ import 'api_Keys.dart';
 
 enum TravelMode { walk, drive, motor }
 
+String travelModeToString(TravelMode mode) {
+  switch (mode) {
+    case TravelMode.walk:  return 'walk';
+    case TravelMode.motor: return 'motor';
+    case TravelMode.drive: return 'drive';
+  }
+}
+
+TravelMode travelModeFromString(String s) {
+  switch (s) {
+    case 'motor': return TravelMode.motor;
+    case 'drive': return TravelMode.drive;
+    case 'walk':
+    default:      return TravelMode.walk;
+  }
+}
+
 
 // Data models
 
@@ -61,6 +78,26 @@ class RouteSummary {
   });
 }
 
+/// One cell of a real-world distance/duration matrix returned by
+/// computeRouteMatrix — the real-road equivalent of a straight-line
+/// Haversine lookup between `origins[originIndex]` and
+/// `destinations[destinationIndex]`.
+class RouteMatrixElement {
+  final int originIndex;
+  final int destinationIndex;
+  final double distanceMeters;
+  final int durationSeconds;
+  final bool isValid; // false if Google couldn't find a route for this pair
+
+  const RouteMatrixElement({
+    required this.originIndex,
+    required this.destinationIndex,
+    required this.distanceMeters,
+    required this.durationSeconds,
+    required this.isValid,
+  });
+}
+
 // RouteService — single source of truth
 
 class RouteService {
@@ -74,6 +111,9 @@ class RouteService {
 
   static const String _routesUrl =
       'https://routes.googleapis.com/directions/v2:computeRoutes';
+
+  static const String _routeMatrixUrl =
+      'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix';
 
   TravelMode currentTravelMode = TravelMode.drive;
 
@@ -100,8 +140,8 @@ class RouteService {
         'routes.legs.steps.staticDuration',
         'routes.legs.steps.startLocation',
         'routes.legs.steps.endLocation',
-        'routes.legs.steps.polyline',       // ← per-step polyline
-        'routes.polyline.encodedPolyline',  // ← full route polyline
+        'routes.legs.steps.polyline.encodedPolyline',
+        'routes.polyline.encodedPolyline',
       ],
     );
 
@@ -125,7 +165,8 @@ class RouteService {
 
         final nav = s['navigationInstruction'] as Map<String, dynamic>? ?? {};
         steps.add(NavStep(
-          instruction:     nav['instructions']   as String? ?? 'Continue',
+          instruction:     _sanitizeInstruction(
+                       nav['instructions'] as String? ?? 'Continue'),
           maneuver:        (nav['maneuver']       as String? ?? '').toLowerCase(),
           distanceMeters:  (s['distanceMeters']  as num?    ?? 0).toDouble(),
           durationSeconds: _parseSecs(s['staticDuration'] as String? ?? '0s'),
@@ -173,6 +214,85 @@ class RouteService {
           route['polyline']['encodedPolyline'] as String),
       bounds:          _parseBounds(route['viewport']),
     );
+  }
+
+  /// Real-world distance/duration matrix between every `origins[i]` and
+  /// every `destinations[j]` in a single API call — this is what
+  /// computeRouteMatrix is for, and it's the right tool for "what order
+  /// should I visit these stops in", since it gives you actual road
+  /// distances instead of straight-line Haversine estimates for every
+  /// pair at once (vs. calling fetchRouteSummary N² times).
+  ///
+  /// Google bills this per element (origins × destinations), and caps a
+  /// single request at 100 elements — comfortably more than a single
+  /// day's stop list will ever need.
+  Future<List<RouteMatrixElement>> fetchRouteMatrix({
+    required List<LatLng> origins,
+    required List<LatLng> destinations,
+    required TravelMode mode,
+  }) async {
+    if (origins.isEmpty || destinations.isEmpty) return [];
+
+    final body = jsonEncode({
+      'origins': origins
+          .map((o) => {
+                'waypoint': {
+                  'location': {
+                    'latLng': {
+                      'latitude':  o.latitude,
+                      'longitude': o.longitude,
+                    }
+                  }
+                }
+              })
+          .toList(),
+      'destinations': destinations
+          .map((d) => {
+                'waypoint': {
+                  'location': {
+                    'latLng': {
+                      'latitude':  d.latitude,
+                      'longitude': d.longitude,
+                    }
+                  }
+                }
+              })
+          .toList(),
+      'travelMode': _modeString(mode),
+      if (mode != TravelMode.walk) 'routingPreference': 'TRAFFIC_AWARE',
+    });
+
+    final resp = await http.post(
+      Uri.parse(_routeMatrixUrl),
+      headers: {
+        'Content-Type':     'application/json',
+        'X-Goog-Api-Key':   _apiKey,
+        'X-Goog-FieldMask':
+            'originIndex,destinationIndex,distanceMeters,duration,condition',
+      },
+      body: body,
+    );
+
+    if (resp.statusCode != 200) {
+      throw Exception('Route Matrix API HTTP ${resp.statusCode}: ${resp.body}');
+    }
+
+    // computeRouteMatrix is a server-streaming method; over plain REST it
+    // comes back as a JSON array of matrix elements rather than nested
+    // under a "routes" key like computeRoutes does.
+    final data = json.decode(resp.body) as List;
+
+    return data.map((raw) {
+      final el = raw as Map<String, dynamic>;
+      final condition = el['condition'] as String? ?? 'ROUTE_EXISTS';
+      return RouteMatrixElement(
+        originIndex:      (el['originIndex']      as num?)?.toInt() ?? 0,
+        destinationIndex: (el['destinationIndex'] as num?)?.toInt() ?? 0,
+        distanceMeters:   (el['distanceMeters']   as num?)?.toDouble() ?? 0,
+        durationSeconds:  _parseSecs(el['duration'] as String? ?? '0s'),
+        isValid:          condition == 'ROUTE_EXISTS',
+      );
+    }).toList();
   }
 
   // ── Formatting helpers (used by UI) ────────
@@ -271,12 +391,25 @@ class RouteService {
   int _parseSecs(String s) =>
       int.tryParse(s.replaceAll('s', '').trim()) ?? 0;
 
+  String _sanitizeInstruction(String instruction) {
+      var text = instruction.replaceAll(RegExp(r'<[^>]*>'), '');
+      text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+      text = text.replaceFirst(RegExp(r'^Head\s+\w+\s+'), 'Go ');
+      text = text.replaceFirst(
+          'Your destination is on the left', 'Destination on the left');
+      text = text.replaceFirst(
+          'Your destination is on the right', 'Destination on the right');
+      return text;
+    }
+    
+    
+
   List<LatLng> _decodePolyline(String encoded) {
     final pts = <LatLng>[];
     int i = 0, lat = 0, lng = 0;
     while (i < encoded.length) {
       int b, shift = 0, result = 0;
-      do {
+      do { 
         b = encoded.codeUnitAt(i++) - 63;
         result |= (b & 0x1f) << shift;
         shift += 5;

@@ -10,21 +10,33 @@ import '../../services/apps_Loading.dart';
 
 class ItineraryPage extends StatefulWidget {
   final VoidCallback? onBack;
-  final VoidCallback? onPlanTrip; 
+  final VoidCallback? onPlanTrip;
   const ItineraryPage({super.key, this.onBack, this.onPlanTrip});
 
   @override
   State<ItineraryPage> createState() => _ItineraryPageState();
 }
 
-class _ItineraryPageState extends State<ItineraryPage> {
+class _ItineraryPageState extends State<ItineraryPage>
+    with TickerProviderStateMixin {
   List<ItineraryModel> _itineraries = [];
   bool _loading = true;
+  late final TabController _outerTabController; // Ongoing / Completed
+  late final TabController _innerTabController; // (inside Ongoing) Ongoing / Planned
 
   @override
   void initState() {
     super.initState();
+    _outerTabController = TabController(length: 2, vsync: this);
+    _innerTabController = TabController(length: 2, vsync: this);
     _load();
+  }
+
+  @override
+  void dispose() {
+    _outerTabController.dispose();
+    _innerTabController.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -34,12 +46,25 @@ class _ItineraryPageState extends State<ItineraryPage> {
   }
 
   Future<void> _delete(ItineraryModel item) async {
-    await ItineraryService.instance.delete(item.id);
-    setState(() => _itineraries.remove(item));
-    if (mounted) {
+    final success = await ItineraryService.instance.delete(item.id);
+
+    if (!mounted) return;
+
+    if (success) {
+      setState(() => _itineraries.remove(item));
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Itinerary deleted'),
             behavior: SnackBarBehavior.floating),
+      );
+    } else {
+      // ★ 兜底：万一真的被删到已完成的行程（比如未来某个入口漏了UI check），
+      // 至少用户能看到明确反馈，而不是静默失败
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Completed itineraries cannot be deleted'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.orange,
+        ),
       );
     }
   }
@@ -48,6 +73,10 @@ class _ItineraryPageState extends State<ItineraryPage> {
 
   @override
   Widget build(BuildContext context) {
+    final planned   = _itineraries.where((i) => !i.isStarted).toList();
+    final ongoing   = _itineraries.where((i) => i.isStarted && !i.isCompleted).toList();
+    final completed = _itineraries.where((i) => i.isCompleted).toList();
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8F6FF),
       appBar: AppBar(
@@ -74,12 +103,87 @@ class _ItineraryPageState extends State<ItineraryPage> {
             onPressed: _load,
           ),
         ],
+        bottom: _loading
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(48),
+                child: _buildOuterTabBar(ongoing.length + planned.length, completed.length),
+              ),
       ),
       body: _loading
           ? const Center(child: TravelLoadingIndicator())
           : _itineraries.isEmpty
               ? _buildEmpty()
-              : _buildList(),
+              : TabBarView(
+                  controller: _outerTabController,
+                  children: [
+                    _buildOngoingOuterTab(ongoing, planned),
+                    _buildFlatTab(completed, 'No completed trips yet'),
+                  ],
+                ),
+    );
+  }
+
+  Widget _buildOuterTabBar(int ongoingTotalCount, int completedCount) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05),
+            blurRadius: 8, offset: const Offset(0, 2))],
+      ),
+      child: TabBar(
+        controller: _outerTabController,
+        indicator: BoxDecoration(
+          color: const Color(0xFF7C4DFF),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        indicatorSize: TabBarIndicatorSize.tab,
+        dividerColor: Colors.transparent,
+        labelColor: Colors.white,
+        unselectedLabelColor: const Color(0xFF7C4DFF),
+        labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+        unselectedLabelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+        tabs: [
+          Tab(text: 'Ongoing ($ongoingTotalCount)'),
+          Tab(text: 'Completed ($completedCount)'),
+        ],
+      ),
+    );
+  }
+
+  // Nested tab: the "Ongoing" outer tab contains its own small tab bar
+  // with 2 sub-tabs — Ongoing / Planned.
+  Widget _buildOngoingOuterTab(List<ItineraryModel> ongoing, List<ItineraryModel> planned) {
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+          child: TabBar(
+            controller: _innerTabController,
+            indicatorColor: const Color(0xFF7C4DFF),
+            indicatorWeight: 3,
+            labelColor: const Color(0xFF7C4DFF),
+            unselectedLabelColor: Colors.grey[500],
+            labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+            unselectedLabelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+            tabs: [
+              Tab(text: 'Ongoing (${ongoing.length})'),
+              Tab(text: 'Planned (${planned.length})'),
+            ],
+          ),
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _innerTabController,
+            children: [
+              _buildFlatTab(ongoing, 'No ongoing trips'),
+              _buildFlatTab(planned, 'No planned trips yet'),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -107,7 +211,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
               style: TextStyle(fontSize: 14, color: Colors.grey[500])),
           const SizedBox(height: 28),
           ElevatedButton.icon(
-            onPressed: _goGenerate, 
+            onPressed: _goGenerate,
             icon: const Icon(Icons.auto_awesome_rounded),
             label: const Text('Plan a Trip'),
             style: ElevatedButton.styleFrom(
@@ -123,13 +227,20 @@ class _ItineraryPageState extends State<ItineraryPage> {
     );
   }
 
+  Widget _emptyTabMessage(String text) {
+    return Center(
+      child: Text(text, style: TextStyle(fontSize: 14, color: Colors.grey[500])),
+    );
+  }
 
-  // List
-  Widget _buildList() {
-    return ListView.builder(
+  // Shared flat list builder — used by all 3 tabs (Planned / Ongoing / Completed)
+  Widget _buildFlatTab(List<ItineraryModel> items, String emptyMessage) {
+    if (items.isEmpty) {
+      return _emptyTabMessage(emptyMessage);
+    }
+    return ListView(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 100),
-      itemCount: _itineraries.length,
-      itemBuilder: (_, i) => _buildCard(_itineraries[i]),
+      children: items.map(_buildCard).toList(),
     );
   }
 
@@ -162,6 +273,13 @@ class _ItineraryPageState extends State<ItineraryPage> {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(20),
+          // ★ 已完成的行程边框稍微加一点绿色识别，跟进行中区分开
+          border: item.isCompleted
+              ? Border.all(color: const Color(0xFF2ECC71).withOpacity(0.3), width: 1)
+              : item.isStarted
+                  ? Border.all(color: const Color(0xFF7C4DFF).withOpacity(0.3), width: 1)
+                  : null,
+
           boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06),
               blurRadius: 12, offset: const Offset(0, 4))],
         ),
@@ -170,17 +288,21 @@ class _ItineraryPageState extends State<ItineraryPage> {
           children: [
 
             // Photo banner
-            ClipRRect(
-              borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(20)),
-              child: SizedBox(
-                height: 140,
-                width: double.infinity,
-                child: firstPhoto != null
-                    ? Image.network(firstPhoto, fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _bannerPlaceholder())
-                    : _bannerPlaceholder(),
-              ),
+            Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(20)),
+                  child: SizedBox(
+                    height: 140,
+                    width: double.infinity,
+                    child: firstPhoto != null
+                        ? Image.network(firstPhoto, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => _bannerPlaceholder())
+                        : _bannerPlaceholder(),
+                  ),
+                ),
+              ],
             ),
 
             Padding(
@@ -196,18 +318,35 @@ class _ItineraryPageState extends State<ItineraryPage> {
                                 fontWeight: FontWeight.bold,
                                 color: Color(0xFF1A1A2E))),
                       ),
-                      GestureDetector(
-                        onTap: () => _confirmDelete(item),
-                        child: Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: Colors.red[50],
-                            borderRadius: BorderRadius.circular(8),
+                      // ★ 核心逻辑：已开始/已完成 → 锁定徽章（不可点）；未开始 → 删除按钮
+                      if (item.isStarted)
+                        Tooltip(
+                          message: item.isCompleted
+                              ? 'Completed trips are kept as your travel record'
+                              : 'Trips you\'ve started are kept as your travel record',
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: Colors.grey[100],
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Icon(Icons.lock_outline_rounded,
+                                size: 16, color: Colors.grey[500]),
                           ),
-                          child: Icon(Icons.delete_outline_rounded,
-                              size: 16, color: Colors.red[400]),
+                        )
+                      else
+                        GestureDetector(
+                          onTap: () => _confirmDelete(item),
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: Colors.red[50],
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Icon(Icons.delete_outline_rounded,
+                                size: 16, color: Colors.red[400]),
+                          ),
                         ),
-                      ),
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -234,6 +373,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
       ),
     );
   }
+
 
   Widget _bannerPlaceholder() => Container(
     color: const Color(0xFF7C4DFF).withOpacity(0.08),

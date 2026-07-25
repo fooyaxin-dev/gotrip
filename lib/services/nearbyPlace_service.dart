@@ -16,6 +16,8 @@ class NearbyPlacesService {
   final Map<String, List<PlaceModel>> _placesByTypeCache = {};
   final Map<String, List<PlaceModel>> _searchCache = {};
   final Set<String> _loadingKeys = {};
+  final Map<String, List<PlaceModel>> _itineraryRawCache = {};
+  final Map<String, int> _itineraryRawCacheRadius = {};
 
   bool _isLoading = false;
   bool _hasLoadedOnce = false;
@@ -70,10 +72,25 @@ class NearbyPlacesService {
   Map<String, List<PlaceModel>> get placesByType => Map.unmodifiable(_placesByTypeCache);
   bool get hasLoaded => _hasLoadedOnce;
 
-  // ── Primary type mapping ────────────────────────────────────────────────────
+ // ── Primary type mapping ────────────────────────────────────────────────────
+  //
+  // 🔧 FIX #2: 酒店/住宿类地点会连带一堆附属设施的 Google types（cafe、
+  // water_park、spa...），如果不先排除，它们会被这些附属类型"捡漏"
+  // 归进 restaurant/entertainment，而不是被识别成"这其实是一间酒店"。
+  // 你现在的 6 大分类里没有"住宿"这一类，所以这里直接排除，让它们
+  // 落到 'other'（被上层调用方过滤掉），不会再被误判成别的分类。
+  //
+  // 如果你之后想让酒店也能显示（比如新增一个 accommodation 分类），
+  // 把下面这段改成 return 'accommodation' 而不是 return 'other' 即可，
+  // 但那样要同步在 UI 那边（categories 列表/图标/子分类）加这个新分类。
   static String _mapToPrimaryType(List<String> googleTypes) {
     if (googleTypes.any((t) => [
-      'restaurant', 'cafe', 'coffee_shop', 'bakery', 'bar',
+      'hotel', 'lodging', 'resort_hotel', 'motel', 'guest_house',
+      'hostel', 'bed_and_breakfast', 'extended_stay_hotel', 'inn',
+    ].contains(t))) return 'other';
+
+    if (googleTypes.any((t) => [
+      'restaurant', 'cafe', 'coffee_shop', 'bakery',
       'fast_food_restaurant', 'food_court', 'dessert_shop',
       'meal_takeaway', 'meal_delivery',
     ].contains(t))) return 'restaurant';
@@ -96,7 +113,7 @@ class NearbyPlacesService {
     if (googleTypes.any((t) => [
       'movie_theater', 'amusement_park', 'bowling_alley', 'karaoke',
       'video_arcade', 'night_club', 'amusement_center', 'concert_hall',
-      'gym', 'fitness_center', 'spa',
+      'gym', 'fitness_center', 'spa', 'bar',
     ].contains(t))) return 'entertainment';
 
     if (googleTypes.any((t) => [
@@ -107,7 +124,7 @@ class NearbyPlacesService {
 
     return 'other';
   }
-
+  
   static const double _dedupDistanceMetres = 50.0;
 
   static double _haversineMetres(double lat1, double lng1, double lat2, double lng2) {
@@ -243,8 +260,52 @@ class NearbyPlacesService {
     required double lat,
     required double lng,
     int radius = 10000,
-  }) {
-    return _fetchGoogleOnce(lat, lng, radius);
+  }) async {
+    final all = await _fetchGoogleOnce(lat, lng, radius);
+    // 🔧 FIX: _fetchGoogleOnce 只负责"抓取"，不做半径过滤——
+    // 之前直接透传会导致实际返回的是 _googleMaxRadius(15000m)范围内的
+    // 全部结果，而不是调用方要求的 radius。
+    return all.where((p) {
+      if (p.lat == null || p.lng == null) return false;
+      return _haversineMetres(lat, lng, p.lat!, p.lng!) <= radius;
+    }).toList();
+  }
+
+  // 🆕 给 searched location 场景用 — Google + Geoapify 都跑，而且必须
+  // 等 Geoapify 背景 phase 真正跑完才返回。跟 loadNearbyPlacesAt 的差别：
+  // 那个是给地图搜索用的，Geoapify 用 unawaited 背景补，UI 可以先看到
+  // Google 结果；这里是一次性批量排程，不能让 itinerary 漏掉 Geoapify
+  // 才有的候选地点，所以要完整等待。
+  Future<List<PlaceModel>> fetchCompleteForItinerary({
+    required double lat,
+    required double lng,
+    int radius = 10000,
+  }) async {
+    final results = <PlaceModel>[];
+    final byType  = <String, List<PlaceModel>>{};
+    final completer = Completer<void>();
+
+    await _fetchAndStore(
+      lat: lat,
+      lng: lng,
+      targetList: results,
+      targetByType: byType,
+      radius: radius,
+      onGeoapifyDone: () {
+        if (!completer.isCompleted) completer.complete();
+      },
+    );
+
+    // _fetchAndStore 本身 Google phase 跑完就 return 了；
+    // 这里额外等 Geoapify 背景 phase 也真正结束（加超时保险，
+    // 避免 Geoapify 网络异常时把整个行程生成卡死）。
+    await completer.future.timeout(
+      const Duration(seconds: 8),
+      onTimeout: () => print('⚠️ Geoapify 超时 — 只用 Google 结果继续生成行程'),
+    );
+
+    print('🏁 fetchCompleteForItinerary: 最终 ${results.length} 个候选地点 (Google+Geoapify 完整)');
+    return results;
   }
   
   // Explicit escape hatch — call this if you ever need to force a fresh
@@ -462,7 +523,6 @@ class NearbyPlacesService {
       flushTimer?.cancel();
       flushTimer = null;
       if (pendingBatch.isEmpty) return;
-      // 🔒 don't deliver stale-generation updates to the UI either
       if (isCurrentGeneration != null && !isCurrentGeneration()) {
         pendingBatch.clear();
         return;
@@ -483,24 +543,19 @@ class NearbyPlacesService {
       print('🟣 Phase 2 (Geoapify): get-or-fetch-once, then filter to ${radius}m...');
       final geoapifyRaw = await _fetchGeoapifyOnce(lat, lng, radius);
 
-      print('📦 Geoapify raw (cached, unfiltered): ${geoapifyRaw.length}');
-
-      // 🔒 Bail before touching shared cache if a newer call has taken over.
       if (isCurrentGeneration != null && !isCurrentGeneration()) {
         print('🚫 Phase 2 result discarded entirely — stale generation');
         return;
       }
 
-      int geoAdded = 0;
+      // ── STEP 1: id / radius / dedup 过滤，先不建 PlaceModel ──────────────
+      final candidates = <Map<String, dynamic>>[];
       int geoDuped = 0;
       int geoTooFar = 0;
 
       for (final p in geoapifyRaw) {
-        // 🔒 check on every iteration too — a newer call could start
-        // mid-loop since this runs across multiple await boundaries only
-        // at the top, but we still re-check defensively before each write.
         if (isCurrentGeneration != null && !isCurrentGeneration()) {
-          print('🚫 Phase 2 aborted mid-loop — stale generation');
+          print('🚫 Phase 2 aborted mid-filter — stale generation');
           break;
         }
 
@@ -512,14 +567,9 @@ class NearbyPlacesService {
         final pLng = (locMap?['longitude'] as num?)?.toDouble();
         if (pLat == null || pLng == null) continue;
 
-        // radius filter
         final dist = _haversineMetres(lat, lng, pLat, pLng);
-        if (dist > radius) {
-          geoTooFar++;
-          continue;
-        }
+        if (dist > radius) { geoTooFar++; continue; }
 
-        // dedup distance (against everything Phase 1 + Phase 2-so-far added)
         bool tooClose = false;
         for (final c in seenCoords) {
           if (_haversineMetres(c.lat, c.lng, pLat, pLng) < _dedupDistanceMetres) {
@@ -527,36 +577,93 @@ class NearbyPlacesService {
             break;
           }
         }
-        if (tooClose) {
-          geoDuped++;
-          continue;
-        }
+        if (tooClose) { geoDuped++; continue; }
 
         final googleTypes = (p['types'] as List?)?.cast<String>() ?? [];
         final primaryType = _mapToPrimaryType(googleTypes);
         if (primaryType == 'other') continue;
 
-        final place = PlaceModel.fromGoogle(p, primary: primaryType);
-        if (place.lat == null || place.lng == null) continue;
-
+        // 占位登记，跟原逻辑一致——保证同一轮内后面的地点 dedup 判断正确
         seenIds.add(id);
         seenCoords.add((lat: pLat, lng: pLng));
+
+        candidates.add(p);
+      }
+
+      print('🟣 Phase 2 候选（radius+dedup 过滤后）: ${candidates.length} '
+          '（重复 $geoDuped，超距 $geoTooFar）');
+
+      if (candidates.isEmpty) {
+        print('🟣 Phase 2 done: 无候选地点');
+        return;
+      }
+
+      // ── STEP 2: 🆕 对候选地点批量做 enrichment，解出具体子分类 ────────────
+      // enrichPlaces() 内部会：查 Firestore 缓存 → OSM tag → 
+      // 全部剩余的一次性丢给 Gemini → 名字兜底
+      // 这里对"这一批候选"只调用一次，不是每个地点单独调
+      final enrichInput = candidates.map((p) {
+        final googleTypes = (p['types'] as List?)?.cast<String>() ?? [];
+        final primaryType = _mapToPrimaryType(googleTypes);
+        return {
+          'placeId':     p['id'] as String? ?? '',
+          'primaryType': primaryType,
+          'placeName':   (p['displayName']?['text'] as String?) ?? '',
+          'address':     (p['formattedAddress'] as String?) ?? '',
+        };
+      }).toList();
+
+      Map<String, List<String>> enrichedTypes = {};
+        final enrichStopwatch = Stopwatch()..start();
+        try {
+          enrichedTypes = await GeoapifyEnrichmentService
+              .enrichPlaces(enrichInput)
+              .timeout(const Duration(seconds: 35));
+          print('⏱️ enrichPlaces 总耗时: ${enrichStopwatch.elapsedMilliseconds}ms');
+        } catch (e) {
+          print('⚠️ Geoapify enrichment 失败（耗时 ${enrichStopwatch.elapsedMilliseconds}ms），'
+              '本批次 fallback 用名字关键词: $e');
+        }
+
+      if (isCurrentGeneration != null && !isCurrentGeneration()) {
+        print('🚫 Phase 2 aborted after enrichment — stale generation');
+        return;
+      }
+
+      // ── STEP 3: 合并具体类型，建 PlaceModel，写入缓存 + 流式推给 UI ──────
+      int geoAdded = 0;
+      for (final p in candidates) {
+        if (isCurrentGeneration != null && !isCurrentGeneration()) {
+          print('🚫 Phase 2 aborted mid-loop — stale generation');
+          break;
+        }
+
+        final id = p['id'] as String? ?? '';
+        final googleTypes = (p['types'] as List?)?.cast<String>() ?? [];
+        final primaryType = _mapToPrimaryType(googleTypes);
+
+        // 把 enrichment 解出来的具体类型（如 chinese_restaurant）
+        // 合并进 Geoapify 原本的通用类型里
+        final extraTypes = enrichedTypes[id] ?? const [];
+        if (extraTypes.isNotEmpty) {
+          p['types'] = [...googleTypes, ...extraTypes];
+        }
+
+        final place = PlaceModel.fromGoogle(p, primary: primaryType);
+        if (place.lat == null || place.lng == null) continue;
 
         targetList.add(place);
         targetByType.putIfAbsent(primaryType, () => []);
         targetByType[primaryType]!.add(place);
 
         geoAdded++;
-
-        // 🔥 queue for batched delivery instead of firing immediately
         pendingBatch.add(place);
         scheduleFlush();
       }
 
-      // flush whatever's left over
       flush();
 
-      print('🟣 Phase 2 done: +$geoAdded added, $geoDuped duped, $geoTooFar filtered');
+      print('🟣 Phase 2 done: +$geoAdded added（已带具体子分类）');
       print('✅ Final total: ${targetList.length}');
     } catch (e) {
       flush();
@@ -568,7 +675,7 @@ class NearbyPlacesService {
       }
     }
   }
-
+  
   // ── Public: load once (real-time GPS mode) ─────────────────────────────────
   int _cachedRadius = 0; // track which radius the current cache was loaded with
 
@@ -781,4 +888,121 @@ class NearbyPlacesService {
     print('♻️ NearbyPlacesService: search cache cleared');
     _searchCache.clear();
   }
+
+  //itinerary生成时，清除所有缓存，避免重复请求
+  static const Map<String, List<String>> _itineraryCategoryTypes = {
+  'restaurant': [
+    'restaurant', 'cafe', 'coffee_shop', 'bakery', 'bar',
+    'fast_food_restaurant', 'food_court', 'dessert_shop',
+  ],
+  'tourist_attraction': [
+    'tourist_attraction', 'historical_landmark', 'monument',
+    'museum', 'art_gallery',
+  ],
+  'shopping_mall': [
+    'shopping_mall', 'supermarket', 'grocery_store',
+    'department_store', 'clothing_store',
+  ],
+  'amusement_park': [
+    'amusement_park', 'movie_theater', 'bowling_alley',
+    'karaoke', 'video_arcade', 'amusement_center',
+  ],
+  'park': [
+    'park', 'national_park', 'botanical_garden',
+    'garden', 'hiking_area', 'beach',
+  ],
+};
+
+Future<List<PlaceModel>> fetchForItinerary({
+  required double lat,
+  required double lng,
+  required List<String> categories,
+  int radius = 10000,
+}) async {
+
+  // 🔍 DEBUG
+  print('🎯 [fetchForItinerary] entered with radius=${radius}m (lat=$lat, lng=$lng)');
+
+  final key = _locKey(lat, lng);
+  final cacheSubKey = '$key|${categories.join(",")}';   // 🔧 cache key 也要区分类别组合，否则查 park 的 cache 会被误用给查 restaurant+park 的请求
+  final cachedRadius = _itineraryRawCacheRadius[key];
+
+  if (_itineraryRawCache.containsKey(key) &&
+      cachedRadius != null &&
+      cachedRadius >= radius) {
+    print('🆓 Itinerary raw cache HIT for $key '
+        '(cached at ${cachedRadius}m, need ${radius}m) — no API call');
+    return _itineraryRawCache[key]!
+        .where((p) =>
+            p.lat != null &&
+            p.lng != null &&
+            _haversineMetres(lat, lng, p.lat!, p.lng!) <= radius)
+        .toList();
+  }
+
+  final relevantEntries = _itineraryCategoryTypes.entries
+      .where((e) => categories.contains(e.key))   // 🆕 只保留用户选中的
+      .toList();
+
+  print('🗺️ Itinerary raw cache MISS for $key — firing 5 independent '
+      'Google searchNearby calls (radius: ${radius}m)...');
+
+  final entries = await Future.wait(
+    relevantEntries.map((entry) async {
+      final primary = entry.key;
+      final types   = entry.value;
+      try {
+        final raw = await PlacesApiService.searchNearby(
+          lat: lat, lng: lng,
+          types: types,
+          maxResultCount: 20,
+          radius: radius,
+        );
+        final places = raw
+            .map((p) {
+              final place = PlaceModel.fromGoogle(p, primary: primary);
+              return (place.lat != null && place.lng != null) ? place : null;
+            })
+            .whereType<PlaceModel>()
+            .toList();
+        print('  ✅ $primary: ${places.length} fetched (独立 20 名额)');
+        return places;
+      } catch (e) {
+        print('  ⚠️ $primary failed: $e');
+        return <PlaceModel>[];
+      }
+    }),
+  );
+
+  final seenIds = <String>{};
+  final places  = <PlaceModel>[];
+  for (final list in entries) {
+    for (final p in list) {
+      if (p.id.isEmpty || seenIds.contains(p.id)) continue;
+      seenIds.add(p.id);
+      places.add(p);
+    }
+  }
+
+  _itineraryRawCache[key] = places;
+  _itineraryRawCacheRadius[key] = radius;
+
+  print('✅ Itinerary raw cache STORED for $key: ${places.length} places @ ${radius}m');
+  return places;
+}
+
+// Explicit escape hatch，跟其他 cache 一样的用法
+void clearItineraryRawCache([double? lat, double? lng]) {
+  if (lat != null && lng != null) {
+    final key = _locKey(lat, lng);
+    _itineraryRawCache.remove(key);
+    _itineraryRawCacheRadius.remove(key);
+  } else {
+    _itineraryRawCache.clear();
+    _itineraryRawCacheRadius.clear();
+  }
+}
+
+
+
 }

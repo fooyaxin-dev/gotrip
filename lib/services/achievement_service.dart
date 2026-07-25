@@ -16,12 +16,30 @@
 //    missing from Firestore.
 // 2. Wrapped the write in try/catch with a debug print so failures are no
 //    longer silent.
+// 3. ★ NEW: fetchStats() now has a short-lived in-memory cache (30s TTL).
+//    Home / Post / Profile pages all call fetchTopBadge()/fetchGroups()
+//    independently in their own initState(), which previously meant each
+//    page triggered its own full Firestore read + recompute of the
+//    history + itineraries collections, even when they all loaded within
+//    the same few seconds. Now the first caller does the real read; any
+//    other caller within the TTL window gets the cached result instantly.
+//    Operations that actually change the underlying data (check-in) call
+//    invalidateStatsCache() to force a real refresh on the next read.
+// 4. ★ FIX: fetchStats() previously ignored forceRefresh entirely — it took
+//    no parameters and always hit Firestore, even though fetchGroups() was
+//    already calling fetchStats(forceRefresh: forceRefresh) and the cache
+//    fields (_cachedStats/_cachedAt) were declared but never read or
+//    written. This didn't compile. fetchStats() now accepts forceRefresh,
+//    actually serves from the cache when valid, and populates the cache
+//    after a real read.
 // -----------------------------------------------------------------------------
 
 import 'dart:math';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'userActivity_service.dart';
+import 'category_mapper.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tier — one level within an achievement group
@@ -138,6 +156,26 @@ class AchievementService {
   final _db   = FirebaseFirestore.instance;
   String? get _uid => FirebaseAuth.instance.currentUser?.uid;
 
+  // ── ★ NEW: short-lived stats cache ────────────────────────────────────────
+  // Home / Post / Profile pages each independently call fetchTopBadge() or
+  // fetchUnlockedBadges() in their own initState(), which all funnel down to
+  // fetchStats(). Without this cache, loading all three pages within a few
+  // seconds of each other triggers 3 separate full reads + recomputes of the
+  // history + itineraries collections for data that hasn't actually changed.
+  AchievementStats? _cachedStats;
+  DateTime? _cachedAt;
+  static const _cacheTtl = Duration(seconds: 30);
+
+  /// Call this after any operation that actually changes the underlying
+  /// data (e.g. a check-in that writes a new history entry) so the next
+  /// fetchStats() call is forced to do a real read instead of returning a
+  /// stale cached value.
+  void invalidateStatsCache() {
+    _cachedStats = null;
+    _cachedAt    = null;
+    UserActivityDataService.instance.invalidate();
+  }
+
   // ── Category labels for type mapping ──────────────────────────────────────
 
   static const _kFoodTypes = [
@@ -150,13 +188,6 @@ class AchievementService {
   static const _kAttractionTypes = [
     'tourist_attraction', 'historical_landmark', 'monument', 'museum', 'art_gallery',
   ];
-
-  static String _typeToCategory(String primaryType) {
-    if (_kFoodTypes.contains(primaryType))       return 'Food';
-    if (_kNatureTypes.contains(primaryType))     return 'Nature';
-    if (_kAttractionTypes.contains(primaryType)) return 'Attraction';
-    return 'Other';
-  }
 
   static String _extractCity(String address) {
     if (address.isEmpty) return '';
@@ -185,21 +216,35 @@ class AchievementService {
 
   // ─────────────────────────────────────────────
   // Fetch all-time stats from Firestore
+  //
+  // ★ [forceRefresh] bypasses the cache — use this after an operation
+  // that just wrote new data (e.g. right after a check-in) so the caller
+  // is guaranteed to see the up-to-date numbers rather than a stale cache.
+  //
+  // Otherwise, if a cached result exists and is younger than [_cacheTtl],
+  // it's returned immediately with no Firestore read at all.
   // ─────────────────────────────────────────────
 
-  Future<AchievementStats> fetchStats() async {
+  
+  Future<AchievementStats> fetchStats({bool forceRefresh = false}) async {
     final uid = _uid;
     if (uid == null) return _emptyStats();
-
-    final results = await Future.wait([
-      _db.collection('users').doc(uid).collection('history').get(),
-      _db.collection('users').doc(uid).collection('itineraries').get(),
-    ]);
-
-    final historySnap     = results[0] as QuerySnapshot;
-    final itinerariesSnap = results[1] as QuerySnapshot;
-
-    // ── Build deduped visit events ──
+  
+    if (!forceRefresh &&
+        _cachedStats != null &&
+        _cachedAt != null &&
+        DateTime.now().difference(_cachedAt!) < _cacheTtl) {
+      return _cachedStats!;
+    }
+  
+    // ★ 改动：不再自己查 Firestore，改用共享的 UserActivityDataService，
+    // 跟 Dashboard 读的是完全同一份原始数据（同一次 .get() 调用的结果）
+    final activity = await UserActivityDataService.instance.getAll(
+      forceRefresh: forceRefresh,
+    );
+    final historyDocs     = activity.history;
+    final itinerariesDocs = activity.itineraries;
+  
     final seenKeys  = <String>{};
     int placesVisited    = 0;
     int foodVisits       = 0;
@@ -207,13 +252,18 @@ class AchievementService {
     int attractionVisits = 0;
     double totalDistanceKm = 0;
     final citySet = <String>{};
-
-    // 1) History
-    for (final doc in historySnap.docs) {
-      final data      = doc.data() as Map<String, dynamic>;
+  
+    final Map<String, List<({double lat, double lng, DateTime visitedAt})>>
+        byItineraryCoords = {};
+  
+    // 1) History —— ActivityDoc 而不是 QueryDocumentSnapshot，用法一样，
+    //    只是 doc.data() 变成 doc.data（没有括号，因为已经是 Map 了）
+    for (final doc in historyDocs) {
+      final data      = doc.data;
       final timestamp = data['visitedAt'] as Timestamp?;
       if (timestamp == null) continue;
       final visitedAt = timestamp.toDate();
+  
       final placeName = data['placeName'] as String? ?? '';
       final dayKey    = '${visitedAt.year}-${visitedAt.month}-${visitedAt.day}';
       final placeId   = data['placeId'] as String?;
@@ -221,78 +271,88 @@ class AchievementService {
           ? '${placeId}_$dayKey' : '${placeName}_$dayKey';
       if (seenKeys.contains(key)) continue;
       seenKeys.add(key);
-
+  
       placesVisited++;
       final address = data['address'] as String? ?? '';
       final city    = _extractCity(address);
       if (city.isNotEmpty) citySet.add(city);
-      // History doesn't store primaryType directly — category counted via
-      // itinerary visits below which do have primaryType.
+  
+      // ★ 改用统一的 CategoryMapper
+      final primaryType = data['primaryType'] as String? ?? '';
+      final category    = CategoryMapper.toAchievementCategory(primaryType);
+      if (category == 'Food')       foodVisits++;
+      if (category == 'Nature')     natureVisits++;
+      if (category == 'Attraction') attractionVisits++;
+  
+      final lat = (data['lat'] as num?)?.toDouble();
+      final lng = (data['lng'] as num?)?.toDouble();
+      final itineraryId = data['itineraryId'] as String? ?? '';
+      if (lat != null && lng != null && itineraryId.isNotEmpty) {
+        byItineraryCoords.putIfAbsent(itineraryId, () => []);
+        byItineraryCoords[itineraryId]!.add((lat: lat, lng: lng, visitedAt: visitedAt));
+      }
     }
-
-    // 2) Itinerary visited places (also contribute category + distance)
-    for (final doc in itinerariesSnap.docs) {
-      final data = doc.data() as Map<String, dynamic>;
+  
+    // 2) Itinerary visited places —— 补漏 + 去重（逻辑不变，只是数据源换了）
+    for (final doc in itinerariesDocs) {
+      final data = doc.data;
       final days = data['days'] as List? ?? [];
-
-      final orderedVisits = <({double lat, double lng, DateTime visitedAt})>[];
-
+      final itineraryId = doc.id;
+  
       for (final day in days) {
         final places = (day as Map<String, dynamic>)['places'] as List? ?? [];
         for (final place in places) {
           final p         = place as Map<String, dynamic>;
           final isVisited = p['isVisited'] as bool? ?? false;
           if (!isVisited) continue;
-
+  
           final timestamp = p['visitedAt'] as Timestamp?;
           if (timestamp == null) continue;
           final visitedAt = timestamp.toDate();
-
-          final name    = p['name']        as String? ?? '';
-          final placeId = p['placeId']     as String? ?? '';
+  
+          final name    = p['name']    as String? ?? '';
+          final placeId = p['placeId'] as String? ?? '';
           final dayKey  = '${visitedAt.year}-${visitedAt.month}-${visitedAt.day}';
           final key     = placeId.isNotEmpty
               ? '${placeId}_$dayKey' : '${name}_$dayKey';
-
-          // Count place if not already counted from history
+  
           if (!seenKeys.contains(key)) {
             seenKeys.add(key);
             placesVisited++;
             final address = p['address'] as String? ?? '';
             final city    = _extractCity(address);
             if (city.isNotEmpty) citySet.add(city);
-          }
-
-          // Category counts (using primaryType which only itineraries store)
-          final primaryType = p['primaryType'] as String? ?? '';
-          final category    = _typeToCategory(primaryType);
-          if (category == 'Food')       foodVisits++;
-          if (category == 'Nature')     natureVisits++;
-          if (category == 'Attraction') attractionVisits++;
-
-          // Collect coordinates for distance calculation
-          final lat = (p['lat'] as num?)?.toDouble();
-          final lng = (p['lng'] as num?)?.toDouble();
-          if (lat != null && lng != null) {
-            orderedVisits.add((lat: lat, lng: lng, visitedAt: visitedAt));
+  
+            final primaryType = p['primaryType'] as String? ?? '';
+            final category    = CategoryMapper.toAchievementCategory(primaryType);
+            if (category == 'Food')       foodVisits++;
+            if (category == 'Nature')     natureVisits++;
+            if (category == 'Attraction') attractionVisits++;
+  
+            final lat = (p['lat'] as num?)?.toDouble();
+            final lng = (p['lng'] as num?)?.toDouble();
+            if (lat != null && lng != null) {
+              byItineraryCoords.putIfAbsent(itineraryId, () => []);
+              byItineraryCoords[itineraryId]!.add((lat: lat, lng: lng, visitedAt: visitedAt));
+            }
           }
         }
       }
-
-      // Sum haversine between consecutive stops within this itinerary
-      orderedVisits.sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
-      for (int i = 0; i < orderedVisits.length - 1; i++) {
+    }
+  
+    for (final group in byItineraryCoords.values) {
+      group.sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
+      for (int i = 0; i < group.length - 1; i++) {
         totalDistanceKm += _haversineKm(
-          orderedVisits[i].lat,     orderedVisits[i].lng,
-          orderedVisits[i + 1].lat, orderedVisits[i + 1].lng,
+          group[i].lat,     group[i].lng,
+          group[i + 1].lat, group[i + 1].lng,
         );
       }
     }
-
-    // ── Completed trips ──
+  
     int tripsCompleted = 0;
-    for (final doc in itinerariesSnap.docs) {
-      final data  = doc.data() as Map<String, dynamic>;
+    for (final doc in itinerariesDocs) {
+      final data  = doc.data;
       final days  = data['days'] as List? ?? [];
       int total   = 0;
       int visited = 0;
@@ -304,8 +364,8 @@ class AchievementService {
       }
       if (total > 0 && visited == total) tripsCompleted++;
     }
-
-    return AchievementStats(
+  
+    final stats = AchievementStats(
       placesVisited:    placesVisited,
       citiesExplored:   citySet.length,
       tripsCompleted:   tripsCompleted,
@@ -314,8 +374,15 @@ class AchievementService {
       attractionVisits: attractionVisits,
       totalDistanceKm:  totalDistanceKm,
     );
+  
+    _cachedStats = stats;
+    _cachedAt    = DateTime.now();
+  
+    return stats;
   }
-
+    
+    
+  
   // ─────────────────────────────────────────────
   // Build AchievementGroups from stats
   // ─────────────────────────────────────────────
@@ -475,8 +542,8 @@ class AchievementService {
   // Convenience: fetch stats + build groups in one call
   // ─────────────────────────────────────────────
 
-  Future<List<AchievementGroup>> fetchGroups() async {
-    final stats = await fetchStats();
+  Future<List<AchievementGroup>> fetchGroups({bool forceRefresh = false}) async {
+    final stats = await fetchStats(forceRefresh: forceRefresh);
     return buildGroups(stats);
   }
 

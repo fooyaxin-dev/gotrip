@@ -21,6 +21,7 @@ class NavigationController extends ChangeNotifier {
   final double endLng;
   final String? destinationName;
   final TravelMode travelMode;
+  final RouteResult? initialRoute;
 
   NavigationController({
     required this.startLat,
@@ -29,11 +30,12 @@ class NavigationController extends ChangeNotifier {
     required this.endLng,
     this.destinationName,
     this.travelMode = TravelMode.drive,
+    this.initialRoute,     
   });
 
   static const String _apiKey = ApiKeys.googleMaps;
 
-  static const double _offRouteThresh  = 50.0;
+  static const double _offRouteThresh  = 50.0; 
   static const double _arrivedThresh   = 30.0;
   static const int    _offRouteConfirm = 4;
   static const int    _stepConfirm     = 2;
@@ -153,12 +155,28 @@ class NavigationController extends ChangeNotifier {
       targetLatLng  = userLatLng;
       displayLatLng = userLatLng;
       lastPos       = pos;
-      await _loadRoute(pos.latitude, pos.longitude);
+
+      if (initialRoute != null) {
+        // 🔗 复用 RoutePreviewPage 已经打过的这次请求结果，
+        // 不再对同一趟行程重复打一次 Google Routes API。
+        _resetRouteState();
+        notifyListeners();
+        await _applyRouteResult(initialRoute!);
+      } else {
+        await _loadRoute(pos.latitude, pos.longitude);
+      }
     } catch (_) {
       userLatLng    = LatLng(startLat, startLng);
       targetLatLng  = userLatLng;
       displayLatLng = userLatLng;
-      await _loadRoute(startLat, startLng);
+
+      if (initialRoute != null) {
+        _resetRouteState();
+        notifyListeners();
+        await _applyRouteResult(initialRoute!);
+      } else {
+        await _loadRoute(startLat, startLng);
+      }
     }
   }
 
@@ -253,6 +271,37 @@ class NavigationController extends ChangeNotifier {
   }
 
   Future<void> _loadRoute(double fromLat, double fromLng) async {
+    _resetRouteState();
+    notifyListeners();
+
+    try {
+      // 🔗 统一走 RouteService，不再自己重复实现一遍 HTTP 请求 + 解析逻辑。
+      // 这里用于两种情况：① 完全没有 initialRoute 时的首次加载；
+      // ② GPS 检测到偏离路线时的重新规划（reroute），这个必须用当前
+      // 实时位置重新请求，没办法预先复用别的数据。
+      final result = await RouteService.instance.fetchNavigationRoute(
+        fromLat: fromLat,
+        fromLng: fromLng,
+        toLat:   endLat,
+        toLng:   endLng,
+        mode:    travelMode,
+      );
+      await _applyRouteResult(result);
+    } catch (e) {
+      error   = e.toString();
+      loading = false;
+      notifyListeners();
+    }
+  }
+
+  // ── 把"清空状态"和"套用路线结果"拆成两个可复用的小方法 ──
+  // _resetRouteState()：无论是首次加载、复用预览页数据、还是 reroute，
+  //                      开始前都要把上一段路线的状态清干净。
+  // _applyRouteResult()：把一份 RouteResult（不管是新请求来的，还是
+  //                      RoutePreviewPage 传进来的）套用到控制器状态里，
+  //                      逻辑跟原来 _loadRoute() 成功之后的部分完全一致。
+
+  void _resetRouteState() {
     currentStepIndex       = 0;
     steps                  = [];
     stepEndPolylineIdx     = [];
@@ -267,140 +316,41 @@ class NavigationController extends ChangeNotifier {
     walkedPoints           = [];
     remainingPoints        = [];
     nearestIdx             = 0;
-    notifyListeners();
-
-    try {
-      final url  = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
-      final body = jsonEncode({
-        'origin':      {'location': {'latLng': {'latitude': fromLat, 'longitude': fromLng}}},
-        'destination': {'location': {'latLng': {'latitude': endLat,  'longitude': endLng}}},
-        'travelMode':  _travelModeStr,
-        'routingPreference': travelMode == TravelMode.walk
-            ? 'ROUTING_PREFERENCE_UNSPECIFIED' : 'TRAFFIC_AWARE',
-        'computeAlternativeRoutes': false,
-        if (travelMode != TravelMode.walk)
-          'routeModifiers': {'avoidTolls': false, 'avoidHighways': false},
-        'languageCode': 'en-US',
-        'units': 'METRIC',
-      });
-
-      final resp = await http.post(
-        url,
-        headers: {
-          'Content-Type':     'application/json',
-          'X-Goog-Api-Key':   _apiKey,
-          'X-Goog-FieldMask':
-              'routes.duration,'
-              'routes.distanceMeters,'
-              'routes.legs.steps.navigationInstruction,'
-              'routes.legs.steps.distanceMeters,'
-              'routes.legs.steps.staticDuration,'
-              'routes.legs.steps.startLocation,'
-              'routes.legs.steps.endLocation,'
-              'routes.legs.steps.polyline,'
-              'routes.viewport',
-        },
-        body: body,
-      );
-
-      if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
-
-      final data   = json.decode(resp.body);
-      final routes = data['routes'] as List?;
-      if (routes == null || routes.isEmpty) throw Exception('No routes returned');
-
-      final route    = routes[0];
-      final legs     = route['legs'] as List;
-      final pts      = <LatLng>[];   // full route polyline
-      final newSteps = <NavStep>[];
-
-      for (final leg in legs) {
-        for (final s in (leg['steps'] as List)) {
-
-          // ── Per-step polyline (for snap accuracy) ──
-          final stepPts = _decode(
-            s['polyline']?['encodedPolyline'] as String? ?? '',
-          );
-
-          // ── Stitch into full route polyline ──
-          if (pts.isNotEmpty && stepPts.isNotEmpty) {
-            pts.addAll(stepPts.skip(1)); // skip duplicate join point
-          } else {
-            pts.addAll(stepPts);
-          }
-
-          // ── Navigation instruction ──
-          final nav = s['navigationInstruction'] as Map<String, dynamic>? ?? {};
-
-          // FIX: correctly extract startLocation and endLocation
-          newSteps.add(NavStep(
-            instruction:    _sanitizeInstruction(
-                nav['instructions'] as String? ?? 'Continue'),
-            maneuver:       (nav['maneuver'] as String? ?? '').toLowerCase(),
-            distanceMeters: (s['distanceMeters'] as num? ?? 0).toDouble(),
-            durationSeconds: _parseSecs(
-                s['staticDuration'] as String? ?? '0s'),
-            startLocation: LatLng(
-              (s['startLocation']['latLng']['latitude']  as num).toDouble(),
-              (s['startLocation']['latLng']['longitude'] as num).toDouble(),
-            ),
-            endLocation: LatLng(
-              (s['endLocation']['latLng']['latitude']  as num).toDouble(),
-              (s['endLocation']['latLng']['longitude'] as num).toDouble(),
-            ),
-            polylinePoints: stepPts,
-          ));
-        }
-      }
-
-      // ── Route bounds ──
-      final vp = route['viewport'];
-      routeBounds = LatLngBounds(
-        southwest: LatLng(
-          (vp['low']['latitude']  as num).toDouble(),
-          (vp['low']['longitude'] as num).toDouble(),
-        ),
-        northeast: LatLng(
-          (vp['high']['latitude']  as num).toDouble(),
-          (vp['high']['longitude'] as num).toDouble(),
-        ),
-      );
-
-      // ── Initial bearing from first two polyline points ──
-      if (pts.length >= 2) bearing = _calcBearing(pts[0], pts[1]);
-
-      polylinePoints     = pts;
-      remainingPoints    = List.from(pts);
-      walkedPoints       = [];
-      steps              = newSteps;
-      stepEndPolylineIdx = [
-        for (final step in newSteps)
-          _findNearestPolylineIndex(step.endLocation, pts),
-      ];
-      distToTurnEnd    = newSteps.isNotEmpty ? newSteps[0].distanceMeters : 0;
-      remainingMeters  = (route['distanceMeters'] as num).toDouble();
-      remainingSeconds = _parseSecs(route['duration'] as String? ?? '0s');
-      _totalRouteMeters = remainingMeters;
-      loading           = false;
-
-      if (displayLatLng != null) _updateRouteProgress(displayLatLng!);
-
-      notifyListeners();
-
-      // Announce first instruction
-      if (newSteps.isNotEmpty) {
-        _speak(newSteps[0].instruction);
-      }
-
-      _startTracking();
-
-    } catch (e) {
-      error   = e.toString();
-      loading = false;
-      notifyListeners();
-    }
   }
 
+  Future<void> _applyRouteResult(RouteResult result) async {
+    final pts      = result.polylinePoints;
+    final newSteps = result.steps;
+
+    if (pts.length >= 2) bearing = _calcBearing(pts[0], pts[1]);
+
+    polylinePoints     = pts;
+    remainingPoints    = List.from(pts);
+    walkedPoints       = [];
+    steps              = newSteps;
+    stepEndPolylineIdx = [
+      for (final step in newSteps)
+        _findNearestPolylineIndex(step.endLocation, pts),
+    ];
+    distToTurnEnd     = newSteps.isNotEmpty ? newSteps[0].distanceMeters : 0;
+    remainingMeters   = result.distanceMeters;
+    remainingSeconds  = result.durationSeconds;
+    _totalRouteMeters = remainingMeters;
+    routeBounds       = result.bounds;
+    loading           = false;
+
+    if (displayLatLng != null) _updateRouteProgress(displayLatLng!);
+
+    notifyListeners();
+
+    if (newSteps.isNotEmpty) {
+      _speak(newSteps[0].instruction);
+    }
+
+    _startTracking();
+  }
+  
+  
   // ─────────────────────────────────────────────
   // GPS tracking
   // ─────────────────────────────────────────────

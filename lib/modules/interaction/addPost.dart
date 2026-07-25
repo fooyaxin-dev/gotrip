@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:image_cropper/image_cropper.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
@@ -13,6 +14,7 @@ import '../../services/sentiment_service.dart';
 import '../../services/achievement_service.dart';
 import '../../services/apps_Loading.dart';
 import '../../services/storage_service.dart';
+
 
 class MediaItem {
   final File file;
@@ -315,25 +317,35 @@ class _PostingPageState extends State<PostingPage> {
 
   Future<void> _pickImagesFromGallery() async {
     try {
-      if (_maxMedia - selectedMedia.length <= 0) { _showErrorDialog('Maximum $_maxMedia media items reached'); return; }
-      final List<XFile>? images = await _picker.pickMultiImage(imageQuality: 85);
-      if (images != null && images.isNotEmpty) {
-        setState(() {
-          for (var img in images) {
-            if (selectedMedia.length < _maxMedia) selectedMedia.add(MediaItem(file: File(img.path), isVideo: false));
-          }
-        });
+      if (_maxMedia - selectedMedia.length <= 0) {
+        _showErrorDialog('Maximum $_maxMedia media items reached');
+        return;
       }
-    } catch (e) { _showErrorDialog('Select images failed: $e'); }
+      final List<XFile>? images = await _picker.pickMultiImage(imageQuality: 85);
+      if (images == null || images.isEmpty) return;
+
+      for (var img in images) {
+        if (selectedMedia.length >= _maxMedia) break;
+        final cropped = await _cropToSquare(File(img.path));
+        if (cropped == null) continue;
+        setState(() => selectedMedia.add(MediaItem(file: cropped, isVideo: false)));
+      }
+    } catch (e) {
+      _showErrorDialog('Select images failed: $e');
+    }
   }
 
   Future<void> _takePhoto() async {
     try {
       final XFile? photo = await _picker.pickImage(source: ImageSource.camera, imageQuality: 80);
-      if (photo != null && selectedMedia.length < _maxMedia) {
-        setState(() => selectedMedia.add(MediaItem(file: File(photo.path), isVideo: false)));
-      }
-    } catch (e) { _showErrorDialog('Take photo failed: $e'); }
+      if (photo == null || selectedMedia.length >= _maxMedia) return;
+
+      final cropped = await _cropToSquare(File(photo.path));
+      if (cropped == null) return;
+      setState(() => selectedMedia.add(MediaItem(file: cropped, isVideo: false)));
+    } catch (e) {
+      _showErrorDialog('Take photo failed: $e');
+    }
   }
 
   Future<void> _pickVideo() async {
@@ -350,6 +362,31 @@ class _PostingPageState extends State<PostingPage> {
       final XFile? video = await _picker.pickVideo(source: ImageSource.camera, maxDuration: const Duration(minutes: 5));
       if (video != null) { setState(() => selectedMedia.add(MediaItem(file: File(video.path), isVideo: true))); _showSuccessSnack('Video recorded'); }
     } catch (e) { _showErrorDialog('Record video failed: $e'); }
+  }
+
+  
+  Future<File?> _cropToSquare(File imageFile) async {
+    final cropped = await ImageCropper().cropImage(
+      sourcePath: imageFile.path,
+      aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+      compressQuality: 85,
+      uiSettings: [
+        AndroidUiSettings(
+          toolbarTitle: 'Crop Photo',
+          toolbarColor: const Color(0xFF7C4DFF),
+          toolbarWidgetColor: Colors.white,
+          activeControlsWidgetColor: const Color(0xFF7C4DFF),
+          lockAspectRatio: true,
+        ),
+        IOSUiSettings(
+          title: 'Crop Photo',
+          aspectRatioLockEnabled: true,
+          resetAspectRatioEnabled: false,
+          aspectRatioPickerButtonHidden: true,
+        ),
+      ],
+    );
+    return cropped != null ? File(cropped.path) : null;
   }
 
   void _removeMedia(int index) => setState(() => selectedMedia.removeAt(index));
@@ -513,8 +550,9 @@ class _PostingPageState extends State<PostingPage> {
 
   Future<void> _publishPost() async {
     _dismissKeyboard();
-    if (_titleController.text.trim().isEmpty || _contentController.text.trim().isEmpty) {
-      _showErrorDialog('Please fill in both title and content');
+
+    if (_contentController.text.trim().isEmpty) {
+      _showErrorDialog('Please write something to share');
       return;
     }
 
@@ -649,7 +687,7 @@ class _PostingPageState extends State<PostingPage> {
               const SizedBox(height: 30),
               TextField(
                 controller: _titleController, focusNode: _titleFocus, enabled: !isUploading,
-                decoration: const InputDecoration(hintText: 'Enter title~', hintStyle: TextStyle(color: Colors.grey, fontSize: 16), border: InputBorder.none),
+                decoration: const InputDecoration(hintText: 'Add a title (optional)~', hintStyle: TextStyle(color: Colors.grey, fontSize: 16), border: InputBorder.none),
               ),
               Divider(color: Colors.grey[200], thickness: 1),
               TextField(

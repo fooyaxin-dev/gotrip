@@ -17,6 +17,8 @@ import '../../services/userPreference_service.dart';
 import 'categoryImage_Helper.dart';
 import '../../services/weather_service.dart';
 import '../../services/apps_Loading.dart';
+import '../../models/itineraryModel.dart';   // ← 新加：ItineraryModel / ItineraryDay / ItineraryPlace
+import 'package:intl/intl.dart';             // ← 新加：DateFormat
 
 // ── CHANGE 1: added 'recommended' sort mode ──────────────────────────────────
 enum SortMode { distance, rating, recommended }
@@ -100,7 +102,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       {'key': 'korean',   'label': 'Korean',   'allowTypes': <String>['korean_restaurant'],                                         'nameKeywords': <String>['korea', 'korean', '한국', 'kimchi', 'bbq korean']},
       {'key': 'chinese',  'label': 'Chinese',  'allowTypes': <String>['chinese_restaurant'],                                        'nameKeywords': <String>['chinese', 'canton', 'dim sum', 'claypot', 'clay pot', '中', '华', '粤', '龙', '金', '福', '记', 'seafood', 'wonton', 'bak kut']},
       {'key': 'japanese', 'label': 'Japanese', 'allowTypes': <String>['japanese_restaurant'],                                       'nameKeywords': <String>['japanese', 'japan', 'sushi', 'ramen', 'mentai', 'yakitori', 'tempura', 'udon', 'tonkatsu', 'izakaya']},
-      {'key': 'malay',    'label': 'Malay',    'allowTypes': <String>['malaysian_restaurant'],                                      'nameKeywords': <String>['nasi', 'mee', 'laksa', 'satay', 'rendang', 'malay', 'restoran', 'warung', 'lemak', 'kampung', 'sup', 'ayam', 'ikan bakar']},
+      {'key': 'malay',    'label': 'Malay',    'allowTypes': <String>['malaysian_restaurant'],                                      'nameKeywords': <String>['nasi', 'mee', 'laksa', 'satay', 'rendang', 'malay', 'warung', 'lemak', 'kampung', 'sup', 'ayam', 'ikan bakar']},
       {'key': 'indian',   'label': 'Indian',   'allowTypes': <String>['indian_restaurant'],                                         'nameKeywords': <String>['indian', 'india', 'naan', 'curry', 'briyani', 'biryani', 'tandoor', 'mamak', 'kandar', 'roti canai', 'banana leaf', 'thali']},
       {'key': 'western',  'label': 'Western',  'allowTypes': <String>['western_restaurant', 'american_restaurant', 'steak_house'],  'nameKeywords': <String>['western', 'steak', 'burger', 'pizza', 'pasta', 'grill', 'bistro', 'secret recipe', 'mcdonalds', 'kfc', 'subway']},
       {'key': 'dessert',  'label': 'Dessert',  'allowTypes': <String>['dessert_shop', 'ice_cream_shop', 'bakery'],                  'nameKeywords': <String>['dessert', 'ice cream', 'gelato', 'cake', 'bakery', 'pastry', 'sweet', 'bubble tea', 'boba', 'cendol', 'waffle', 'crepe']},
@@ -433,6 +435,24 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
 
+  // 收集某个 primary 分类下,所有子分类"具体类型"的并集
+  // 用来判断一个地点是否已经有明确的具体类型(不管来自 Google 原生 types
+  // 还是 GeoapifyEnrichmentService 打的标签)
+  final Map<String, Set<String>> _specificTypesCache = {};
+
+  Set<String> _allSpecificTypesFor(String primary) {
+    return _specificTypesCache.putIfAbsent(primary, () {
+      final subs = subCategories[primary] ?? [];
+      final all = <String>{};
+      for (final s in subs) {
+        final types = (s['allowTypes'] as List?)?.cast<String>() ?? [];
+        all.addAll(types);
+      }
+      return all;
+    });
+  }
+
+
   // ─────────────────────────────────────────────
   // Filter
   // ─────────────────────────────────────────────
@@ -453,16 +473,27 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         (e) => e['key'] == _selectedSecondary,
         orElse: () => {'allowTypes': <String>[], 'nameKeywords': <String>[]},
       );
-      final allowTypes   = (cfg['allowTypes']   as List?)?.cast<String>() ?? [];
-      final nameKeywords = (cfg['nameKeywords'] as List?)?.cast<String>() ?? [];
+      final allowTypes       = (cfg['allowTypes']   as List?)?.cast<String>() ?? [];
+      final nameKeywords     = (cfg['nameKeywords'] as List?)?.cast<String>() ?? [];
+      final allSpecificTypes = _allSpecificTypesFor(_selectedPrimary!);
 
       places = sourcePlaces.where((place) {
         if (_selectedPrimary != null && place.primaryType != _selectedPrimary) return false;
         if (allowTypes.isEmpty && nameKeywords.isEmpty) return true;
-        final name      = place.name.toLowerCase();
-        final typeMatch = allowTypes.isNotEmpty && place.allTypes.any((t) => allowTypes.contains(t));
-        final nameMatch = nameKeywords.isNotEmpty && nameKeywords.any((k) => name.contains(k.toLowerCase()));
-        return typeMatch || nameMatch;
+
+        // 该地点是否已经有明确的具体类型(来自 Google types 或 enrichment)？
+        final hasResolvedSpecificType =
+            place.allTypes.any((t) => allSpecificTypes.contains(t));
+
+        if (hasResolvedSpecificType) {
+          // 已经有权威类型 → 只信 typeMatch,不用名字关键词猜测
+          return allowTypes.isNotEmpty && place.allTypes.any((t) => allowTypes.contains(t));
+        }
+
+        // 还没有具体类型（未 enrich 的原始数据）→ 才 fallback 用名字关键词
+        final name = place.name.toLowerCase();
+        return nameKeywords.isNotEmpty &&
+            nameKeywords.any((k) => name.contains(k.toLowerCase()));
       }).toList();
     }
 
@@ -563,13 +594,64 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   void _viewSelectedItinerary() {
     if (_selectedPlaceIds.isEmpty || _currentPosition == null) return;
 
-    final optimizedPlaces = _buildOptimizedRoute();
+    final selectedPlaces = _selectedPlacesMap.values.toList();
+
+    final now     = DateTime.now();
+    final dateStr = DateFormat('yyyy-MM-dd').format(now);
+
+    var curHour = 9;
+    var curMin  = 0;
+    final itineraryPlaces = <ItineraryPlace>[];
+    for (final p in selectedPlaces) {
+      final timeStr = '${curHour.toString().padLeft(2, '0')}:${curMin.toString().padLeft(2, '0')}';
+      final duration = p.primaryType == 'restaurant' ? 60 : 90;
+      itineraryPlaces.add(ItineraryPlace(
+        placeId:         p.id,
+        name:            p.name,
+        address:         p.address ?? '',
+        photoUrl:        p.photoUrl,
+        lat:             p.lat,
+        lng:             p.lng,
+        primaryType:     p.primaryType,
+        suggestedTime:   timeStr,
+        durationMinutes: duration,
+        notes:           'Added by you',
+      ));
+      curMin += duration;
+      curHour += curMin ~/ 60;
+      curMin = curMin % 60;
+      if (curHour >= 21) { curHour = 21; curMin = 0; }
+    }
+
+    // 🆕 判断这次的 origin 到底来自哪里：
+    // - landmark 模式（从别的页面带着固定坐标跳进来）→ 固定地点，不是实时定位
+    // - 搜索模式（用户搜了别的地方）→ 固定地点，不是实时定位
+    // - 都不是 → 用的就是设备的实时 GPS 定位
+    final bool isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
+    final bool useCurrentLocation = !isLandmarkMode && _searchLocationName == null;
+    final String? originName = useCurrentLocation
+        ? null
+        : (_searchLocationName ?? 'Landmark Location');
+
+    final draftItinerary = ItineraryModel(
+      id:        '',
+      title:     'My Custom Trip',
+      startDate: dateStr,
+      totalDays: 1,
+      days: [ItineraryDay(dayNumber: 1, date: dateStr, places: itineraryPlaces)],
+      createdAt: now,
+      isOriginCurrentLocation: useCurrentLocation,       // 🆕
+      originLat:  _currentPosition!.latitude,             // 🆕 _currentPosition 已经对应正确来源的坐标
+      originLng:  _currentPosition!.longitude,            // 🆕
+      originName: originName,        
+      travelMode: travelModeToString(_travelMode),                      // 🆕
+    );
 
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => RouteOptimizerPage(
-          places:            optimizedPlaces,
+          itinerary:         draftItinerary,
           startLat:          _currentPosition!.latitude,
           startLng:          _currentPosition!.longitude,
           startLocationName: _searchLocationName,
@@ -585,55 +667,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       }
     });
   }
-
-  List<PlaceModel> _buildOptimizedRoute() {
-    final remaining = _selectedPlacesMap.values.toList();
-    final result    = <PlaceModel>[];
-
-    if (remaining.isEmpty || _currentPosition == null) return result;
-
-    double currentLat = _currentPosition!.latitude;
-    double currentLng = _currentPosition!.longitude;
-    int    step       = 1;
-
-    print('🚀 START ROUTE OPTIMIZATION');
-    print('📍 Start: $currentLat, $currentLng');
-    print('📦 Total places: ${remaining.length}');
-    print('🚗 Travel mode: $_travelMode');
-
-    while (remaining.isNotEmpty) {
-      PlaceModel? nearest;
-      double minDist = double.infinity;
-
-      print('\n🔁 STEP $step — current: $currentLat, $currentLng');
-
-      for (final place in remaining) {
-        if (place.lat == null || place.lng == null) continue;
-        final dist = Geolocator.distanceBetween(
-          currentLat, currentLng, place.lat!, place.lng!,
-        );
-        print('   👉 ${place.name} = ${dist.toStringAsFixed(1)} m');
-        if (dist < minDist) { minDist = dist; nearest = place; }
-      }
-
-      if (nearest == null) break;
-
-      print('⭐ SELECTED: ${nearest.name} (${minDist.toStringAsFixed(1)} m)');
-      result.add(nearest);
-      remaining.remove(nearest);
-      currentLat = nearest.lat!;
-      currentLng = nearest.lng!;
-      step++;
-    }
-
-    print('\n🏁 FINAL ROUTE:');
-    for (int i = 0; i < result.length; i++) {
-      print('  ${i + 1}. ${result[i].name}');
-    }
-
-    return result;
-  }
-
+  
   // ─────────────────────────────────────────────
   // Markers & Routes
   // ─────────────────────────────────────────────
@@ -1008,7 +1042,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     final List<PlaceModel> openPlaces =
         _displayedPlaces.where((p) => p.isOpenNow != false).toList();
 
-    final List<PlaceModel> sortedPlaces = List.from(openPlaces);
+    // Google 和 Geoapify 分开处理 —— Geoapify 结构性缺 rating / isOpenNow，
+    // 永远排不进主推荐榜，所以直接按来源分流，不做打分排除。
+    final List<PlaceModel> googlePlaces =
+        openPlaces.where((p) => !p.isGeoapify).toList();
+    final List<PlaceModel> geoapifyPlaces =
+        openPlaces.where((p) => p.isGeoapify).toList();
+
+    final List<PlaceModel> sortedPlaces = List.from(googlePlaces);
+
     sortedPlaces.sort((a, b) {
       switch (_sortMode) {
         case SortMode.recommended:
@@ -1049,6 +1091,13 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         case SortMode.rating:
           return (b.rating ?? 0.0).compareTo(a.rating ?? 0.0);
       }
+    });
+
+    final List<PlaceModel> sortedGeoapifyPlaces = List.from(geoapifyPlaces)
+    ..sort((a, b) {
+      final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
+      final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
+      return aD.compareTo(bD); // Geoapify 没有 rating，只能按距离排
     });
 
     if (_initialCameraPosition == null) {
@@ -1339,7 +1388,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                           blurRadius: 15)],
                     ),
                     child: _buildPlaceListSheet(
-                        scrollController, sortedPlaces),
+                        scrollController, sortedPlaces, sortedGeoapifyPlaces),
                   );
                 },
               ),
@@ -1359,7 +1408,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // ─────────────────────────────────────────────
 
   Widget _buildPlaceListSheet(
-    ScrollController scrollController, List<PlaceModel> sortedPlaces) {
+    ScrollController scrollController,
+    List<PlaceModel> sortedPlaces,
+    List<PlaceModel> sortedGeoapifyPlaces) {
   return Stack(
     children: [
       ListView(
@@ -1561,24 +1612,72 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
               ]),
             ),
           ),
-          
+
           if (_selectedPrimary != null &&
               subCategories.containsKey(_selectedPrimary))
             _buildSecondaryBar(),
 
           const Divider(height: 1, thickness: 0.5),
 
-          if (sortedPlaces.isEmpty && !_isLoading)
+          // ── 主列表 + Other nearby places 区块 ──────────────────────────
+          if (sortedPlaces.isEmpty &&
+              sortedGeoapifyPlaces.isEmpty &&
+              !_isLoading)
             SizedBox(height: 300, child: _buildEmptyState())
-          else
-            ...List.generate(
-              sortedPlaces.length,
-              (index) => Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 8),
-                child: _buildPlaceCard(sortedPlaces[index]),
+          else ...[
+            // ── Google 地点：主推荐列表 ──────────────────────────────────
+            if (sortedPlaces.isEmpty && !_isLoading)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Center(
+                  child: Text(
+                    'No main results — check "Other nearby places" below',
+                    style: TextStyle(fontSize: 13, color: Colors.grey[400]),
+                  ),
+                ),
+              )
+            else
+              ...List.generate(
+                sortedPlaces.length,
+                (index) => Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 8),
+                  child: _buildPlaceCard(sortedPlaces[index]),
+                ),
               ),
-            ),
+
+            // ── Geoapify 地点：单独区块，信息不全，仅作补充 ────────────────
+            if (sortedGeoapifyPlaces.isNotEmpty) ...[
+              const Divider(height: 1, thickness: 0.5),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                child: Row(children: [
+                  Icon(Icons.info_outline_rounded,
+                      size: 14, color: Colors.grey[500]),
+                  const SizedBox(width: 6),
+                  Text('Other nearby places',
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey[500],
+                          fontWeight: FontWeight.w600)),
+                  const SizedBox(width: 6),
+                  Text('(limited info)',
+                      style: TextStyle(fontSize: 11, color: Colors.grey[400])),
+                ]),
+              ),
+              ...List.generate(
+                sortedGeoapifyPlaces.length,
+                (index) => Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 8),
+                  child: _buildPlaceCard(
+                    sortedGeoapifyPlaces[index],
+                    allowForYouBadge: false,
+                  ),
+                ),
+              ),
+            ],
+          ],
 
           SizedBox(
             height: 24 +
@@ -1641,12 +1740,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // Place Card
   // ─────────────────────────────────────────────
 
-  Widget _buildPlaceCard(PlaceModel place) {
+  Widget _buildPlaceCard(PlaceModel place, {bool allowForYouBadge = true}) {
     final routeInfo  = _routeResults[place.id];
     final isSelected = _selectedPlaceIds.contains(place.id);
 
     // Compute score + reason for "For You" badge
-    final isForYouMode = _sortMode == SortMode.recommended;
+    final isForYouMode = allowForYouBadge && _sortMode == SortMode.recommended;
     final score = isForYouMode
         ? UserPreferenceService.instance.scorePlaceModel(
             primaryType:    place.primaryType,
@@ -1895,21 +1994,30 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             .where((p) => p.primaryType == _selectedPrimary)
             .toList();
 
+    final allSpecificTypes = _allSpecificTypesFor(_selectedPrimary!);
+
     return subs.where((sub) {
       if (sub['key'] == 'all') return true;
       final allowTypes   = (sub['allowTypes']   as List?)?.cast<String>() ?? [];
       final nameKeywords = (sub['nameKeywords'] as List?)?.cast<String>() ?? [];
+
       return sourcePlaces.any((place) {
-        final name      = place.name.toLowerCase();
-        final typeMatch = allowTypes.isNotEmpty &&
-            place.allTypes.any((t) => allowTypes.contains(t));
-        final nameMatch = nameKeywords.isNotEmpty &&
+        final hasResolvedSpecificType =
+            place.allTypes.any((t) => allSpecificTypes.contains(t));
+
+        if (hasResolvedSpecificType) {
+          // 已经有权威类型 → 只信 typeMatch,不用名字关键词
+          return allowTypes.isNotEmpty && place.allTypes.any((t) => allowTypes.contains(t));
+        }
+
+        // 还没有具体类型 → fallback 用名字关键词
+        final name = place.name.toLowerCase();
+        return nameKeywords.isNotEmpty &&
             nameKeywords.any((k) => name.contains(k.toLowerCase()));
-        return typeMatch || nameMatch;
       });
     }).toList();
   }
-
+    
   Widget _buildSecondaryBar() {
     final subs = _getAvailableSubCategories();
     return Container(

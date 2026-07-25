@@ -177,7 +177,7 @@ class PlacesApiService {
     List<String>? types,
     int radius = 5000,
     int maxResultCount = 20,
-    String rankPreference = 'DISTANCE', // or 'POPULARITY'
+    String rankPreference = 'POPULARITY', // or 'POPULARITY'
   }) async {
     final startTime = DateTime.now();
     _totalApiCalls++;

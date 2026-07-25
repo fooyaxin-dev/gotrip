@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:geolocator/geolocator.dart';
@@ -8,6 +9,7 @@ import 'favouriteButton.dart';
 import 'routePreviewPage.dart';
 import '../place/categoryImage_Helper.dart';
 import '../../services/apps_Loading.dart';
+
 
 class PlaceDetailPage extends StatefulWidget {
   final String placeId;        // Google ID for google places, 'geo_xxx' for geoapify
@@ -593,6 +595,18 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     );
   }
 
+  void _copyToClipboard(String text, String label) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$label copied to clipboard'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+
   Widget _buildInfoSection(IconData icon, String title, String content) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
@@ -607,9 +621,18 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
               children: [
                 Text(title, style: TextStyle(color: Colors.grey[500], fontSize: 12)),
                 const SizedBox(height: 4),
-                Text(content, style: const TextStyle(fontSize: 15, height: 1.4)),
+                SelectableText(
+                  content,
+                  style: const TextStyle(fontSize: 15, height: 1.4),
+                ),
               ],
             ),
+          ),
+          IconButton(
+            icon: Icon(Icons.copy_rounded, size: 18, color: Colors.grey[500]),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: () => _copyToClipboard(content, title),
           ),
         ],
       ),

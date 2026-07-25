@@ -32,7 +32,7 @@ enum DetectionMethod {
 }
 
 class VisionService {
-  static const String _apiKey = ApiKeys.googleVision;
+  static const String _apiKey = ApiKeys.gemini;
   static const double _highConfidenceThreshold = 0.70;
 
   // ─────────────────────────────────────────────────────────────
@@ -171,9 +171,10 @@ class VisionService {
           )
           .timeout(const Duration(seconds: 30));
 
-      if (response.statusCode != 200) {
-        debugPrint('⚠️ Gemini Vision error: ${response.statusCode}');
-        return _noLandmark(rawJson);
+  
+      if(response.statusCode != 200){
+        print('⚠️ Gemini Vision error: ${response.statusCode}');
+        print(response.body);
       }
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;

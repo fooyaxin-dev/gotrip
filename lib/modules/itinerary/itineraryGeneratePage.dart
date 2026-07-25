@@ -7,8 +7,11 @@ import '../../services/itinerary_service.dart';
 import '../../services/location_service.dart';
 import '../../services/placesAPI_service.dart';
 import '../../services/userPreference_service.dart';
+import '../../services/route_service.dart';
 import 'itineraryDetail.dart';
 import '../../services/apps_Loading.dart';
+import '../../models/placeModel.dart';
+import '../place/routeOptimizerPage.dart';
 
 class GenerateItineraryPage extends StatefulWidget {
   const GenerateItineraryPage({super.key});
@@ -29,15 +32,18 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
 
   late Set<String> _activeCategories;
   late Set<String> _activeCuisines;
+  late String _activeTravelMode;
 
   bool   _useCurrentLocation   = true;
   String _selectedLocationName = 'Current Location';
   double? _selectedLat;
   double? _selectedLng;
+  
 
   final _locationController = TextEditingController();
   List<Map<String, dynamic>> _suggestions = [];
   bool _searchingLocation = false;
+  
 
   // ── Debounce for location autocomplete ──
   Timer? _locationDebounce;
@@ -74,12 +80,19 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     {'key': 'cafe',     'label': 'Cafe',     'icon': '☕'},
   ];
 
+  static const _travelModes = [
+    {'key': 'walk',  'label': 'Walking',  'icon': '🚶'},
+    {'key': 'drive', 'label': 'Driving',  'icon': '🚗'},
+    {'key': 'both',  'label': 'Flexible', 'icon': '🔀'},
+  ];
+
   @override
   void initState() {
     super.initState();
     final prefs = UserPreferenceService.instance.current;
     _activeCategories = Set.from(prefs.categories);
     _activeCuisines   = Set.from(prefs.cuisines);
+    _activeTravelMode = prefs.travelMode;
   }
 
   @override
@@ -187,6 +200,31 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   }
 
   // ─────────────────────────────────────────────
+  // Travel mode mapping
+  //
+  // `_activeTravelMode` ('walk' / 'drive' / 'both') drives how far the
+  // GENERATOR is willing to search for candidate places. It's a different
+  // concept from RouteOptimizerPage's `TravelMode` (used to estimate real
+  // walk/drive time between the chosen stops), but it's a reasonable
+  // default to carry over: if the user said they're willing to go far
+  // ('drive' or 'both' = flexible/far), default the optimizer's travel
+  // mode to driving too, so the leg times shown make sense together with
+  // the wider search radius that was actually used to pick these places.
+  // ─────────────────────────────────────────────
+
+  TravelMode _resolveOptimizerTravelMode() {
+    switch (_activeTravelMode) {
+      case 'walk':
+        return TravelMode.walk;
+      case 'drive':
+      case 'both': // "Flexible" = willing to go far → default to driving
+        return TravelMode.drive;
+      default:
+        return TravelMode.walk;
+    }
+  }
+
+  // ─────────────────────────────────────────────
   // Generate
   // ─────────────────────────────────────────────
 
@@ -211,7 +249,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     _generatingStepTimer = null;
   }
 
-  Future<void> _generate() async {
+  Future<void> _generate({int? overrideRadius}) async {   // 🔧 CHANGED: 加可选参数，补救时用
     _dismissKeyboard();
 
     if (_useCurrentLocation) {
@@ -227,11 +265,13 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       return;
     }
 
+    print('🎯 [Page] _activeTravelMode = $_activeTravelMode');
+
     setState(() => _isGenerating = true);
     _startGeneratingStepTimer();
 
     try {
-      final itinerary = await ItineraryService.instance.generate(
+      final result = await ItineraryService.instance.generate(   // 🔧 CHANGED
         startDate:          DateFormat('yyyy-MM-dd').format(_startDate),
         totalDays:          _totalDays,
         placesPerDay:       _placesPerDay,
@@ -241,22 +281,27 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
         overrideCuisines:   _activeCuisines.toList(),
         overrideLat:        _useCurrentLocation ? null : _selectedLat,
         overrideLng:        _useCurrentLocation ? null : _selectedLng,
+        isCurrentLocation:  _useCurrentLocation,
+        overrideTravelMode: _activeTravelMode,
       );
 
       if (!mounted) return;
 
-      if (itinerary == null) {
+      if (result.itinerary == null) {
         _showSnack('Failed to generate itinerary. Please try again.');
         return;
       }
 
-      final saved = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(
-            builder: (_) => ItineraryDetailPage(itinerary: itinerary)),
-      );
+      // 🆕 候选不足——提示用户，并给出补救选项
+      if (result.isShortfall) {
+        _showShortfallDialog(result);
+        return;   // 让用户决定：接受当前结果 / 放宽范围重试
+      }
 
-      if (saved == true && mounted) Navigator.pop(context);
+      await _proceedToRouteOptimizer(
+        result.itinerary!,
+        leftoverCandidates: result.leftoverCandidates,   // 🔧 FIX
+      );
 
     } finally {
       _stopGeneratingStepTimer();
@@ -264,6 +309,110 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     }
   }
 
+  // 🆕 抽出跳转逻辑，方便 shortfall 对话框里"仍然使用"这个按钮也能复用
+// pages/itinerary/generate_itinerary_page.dart
+
+  Future<void> _proceedToRouteOptimizer(
+    ItineraryModel itinerary, {
+    required List<PlaceModel> leftoverCandidates,
+  }) async {
+    final pos = LocationService.instance.currentPosition;
+    final double startLat = _useCurrentLocation ? pos!.latitude  : _selectedLat!;
+    final double startLng = _useCurrentLocation ? pos!.longitude : _selectedLng!;
+    final String  startName = _useCurrentLocation ? 'Current Location' : _selectedLocationName;
+
+    final resolvedTravelMode = _resolveOptimizerTravelMode();   // 🆕 已有的方法，直接复用
+
+    final itineraryWithOrigin = itinerary.copyWith(
+      isOriginCurrentLocation: _useCurrentLocation,
+      originLat:  startLat,
+      originLng:  startLng,
+      originName: startName,
+      travelMode: travelModeToString(resolvedTravelMode),   // 🆕
+    );
+
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RouteOptimizerPage(
+          itinerary:          itineraryWithOrigin,
+          startLat:           startLat,
+          startLng:           startLng,
+          startLocationName:  startName,
+          travelMode:         resolvedTravelMode,   // 🔧 复用同一个值，保证一致
+          leftoverCandidates: leftoverCandidates,
+        ),
+      ),
+    );
+
+    if (saved == true && mounted) {
+      Navigator.of(context).removeRoute(ModalRoute.of(context)!);
+    }
+  }
+
+  void _showShortfallDialog(ItineraryGenerationResult result) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.info_outline_rounded, color: Color(0xFF7C4DFF)),
+            SizedBox(width: 8),
+            Expanded(  // ← 加这个，文字超出会自动换行而不是溢出
+              child: Text(
+                'Fewer places found',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          'We could only find ${result.actualTotal} place'
+          '${result.actualTotal == 1 ? "" : "s"} out of the '
+          '${result.requestedTotal} you wanted, based on your selected '
+          'categories and travel distance in this area.\n\n'
+          'You can still use this itinerary, or try widening your travel '
+          'distance or adding more categories for a fuller trip.',
+          style: const TextStyle(fontSize: 14, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Adjust settings',
+                style: TextStyle(color: Colors.grey[600])),
+          ),
+          if (_activeTravelMode != 'drive')
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                setState(() => _activeTravelMode =
+                    _activeTravelMode == 'walk' ? 'both' : 'drive');
+                _generate();
+              },
+              child: const Text('Try wider range',
+                  style: TextStyle(color: Color(0xFF7C4DFF), fontWeight: FontWeight.w600)),
+            ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _proceedToRouteOptimizer(
+                result.itinerary!,
+                leftoverCandidates: result.leftoverCandidates,   // 🔧 FIX
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF7C4DFF),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Use this itinerary',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+  
   Future<void> _pickDate() async {
     _dismissKeyboard();
     await Future.delayed(const Duration(milliseconds: 100));
@@ -544,6 +693,10 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               const SizedBox(height: 24),
 
               _buildPreferencesSection(),
+
+              const SizedBox(height: 24),   // 🆕
+
+              _buildTravelModeSection(),    // 🆕
 
               const SizedBox(height: 32),
 
@@ -985,6 +1138,52 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       ],
     );
   }
+
+  // ─────────────────────────────────────────────
+  // Travel mode section — how far the user is willing to go
+  // ─────────────────────────────────────────────
+
+  Widget _buildTravelModeSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionLabel('How far are you willing to go?'),
+        const SizedBox(height: 6),
+        Text('This affects how far candidate places can be from your trip location',
+            style: TextStyle(fontSize: 11, color: Colors.grey[400])),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8, runSpacing: 8,
+          children: _travelModes.map((m) {
+            final isOn = _activeTravelMode == m['key'];
+            return GestureDetector(
+              onTap: () => setState(() => _activeTravelMode = m['key']!),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: isOn
+                      ? const Color(0xFF7C4DFF).withOpacity(0.12)
+                      : Colors.grey[100],
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isOn ? const Color(0xFF7C4DFF) : Colors.transparent,
+                    width: 1.5,
+                  ),
+                ),
+                child: Text('${m['icon']} ${m['label']}',
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        color: isOn ? const Color(0xFF7C4DFF) : Colors.black87)),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+}
+
 
   Widget _removableTag({
     required String label,
