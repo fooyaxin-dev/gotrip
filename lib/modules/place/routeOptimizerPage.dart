@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:gotrip/services/apps_Loading.dart';
 import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
@@ -12,6 +13,7 @@ import '../../services/itinerary_service.dart';
 import '../itinerary/itineraryDetail.dart';
 import '../../services/route_service.dart';
 import '../../models/placeModel.dart';
+import '../../services/placesAPI_service.dart';
 import 'placeDetailPage.dart';   // 跟 RealTimeDetectPage 用的是同一个相对路径，如果不在同一文件夹，按实际路径调整
 
 class RouteOptimizerPage extends StatefulWidget {
@@ -26,6 +28,7 @@ class RouteOptimizerPage extends StatefulWidget {
   // a brand new ItineraryDetailPage on top of the one that's already there).
   final bool isEditingExisting;
   final List<PlaceModel> leftoverCandidates;  
+  final List<String> leftoverPlaceIds;
 
   const RouteOptimizerPage({
     super.key,
@@ -36,6 +39,7 @@ class RouteOptimizerPage extends StatefulWidget {
     this.travelMode = TravelMode.walk,
     this.isEditingExisting = false,
     this.leftoverCandidates = const [],
+    this.leftoverPlaceIds = const [],
   });
 
   @override
@@ -45,6 +49,9 @@ class RouteOptimizerPage extends StatefulWidget {
 class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   late ItineraryModel _itinerary;
   late List<PlaceModel> _leftovers;
+  List<String> _pendingLeftoverIds = [];   // 🆕 还没 hydrate 的 id
+  bool _isHydratingPool = false;           // 🆕
+  bool _poolHydrated = false;      
 
   // 0 = Overview, index i+1 = Day i
   int _selectedIndex = 0;
@@ -130,25 +137,27 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // ─────────────────────────────────────────────
 
   @override
-  void initState() {
-    super.initState();
-    _itinerary = widget.itinerary;
-    _leftovers = List.from(widget.leftoverCandidates); 
-    _updateMapOverlays(); // show something immediately with whatever order we were given
+    void initState() {
+      super.initState();
+      _itinerary = widget.itinerary;
+      _leftovers = List.from(widget.leftoverCandidates);
 
-    // Fresh drafts (fresh from AI generation or manual place selection)
-    // arrive with only a straight-line guessed order. Silently upgrade
-    // every day to the real-route-optimized order right away, using the
-    // same matrix-based logic as the "Re-optimize" button — so the user
-    // doesn't have to know to tap it themselves.
-    //
-    // Skipped when editing an already-saved itinerary: the user may have
-    // deliberately reordered things by hand previously, and we shouldn't
-    // silently undo that just because they reopened it to tweak something.
-    if (!widget.isEditingExisting && _itinerary.id.isEmpty) {
-      _autoOptimizeAllDays();
+      // 🆕 Generate 流程直接带完整 PlaceModel，不需要 hydrate；
+      // Edit 已存档行程时只有 id，标记成"待 hydrate"，等用户真的点开
+      // More Places tab 才去补全，而不是一进页面就打一堆 API
+      if (widget.leftoverCandidates.isEmpty && widget.leftoverPlaceIds.isNotEmpty) {
+        _pendingLeftoverIds = List.from(widget.leftoverPlaceIds);
+        _poolHydrated = false;
+      } else {
+        _poolHydrated = true;
+      }
+
+      _updateMapOverlays();
+
+      if (!widget.isEditingExisting && _itinerary.id.isEmpty) {
+        _autoOptimizeAllDays();
+      }
     }
-  }
 
   Future<void> _autoOptimizeAllDays() async {
     for (int d = 0; d < _itinerary.days.length; d++) {
@@ -549,6 +558,36 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     if (_selectedIndex == index) return;
     setState(() => _selectedIndex = index);
     _updateMapOverlays();
+
+    // 🆕 第一次点进 More Places tab 才去补全候补池详情
+    if (index == _poolTabIndex && !_poolHydrated && !_isHydratingPool) {
+      _hydrateLeftoverPool();
+    }
+  }
+
+  // 🆕 把 _pendingLeftoverIds 逐个补全成 PlaceModel。
+  // 单个 id 失败（place 下架/无效）不影响其他的，直接跳过。
+  Future<void> _hydrateLeftoverPool() async {
+    if (_pendingLeftoverIds.isEmpty) {
+      _poolHydrated = true;
+      return;
+    }
+    setState(() => _isHydratingPool = true);
+
+    final results = await Future.wait(_pendingLeftoverIds.map((id) async {
+      try {
+        return await PlacesApiService.getPlaceModelDetails(id);
+      } catch (_) {
+        return null;
+      }
+    }));
+
+    if (!mounted) return;
+    setState(() {
+      _leftovers = [..._leftovers, ...results.whereType<PlaceModel>()];
+      _isHydratingPool = false;
+      _poolHydrated = true;
+    });
   }
 
   // ─────────────────────────────────────────────
@@ -1042,6 +1081,12 @@ void _addPoolPlaceToPosition(
     if (!hasAnyPlace) return;
     setState(() => _isSaving = true);
 
+    // 🆕 把用户这次 session 里最终的候补池 id 写回去，
+    // 这样下次再 edit，候补池还是这次离开时的状态
+    _itinerary = _itinerary.copyWith(
+      leftoverPlaceIds: _leftovers.map((p) => p.id).toList(),
+    );
+    
     String? savedId;
     if (_itinerary.id.isEmpty) {
       savedId = await ItineraryService.instance.save(_itinerary);
@@ -1724,6 +1769,19 @@ void _addPoolPlaceToPosition(
   }
 
   Widget _buildPoolContent(ScrollController scrollController) {
+
+    if (_isHydratingPool) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(width: 28, height: 28, child: TravelLoadingIndicator()),
+            SizedBox(height: 12),
+          ],
+        ),
+      );
+    }
+    
   if (_leftovers.isEmpty) {
     return ListView(controller: scrollController, physics: const ClampingScrollPhysics(),
       children: [
@@ -1748,7 +1806,8 @@ void _addPoolPlaceToPosition(
 
   final byType = <String, List<PlaceModel>>{};
   for (final p in _leftovers) {
-    byType.putIfAbsent(p.primaryType ?? 'other', () => []).add(p);
+    final label = _typeLabel(p.primaryType ?? 'other');   // 🔧 先转成显示文字
+    byType.putIfAbsent(label, () => []).add(p);           // 🔧 再用这个文字当 key 分组
   }
 
   return ListView(
@@ -1769,7 +1828,7 @@ void _addPoolPlaceToPosition(
       ]),
       const SizedBox(height: 14),
       for (final entry in byType.entries) ...[
-        Text(_typeLabel(entry.key),
+        Text(entry.key,    // 🔧 直接用 entry.key,不要再套 _typeLabel
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold,
                 color: Color(0xFF1A1A2E))),
         const SizedBox(height: 8),
@@ -1783,10 +1842,16 @@ void _addPoolPlaceToPosition(
 String _typeLabel(String type) {
   const labels = {
     'restaurant':         '🍜 Food',
+    'meal_takeaway':      '🍜 Food',
+    'cafe':               '☕ Cafe',
+    'bakery':             '🥐 Bakery',
     'tourist_attraction': '🏛️ Historical',
     'shopping_mall':      '🛍️ Shopping',
     'amusement_park':     '🎭 Entertainment',
     'park':               '🌿 Nature',
+    'hospital':           '🏥 Medical',
+    'university':         '🎓 Education',
+    'florist':            '💐 Florist',
   };
   return labels[type] ?? '📍 Other';
 }

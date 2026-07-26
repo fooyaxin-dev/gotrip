@@ -768,6 +768,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
           startLocationName: startName,
           travelMode: resolvedTravelMode,   // 🔧 CHANGED
           isEditingExisting: true,
+          leftoverPlaceIds: _itinerary.leftoverPlaceIds, 
         ),
       ),
     );

@@ -162,6 +162,7 @@ class ItineraryModel {
   final double? originLng;      // 🆕
   final String? originName;     // 🆕
   final String travelMode;      // 🆕 'walk' | 'motor' | 'drive' — 生成/上次编辑时用的出行方式
+  final List<String> leftoverPlaceIds;
 
   ItineraryModel({
     required this.id,
@@ -175,6 +176,7 @@ class ItineraryModel {
     this.originLng,
     this.originName,
     this.travelMode = 'walk',     // 🆕 默认值，保证老代码里没传这个参数也能编译/运行
+    this.leftoverPlaceIds = const [],     
   });
 
   factory ItineraryModel.fromMap(String id, Map<String, dynamic> m) =>
@@ -192,6 +194,9 @@ class ItineraryModel {
         originLng:  (m['originLng'] as num?)?.toDouble(),
         originName: m['originName'],
         travelMode: m['travelMode'] ?? 'walk',   // 🆕 老数据没存过就退回 walk
+        leftoverPlaceIds: (m['leftoverPlaceIds'] as List<dynamic>?)   // 🆕
+            ?.map((e) => e.toString())
+            .toList() ?? const [],
       );
 
   Map<String, dynamic> toMap() => {
@@ -204,7 +209,8 @@ class ItineraryModel {
     'originLat':  originLat,
     'originLng':  originLng,
     'originName': originName,
-    'travelMode': travelMode,   // 🆕
+    'travelMode': travelMode,   // 🆕  
+    'leftoverPlaceIds': leftoverPlaceIds,
   };
 
   ItineraryModel copyWith({
@@ -216,6 +222,7 @@ class ItineraryModel {
     double? originLng,
     String? originName,
     String? travelMode,          // 🆕
+    List<String>? leftoverPlaceIds,  // 🆕
   }) => ItineraryModel(
     id:        id        ?? this.id,
     title:     title     ?? this.title,
@@ -228,6 +235,7 @@ class ItineraryModel {
     originLng:  originLng  ?? this.originLng,
     originName: originName ?? this.originName,
     travelMode: travelMode ?? this.travelMode,   // 🆕
+    leftoverPlaceIds: leftoverPlaceIds ?? this.leftoverPlaceIds,  // 🆕
   );
 
   int get totalVisited => days.fold(0, (sum, d) => sum + d.visitedCount);

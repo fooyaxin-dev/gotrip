@@ -15,6 +15,7 @@ import '../../services/achievement_service.dart';
 import '../dashboard/dashboard_page.dart';
 import '../place/categoryImage_Helper.dart';
 import '../../services/apps_Loading.dart';
+import 'allRecommendedPlacesPage.dart';
 
 class MainPage extends StatefulWidget {
   final dynamic username;
@@ -30,6 +31,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   List<PlaceModel> _nearbyPlaces    = [];
   List<PlaceModel> _forYouPlaces    = [];
   bool _loadingNearby               = true;
+    List<PlaceModel> get _openNearbyPlaces =>
+      _nearbyPlaces.where((p) => p.isOpenNow != false).toList();
 
   // ── Achievement banner ──
   AchievementTier? _latestBadge;
@@ -39,6 +42,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   String _currentLocationText       = "Detecting your location...";
 
   Map<String, RouteResult> _routeResults = {};
+  String? _travelModeOverride;   // 🆕 仅本次 session 有效的临时覆盖，不写回 Firestore
+
+  String get _effectiveTravelMode =>
+      _travelModeOverride ?? UserPreferenceService.instance.current.travelMode;
 
   @override
   void initState() {
@@ -112,6 +119,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   }
 
   Future<void> _initAndLoad() async {
+    _travelModeOverride = null;
     NearbyPlacesService.instance.clearCache(); 
     await _initLocation();
     await _loadNearby();
@@ -147,8 +155,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   }
 
   double get _distanceLimitMeters {
-    final mode = UserPreferenceService.instance.current.travelMode;
-    switch (mode) {
+    switch (_effectiveTravelMode) {   // 🔧 CHANGED
       case 'walk':  return 2000;
       case 'drive': return 20000;
       default:      return 10000;
@@ -156,8 +163,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   }
 
   String get _distanceLimitLabel {
-    final mode = UserPreferenceService.instance.current.travelMode;
-    switch (mode) {
+    switch (_effectiveTravelMode) {   // 🔧 CHANGED
       case 'walk':  return 'within 2 km (walking)';
       case 'drive': return 'within 20 km (driving)';
       default:      return 'within 10 km';
@@ -183,13 +189,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     final limit = _distanceLimitMeters;
 
     const allowedTypes = {
-      'restaurant',
-      'park',
-      'entertainment',
-      'shopping_mall',
+      'restaurant', 'park', 'entertainment', 'shopping_mall',
     };
 
-    final withinRange = _nearbyPlaces.where((place) {
+    final withinRange = _openNearbyPlaces.where((place) {
       final dist = _routeResults[place.id]?.distanceMeters ?? double.infinity;
       final isAllowed = allowedTypes.contains(place.primaryType) ||
           place.allTypes.any((t) => allowedTypes.contains(t));
@@ -199,7 +202,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
           isAllowed;
     }).toList();
 
-    // 评分
     final scored = withinRange.map((place) {
       final dist  = _routeResults[place.id]?.distanceMeters;
       final score = UserPreferenceService.instance.scorePlaceModel(
@@ -211,29 +213,21 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     }).toList()
       ..sort((a, b) => b.value.compareTo(a.value));
 
-
-    print('🔍 ForYou withinRange: ${withinRange.length}');
-    for (final p in withinRange) {
-      print('  ${p.name} | primary: ${p.primaryType} | types: ${p.allTypes.take(3)}');
-    }
-
     final filtered = scored
         .where((e) => e.value > 0)
         .map((e) => e.key)
-        .take(7)
-        .toList();
+        .toList();   // 🔧 CHANGED — 去掉 .take(7)，存完整列表
 
     final result = filtered.isNotEmpty
         ? filtered
         : (List<PlaceModel>.from(withinRange)
             ..removeWhere((p) => p.photoUrl == null || p.photoUrl!.isEmpty)
-            ..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0)))
-            .take(7)
-            .toList();
+            ..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0)));
+            // 🔧 CHANGED — 同样去掉 .take(7)
 
     setState(() => _forYouPlaces = result);
   }
-
+  
   // ─────────────────────────────────────────────
   // Load nearby
   // ─────────────────────────────────────────────
@@ -269,7 +263,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
 
   RouteResult _calcRoute(double lat, double lng, PlaceModel place) {
     final dist = Geolocator.distanceBetween(lat, lng, place.lat!, place.lng!);
-    final mode = UserPreferenceService.instance.current.travelMode;
+    final mode = _effectiveTravelMode;
 
     final driveRoad = dist * 1.4; 
     final walkRoad  = dist * 1.2;  
@@ -300,7 +294,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   String _formatDuration(String placeId) {
     final route = _routeResults[placeId];
     if (route == null) return "--";
-    final mode = UserPreferenceService.instance.current.travelMode;
+    final mode = _effectiveTravelMode;
     final mainMins = (route.durationSeconds ~/ 60).toString();
 
     if (mode == 'both' && route.walkDurationSeconds != null) {
@@ -330,47 +324,90 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
 
   Map<String, List<PlaceModel>> get _placeByCategory {
     if (_nearbyPlaces.isEmpty) return {"All": []};
-    final Map<String, List<PlaceModel>> result = {"All": _nearbyPlaces};
+    final openPlaces = _openNearbyPlaces;   // 🔧 CHANGED
+    final Map<String, List<PlaceModel>> result = {"All": openPlaces};
     for (final category in _categories) {
       final type = category['type'] as String;
       if (type == 'all') continue;
-      result[category['label']] = _nearbyPlaces
+      result[category['label']] = openPlaces   // 🔧 CHANGED
           .where((p) => p.primaryType == type).toList();
     }
     return result;
   }
 
   List<PlaceModel> get _nearbyTrending {
-    if (_nearbyPlaces.isEmpty) return [];
-    final pos = LocationService.instance.currentPosition;
-    if (pos == null) return [];
+      if (_nearbyPlaces.isEmpty) return [];
+      final pos = LocationService.instance.currentPosition;
+      if (pos == null) return [];
 
-    const allowedTypes = {
-      'restaurant',
-      'park',
-      'entertainment',
-      'shopping_mall',
-      'tourist_attraction',
-    };
+      const allowedTypes = {
+        'restaurant',
+        'park',
+        'entertainment',
+        'shopping_mall',
+        'tourist_attraction',
+      };
 
-    final sorted = List<PlaceModel>.from(_nearbyPlaces)
-      ..removeWhere((p) =>
-          p.photoUrl == null ||
-          p.photoUrl!.isEmpty ||
-          (!allowedTypes.contains(p.primaryType) &&
-          !p.allTypes.any((t) => allowedTypes.contains(t))))  
-      ..sort((a, b) {
-        final distA = _routeResults[a.id]?.distanceMeters ?? double.infinity;
-        final distB = _routeResults[b.id]?.distanceMeters ?? double.infinity;
-        return distA.compareTo(distB);
-      });
-    return sorted.take(6).toList();
+      final sorted = List<PlaceModel>.from(_openNearbyPlaces)   // 🔧 CHANGED
+        ..removeWhere((p) =>
+            p.photoUrl == null ||
+            p.photoUrl!.isEmpty ||
+            (!allowedTypes.contains(p.primaryType) &&
+            !p.allTypes.any((t) => allowedTypes.contains(t))))
+        ..sort((a, b) {
+          final distA = _routeResults[a.id]?.distanceMeters ?? double.infinity;
+          final distB = _routeResults[b.id]?.distanceMeters ?? double.infinity;
+          return distA.compareTo(distB);
+        });
+      return sorted.take(6).toList();
+    }
+    
+    
+  void _openAllForYou() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AllRecommendedPlacesPage(
+          places:       _forYouPlaces,
+          routeResults: _routeResults,
+        ),
+      ),
+    );
   }
+
+  // 🆕 For You 为空时，用户可以临时把范围放宽到 drive（20km），
+  // 只在本次 session 生效，不覆盖用户在 Settings 里保存的真正偏好。
+  Future<void> _tryWiderTravelMode() async {
+    if (_effectiveTravelMode == 'drive') return; // 已经是最大范围了
+
+    setState(() {
+      _travelModeOverride = 'drive';
+      _loadingNearby = true;
+    });
+
+    NearbyPlacesService.instance.clearCache();
+    try {
+      final places = await NearbyPlacesService.instance.loadNearbyPlacesOnce(
+        _categories, context,
+        radius: _distanceLimitMeters.toInt(),   // 🆕 这次真的按 20km 去拉数据
+      );
+      if (!mounted) return;
+      setState(() {
+        _nearbyPlaces  = places;
+        _loadingNearby = false;
+      });
+      _calculateRoutes();
+      await _buildForYou();
+    } catch (e) {
+      if (mounted) setState(() => _loadingNearby = false);
+    }
+  }
+
+
 
   // ─────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────
-
 
   @override
   Widget build(BuildContext context) {
@@ -394,7 +431,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               const SizedBox(height: 20),
 
               // ── 1. For You ──────────────────────
-              _buildSectionHeader("✨ For You", false),
+              _buildSectionHeader(
+                "✨ For You",
+                onSeeAll: _forYouPlaces.isNotEmpty ? _openAllForYou : null,
+              ),
               const SizedBox(height: 4),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 25),
@@ -414,7 +454,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               const SizedBox(height: 28),
 
               // ── 2. Browse by Category ───────────
-              _buildSectionHeader("Recommended Places", true),
+              _buildSectionHeader("Recommended Places"), 
               const SizedBox(height: 10),
               _buildCategorySection(),
 
@@ -460,7 +500,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               const SizedBox(height: 20),
 
               // ── 3. Nearby Trending ───────────────
-              _buildSectionHeader("Nearby Trending", false),
+              _buildSectionHeader("Nearby Trending"),  
               const SizedBox(height: 20),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 25),
@@ -484,7 +524,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   // For You Section
   // ─────────────────────────────────────────────
 
-  Widget _buildForYouSection() {
+    Widget _buildForYouSection() {
       if (_loadingNearby) {
         return const SizedBox(
           height: 200,
@@ -493,10 +533,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
       }
 
       if (_forYouPlaces.isEmpty) {
+        final canWiden = _effectiveTravelMode != 'drive';   // 🆕
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 25),
           child: Container(
-            height: 120,
+            padding: const EdgeInsets.symmetric(vertical: 20),   // 🔧 CHANGED — 固定 height 改成 padding，给按钮留空间
             decoration: BoxDecoration(
               color: Colors.grey[50],
               borderRadius: BorderRadius.circular(20),
@@ -504,7 +545,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
             ),
             child: Center(
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,   // 🔧 CHANGED
                 children: [
                   Icon(Icons.explore_outlined, size: 32, color: Colors.grey[400]),
                   const SizedBox(height: 8),
@@ -513,6 +554,23 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                   const SizedBox(height: 4),
                   Text('Try updating your preferences in Settings',
                       style: TextStyle(color: Colors.grey[400], fontSize: 11)),
+                  if (canWiden) ...[   // 🆕
+                    const SizedBox(height: 14),
+                    ElevatedButton.icon(
+                      onPressed: _loadingNearby ? null : _tryWiderTravelMode,
+                      icon: const Icon(Icons.directions_car_filled_rounded, size: 16),
+                      label: const Text('Try 20 km (Drive)'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF7C4DFF),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -520,19 +578,23 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
         );
       }
 
+      final preview = _forYouPlaces.take(7).toList();
+
       return SizedBox(
         height: 220,
         child: ListView.builder(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 25),
-          itemCount: _forYouPlaces.length,
+          itemCount: preview.length,   // 🔧 CHANGED
           itemBuilder: (context, index) {
-            return _buildForYouCard(_forYouPlaces[index]);
+            return _buildForYouCard(preview[index]);   // 🔧 CHANGED
           },
         ),
       );
     }
 
+  
+  
   Widget _buildForYouCard(PlaceModel place) {
     final route = _routeResults[place.id];
     final dist  = route != null ? (route.distanceMeters / 1000).toStringAsFixed(1) : "--";
@@ -1038,7 +1100,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildSectionHeader(String title, bool showAll) {
+  Widget _buildSectionHeader(String title, {VoidCallback? onSeeAll}) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 25),
       child: Row(
@@ -1046,7 +1108,20 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
         children: [
           Text(title, style: const TextStyle(
               fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
-         
+          if (onSeeAll != null)
+            GestureDetector(
+              onTap: onSeeAll,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text('See All',
+                      style: TextStyle(fontSize: 13, color: Colors.grey[500],
+                          fontWeight: FontWeight.w600)),
+                  Icon(Icons.arrow_forward_ios_rounded,
+                      size: 12, color: Colors.grey[500]),
+                ]),
+              ),
+            ),
         ],
       ),
     );

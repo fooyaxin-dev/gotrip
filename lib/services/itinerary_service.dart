@@ -516,6 +516,8 @@ class ItineraryService {
       originLng:  lng,                               // 🆕
       originName: null,                              // 🆕 GenerateItineraryPage 那边会 copyWith 补上真正的名字
       travelMode: travelMode,                        // 🆕 复用方法开头已解析出来的 'walk'/'drive'/'both' 字符串
+      leftoverPlaceIds: finalLeftovers.map((p) => p.id).toList(),  // 🆕
+
     );
 
     return ItineraryGenerationResult(

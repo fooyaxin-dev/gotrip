@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'api_Keys.dart';
+import '../models/placeModel.dart';
 
 class PlacesApiService {
   static const String _apiKey = ApiKeys.googlePlacesNew;
@@ -408,6 +409,41 @@ class PlacesApiService {
     }
   }
 
+  
+  /// 🆕 把 getPlaceDetails() 的原始 Google 格式转成 PlaceModel。
+  /// 专门给 RouteOptimizerPage 的候补池 lazy-hydrate 用——
+  /// 存档时只存了 placeId，用户点开 "More Places" tab 才需要
+  /// 把这些 id 还原成完整的 PlaceModel（走的还是原本的 Firestore 缓存，
+  /// 30 天内基本不会真的打 Google API）。
+  static Future<PlaceModel> getPlaceModelDetails(String placeId) async {
+    final data = await getPlaceDetails(placeId); // 复用现有缓存逻辑
+
+    final photos = data['photos'] as List?;
+    final photoUrl = (photos != null && photos.isNotEmpty)
+        ? buildPhotoUrl(photos[0]['name'])
+        : null;
+
+    final rawTypes = (data['types'] as List?)
+            ?.map((e) => e.toString())
+            .toList() ??
+        [];
+
+    return PlaceModel(
+      id:          placeId,
+      name:        data['displayName']?['text'] ?? 'Unknown',
+      address:     data['formattedAddress'],
+      lat:         (data['location']?['latitude']  as num?)?.toDouble(),
+      lng:         (data['location']?['longitude'] as num?)?.toDouble(),
+      rating:      (data['rating'] as num?)?.toDouble(),
+      photoUrl:    photoUrl,
+      source:      'google',
+      primaryType: data['primaryType'] as String?,
+      allTypes:    rawTypes,
+      isOpenNow:   data['regularOpeningHours']?['openNow'] as bool?,
+    );
+  }
+  
+  
   static Future<void> clearPlaceCache(String placeId) async {
     try {
       await _firestore.collection(_collectionName).doc(placeId).delete();
