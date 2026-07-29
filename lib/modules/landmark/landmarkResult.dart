@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:gotrip/modules/place/detectPlacePage.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/location_service.dart';
 import '../../services/wikipedia_service.dart';
 import '../../services/vision_service.dart';
@@ -616,10 +617,10 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       return Image.memory(widget.imageBytes!, fit: BoxFit.cover);
     }
     if (widget.fallbackImageUrl != null && widget.fallbackImageUrl!.isNotEmpty) {
-      return Image.network(
-        widget.fallbackImageUrl!,
+      return CachedNetworkImage(
+        imageUrl: widget.fallbackImageUrl!,
         fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => _heroPlaceholder(),
+        errorWidget: (_, __, ___) => _heroPlaceholder(),
       );
     }
     return _heroPlaceholder();
@@ -852,21 +853,20 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                         offset: const Offset(0, 10))
                   ],
                 ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: Image.network(url, fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (mounted)
-                        setState(() => _failedImageUrls.add(url));
-                    });
-                    return Container(
-                        color: Colors.grey[200],
-                        child: const Center(
-                            child: Icon(Icons.broken_image,
-                                size: 40, color: Colors.grey)));
-                  }),
-                ),
+                child: CachedNetworkImage(
+                    imageUrl: url,
+                    fit: BoxFit.cover,
+                    errorWidget: (_, __, ___) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) setState(() => _failedImageUrls.add(url));
+                      });
+                      return Container(
+                          color: Colors.grey[200],
+                          child: const Center(
+                              child: Icon(Icons.broken_image,
+                                  size: 40, color: Colors.grey)));
+                    },
+                  ),
               );
             },
           ),

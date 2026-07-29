@@ -8,10 +8,11 @@ import '../../services/userPreference_service.dart';
 import 'signup.dart';
 import '../main/homepage.dart';
 import '../../services/apps_Loading.dart';
+import '../../services/connectivity_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
-
+ 
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
@@ -33,6 +34,14 @@ class _LoginPageState extends State<LoginPage> {
   // ================= Email/Password Login =================
   Future<void> loginUserWithEmailAndPassword() async {
     if (!_formKey.currentState!.validate()) return;
+
+      // 🆕 登录前先确认有网，没网直接提示，不让转圈卡住
+    final online = await ConnectivityService.instance.ensureConnected(
+      context,
+      onRetry: loginUserWithEmailAndPassword,
+    );
+    if (!online) return;
+
     setState(() => isLoading = true);
 
     try {

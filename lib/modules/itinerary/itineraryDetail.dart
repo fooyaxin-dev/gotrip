@@ -11,8 +11,9 @@ import '../place/placeDetailPage.dart';
 import '../place/routePreviewPage.dart';
 import '../place/routeOptimizerPage.dart';
 import '../../services/route_service.dart';
+import '../../services/error_handler.dart';
 import '../../services/achievement_service.dart';
-import '../../services/apps_Loading.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 class ItineraryDetailPage extends StatefulWidget {
   final ItineraryModel itinerary;
@@ -108,16 +109,29 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     }
 
     // ── Step 3: Save to history ──
-    HistoryService.instance.addEntry(
-      placeName:      visited.name,
-      address:        visited.address,
-      photoUrl:       visited.photoUrl,
-      visitedAt:      visited.visitedAt!,
-      itineraryId:    _itinerary.id,
-      itineraryTitle: _itinerary.title,
-      placeId:        visited.placeId,
-      primaryType:    visited.primaryType,
-    );
+    try {
+      await HistoryService.instance.addEntry(
+        placeName:      visited.name,
+        address:        visited.address,
+        photoUrl:       visited.photoUrl,
+        visitedAt:      visited.visitedAt!,
+        itineraryId:    _itinerary.id,
+        itineraryTitle: _itinerary.title,
+        placeId:        visited.placeId,
+        primaryType:    visited.primaryType,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.toString().replaceFirst('Exception: ', '')),
+            backgroundColor: Colors.orange[700],
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    }
 
     _scrollToNextPlace(dayIndex);
 
@@ -534,13 +548,12 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: place.photoUrl != null
-                      ? Image.network(
-                          place.photoUrl!,
-                          width: 70, height: 70, fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) =>
-                              _placeholderImg(),
-                        )
-                      : _placeholderImg(),
+                  ? CachedNetworkImage(
+                      imageUrl: place.photoUrl!,
+                      width: 70, height: 70, fit: BoxFit.cover,
+                      errorWidget: (_, __, ___) => _placeholderImg(),
+                    )
+                  : _placeholderImg(),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -816,17 +829,23 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                 style: TextStyle(color: Colors.grey[600])),
           ),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(context);
               if (ctrl.text.trim().isNotEmpty) {
-                final updated =
-                    _itinerary.copyWith(title: ctrl.text.trim());
+                final updated = _itinerary.copyWith(title: ctrl.text.trim());
                 setState(() => _itinerary = updated);
                 if (_itinerary.id.isNotEmpty) {
-                  ItineraryService.instance.update(_itinerary);
+                  try {
+                    await ItineraryService.instance.update(_itinerary);
+                  } catch (e) {
+                    if (mounted) {
+                      ErrorHandler.showError(context, message: 'Failed to save title. Please try again.');
+                    }
+                  }
                 }
               }
             },
+
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF7C4DFF),
               shape: RoundedRectangleBorder(

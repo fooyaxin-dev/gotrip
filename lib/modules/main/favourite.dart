@@ -3,7 +3,7 @@ import '../../services/favourite_service.dart';
 import '../place/favouriteButton.dart';
 import '../place/placeDetailPage.dart';
 import '../../services/apps_Loading.dart';
-
+import 'package:cached_network_image/cached_network_image.dart';
 // ─────────────────────────────────────────────
 // 📌 Google Places API types → 自定义分类映射
 // ─────────────────────────────────────────────
@@ -293,14 +293,14 @@ class _FavouritePageState extends State<FavouritePage> with TickerProviderStateM
               // 背景图片
               Positioned.fill(
                 child: photoUrl != null
-                    ? Image.network(
-                        photoUrl,
+                    ? CachedNetworkImage(
+                        imageUrl: photoUrl,
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _buildImgPlaceholder(),
+                        errorWidget: (_, __, ___) => _buildImgPlaceholder(),
                       )
                     : _buildImgPlaceholder(),
               ),
-
+  
               // 渐变蒙层
               Positioned.fill(
                 child: Container(

@@ -6,6 +6,7 @@ import 'placesAPI_service.dart';
 import 'geoapify_service.dart';
 import 'location_service.dart';
 import 'geoapifyEnrichment_service.dart';
+import 'route_service.dart'; 
 
 class NearbyPlacesService {
 
@@ -34,6 +35,11 @@ class NearbyPlacesService {
   // radius (see `_fetchGoogleOnce`), so correctness is preserved either way
   // — this constant is a cost/coverage tuning knob, not a hard cap.
   static const int _googleMaxRadius = 15000;
+
+  // 🖼️ 预加载图片上限——只预加载"最可能马上被看到"的一批，
+  // 不是整个 cache（cache 可能有几十到上百个地点）
+  static const int _maxPrecacheImages = 24;
+  static const int _precacheBatchSize = 6;
 
   // location-key ('lat,lng' rounded to 3dp ≈ 111m) → raw Google places
   // (parsed, NOT filtered by radius) fetched at up to `_googleMaxRadius`.
@@ -259,7 +265,7 @@ class NearbyPlacesService {
   Future<List<PlaceModel>> getOrFetchGooglePlaces({
     required double lat,
     required double lng,
-    int radius = 10000,
+    int radius = 12000,
   }) async {
     final all = await _fetchGoogleOnce(lat, lng, radius);
     // 🔧 FIX: _fetchGoogleOnce 只负责"抓取"，不做半径过滤——
@@ -279,7 +285,7 @@ class NearbyPlacesService {
   Future<List<PlaceModel>> fetchCompleteForItinerary({
     required double lat,
     required double lng,
-    int radius = 10000,
+    int radius = 12000,
   }) async {
     final results = <PlaceModel>[];
     final byType  = <String, List<PlaceModel>>{};
@@ -677,14 +683,20 @@ class NearbyPlacesService {
   }
   
   // ── Public: load once (real-time GPS mode) ─────────────────────────────────
-  int _cachedRadius = 0; // track which radius the current cache was loaded with
+  // Replace the single _cachedRadius field with a full cache-identity check
+    int _cachedRadius = 0;
+    double? _cachedLat;   // 🆕
+    double? _cachedLng;   // 🆕
+
+    // tune this to whatever "same spot" should mean for this cache
+    static const double _cacheLocationToleranceMetres = 500; // 🆕
 
   Future<List<PlaceModel>> loadNearbyPlacesOnce(
     List<Map<String, dynamic>> categories,
     BuildContext context, {
     double? lat,
     double? lng,
-    int radius = 5000,
+    int radius = 12000,
     Function(PlaceModel)? onGeoapifyAdd,       // kept for backwards-compat (per-place)
     Function(List<PlaceModel>)? onGeoapifyBatchAdd, // ← NEW: preferred, batched
     Function()? onGeoapifyDone,
@@ -704,6 +716,15 @@ class NearbyPlacesService {
 
     final searchLat = lat ?? pos!.latitude;
     final searchLng = lng ?? pos!.longitude;
+
+    final sameLocation = _cachedLat != null && _cachedLng != null &&
+        _haversineMetres(_cachedLat!, _cachedLng!, searchLat, searchLng) <=
+            _cacheLocationToleranceMetres;
+
+    if (_hasLoadedOnce && _cachedRadius == radius && sameLocation) {
+      print('🧠 NearbyPlacesService: using cache (radius ${radius}m, same location)');
+      return _allPlacesCache;
+    }
 
     // 🔒 mint a new generation token for this call and invalidate any
     // in-flight background phase from a previous call.
@@ -747,16 +768,14 @@ class NearbyPlacesService {
     // 🔒 Only commit "loaded" bookkeeping if we're still the latest call.
     if (isCurrentGeneration()) {
       _hasLoadedOnce = true;
-      _cachedRadius  = radius; // ← record which radius this cache was loaded with
+      _cachedRadius  = radius;
+      _cachedLat     = searchLat;   // 🆕
+      _cachedLng     = searchLng;   // 🆕
       _isLoading = false;
     }
 
     print('🏁 Phase 1 returned: ${googlePlaces.length} Google places in '
         '${stopwatch.elapsedMilliseconds}ms (radius: ${radius}m)');
-
-    if (isCurrentGeneration()) {
-      _precacheImages(context);
-    }
 
     // NOTE: this list is the SAME reference as _allPlacesCache, so it will
     // keep growing as Phase 2 (Geoapify) adds more places in the background
@@ -774,7 +793,7 @@ class NearbyPlacesService {
     required double lng,
     required List<Map<String, dynamic>> categories,
     required BuildContext context,
-    int radius = 5000,
+    int radius = 12000,
     Function(PlaceModel)? onGeoapifyAdd,
     Function(List<PlaceModel>)? onGeoapifyBatchAdd, // ← NEW: preferred, batched
     Function()? onGeoapifyDone,
@@ -824,7 +843,6 @@ class NearbyPlacesService {
       // in the background, so cache hits later will include the merged data.
       _searchCache[cacheKey] = results;
 
-      if (context.mounted) _precacheImages(context);
       return results;
 
     } finally {
@@ -863,11 +881,50 @@ class NearbyPlacesService {
   }
 
   // ── Utils ───────────────────────────────────────────────────────────────────
-  void _precacheImages(BuildContext context) {
-    final withPhoto = _allPlacesCache.where((p) => p.photoUrl != null).toList();
-    print('🖼️ Precaching ${withPhoto.length} images...');
-    for (final place in withPhoto) {
-      precacheImage(NetworkImage(place.photoUrl!), context);
+  // 🔧 FIX: 之前是把 _allPlacesCache 里所有带图的地点全部一次性
+  // precacheImage——radius 一大、Google+Geoapify 都返回时轻松破百张。
+  // 现在改成：
+  //   1. 按离 origin（用户位置/搜索中心）的距离排序，只取最近的一批
+  //      —— 这批就是用户一打开列表最先滚到、最先看到的
+  //   2. 分批发请求，批次之间留一点间隔，不再瞬间甩出几十个并发请求
+  // 把原来的 _precacheImages(context, {originLat, originLng, limit}) 换成：
+  void precacheOrderedImages(
+    BuildContext context, {
+    required List<PlaceModel> orderedPlaces, // 调用方已经按自己的排序逻辑排好了
+    int limit = _maxPrecacheImages,
+  }) {
+    if (!context.mounted) return;
+
+    final toPrecache = orderedPlaces
+        .where((p) => p.photoUrl != null)
+        .take(limit)
+        .toList();
+
+    print('🖼️ Precaching ${toPrecache.length} images '
+        '(ordered by caller — matches whatever is rendered first)');
+
+    _precacheInBatches(context, toPrecache);
+  }
+
+  Future<void> _precacheInBatches(
+    BuildContext context,
+    List<PlaceModel> places, {
+    int batchSize = _precacheBatchSize,
+  }) async {
+    for (int i = 0; i < places.length; i += batchSize) {
+      if (!context.mounted) return;
+      final batch = places.skip(i).take(batchSize);
+      try {
+        await Future.wait(
+          batch.map((p) => precacheImage(NetworkImage(p.photoUrl!), context)),
+        );
+      } catch (e) {
+        // 单张图片加载失败不该中断整个预加载流程
+        print('⚠️ Precache batch failed (continuing): $e');
+      }
+      if (i + batchSize < places.length) {
+        await Future.delayed(const Duration(milliseconds: 80));
+      }
     }
   }
 
@@ -917,7 +974,7 @@ Future<List<PlaceModel>> fetchForItinerary({
   required double lat,
   required double lng,
   required List<String> categories,
-  int radius = 10000,
+  int radius = 12000,
 }) async {
 
   // 🔍 DEBUG

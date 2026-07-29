@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'dart:io';
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -17,6 +18,7 @@ import '../interaction/editPost.dart';
 import 'editProfile.dart';
 import '../../services/apps_Loading.dart';
 import '../interaction/postMedia.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOCAL VIDEO PLAYER
@@ -769,8 +771,11 @@ class _TripCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(24),
           child: Stack(fit: StackFit.expand, children: [
             if (hasPhoto)
-              Image.network(trip.coverPhoto!, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => _gradientBg(accent))
+              CachedNetworkImage(
+                imageUrl: trip.coverPhoto!,
+                fit: BoxFit.cover,
+                errorWidget: (_, __, ___) => _gradientBg(accent),
+              )
             else
               _gradientBg(accent),
             DecoratedBox(
@@ -855,7 +860,11 @@ class _TripDetailPopup extends StatelessWidget {
                 borderRadius: BorderRadius.circular(20),
                 child: SizedBox(
                   height: 120, width: double.infinity,
-                  child: Image.network(trip.coverPhoto!, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const SizedBox()),
+                  child: CachedNetworkImage(
+                    imageUrl: trip.coverPhoto!,
+                    fit: BoxFit.cover,
+                    errorWidget: (_, __, ___) => const SizedBox(),
+                  ),
                 ),
               ),
             ),
@@ -920,8 +929,11 @@ class _TripDetailPopup extends StatelessWidget {
                               const SizedBox(width: 10),
                               ClipRRect(
                                 borderRadius: BorderRadius.circular(10),
-                                child: Image.network(item.photoUrl!, width: 48, height: 48, fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => const SizedBox()),
+                                child: CachedNetworkImage(
+                                  imageUrl: item.photoUrl!,
+                                  width: 48, height: 48, fit: BoxFit.cover,
+                                  errorWidget: (_, __, ___) => const SizedBox(),
+                                ),
                               ),
                             ],
                           ]),
@@ -953,7 +965,11 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePageState extends State<ProfilePage> {
   final UserService _userService = UserService();
-  late final Stream<UserProfile?> _stream;
+  StreamSubscription<UserProfile?>? _profileSub;
+
+  // 🆕 缓存当前 profile 数据，避免每次切换 zoom 视图时重新订阅流
+  //    （广播流对新监听者不会补发历史数据，之前就是这里导致的白屏）
+  UserProfile? _profile;
 
   bool _showZoom    = false;
   int  _currentIndex = 0;
@@ -964,9 +980,26 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   void initState() {
     super.initState();
-    _stream = _userService.getCurrentUserProfileStream();
     _currentIndex = widget.initialTab;
+
+    // 🆕 只订阅一次，数据统一存到 _profile 里，任何视图都用这份缓存
+    _profileSub = _userService.getCurrentUserProfileStream().listen(
+      (profile) {
+        if (mounted) setState(() => _profile = profile);
+      },
+      onError: (e) {
+        // 避免未处理异常导致页面崩溃/白屏
+        debugPrint('Profile stream error: $e');
+      },
+    );
+
     _loadBadges();
+  }
+
+  @override
+  void dispose() {
+    _profileSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadBadges() async {
@@ -976,10 +1009,19 @@ class _ProfilePageState extends State<ProfilePage> {
 
   ImageProvider _getImageProvider(String imageUrl, String defaultAsset) {
     if (imageUrl.isEmpty) return AssetImage(defaultAsset);
+
     if (imageUrl.startsWith('data:image')) {
-      final bytes = base64Decode(imageUrl.split(',')[1]);
-      return MemoryImage(bytes);
+      try {
+        final parts = imageUrl.split(',');
+        if (parts.length < 2) return AssetImage(defaultAsset);   // 🆕 格式不对，直接 fallback
+        final bytes = base64Decode(parts[1]);
+        return MemoryImage(bytes);
+      } catch (e) {
+        // 🆕 base64 解析失败，不要让整个页面崩溃，退回默认头像
+        return AssetImage(defaultAsset);
+      }
     }
+
     if (imageUrl.startsWith('http')) return NetworkImage(imageUrl);
     return AssetImage(defaultAsset);
   }
@@ -995,23 +1037,19 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Widget _buildProfileView(double height) {
+    final userProfile = _profile;
+
     return Stack(children: [
-      StreamBuilder<UserProfile?>(
-        stream: _stream,
-        builder: (context, snapshot) {
-          final userProfile = snapshot.data;
-          if (userProfile == null) return const SizedBox();
-          return Container(
-            height: 200, width: double.infinity,
-            decoration: BoxDecoration(
-              image: DecorationImage(
-                image: _getImageProvider(userProfile.backgroundImageUrl, 'assets/images/longbg1.jpg'),
-                fit: BoxFit.cover,
-              ),
+      if (userProfile != null)
+        Container(
+          height: 200, width: double.infinity,
+          decoration: BoxDecoration(
+            image: DecorationImage(
+              image: _getImageProvider(userProfile.backgroundImageUrl, 'assets/images/longbg1.jpg'),
+              fit: BoxFit.cover,
             ),
-          );
-        },
-      ),
+          ),
+        ),
       Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -1043,123 +1081,126 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Widget _buildZoomView(double height) {
+    final userProfile = _profile;
+    if (userProfile == null) {
+      // 理论上点头像时 _profile 早已有值；保险起见给个可点击返回的占位
+      return InkWell(
+        onTap: () => setState(() => _showZoom = false),
+        child: const SizedBox.expand(),
+      );
+    }
+
     return InkWell(
       onTap: () => setState(() => _showZoom = false),
-      child: StreamBuilder<UserProfile?>(
-        stream: _stream,
-        builder: (context, snapshot) {
-          final userProfile = snapshot.data;
-          if (userProfile == null) return const SizedBox();
-          return Stack(children: [
-            Container(
-              height: 200, width: double.infinity,
-              decoration: BoxDecoration(
-                image: DecorationImage(
-                  image: _getImageProvider(userProfile.profileImageUrl, 'assets/images/profile.jpg'),
-                  fit: BoxFit.cover,
-                ),
+      child: Stack(children: [
+        Container(
+          height: 200, width: double.infinity,
+          decoration: BoxDecoration(
+            image: DecorationImage(
+              image: _getImageProvider(userProfile.profileImageUrl, 'assets/images/profile.jpg'),
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
+        Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Colors.transparent, Colors.white],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              stops: [0, .2],
+            ),
+          ),
+        ),
+        BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: Container(
+            height: height,
+            color: Colors.white.withOpacity(0.3),
+            child: Center(
+              child: CircleAvatar(
+                radius: 120,
+                backgroundImage: _getImageProvider(userProfile.profileImageUrl, 'assets/images/profile.jpg'),
+                onBackgroundImageError: (exception, stackTrace) {
+                  // 🆕 静默处理，避免未捕获异常
+                },
               ),
             ),
-            Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Colors.transparent, Colors.white],
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  stops: [0, .2],
-                ),
-              ),
-            ),
-            BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-              child: Container(
-                height: height,
-                color: Colors.white.withOpacity(0.3),
-                child: Center(
-                  child: CircleAvatar(
-                    radius: 120,
-                    backgroundImage: _getImageProvider(userProfile.profileImageUrl, 'assets/images/profile.jpg'),
-                  ),
-                ),
-              ),
-            ),
-          ]);
-        },
-      ),
+          ),
+        ),
+      ]),
     );
   }
 
   Widget _buildProfileInfo(double height) {
-    return StreamBuilder<UserProfile?>(
-      stream: _stream,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const SizedBox(height: 200, child: Center(child: TravelLoadingIndicator()));
-        }
-        final userProfile = snapshot.data;
-        if (userProfile == null) return const SizedBox();
+    final userProfile = _profile;
 
-        return Column(children: [
-          CircleAvatar(
-            backgroundColor: Colors.indigoAccent, radius: 47,
+    if (userProfile == null) {
+      return SizedBox(height: 200, child: Center(child: TravelLoadingIndicator()));
+    }
+
+    return Column(children: [
+      CircleAvatar(
+        backgroundColor: Colors.indigoAccent, radius: 47,
+        child: CircleAvatar(
+          backgroundColor: Colors.white, radius: 45,
+          child: InkWell(
+            onTap: () => setState(() => _showZoom = true),
             child: CircleAvatar(
-              backgroundColor: Colors.white, radius: 45,
-              child: InkWell(
-                onTap: () => setState(() => _showZoom = true),
-                child: CircleAvatar(
-                  radius: 43,
-                  backgroundImage: _getImageProvider(userProfile.profileImageUrl, 'assets/images/profile.jpg'),
-                ),
-              ),
+              radius: 43,
+              backgroundImage: _getImageProvider(userProfile.profileImageUrl, 'assets/images/profile.jpg'),
+              onBackgroundImageError: (exception, stackTrace) {
+                // 🆕 静默处理，避免未捕获异常
+              },
             ),
           ),
-          SizedBox(height: height * 0.02),
-          Text(
-            userProfile.username.isNotEmpty ? '@${userProfile.username}' : '@username',
-            style: const TextStyle(fontSize: 16, color: Colors.grey),
-          ),
+        ),
+      ),
+      SizedBox(height: height * 0.02),
+      Text(
+        userProfile.username.isNotEmpty ? '@${userProfile.username}' : '@username',
+        style: const TextStyle(fontSize: 16, color: Colors.grey),
+      ),
 
-          // ── Badge row (like Weibo level badges) ──
-          if (_badges.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            _buildBadgeRow(),
-          ],
+      // ── Badge row (like Weibo level badges) ──
+      if (_badges.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        _buildBadgeRow(),
+      ],
 
-          Padding(
-            padding: const EdgeInsets.only(left: 30, right: 30, top: 10),
-            child: Text(
-              userProfile.bio.isNotEmpty ? userProfile.bio : 'Bio',
-              style: TextStyle(fontSize: 15, color: Colors.grey.shade400),
-              textAlign: TextAlign.center,
-            ),
-          ),
-          SizedBox(height: height * 0.02),
-          ElevatedButton.icon(
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => EditProfilePage(userProfile: userProfile)),
-            ),
-            icon: const Icon(Icons.edit, size: 18),
-            label: const Text('Edit Profile'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.indigoAccent,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            ),
-          ),
-          SizedBox(height: height * 0.02),
-          // ── Stats: Post + Favourite only (Route removed) ──
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _statColumn('Post', '${userProfile.postCount}'),
-              _statColumn('Favourite', '${userProfile.favouriteCount}'),
-            ],
-          ),
-        ]);
-      },
-    );
+      Padding(
+        padding: const EdgeInsets.only(left: 30, right: 30, top: 10),
+        child: Text(
+          userProfile.bio.isNotEmpty ? userProfile.bio : 'Bio',
+          style: TextStyle(fontSize: 15, color: Colors.grey.shade400),
+          textAlign: TextAlign.center,
+        ),
+      ),
+      SizedBox(height: height * 0.02),
+      ElevatedButton.icon(
+        onPressed: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => EditProfilePage(userProfile: userProfile)),
+        ),
+        icon: const Icon(Icons.edit, size: 18),
+        label: const Text('Edit Profile'),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.indigoAccent,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        ),
+      ),
+      SizedBox(height: height * 0.02),
+      // ── Stats: Post + Favourite only (Route removed) ──
+      Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _statColumn('Post', '${userProfile.postCount}'),
+          _statColumn('Favourite', '${userProfile.favouriteCount}'),
+        ],
+      ),
+    ]);
   }
 
   // ── Badge row — compact Weibo-style display ──────────────────────────────

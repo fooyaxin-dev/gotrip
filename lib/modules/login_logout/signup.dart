@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'login.dart';
 import '../../services/apps_Loading.dart';
+import '../../services/connectivity_service.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -77,6 +78,14 @@ class _SignupPageState extends State<SignupPage> {
       _showError('Please meet all password requirements');
       return;
     }
+
+      // 🆕 注册前先确认有网，没网直接提示，不让转圈卡住
+  final online = await ConnectivityService.instance.ensureConnected(
+    context,
+    onRetry: createUserWithEmailAndPassword,
+  );
+  if (!online) return;
+  
 
     final username = usernameController.text.trim();
     final email    = emailController.text.trim();

@@ -48,6 +48,17 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   // Throttle camera updates — only move if >80ms since last move
   static const int _cameraCooldownMs = 80;
 
+  // FIX: 用固定 Timer 重置 _isProgrammaticMove，不再依赖
+  // animateCamera() 的 Future 完成时机（Future 可能因为动画被
+  // 下一次调用打断而提前 resolve，导致标志位过早复位，把系统
+  // 触发的相机移动误判成用户手动拖动）。
+  Timer? _programmaticMoveResetTimer;
+  static const int _programmaticMoveResetMs = 350;
+
+  // FIX: 目的地 marker 不会变，初始化时建一次就够了，不用每次
+  // 重建地图都重新 new 一个 Marker 对象。
+  Marker? _destinationMarker;
+
   @override
   void initState() {
     super.initState();
@@ -62,35 +73,53 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       initialRoute:    widget.initialRoute,
     );
 
+    _destinationMarker = Marker(
+      markerId:  const MarkerId('destination'),
+      position:  LatLng(widget.endLat, widget.endLng),
+      icon:      BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+      infoWindow: InfoWindow(title: widget.destinationName ?? 'Destination'),
+    );
+
     // Wire arrived callback
     _nav.onArrived = _showArrivedDialog;
 
     // Initialise (loads route + starts GPS + compass)
     _nav.init(this);
 
-    // Listen to controller changes → drive camera + setState
+    // FIX: 低频状态变化（换 step、ETA、reroute、TTS 开关等）走这个，
+    // 只在真正需要重建 banner/ETA 面板/进度条等 UI 时才触发。
     _nav.addListener(_onNavUpdate);
+
+    // FIX: 高频位置插值单独监听，只负责驱动相机跟随，不触发 setState()。
+    _nav.positionNotifier.addListener(_onPositionTick);
   }
 
   @override
   void dispose() {
     _nav.removeListener(_onNavUpdate);
+    _nav.positionNotifier.removeListener(_onPositionTick);
+    _programmaticMoveResetTimer?.cancel();
     _nav.dispose();
     _mapController?.dispose();
     super.dispose();
   }
 
   // ─────────────────────────────────────────────
-  // Nav update handler
+  // Nav update handlers
   // ─────────────────────────────────────────────
 
+  // 低频：真正的导航状态变化才会走到这里（换 step / ETA / reroute / TTS）。
   void _onNavUpdate() {
     if (!mounted) return;
-    setState(() {}); // rebuild UI
+    setState(() {}); // 重建 banner / ETA 面板 / 进度条这些低频 UI
+  }
 
-    // Move camera to follow user
-    if (_isFollowing && !_isOverview && _nav.displayLatLng != null) {
-      _moveCamera(_nav.displayLatLng!);
+  // 高频：每次箭头位置插值都会走到这里，只负责相机跟随，
+  // 不调用 setState()，不会波及整页。
+  void _onPositionTick() {
+    if (_isFollowing && !_isOverview) {
+      final pos = _nav.positionNotifier.value;
+      if (pos != null) _moveCamera(pos);
     }
   }
 
@@ -106,11 +135,11 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     _lastCameraMove = now;
 
     final zoom = _zoomForSpeed(_nav.lastPos?.speed ?? 0);
-
-    // FIX: Use cameraBearing from controller which handles walk vs drive separately
     final bearing = _nav.cameraBearing;
 
     _isProgrammaticMove = true;
+    _programmaticMoveResetTimer?.cancel();
+
     _mapController!.animateCamera(
       CameraUpdate.newCameraPosition(
         CameraPosition(
@@ -120,7 +149,13 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
           bearing: bearing,
         ),
       ),
-    ).then((_) => _isProgrammaticMove = false);
+    );
+
+    // FIX: 固定延迟重置，覆盖动画实际时长，不依赖 Future 完成时机。
+    _programmaticMoveResetTimer = Timer(
+      const Duration(milliseconds: _programmaticMoveResetMs),
+      () => _isProgrammaticMove = false,
+    );
   }
 
   double _zoomForSpeed(double mps) {
@@ -133,7 +168,8 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
 
   void _recenter() {
     setState(() { _isFollowing = true; _isOverview = false; });
-    if (_nav.displayLatLng != null) _moveCamera(_nav.displayLatLng!);
+    final pos = _nav.positionNotifier.value;
+    if (pos != null) _moveCamera(pos);
   }
 
   Future<void> _toggleOverview() async {
@@ -143,6 +179,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       _isFollowing = !_isOverview;
     });
     if (_isOverview) {
+      _programmaticMoveResetTimer?.cancel();
       _isProgrammaticMove = true;
       await _mapController?.animateCamera(
         CameraUpdate.newLatLngBounds(_nav.routeBounds!, 80),
@@ -157,19 +194,13 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   // Build markers + polylines from controller
   // ─────────────────────────────────────────────
 
-  Set<Marker> _buildMarkers() {
+  // FIX: 接收当前位置作为参数，只在地图子树内被调用，
+  // 不再依赖整页 setState() 才能拿到最新位置。
+  Set<Marker> _buildMarkers(LatLng? pos) {
     final markers = <Marker>{};
 
-    // Destination pin
-    markers.add(Marker(
-      markerId:  const MarkerId('destination'),
-      position:  LatLng(widget.endLat, widget.endLng),
-      icon:      BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-      infoWindow: InfoWindow(title: widget.destinationName ?? 'Destination'),
-    ));
+    if (_destinationMarker != null) markers.add(_destinationMarker!);
 
-    // User arrow
-    final pos = _nav.displayLatLng;
     if (pos != null) {
       markers.add(Marker(
         markerId: const MarkerId('me'),
@@ -218,8 +249,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     return polylines;
   }
 
-  Set<Circle> _buildCircles() {
-    final pos = _nav.displayLatLng;
+  Set<Circle> _buildCircles(LatLng? pos) {
     if (pos == null) return {};
     return {
       Circle(
@@ -350,46 +380,48 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         children: [
 
           // ── Google Map ──
-          GoogleMap(
-            initialCameraPosition: CameraPosition(
-              target:  _nav.displayLatLng ??
-                  LatLng(widget.startLat, widget.startLng),
-              zoom:    19,
-              tilt:    widget.travelMode == TravelMode.walk ? 0 : 45,
-              bearing: _nav.cameraBearing,
-            ),
-            markers:                _buildMarkers(),
-            polylines:              _buildPolylines(),
-            circles:                _buildCircles(),
-            myLocationEnabled:      false,
-            myLocationButtonEnabled: false,
-            zoomControlsEnabled:    false,
-            compassEnabled:         false,
-            buildingsEnabled:       false,
-            onMapCreated: (c) {
-              _mapController = c;
-              // Initial camera move after map is ready
-              Future.delayed(const Duration(milliseconds: 400), () {
-                if (_nav.displayLatLng != null) {
-                  _moveCamera(_nav.displayLatLng!);
-                }
-              });
+          // FIX: 只有这一块包在 ValueListenableBuilder 里监听高频的
+          // positionNotifier。箭头每次插值只重建这个小组件，banner、
+          // ETA 面板、进度条、按钮这些都在外层 Stack，不会被牵连重建。
+          ValueListenableBuilder<LatLng?>(
+            valueListenable: _nav.positionNotifier,
+            builder: (context, pos, _) {
+              return GoogleMap(
+                initialCameraPosition: CameraPosition(
+                  target:  pos ?? LatLng(widget.startLat, widget.startLng),
+                  zoom:    19,
+                  tilt:    widget.travelMode == TravelMode.walk ? 0 : 45,
+                  bearing: _nav.cameraBearing,
+                ),
+                markers:                _buildMarkers(pos),
+                polylines:              _buildPolylines(),
+                circles:                _buildCircles(pos),
+                myLocationEnabled:      false,
+                myLocationButtonEnabled: false,
+                zoomControlsEnabled:    false,
+                compassEnabled:         false,
+                buildingsEnabled:       false,
+                onMapCreated: (c) {
+                  _mapController = c;
+                  // Initial camera move after map is ready
+                  Future.delayed(const Duration(milliseconds: 400), () {
+                    final p = _nav.positionNotifier.value;
+                    if (p != null) _moveCamera(p);
+                  });
+                },
+                onCameraMoveStarted: () {
+                  // 只要不是我们自己代码触发的移动（_isProgrammaticMove），
+                  // 就认定是用户手指主动拖动/缩放/旋转，立刻退出跟随模式。
+                  if (!_isProgrammaticMove) {
+                    setState(() => _isFollowing = false);
+                  }
+                },
+                padding: EdgeInsets.only(
+                  top:    bannerH,
+                  bottom: panelH + mq.padding.bottom,
+                ),
+              );
             },
-            onCameraMoveStarted: () {
-              // 只要不是我们自己代码触发的移动（_isProgrammaticMove），
-              // 就认定是用户手指主动拖动/缩放/旋转，立刻退出跟随模式。
-              // 之前用「距离上次自动跟随移动是否超过 1 秒」来判断，
-              // 但导航过程中 GPS 每 200ms 就会自动跟随一次，_lastCameraMove
-              // 几乎从不超过 1 秒没更新过，导致这个条件永远不成立、
-              // 用户永远退不出跟随模式，感觉整个地图像是拖不动。
-              if (!_isProgrammaticMove) {
-                setState(() => _isFollowing = false);
-              }
-            },
-            padding: EdgeInsets.only(
-              top:    bannerH,
-              bottom: panelH + mq.padding.bottom,
-            ),
           ),
 
           // ── Turn-by-turn banner ──

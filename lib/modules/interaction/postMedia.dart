@@ -14,6 +14,7 @@
 
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 Widget buildPostImage(
   String source, {
@@ -34,27 +35,27 @@ Widget buildPostImage(
     );
   }
 
-  if (isNetwork) {
-    return Image.network(
-      source,
+    if (isNetwork) {
+    // 🔧 改动：Image.network → CachedNetworkImage，加一层磁盘缓存，
+    // 同一个 URL 只下载一次，之后从本地缓存文件读取
+    return CachedNetworkImage(
+      imageUrl: source,
       width: width,
       height: height,
       fit: fit,
-      errorBuilder: fallback,
-      loadingBuilder: (context, child, progress) {
-        if (progress == null) return child;
-        return Container(
-          width: width,
-          height: height,
-          color: Colors.grey[100],
-          child: const Center(
-            child: SizedBox(
-              width: 20, height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
+      fadeInDuration: const Duration(milliseconds: 200),
+      placeholder: (context, _) => Container(
+        width: width,
+        height: height,
+        color: Colors.grey[100],
+        child: const Center(
+          child: SizedBox(
+            width: 20, height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
           ),
-        );
-      },
+        ),
+      ),
+      errorWidget: (context, _, error) => fallback(context, error, null),
     );
   }
 

@@ -139,14 +139,15 @@ class HistoryService {
     required DateTime visitedAt,
     required String itineraryId,
     required String itineraryTitle,
-    String? placeId,      // ← 新增
-    String? primaryType,  // ← 新增
-    double? lat,   // ★ 新增
-    double? lng,   // ★ 新增
+    String? placeId,
+    String? primaryType,
+    double? lat,
+    double? lng,
   }) async {
-    if (_col == null) return;
+    if (_col == null) {
+      throw Exception('You need to be logged in to save visit history');
+    }
 
-    // Auto-extract city from address
     final city = _extractCity(address);
 
     try {
@@ -161,11 +162,12 @@ class HistoryService {
         placeId:        placeId,
         primaryType:    primaryType,
         city:           city.isNotEmpty ? city : null,
-        lat:            lat,   // ★ 新增
-        lng:            lng,   // ★ 新增
+        lat:            lat,
+        lng:            lng,
       ).toMap());
     } catch (e) {
       print('❌ HistoryService.addEntry: $e');
+      throw Exception('Failed to save this visit to your history. Your check-in may not appear in Dashboard stats.');
     }
   }
 

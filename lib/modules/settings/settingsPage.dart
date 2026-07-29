@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../main/onBoarding.dart';
 import '../../services/userPreference_service.dart';
 import '../itinerary/itineraryPage.dart';
+import '../../services/error_handler.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -385,14 +386,20 @@ class _SettingsPageState extends State<SettingsPage> {
           ElevatedButton(
             onPressed: () async {
               Navigator.pop(context);
-              await UserPreferenceService.instance.reset();
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Preferences reset successfully'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
+              try {
+                await UserPreferenceService.instance.reset();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Preferences reset successfully'),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  ErrorHandler.showError(context, message: 'Failed to reset preferences. Please try again.');
+                }
               }
             },
             style: ElevatedButton.styleFrom(

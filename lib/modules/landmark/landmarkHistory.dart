@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:intl/intl.dart';
 import '../../services/landmarkHistory_service.dart';
 import '../../services/vision_service.dart';
+import '../../services/error_handler.dart';
 import 'landmarkResult.dart';
 import '../../services/apps_Loading.dart';
 
@@ -30,15 +32,21 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
   }
 
   Future<void> _delete(LandmarkHistoryEntry entry) async {
-    await LandmarkHistoryService.delete(entry.id);
-    setState(() => _entries.removeWhere((e) => e.id == entry.id));
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Removed from history'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    try {
+      await LandmarkHistoryService.delete(entry.id);
+      setState(() => _entries.removeWhere((e) => e.id == entry.id));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Removed from history'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ErrorHandler.showError(context, message: 'Failed to remove item. Please try again.');
+      }
     }
   }
 
@@ -104,10 +112,16 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
         ],
       ),
     );
-    if (confirm == true) {
+   if (confirm == true) {
+    try {
       await LandmarkHistoryService.clearAll();
       if (mounted) setState(() => _entries = []);
+    } catch (e) {
+      if (mounted) {
+        ErrorHandler.showError(context, message: 'Failed to clear history. Please try again.');
+      }
     }
+  }
   }
 
   @override
@@ -293,13 +307,20 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
   Widget _buildThumbnail(LandmarkHistoryEntry entry) {
     // Priority: Google Places photo > scanned image base64 > placeholder
     if (entry.photoUrl != null && entry.photoUrl!.isNotEmpty) {
-      return Image.network(entry.photoUrl!, fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _placeholder());
+      return CachedNetworkImage(
+        imageUrl: entry.photoUrl!,
+        fit: BoxFit.cover,
+        errorWidget: (_, __, ___) => _placeholder(),
+      );
     }
     if (entry.imageBase64 != null && entry.imageBase64!.isNotEmpty) {
       try {
         final bytes = base64Decode(entry.imageBase64!);
-        return Image.memory(bytes, fit: BoxFit.cover);
+        return CachedNetworkImage(
+          imageUrl: 'data:image/jpeg;base64,$bytes',
+          fit: BoxFit.cover,
+          errorWidget: (_, __, ___) => _placeholder(),
+        );
       } catch (_) {}
     }
     return _placeholder();

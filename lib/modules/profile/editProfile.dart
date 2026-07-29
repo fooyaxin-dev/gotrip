@@ -125,17 +125,19 @@ class _EditProfilePageState extends State<EditProfilePage> {
   Future<void> _saveChanges() async {
     setState(() => _isLoading = true);
 
+    // capture originals before they get overwritten below
+    final oldProfileUrl    = widget.userProfile.profileImageUrl;
+    final oldBackgroundUrl = widget.userProfile.backgroundImageUrl;
+
     try {
       String profileImageUrl = widget.userProfile.profileImageUrl;
       String backgroundImageUrl = widget.userProfile.backgroundImageUrl;
 
-      // ── Process new profile image ──
       if (_newProfileImage != null) {
         final newUrl = await _userService.uploadProfileImage(
           _newProfileImage!,
           widget.userProfile.uid,
         );
-
         if (newUrl != null && newUrl.isNotEmpty) {
           profileImageUrl = newUrl;
         } else {
@@ -147,13 +149,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
         }
       }
 
-      // ── Process new background image ──
       if (_newBackgroundImage != null) {
         final newUrl = await _userService.uploadBackgroundImage(
           _newBackgroundImage!,
           widget.userProfile.uid,
         );
-
         if (newUrl != null && newUrl.isNotEmpty) {
           backgroundImageUrl = newUrl;
         } else {
@@ -165,7 +165,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
         }
       }
 
-      // ── Build updated profile and save ──
       final updatedProfile = widget.userProfile.copyWith(
         username: _usernameController.text.trim(),
         bio: _bioController.text.trim(),
@@ -179,6 +178,14 @@ class _EditProfilePageState extends State<EditProfilePage> {
       setState(() => _isLoading = false);
 
       if (result.success) {
+        // ── fire-and-forget cleanup of replaced images ──
+        if (_newProfileImage != null && oldProfileUrl != profileImageUrl) {
+          _userService.deleteImageFromUrl(oldProfileUrl);
+        }
+        if (_newBackgroundImage != null && oldBackgroundUrl != backgroundImageUrl) {
+          _userService.deleteImageFromUrl(oldBackgroundUrl);
+        }
+
         Navigator.pop(context, true);
         _showSuccessSnackBar('Profile saved successfully!');
       } else {
@@ -190,7 +197,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       _showErrorSnackBar('Something went wrong: $e');
     }
   }
-
+  
   void _showSuccessSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(

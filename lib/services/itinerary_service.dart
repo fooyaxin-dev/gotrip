@@ -104,14 +104,8 @@ class ItineraryService {
   // 跟 onboarding 收集的 travelMode 用同一套字符串（walk/drive/both），
   // 但这里独立维护映射，不依赖 route_service.dart 的 TravelMode 枚举
   // （那个是 walk/drive/motor，跟 onboarding 的选项不是一回事）。
-  int _radiusFromTravelMode(String travelMode) {
-    switch (travelMode) {
-      case 'walk':  return 3000;
-      case 'drive': return 15000;
-      case 'both':  return 8000;
-      default:      return 8000;
-    }
-  }
+  int _radiusFromTravelMode(String travelMode) =>
+    radiusForTravelModeString(travelMode);
 
   // ─────────────────────────────────────────────
   // Firestore CRUD

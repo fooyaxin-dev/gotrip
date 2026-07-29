@@ -1,6 +1,7 @@
 // pages/itinerary/itinerary_page.dart
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../../models/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
 import '../../services/userPreference_service.dart';
@@ -39,10 +40,34 @@ class _ItineraryPageState extends State<ItineraryPage>
     super.dispose();
   }
 
+  String? _firstPhotoUrl(ItineraryModel item) {
+    for (final day in item.days) {
+      for (final place in day.places) {
+        if (place.photoUrl != null && place.photoUrl!.isNotEmpty) {
+          return place.photoUrl;
+        }
+      }
+    }
+    return null;
+  }
+
   Future<void> _load() async {
     setState(() => _loading = true);
     final list = await ItineraryService.instance.fetchAll();
-    if (mounted) setState(() { _itineraries = list; _loading = false; });
+    if (!mounted) return;
+    setState(() { _itineraries = list; _loading = false; });
+    _precacheAllPhotos(list); // ← 新增:数据到手就开始预热,不等 tab 切换
+  }
+
+  void _precacheAllPhotos(List<ItineraryModel> list) {
+    for (final item in list) {
+      final url = _firstPhotoUrl(item);
+      if (url == null) continue;
+      // fire-and-forget:不 await,失败也不影响主流程,
+      // 图片加载失败的兜底交给 CachedNetworkImage 自己的 errorWidget
+      precacheImage(CachedNetworkImageProvider(url), context)
+          .catchError((_) {});
+    }
   }
 
   Future<void> _delete(ItineraryModel item) async {
@@ -76,6 +101,7 @@ class _ItineraryPageState extends State<ItineraryPage>
     final planned   = _itineraries.where((i) => !i.isStarted).toList();
     final ongoing   = _itineraries.where((i) => i.isStarted && !i.isCompleted).toList();
     final completed = _itineraries.where((i) => i.isCompleted).toList();
+    
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8F6FF),
@@ -245,19 +271,11 @@ class _ItineraryPageState extends State<ItineraryPage>
   }
 
   Widget _buildCard(ItineraryModel item) {
+
     final totalPlaces = item.days.fold<int>(
         0, (sum, d) => sum + d.places.length);
 
-    String? firstPhoto;
-    for (final day in item.days) {
-      for (final place in day.places) {
-        if (place.photoUrl != null && place.photoUrl!.isNotEmpty) {
-          firstPhoto = place.photoUrl;
-          break;
-        }
-      }
-      if (firstPhoto != null) break;
-    }
+    final firstPhoto = _firstPhotoUrl(item);
 
     return GestureDetector(
       onTap: () async {
@@ -297,9 +315,12 @@ class _ItineraryPageState extends State<ItineraryPage>
                     height: 140,
                     width: double.infinity,
                     child: firstPhoto != null
-                        ? Image.network(firstPhoto, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => _bannerPlaceholder())
-                        : _bannerPlaceholder(),
+                      ? CachedNetworkImage(
+                          imageUrl: firstPhoto,
+                          fit: BoxFit.cover,
+                          errorWidget: (_, __, ___) => _bannerPlaceholder(),
+                        )
+                      : _bannerPlaceholder(),
                   ),
                 ),
               ],

@@ -57,16 +57,31 @@ class _InteractionPageState extends State<InteractionPage> {
   // ── User info cache ──
   final Map<String, Map<String, dynamic>> _userCache = {};
 
+
+  // ── Feed pagination state ──
+  final ScrollController _feedScrollController = ScrollController();
+  static const int _feedPageSize = 20;
+  List<Post> _feedPosts = [];
+  DocumentSnapshot? _feedLastDoc;
+  bool _feedHasMore = true;
+  bool _feedInitialLoading = true;
+  bool _feedLoadingMore = false;
+
+
   @override
   void initState() {
     super.initState();
     _searchFocus.addListener(() {
-    if (_searchFocus.hasFocus && _searchController.text.trim().isNotEmpty) {
-      setState(() => _showSuggestions = _keywordSuggestions.isNotEmpty);
-    } else if (!_searchFocus.hasFocus) {
-      setState(() => _showSuggestions = false);
-    }
-  });
+      if (_searchFocus.hasFocus && _searchController.text.trim().isNotEmpty) {
+        setState(() => _showSuggestions = _keywordSuggestions.isNotEmpty);
+      } else if (!_searchFocus.hasFocus) {
+        setState(() => _showSuggestions = false);
+      }
+    });
+
+    // ★ 新增：feed 分页
+    _loadFeedFirstPage();
+    _feedScrollController.addListener(_onFeedScroll);
   }
 
   @override
@@ -74,6 +89,7 @@ class _InteractionPageState extends State<InteractionPage> {
     _searchController.dispose();
     _searchFocus.dispose();
     _debounce?.cancel();
+    _feedScrollController.dispose();
     super.dispose();
   }
 
@@ -89,6 +105,61 @@ class _InteractionPageState extends State<InteractionPage> {
     } catch (_) {}
     return {};
   }
+
+  // ── Feed pagination ──────────────────────────────────────────────────────
+
+  void _onFeedScroll() {
+    if (_isSearchActive) return; // 搜索模式下不触发 feed 翻页
+    if (_feedLoadingMore || !_feedHasMore) return;
+
+    final pos = _feedScrollController.position;
+    // 滑到还剩 300px 到底部时就提前加载下一页，体验更顺滑
+    if (pos.pixels >= pos.maxScrollExtent - 300) {
+      _loadMoreFeedPosts();
+    }
+  }
+
+  Future<void> _loadFeedFirstPage() async {
+    setState(() {
+      _feedInitialLoading = true;
+      _feedPosts = [];
+      _feedLastDoc = null;
+      _feedHasMore = true;
+    });
+
+    final page = _selectedCity != null
+        ? await _postService.getPostsByCityPaginated(city: _selectedCity!)
+        : await _postService.getPublicPostsPaginated();
+
+    if (!mounted) return;
+    setState(() {
+      _feedPosts = page.posts;
+      _feedLastDoc = page.lastDocument;
+      _feedHasMore = page.hasMore;
+      _feedInitialLoading = false;
+    });
+  }
+
+  Future<void> _loadMoreFeedPosts() async {
+    if (_feedLoadingMore || !_feedHasMore) return;
+    setState(() => _feedLoadingMore = true);
+
+    final page = _selectedCity != null
+        ? await _postService.getPostsByCityPaginated(
+            city: _selectedCity!, startAfter: _feedLastDoc)
+        : await _postService.getPublicPostsPaginated(startAfter: _feedLastDoc);
+
+    if (!mounted) return;
+    setState(() {
+      _feedPosts.addAll(page.posts);
+      _feedLastDoc = page.lastDocument;
+      _feedHasMore = page.hasMore;
+      _feedLoadingMore = false;
+    });
+  }
+
+
+
 
   // ─── 打字时的即时建议（dropdown，小数量）────────────────────────────────
 
@@ -219,6 +290,7 @@ class _InteractionPageState extends State<InteractionPage> {
           _selectedCityLabel = post.city;
           _searchController.text = post.city!;
         });
+        _loadFeedFirstPage();
       }
       return;
     }
@@ -289,6 +361,7 @@ class _InteractionPageState extends State<InteractionPage> {
                     _selectedCityLabel = post.city;
                     _searchController.text = post.city!;
                   });
+                  _loadFeedFirstPage(); // ★ 新增：切换城市后重新拉第一页
                 }
               },
             ),
@@ -395,7 +468,7 @@ class _InteractionPageState extends State<InteractionPage> {
           bottom: PreferredSize(preferredSize: const Size.fromHeight(56), child: _buildSearchBar()),
         ),
         body: Stack(children: [
-          _isSearchActive ? _buildSearchResultsList() : _buildFeedStream(),
+          _isSearchActive ? _buildSearchResultsList() : _buildFeedList(),   // ← 改这一行
           if (_showSuggestions && !_isSearchActive)
             Positioned(top: 0, left: 0, right: 0, child: _buildSearchDropdown()),
         ]),
@@ -404,40 +477,42 @@ class _InteractionPageState extends State<InteractionPage> {
   }
 
   // ── 原本的公开 feed / 按城市筛选的 feed（未搜索时展示）──
-  Widget _buildFeedStream() {
-    return StreamBuilder<List<Post>>(
-      stream: _selectedCity != null
-          ? _postService.getPostsByCity(_selectedCity!)
-          : _postService.getPublicPosts(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: TravelLoadingIndicator());
-        }
-        if (snapshot.hasError) {
-          return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            const Icon(Icons.error_outline, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            Text('Failed to load: ${snapshot.error}', style: const TextStyle(color: Colors.red)),
-            const SizedBox(height: 16),
-            ElevatedButton(onPressed: () => setState(() {}), child: const Text('Retry')),
-          ]));
-        }
-        if (!snapshot.hasData || snapshot.data!.isEmpty) return _buildEmptyState();
-        return RefreshIndicator(
-          onRefresh: () async {
-            _userCache.clear();
-            setState(() {});
-          },
-          color: const Color(0xFF7C4DFF),
-          child: ListView.builder(
-            key: const PageStorageKey('post_list'),
-            physics: const BouncingScrollPhysics(),
-            itemCount: snapshot.data!.length,
-            padding: const EdgeInsets.only(top: 10, bottom: 90),
-            itemBuilder: (context, index) => _buildPostCard(snapshot.data![index]),
-          ),
-        );
+  // ── 原本按城市筛选/公开 feed（未搜索时展示）── 分页版本
+  Widget _buildFeedList() {
+    if (_feedInitialLoading) {
+      return const Center(child: TravelLoadingIndicator());
+    }
+    if (_feedPosts.isEmpty) {
+      return _buildEmptyState();
+    }
+    return RefreshIndicator(
+      onRefresh: () async {
+        _userCache.clear();
+        await _loadFeedFirstPage();
       },
+      color: const Color(0xFF7C4DFF),
+      child: ListView.builder(
+        key: const PageStorageKey('post_list'),
+        controller: _feedScrollController,
+        physics: const BouncingScrollPhysics(),
+        // 多一个 item 位置放"加载更多"的转圈
+        itemCount: _feedPosts.length + (_feedHasMore ? 1 : 0),
+        padding: const EdgeInsets.only(top: 10, bottom: 90),
+        itemBuilder: (context, index) {
+          if (index >= _feedPosts.length) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Center(
+                child: SizedBox(
+                  width: 28, height: 28,
+                  child: TravelLoadingIndicator(),
+                ),
+              ),
+            );
+          }
+          return _buildPostCard(_feedPosts[index]);
+        },
+      ),
     );
   }
 

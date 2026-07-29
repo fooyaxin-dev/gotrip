@@ -16,6 +16,20 @@ import '../../services/category_mapper.dart';
 // Data Models
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── 新增:all-time 缓存,只在 raw data 变化时重算 ──
+class _AllTimeCache {
+  final List<_VisitEvent> dedupedEvents;
+  final Map<String, int> monthlyActivityFull;
+  final List<AchievementGroup> achievements;
+
+  const _AllTimeCache({
+    required this.dedupedEvents,
+    required this.monthlyActivityFull,
+    required this.achievements,
+  });
+}
+
+
 class _DashboardData {
   final int placesVisited;
   final int citiesExplored;
@@ -172,7 +186,12 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
+
+    static const List<int> _kFilterMonths = [3, 6, 12];
+
   _RawData? _rawData;
+  _AllTimeCache? _allTimeCache;                 // 新增
+  final Map<int, _DashboardData> _filteredCache = {}; // 新增
   bool _isLoading = true;
   String? _errorMsg;
 
@@ -291,7 +310,12 @@ class _DashboardPageState extends State<DashboardPage> {
           favouriteEntries: favouriteEntries,
           itineraryModels:  itineraryModels,
         );
+
+        _allTimeCache = _buildAllTimeCache(_rawData!);  // 新增
+        _filteredCache.clear(); 
+        _prewarmFilteredCache();
         _isLoading = false;
+
       });
     } catch (e) {
       setState(() { _isLoading = false; _errorMsg = e.toString(); });
@@ -305,13 +329,8 @@ class _DashboardPageState extends State<DashboardPage> {
   // raw.visitEvents filtered by visitedAt >= cutoff.
   // ─────────────────────────────────────────────
 
-  _DashboardData _computeData(_RawData raw, int months) {
-    final now    = DateTime.now();
-    final cutoff = DateTime(now.year, now.month - months + 1, 1);
-
-    // De-duplicate: a place visited via an itinerary AND logged in plain
-    // history would otherwise be double-counted. We dedupe by
-    // (placeId, day) when placeId is available; otherwise keep as-is.
+  _AllTimeCache _buildAllTimeCache(_RawData raw) {
+    // ── 去重(原来在 _computeData 顶部) ──
     final seenKeys = <String>{};
     final dedupedEvents = <_VisitEvent>[];
     for (final e in raw.visitEvents) {
@@ -323,6 +342,100 @@ class _DashboardPageState extends State<DashboardPage> {
       seenKeys.add(key);
       dedupedEvents.add(e);
     }
+
+    // ── Monthly Activity(全 12 个月,不受 filter 影响) ──
+    final now = DateTime.now();
+    final monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    final monthMapFull = <String, int>{};
+    for (int i = 11; i >= 0; i--) {
+      final m = DateTime(now.year, now.month - i, 1);
+      monthMapFull['${monthNames[m.month - 1]} ${m.year}'] = 0;
+    }
+    for (final e in dedupedEvents) {
+      final diff = (now.year - e.visitedAt.year) * 12 + (now.month - e.visitedAt.month);
+      if (diff >= 0 && diff < 12) {
+        final key = '${monthNames[e.visitedAt.month - 1]} ${e.visitedAt.year}';
+        monthMapFull[key] = (monthMapFull[key] ?? 0) + 1;
+      }
+    }
+
+    // ── Achievements(all time,原来每次 filter 切换都重算,现在只算一次) ──
+    final allTimeCitySet = <String>{};
+    for (final e in dedupedEvents) {
+      final city = _extractCity(e.address);
+      if (city.isNotEmpty) allTimeCitySet.add(city);
+    }
+    final allTimeFoodVisits       = dedupedEvents.where((e) => e.primaryType == 'Food').length;
+    final allTimeNatureVisits     = dedupedEvents.where((e) => e.primaryType == 'Nature').length;
+    final allTimeAttractionVisits = dedupedEvents.where((e) => e.primaryType == 'Attraction').length;
+
+    int allTimeCompletedTrips = 0;
+    for (final model in raw.itineraryModels) {
+      if (model.totalPlaces > 0 && model.totalVisited == model.totalPlaces) {
+        allTimeCompletedTrips++;
+      }
+    }
+
+    final byItineraryAllTime = <String, List<_VisitEvent>>{};
+    for (final e in dedupedEvents) {
+      if (e.itineraryId.isEmpty || e.lat == null || e.lng == null) continue;
+      byItineraryAllTime.putIfAbsent(e.itineraryId, () => []).add(e);
+    }
+    double allTimeDistanceKm = 0;
+    for (final group in byItineraryAllTime.values) {
+      group.sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
+      for (int i = 0; i < group.length - 1; i++) {
+        allTimeDistanceKm += _haversineKm(
+          group[i].lat!, group[i].lng!,
+          group[i + 1].lat!, group[i + 1].lng!,
+        );
+      }
+    }
+
+    final achievements = AchievementService.instance.buildGroups(AchievementStats(
+      placesVisited:    dedupedEvents.length,
+      citiesExplored:   allTimeCitySet.length,
+      tripsCompleted:   allTimeCompletedTrips,
+      foodVisits:       allTimeFoodVisits,
+      natureVisits:     allTimeNatureVisits,
+      attractionVisits: allTimeAttractionVisits,
+      totalDistanceKm:  allTimeDistanceKm,
+    ));
+
+    return _AllTimeCache(
+      dedupedEvents: dedupedEvents,
+      monthlyActivityFull: monthMapFull,
+      achievements: achievements,
+    );
+  }
+  
+  // ─────────────────────────────────────────────
+  // 预热 filter 缓存 —— raw data / all-time cache 刚建好时,
+  // 一次性把 3 / 6 / 12 个月三个档位都算好存起来。
+  // 这样用户切 filter chip 的时候,包括第一次点某个档位,
+  // 都是直接读缓存,不会有现算的那一下卡顿。
+  //
+  // 三次 _computeData 加起来的耗时跟切换时分次算是一样的,
+  // 只是提前在 loading 状态里做掉,不会挡住用户交互。
+  // ─────────────────────────────────────────────
+  void _prewarmFilteredCache() {
+    for (final months in _kFilterMonths) {
+      _filteredCache[months] = _computeData(_rawData!, _allTimeCache!, months);
+    }
+  }
+  
+  
+  // ─────────────────────────────────────────────
+  // Filter 相关的计算 —— 复用 _AllTimeCache 里已经算好的
+  // dedupedEvents / monthlyActivityFull / achievements,
+  // 这里只处理跟 _selectedMonths 有关的部分。
+  // ─────────────────────────────────────────────
+
+  _DashboardData _computeData(_RawData raw, _AllTimeCache cache, int months) {
+    final now    = DateTime.now();
+    final cutoff = DateTime(now.year, now.month - months + 1, 1);
+
+    final dedupedEvents = cache.dedupedEvents; // 直接复用,不再重新去重
 
     // ── Filtered visit events (by visitedAt) — single source of truth ──
     final filteredEvents = dedupedEvents
@@ -376,27 +489,9 @@ class _DashboardPageState extends State<DashboardPage> {
     }
     incompleteTrips.sort((a, b) => a.progress.compareTo(b.progress));
 
-    // ── Monthly Activity (full 12 months, sliced by filter in UI) ──
-    final monthNames   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    final monthMapFull = <String, int>{};
-    for (int i = 11; i >= 0; i--) {
-      final m   = DateTime(now.year, now.month - i, 1);
-      final key = '${monthNames[m.month - 1]} ${m.year}';
-      monthMapFull[key] = 0;
-    }
-    for (final e in dedupedEvents) {
-      final diff = (now.year - e.visitedAt.year) * 12 + (now.month - e.visitedAt.month);
-      if (diff >= 0 && diff < 12) {
-        final key = '${monthNames[e.visitedAt.month - 1]} ${e.visitedAt.year}';
-        monthMapFull[key] = (monthMapFull[key] ?? 0) + 1;
-      }
-    }
-
     // ── Total Travel Distance (FILTERED — shown on the Distance Card) ──
     // Group filtered events by itineraryId, sort each group chronologically,
     // and sum the haversine distance between consecutive stops.
-    // Events without lat/lng (plain history) or without an itineraryId are
-    // skipped — there is no route to measure without coordinates.
     final byItineraryFiltered = <String, List<_VisitEvent>>{};
     for (final e in filteredEvents) {
       if (e.itineraryId.isEmpty || e.lat == null || e.lng == null) continue;
@@ -414,58 +509,6 @@ class _DashboardPageState extends State<DashboardPage> {
       }
     }
 
-    // ── Achievements (ALL TIME — delegated to AchievementService) ──
-    // The service uses its own Firestore fetch internally, completely
-    // independent of the filter. We pass in the cached raw data to avoid
-    // an extra network round-trip by building the stats inline and calling
-    // buildGroups() directly.
-    final allTimePlacesVisited = dedupedEvents.length;
-
-    final allTimeCitySet = <String>{};
-    for (final e in dedupedEvents) {
-      final city = _extractCity(e.address);
-      if (city.isNotEmpty) allTimeCitySet.add(city);
-    }
-
-    final allTimeFoodVisits       = dedupedEvents.where((e) => e.primaryType == 'Food').length;
-    final allTimeNatureVisits     = dedupedEvents.where((e) => e.primaryType == 'Nature').length;
-    final allTimeAttractionVisits = dedupedEvents.where((e) => e.primaryType == 'Attraction').length;
-
-    int allTimeCompletedTrips = 0;
-    for (final model in raw.itineraryModels) {
-      if (model.totalPlaces > 0 && model.totalVisited == model.totalPlaces) {
-        allTimeCompletedTrips++;
-      }
-    }
-
-    final byItineraryAllTime = <String, List<_VisitEvent>>{};
-    for (final e in dedupedEvents) {
-      if (e.itineraryId.isEmpty || e.lat == null || e.lng == null) continue;
-      byItineraryAllTime.putIfAbsent(e.itineraryId, () => []).add(e);
-    }
-    double allTimeDistanceKm = 0;
-    for (final group in byItineraryAllTime.values) {
-      group.sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
-      for (int i = 0; i < group.length - 1; i++) {
-        allTimeDistanceKm += _haversineKm(
-          group[i].lat!, group[i].lng!,
-          group[i + 1].lat!, group[i + 1].lng!,
-        );
-      }
-    }
-
-    final allTimeStats = AchievementStats(
-      placesVisited:    allTimePlacesVisited,
-      citiesExplored:   allTimeCitySet.length,
-      tripsCompleted:   allTimeCompletedTrips,
-      foodVisits:       allTimeFoodVisits,
-      natureVisits:     allTimeNatureVisits,
-      attractionVisits: allTimeAttractionVisits,
-      totalDistanceKm:  allTimeDistanceKm,
-    );
-
-    final achievements = AchievementService.instance.buildGroups(allTimeStats);
-
     return _DashboardData(
       placesVisited:               placesVisited,
       citiesExplored:              citiesExplored,
@@ -473,12 +516,12 @@ class _DashboardPageState extends State<DashboardPage> {
       tripsTaken:                  tripsTaken,
       visitedCategoryDistribution: visitedCatCount,
       incompleteTrips:             incompleteTrips,
-      monthlyActivityFull:         monthMapFull,
+      monthlyActivityFull:         cache.monthlyActivityFull, // 复用缓存,不重算
       totalDistanceKm:             totalDistanceKm,
-      achievements:                achievements,
+      achievements:                cache.achievements,        // 复用缓存,不重算
     );
   }
-
+  
   // ─────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────
@@ -523,7 +566,10 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Widget _buildBody() {
-    final data = _computeData(_rawData!, _selectedMonths);
+      final data = _filteredCache.putIfAbsent(
+      _selectedMonths,
+      () => _computeData(_rawData!, _allTimeCache!, _selectedMonths),
+    );
 
     return RefreshIndicator(
       color: const Color(0xFF6366F1),
@@ -605,7 +651,7 @@ class _DashboardPageState extends State<DashboardPage> {
           ]),
           const SizedBox(height: 12),
           Row(
-            children: [3, 6, 12].map((months) {
+            children: _kFilterMonths.map((months) {
               final selected = _selectedMonths == months;
               return Expanded(
                 child: Padding(

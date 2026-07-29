@@ -13,9 +13,11 @@ import '../../services/nearbyPlace_service.dart';
 import '../../services/userPreference_service.dart';
 import '../../services/achievement_service.dart';
 import '../dashboard/dashboard_page.dart';
-import '../place/categoryImage_Helper.dart';
+import '../../services/categoryImage_Helper.dart';
 import '../../services/apps_Loading.dart';
 import 'allRecommendedPlacesPage.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import '../../services/error_handler.dart';
 
 class MainPage extends StatefulWidget {
   final dynamic username;
@@ -122,9 +124,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     _travelModeOverride = null;
     NearbyPlacesService.instance.clearCache(); 
     await _initLocation();
+    await UserPreferenceService.instance.load();   // 🆕 提前到这里，确保 radius 计算时用的是真实数据
     await _loadNearby();
     _calculateRoutes();
-    _buildForYou(); 
+    _buildForYou();   // 内部的 load() 调用变成幂等的重复调用，不影响正确性，但可以顺手拿掉
   }
 
   Future<void> _initLocation() async {
@@ -154,27 +157,24 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     }
   }
 
-  double get _distanceLimitMeters {
-    switch (_effectiveTravelMode) {   // 🔧 CHANGED
-      case 'walk':  return 2000;
-      case 'drive': return 20000;
-      default:      return 10000;
-    }
-  }
+  double get _distanceLimitMeters =>
+      radiusForTravelModeString(_effectiveTravelMode).toDouble();
 
   String get _distanceLimitLabel {
-    switch (_effectiveTravelMode) {   // 🔧 CHANGED
+    switch (_effectiveTravelMode) {
       case 'walk':  return 'within 2 km (walking)';
-      case 'drive': return 'within 20 km (driving)';
-      default:      return 'within 10 km';
+      case 'motor': return 'within 8 km (motor)';     // 🆕
+      case 'drive': return 'within 12 km (driving)';  // 🔧 20 km → 12 km
+      default:      return 'within 12 km';            // 'both' 落在这，跟 drive 一致
     }
   }
 
   IconData get _travelModeIcon {
     switch (UserPreferenceService.instance.current.travelMode) {
       case 'drive': return Icons.directions_car_rounded;
+      case 'motor': return Icons.motorcycle;          // 🆕
       case 'walk':  return Icons.directions_walk_rounded;
-      default:      return Icons.near_me_rounded;
+      default:      return Icons.near_me_rounded;     // 'both' 落在这
     }
   }
 
@@ -236,7 +236,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     setState(() => _loadingNearby = true);
     try {
       final places = await NearbyPlacesService.instance
-          .loadNearbyPlacesOnce(_categories, context);
+          .loadNearbyPlacesOnce(_categories, context, radius: _distanceLimitMeters.toInt(),);
       if (!mounted) return;
       setState(() {
         _nearbyPlaces    = places; 
@@ -245,7 +245,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     } catch (e) {
       if (!mounted) return;
       setState(() => _loadingNearby = false);
-      print('🚨🚨🚨:Failed to load nearby places: $e');
+      ErrorHandler.showError(
+        context,
+        message: 'Failed to load nearby places. Pull down to refresh.',
+      );
     }
   }
 
@@ -632,10 +635,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               // 背景图
               Positioned.fill(
                 child: place.photoUrl != null && place.photoUrl!.isNotEmpty
-                    ? Image.network(
-                        place.photoUrl!,
+                    ? CachedNetworkImage(
+                        imageUrl: place.photoUrl!,
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _buildPlaceholderBg(place), // ← 网络错误也有 fallback
+                        errorWidget: (_, __, ___) => _buildPlaceholderBg(place),
                       )
                     : _buildPlaceholderBg(place),
               ),
@@ -1152,10 +1155,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
             children: [
               Positioned.fill(
                 child: (place.photoUrl != null && place.photoUrl!.isNotEmpty)
-                    ? Image.network(
-                        place.photoUrl!,
+                    ? CachedNetworkImage(
+                        imageUrl: place.photoUrl!,
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _buildPlaceholderBg(place),
+                        errorWidget: (_, __, ___) => _buildPlaceholderBg(place),
                       )
                     : _buildPlaceholderBg(place),
               ),
@@ -1273,14 +1276,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
           )],
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(20),
-          child: (place.photoUrl != null && place.photoUrl!.isNotEmpty)
-              ? Image.network(
-                  place.photoUrl!,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => _buildPlaceholderBg(place),
-                )
-              : _buildPlaceholderBg(place),
+              borderRadius: BorderRadius.circular(20),
+              child: (place.photoUrl != null && place.photoUrl!.isNotEmpty)
+        ? CachedNetworkImage(
+            imageUrl: place.photoUrl!,
+            fit: BoxFit.cover,
+            errorWidget: (_, __, ___) => _buildPlaceholderBg(place),
+          )
+        : _buildPlaceholderBg(place),
         ),
       ),
     );

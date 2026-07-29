@@ -197,12 +197,13 @@ class UserPreferenceService {
       _favouriteCount.clear();
       countMap.forEach((k, v) => _favouriteCount[k] = (v as num).toInt());
 
-      // ── Load searchScoreBuffer ── ← 新增，App 重启后 buffer 不会丢失
+      // ── Load searchScoreBuffer ──
       final bufferMap =
           doc.data()!['searchScoreBuffer'] as Map<String, dynamic>? ?? {};
       _searchScoreBuffer.clear();
       bufferMap.forEach((k, v) => _searchScoreBuffer[k] = (v as num).toDouble());
 
+      preferencesChanged.value++;   // 🆕 让所有监听者（包括 MainPage）知道数据到位了
       return _prefs;
     } catch (e) {
       print('❌ UserPreferenceService.load: $e');
@@ -767,7 +768,7 @@ class UserPreferenceService {
 
   double _distanceScore(double? distanceMeters) {
     if (distanceMeters == null || distanceMeters <= 0) return 0.5;
-    return (1.0 - distanceMeters / 15000.0).clamp(0.0, 1.0);
+    return (1.0 - distanceMeters / 12000.0).clamp(0.0, 1.0);   // 目前用 12000 做满分基准
   }
 
   double _ratingScore(double? rating) {

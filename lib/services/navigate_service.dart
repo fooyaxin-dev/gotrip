@@ -66,6 +66,14 @@ class NavigationController extends ChangeNotifier {
   LatLng?   displayLatLng;
   Position? lastPos;
 
+  // FIX: 高频位置更新专用通知器。_onTick 每帧都会跑，之前直接调用
+  // notifyListeners() 会连带触发 GuidePage 整页 setState()（banner、
+  // ETA 面板、进度条等跟位置插值完全无关的 UI 也跟着重建）。
+  // 现在把"箭头平滑移动"这个高频、只影响地图的信号，从主状态通知
+  // 里拆出来，单独走这个 ValueNotifier，只有真正监听它的地图部件
+  // 才会因为它重建。
+  final ValueNotifier<LatLng?> positionNotifier = ValueNotifier<LatLng?>(null);
+
   // ── Heading ──
   double bearing = 0;
 
@@ -120,6 +128,7 @@ class NavigationController extends ChangeNotifier {
     _positionSub?.cancel();
     _compassSub?.cancel();
     _tts.stop();
+    positionNotifier.dispose();
     super.dispose();
   }
 
@@ -135,7 +144,8 @@ class NavigationController extends ChangeNotifier {
       current.latitude  + (targetLatLng!.latitude  - current.latitude)  * t,
       current.longitude + (targetLatLng!.longitude - current.longitude) * t,
     );
-    notifyListeners();
+    // FIX: 只通知地图那一路的监听者，不再 notifyListeners() 波及全页。
+    positionNotifier.value = displayLatLng;
   }
 
   // ─────────────────────────────────────────────
@@ -155,6 +165,7 @@ class NavigationController extends ChangeNotifier {
       targetLatLng  = userLatLng;
       displayLatLng = userLatLng;
       lastPos       = pos;
+      positionNotifier.value = displayLatLng;
 
       if (initialRoute != null) {
         // 🔗 复用 RoutePreviewPage 已经打过的这次请求结果，
@@ -169,6 +180,7 @@ class NavigationController extends ChangeNotifier {
       userLatLng    = LatLng(startLat, startLng);
       targetLatLng  = userLatLng;
       displayLatLng = userLatLng;
+      positionNotifier.value = displayLatLng;
 
       if (initialRoute != null) {
         _resetRouteState();
@@ -486,6 +498,9 @@ class NavigationController extends ChangeNotifier {
       userLatLng    = snapped;
       targetLatLng  = snapped;
       displayLatLng ??= snapped;
+      // FIX: 让地图那一路的 notifier 也立刻拿到最新目标，不用等下一帧
+      // ticker 才追上，避免刚收到 GPS 定位时地图短暂"卡一下"的感觉。
+      if (displayLatLng != null) positionNotifier.value = displayLatLng;
       _updateRouteProgress(snapped);
       notifyListeners();
     });

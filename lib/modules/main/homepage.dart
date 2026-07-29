@@ -154,10 +154,13 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
 
+      floatingActionButtonAnimator: FloatingActionButtonAnimator.scaling,
+
       // ── Dynamic FAB based on current tab ──
       floatingActionButton: isItineraryTab
           // Itinerary tab → New Trip button (bottom right)
           ? FloatingActionButton.extended(
+            key: const ValueKey('newTripFab'), 
               onPressed: _goGenerateItinerary,
               backgroundColor: const Color(0xFF7C4DFF),
               foregroundColor: Colors.white,
@@ -167,6 +170,7 @@ class _HomePageState extends State<HomePage> {
             )
           // Other tabs → Camera button (center docked)
           : FloatingActionButton(
+            key: const ValueKey('cameraFab'), 
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const LandmarkFAB()),
               ),

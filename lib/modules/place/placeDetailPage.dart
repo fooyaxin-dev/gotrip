@@ -7,8 +7,9 @@ import 'package:geolocator/geolocator.dart';
 import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
 import 'routePreviewPage.dart';
-import '../place/categoryImage_Helper.dart';
+import '../../services/categoryImage_Helper.dart';
 import '../../services/apps_Loading.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 
 class PlaceDetailPage extends StatefulWidget {
@@ -569,7 +570,12 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
           controller: PageController(initialPage: initialIndex),
           itemCount: photoUrls.length,
           itemBuilder: (context, index) => InteractiveViewer(
-            child: Center(child: Image.network(photoUrls[index], fit: BoxFit.contain)),
+            child: Center(
+              child: CachedNetworkImage(
+                imageUrl: photoUrls[index],
+                fit: BoxFit.contain,
+              ),
+            ),
           ),
         ),
       ),

@@ -4,7 +4,8 @@ import '../../services/route_service.dart';
 import '../../services/userPreference_service.dart';
 import '../../services/location_service.dart';
 import '../../modules/place/placeDetailPage.dart';
-import '../../modules/place/categoryImage_Helper.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import '../../services/categoryImage_Helper.dart';
 
 class AllRecommendedPlacesPage extends StatelessWidget {
   final List<PlaceModel> places;
@@ -91,11 +92,11 @@ class AllRecommendedPlacesPage extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(14),
                 child: place.photoUrl != null && place.photoUrl!.isNotEmpty
-                    ? Image.network(
-                        place.photoUrl!,
-                        width: 76, height: 76, fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _placeholder(place),
-                      )
+                    ?CachedNetworkImage(
+                      imageUrl: place.photoUrl!,
+                      width: 76, height: 76, fit: BoxFit.cover,
+                      errorWidget: (_, __, ___) => _placeholder(place),
+                    )
                     : _placeholder(place),
               ),
               const SizedBox(width: 14),

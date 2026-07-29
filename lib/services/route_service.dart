@@ -14,10 +14,28 @@ String travelModeToString(TravelMode mode) {
   }
 }
 
+// ── 全 app 统一的 "travel mode → 搜索半径" ─────────────────────
+// Home（For You 过滤）、Nearby 实际 fetch、Itinerary 生成，
+// 全部从这里拿数字，不要各自维护一份。
+int radiusForTravelModeString(String mode) {
+  switch (mode) {
+    case 'walk':  return 2000;
+    case 'motor': return 8000;
+    case 'drive': return 12000;   // 🔧 20000 → 12000（原本写的是 15000，文案是 20000，现在统一成 12000）
+    case 'both':  return 12000;   // 🔧 both = drive，同一个值
+    default:      return 8000;
+  }
+}
+
+int radiusForTravelMode(TravelMode mode) =>
+    radiusForTravelModeString(travelModeToString(mode));
+    
+
 TravelMode travelModeFromString(String s) {
   switch (s) {
     case 'motor': return TravelMode.motor;
     case 'drive': return TravelMode.drive;
+    case 'both':  return TravelMode.drive;   // 🆕
     case 'walk':
     default:      return TravelMode.walk;
   }

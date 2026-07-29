@@ -14,6 +14,7 @@ import '../../services/sentiment_service.dart';
 import '../../services/achievement_service.dart';
 import '../../services/apps_Loading.dart';
 import '../../services/storage_service.dart';
+import '../../services/connectivity_service.dart';
 
 
 class MediaItem {
@@ -555,6 +556,14 @@ class _PostingPageState extends State<PostingPage> {
       _showErrorDialog('Please write something to share');
       return;
     }
+
+    // 🆕 发帖前先确认有网，没网直接提示，不让用户卡在转圈
+    final online = await ConnectivityService.instance.ensureConnected(
+      context,
+      onRetry: _publishPost,
+    );
+    if (!online) return;
+
 
     showDialog(
       context: context,

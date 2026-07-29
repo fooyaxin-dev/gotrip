@@ -7,6 +7,8 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:gotrip/services/apps_Loading.dart';
 import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+
 
 import '../../models/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
@@ -15,6 +17,8 @@ import '../../services/route_service.dart';
 import '../../models/placeModel.dart';
 import '../../services/placesAPI_service.dart';
 import 'placeDetailPage.dart';   // 跟 RealTimeDetectPage 用的是同一个相对路径，如果不在同一文件夹，按实际路径调整
+import '../../services/connectivity_service.dart';
+
 
 class RouteOptimizerPage extends StatefulWidget {
   final ItineraryModel itinerary;
@@ -1081,6 +1085,9 @@ void _addPoolPlaceToPosition(
     if (!hasAnyPlace) return;
     setState(() => _isSaving = true);
 
+    final online = await ConnectivityService.instance.ensureConnected(context, onRetry: _saveAndContinue);
+    if (!online) return;
+
     // 🆕 把用户这次 session 里最终的候补池 id 写回去，
     // 这样下次再 edit，候补池还是这次离开时的状态
     _itinerary = _itinerary.copyWith(
@@ -1693,10 +1700,12 @@ void _addPoolPlaceToPosition(
         ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: place.photoUrl != null
-              ? Image.network(place.photoUrl!,
-                  width: 36, height: 36, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => _photoPlaceholder(size: 36))
-              : _photoPlaceholder(size: 36),
+                        ? CachedNetworkImage(
+            imageUrl: place.photoUrl!,
+            width: 36, height: 36, fit: BoxFit.cover,
+            errorWidget: (_, __, ___) => _photoPlaceholder(size: 36),
+          )
+          : _photoPlaceholder(size: 36),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -1875,8 +1884,11 @@ Widget _buildPoolChip(PlaceModel place) {
         ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: place.photoUrl != null
-              ? Image.network(place.photoUrl!, width: 40, height: 40, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => _photoPlaceholder(size: 40))
+              ? CachedNetworkImage(
+              imageUrl: place.photoUrl!,
+              width: 40, height: 40, fit: BoxFit.cover,
+              errorWidget: (_, __, ___) => _photoPlaceholder(size: 40),
+            )
               : _photoPlaceholder(size: 40),
         ),
         const SizedBox(width: 8),
@@ -2058,10 +2070,12 @@ Widget _buildPoolChip(PlaceModel place) {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(10),
                   child: place.photoUrl != null
-                      ? Image.network(place.photoUrl!,
-                          width: 52, height: 52, fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _photoPlaceholder())
-                      : _photoPlaceholder(),
+                    ? CachedNetworkImage(
+                        imageUrl: place.photoUrl!,
+                        width: 52, height: 52, fit: BoxFit.cover,
+                        errorWidget: (_, __, ___) => _photoPlaceholder(),
+                      )
+                    : _photoPlaceholder(),
                 ),
                 const SizedBox(width: 10),
                Expanded(
@@ -2448,9 +2462,11 @@ Widget _buildPoolChip(PlaceModel place) {
                           leading: ClipRRect(
                             borderRadius: BorderRadius.circular(10),
                             child: c.photoUrl != null
-                                ? Image.network(c.photoUrl!,
+                                ? CachedNetworkImage(
+                                    imageUrl: c.photoUrl!,
                                     width: 52, height: 52, fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => _photoPlaceholder())
+                                    errorWidget: (_, __, ___) => _photoPlaceholder(),
+                                  )
                                 : _photoPlaceholder(),
                           ),
                           title: Text(c.name,

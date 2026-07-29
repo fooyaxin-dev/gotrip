@@ -12,6 +12,7 @@ import 'itineraryDetail.dart';
 import '../../services/apps_Loading.dart';
 import '../../models/placeModel.dart';
 import '../place/routeOptimizerPage.dart';
+import '../../services/connectivity_service.dart';
 
 class GenerateItineraryPage extends StatefulWidget {
   const GenerateItineraryPage({super.key});
@@ -251,6 +252,9 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
 
   Future<void> _generate({int? overrideRadius}) async {   // 🔧 CHANGED: 加可选参数，补救时用
     _dismissKeyboard();
+
+    final online = await ConnectivityService.instance.ensureConnected(context, onRetry: _generate);
+    if (!online) return;
 
     if (_useCurrentLocation) {
       final pos = LocationService.instance.currentPosition;

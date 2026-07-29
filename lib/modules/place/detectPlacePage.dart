@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'placeDetailPage.dart';
 import '../../services/route_service.dart';
@@ -14,7 +15,7 @@ import '../../services/placesAPI_service.dart';
 import 'favouriteButton.dart';
 import 'routeOptimizerPage.dart';
 import '../../services/userPreference_service.dart'; 
-import 'categoryImage_Helper.dart';
+import '../../services/categoryImage_Helper.dart';
 import '../../services/weather_service.dart';
 import '../../services/apps_Loading.dart';
 import '../../models/itineraryModel.dart';   // ← 新加：ItineraryModel / ItineraryDay / ItineraryPlace
@@ -51,10 +52,17 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   SortMode _sortMode = SortMode.recommended;
   TravelMode _travelMode = TravelMode.walk; // will be overridden in initState
   bool _isTravelModeExpanded = false;
+  bool _travelModeManuallySet = false;  
 
   final List<PlaceModel> _displayedPlaces = [];
   List<PlaceModel> _landmarkPlaces = [];
   Map<String, RouteResult> _routeResults = {};
+
+  // 🆕 单一数据源 — build()/precache/卡片徽章 都读这里，不再各自重算
+  List<PlaceModel> _rankedGooglePlaces = [];
+  List<PlaceModel> _rankedGeoapifyPlaces = [];
+  Map<String, double> _placeScores = {};
+
   bool _isLoading = false;
 
   String? _selectedPrimary;
@@ -161,13 +169,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   void initState() {
     super.initState();
 
-    // ── Read travel mode from user preference before loading ────────────────
-    final savedMode = UserPreferenceService.instance.current.travelMode;
-    _travelMode = savedMode == 'drive'
-        ? TravelMode.drive
-        : savedMode == 'motor'
-            ? TravelMode.motor
-            : TravelMode.walk;
+    // ── Travel mode 现在跟随 UserPreferenceService，实时同步 ─────────────
+    _syncTravelModeFromPreference();
+    UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged);
 
     _bootstrap();
 
@@ -184,6 +188,32 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
 
     LocationService.instance.addListener(_onLocationChanged);
+  }
+
+
+  void _syncTravelModeFromPreference() {
+    final raw = UserPreferenceService.instance.current.travelMode;
+    print('🔍 _syncTravelModeFromPreference: raw="$raw" → ${travelModeFromString(raw)}');
+    _travelMode = travelModeFromString(raw);
+  }
+
+  Future<void> _onPreferencesChanged() async {
+    if (!mounted || _travelModeManuallySet) return; // 用户手动选过 → 不再被外部覆盖
+    final savedMode = UserPreferenceService.instance.current.travelMode;
+    final newMode = savedMode == 'drive'
+        ? TravelMode.drive
+        : savedMode == 'motor'
+            ? TravelMode.motor
+            : TravelMode.walk;
+
+    if (newMode == _travelMode) return; // 没变化，不用重新加载
+
+    setState(() => _travelMode = newMode);
+
+    // radius 跟着 travel mode 变了，跟手动切换一样要清 cache 重新拉数据
+    NearbyPlacesService.instance.clearCache();
+    NearbyPlacesService.instance.clearSearchCache();
+    await _bootstrap();
   }
 
   void _onLocationChanged() {
@@ -212,12 +242,16 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       lat: _currentPosition!.latitude,
       lng: _currentPosition!.longitude,
     );
-    if (mounted) setState(() => _currentWeather = w);
+    if (mounted) {
+      setState(() => _currentWeather = w);
+      _recomputeRanking(); // 拿到天气后按更准的分数重排一次预加载优先级
+    }
   }
 
   @override
   void dispose() {
     LocationService.instance.removeListener(_onLocationChanged);
+    UserPreferenceService.instance.preferencesChanged.removeListener(_onPreferencesChanged); // 🆕
     _searchController.dispose();
     _searchFocus.dispose();
     _debounce?.cancel();
@@ -497,6 +531,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       }).toList();
     }
 
+  // 🆕 加这一行——地图 marker 和列表用同一份 "开着的" 数据源
+  places = places.where((p) => p.isOpenNow != false).toList();
+
     setState(() {
       _isLoading = false;
       _displayedPlaces.clear();
@@ -508,17 +545,20 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       }
     });
 
-    _animateToFitMarkers(keepZoom: true);
+    _animateToFitMarkers(keepZoom: false);
+    _recomputeRanking();
   }
 
   List<PlaceModel> _getRealtimePlaces() {
-    final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
+   final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
     final source = isLandmarkMode
         ? _landmarkPlaces
         : NearbyPlacesService.instance.getByPrimary(null);
 
-    if (_selectedPrimary == null) return source;
-    return source.where((p) => p.primaryType == _selectedPrimary).toList();
+    final open = source.where((p) => p.isOpenNow != false);
+
+    if (_selectedPrimary == null) return open.toList();
+    return open.where((p) => p.primaryType == _selectedPrimary).toList();
   }
 
   void _onPrimaryTap(String type) {
@@ -724,13 +764,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   }
 
   // ── Radius is derived from travel mode — no separate picker needed ──────────
-  int get _radiusFromTravelMode {
-    switch (_travelMode) {
-      case TravelMode.walk:  return 2000;
-      case TravelMode.motor: return 8000;
-      case TravelMode.drive: return 15000;
-    }
-  }
+  int get _radiusFromTravelMode => radiusForTravelMode(_travelMode);
 
   void _updateRouteTimesForTravelMode() {
     if (_currentPosition == null) return;
@@ -807,6 +841,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     final result = await Connectivity().checkConnectivity();
     if (result == ConnectivityResult.none) {
       if (mounted) {
+        // 先清掉可能已经在排队/显示中的旧提示，保证同一时间只有一条
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: const Row(children: [
             Icon(Icons.wifi_off_rounded, color: Colors.white, size: 18),
@@ -815,6 +851,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           ]),
           backgroundColor: Colors.red[700],
           behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2), // 加个明确时长，别让它无限排队
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ));
       }
@@ -1035,70 +1072,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
 
-    // ── CHANGE 4: hard-filter closed places, then sort by recommendation score ──
-    // isOpenNow == false → definitely closed, exclude.
-    // isOpenNow == null  → unknown (e.g. Geoapify places don't carry this field),
-    //                      don't penalize — we simply don't know.
-    final List<PlaceModel> openPlaces =
-        _displayedPlaces.where((p) => p.isOpenNow != false).toList();
-
-    // Google 和 Geoapify 分开处理 —— Geoapify 结构性缺 rating / isOpenNow，
-    // 永远排不进主推荐榜，所以直接按来源分流，不做打分排除。
-    final List<PlaceModel> googlePlaces =
-        openPlaces.where((p) => !p.isGeoapify).toList();
-    final List<PlaceModel> geoapifyPlaces =
-        openPlaces.where((p) => p.isGeoapify).toList();
-
-    final List<PlaceModel> sortedPlaces = List.from(googlePlaces);
-
-    sortedPlaces.sort((a, b) {
-      switch (_sortMode) {
-        case SortMode.recommended:
-          // Convert duration → effective distance so walk/drive are weighted fairly.
-          // e.g. 10 min walk vs 10 min drive feel equally "close" to the user.
-          double? effectiveDistA;
-          double? effectiveDistB;
-          final routeA = _routeResults[a.id];
-          final routeB = _routeResults[b.id];
-          if (routeA != null) {
-            effectiveDistA = routeA.durationSeconds * _getSpeedMeterPerSecond();
-          }
-          if (routeB != null) {
-            effectiveDistB = routeB.durationSeconds * _getSpeedMeterPerSecond();
-          }
-
-          final aScore = UserPreferenceService.instance.scorePlaceModel(
-            primaryType:    a.primaryType,
-            allTypes:       a.allTypes,
-            distanceMeters: effectiveDistA,
-            rating:         a.rating,
-            priceLevel:     a.priceLevel,
-            weather:        _currentWeather,
-          );
-          final bScore = UserPreferenceService.instance.scorePlaceModel(
-            primaryType:    b.primaryType,
-            allTypes:       b.allTypes,
-            distanceMeters: effectiveDistB,
-            rating:         b.rating,
-            priceLevel:     b.priceLevel,
-            weather:        _currentWeather,
-          );
-          return bScore.compareTo(aScore);
-        case SortMode.distance:
-          final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
-          final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
-          return aD.compareTo(bD);
-        case SortMode.rating:
-          return (b.rating ?? 0.0).compareTo(a.rating ?? 0.0);
-      }
-    });
-
-    final List<PlaceModel> sortedGeoapifyPlaces = List.from(geoapifyPlaces)
-    ..sort((a, b) {
-      final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
-      final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
-      return aD.compareTo(bD); // Geoapify 没有 rating，只能按距离排
-    });
+    final List<PlaceModel> sortedPlaces = _rankedGooglePlaces;
+    final List<PlaceModel> sortedGeoapifyPlaces = _rankedGeoapifyPlaces;
 
     if (_initialCameraPosition == null) {
       return const Scaffold(body: Center(child: TravelLoadingIndicator()));
@@ -1434,307 +1409,373 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
           if (_searchLocationName != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Row(children: [
-                const Icon(Icons.location_on_rounded,
-                    size: 14, color: Color(0xFF1A73E8)),
-                const SizedBox(width: 4),
-                Text(
-                  'Showing results near: $_searchLocationName',
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: Color(0xFF1A73E8),
-                    fontWeight: FontWeight.w500,
+                child: Row(children: [
+                  const Icon(Icons.location_on_rounded,
+                      size: 14, color: Color(0xFF1A73E8)),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Showing results near: $_searchLocationName',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: Color(0xFF1A73E8),
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: _clearSearch,
-                  child: const Icon(Icons.close_rounded,
-                      size: 16, color: Color(0xFF1A73E8)),
-                ),
-              ]),
-            ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: _clearSearch,
+                    child: const Icon(Icons.close_rounded,
+                        size: 16, color: Color(0xFF1A73E8)),
+                  ),
+                ]),
+              ),
 
-          // Primary categories
-          SizedBox(
-            height: 95,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: categories.length,
-              itemBuilder: (context, index) {
-                final cat = categories[index];
-                final isSelected = cat['type'] == 'all'
-                    ? _selectedPrimary == null
-                    : _selectedPrimary == cat['type'];
-                return Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: GestureDetector(
-                    onTap: () => _onPrimaryTap(cat['type']),
-                    child: Column(children: [
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
+            // Primary categories
+            SizedBox(
+              height: 95,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: categories.length,
+                itemBuilder: (context, index) {
+                  final cat = categories[index];
+                  final isSelected = cat['type'] == 'all'
+                      ? _selectedPrimary == null
+                      : _selectedPrimary == cat['type'];
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 12),
+                    child: GestureDetector(
+                      onTap: () => _onPrimaryTap(cat['type']),
+                      child: Column(children: [
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? cat['color']
+                                : Colors.grey[100],
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(cat['icon'],
+                              color: isSelected
+                                  ? Colors.white
+                                  : Colors.grey[600],
+                              size: 26),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(cat['name'], style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: isSelected
+                              ? FontWeight.bold
+                              : FontWeight.normal,
                           color: isSelected
                               ? cat['color']
-                              : Colors.grey[100],
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(cat['icon'],
-                            color: isSelected
-                                ? Colors.white
-                                : Colors.grey[600],
-                            size: 26),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(cat['name'], style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: isSelected
-                            ? FontWeight.bold
-                            : FontWeight.normal,
-                        color: isSelected
-                            ? cat['color']
-                            : Colors.grey[700],
-                      )),
-                    ]),
-                  ),
-                );
-              },
-            ),
-          ),
-
-          const Divider(height: 1, thickness: 0.5),
-
-          // Travel mode + radius picker on same row
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            child: Row(children: [
-              Text('Travel By:',
-                  style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-              const SizedBox(width: 12),
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeInOut,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.blue[50],
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.blue[200]!),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  GestureDetector(
-                    onTap: () => setState(
-                        () => _isTravelModeExpanded = !_isTravelModeExpanded),
-                    child: Row(children: [
-                      Icon(_getTravelIcon(_travelMode),
-                          color: Colors.blue[800], size: 20),
-                      const SizedBox(width: 4),
-                      Text(
-                        _radiusFromTravelMode >= 1000
-                            ? '${_radiusFromTravelMode ~/ 1000} km'
-                            : '${_radiusFromTravelMode} m',
-                        style: TextStyle(
-                            fontSize: 11, color: Colors.blue[700],
-                            fontWeight: FontWeight.w600),
-                      ),
-                      Icon(
-                        _isTravelModeExpanded
-                            ? Icons.arrow_left
-                            : Icons.arrow_drop_down,
-                        color: Colors.blue[800],
-                      ),
-                    ]),
-                  ),
-                  if (_isTravelModeExpanded)
-                    Row(children: [
-                      const VerticalDivider(width: 16),
-                      _buildMiniIconWithReload(TravelMode.walk, Icons.directions_walk),
-                      _buildMiniIconWithReload(TravelMode.motor, Icons.motorcycle),
-                      _buildMiniIconWithReload(TravelMode.drive, Icons.directions_car),
-                    ]),
-                ]),
-              ),
-            ]),
-          ),
-
-          // Sort + selected count
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(children: [
-                _buildStyledFilterChip(
-                  label: 'For You',
-                  isSelected: _sortMode == SortMode.recommended,
-                  onTap: () => setState(() => _sortMode = SortMode.recommended),
-                  icon: Icons.auto_awesome_rounded,
-                ),
-                const SizedBox(width: 5),
-                _buildStyledFilterChip(
-                  label: 'Nearest',
-                  isSelected: _sortMode == SortMode.distance,
-                  onTap: () => setState(() => _sortMode = SortMode.distance),
-                  icon: Icons.near_me_outlined,
-                ),
-                const SizedBox(width: 5),
-                _buildStyledFilterChip(
-                  label: 'High Rated',
-                  isSelected: _sortMode == SortMode.rating,
-                  onTap: () => setState(() => _sortMode = SortMode.rating),
-                  icon: Icons.star_outline_rounded,
-                ),
-                if (_selectedPlaceIds.isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                          color: const Color(0xFF7C4DFF).withOpacity(0.3)),
+                              : Colors.grey[700],
+                        )),
+                      ]),
                     ),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      const Icon(Icons.check_circle_rounded,
-                          size: 14, color: Color(0xFF7C4DFF)),
-                      const SizedBox(width: 4),
-                      Text('${_selectedPlaceIds.length}',
-                          style: const TextStyle(
-                              fontSize: 12,
-                              color: Color(0xFF7C4DFF),
-                              fontWeight: FontWeight.w600)),
-                    ]),
+                  );
+                },
+              ),
+            ),
+
+            const Divider(height: 1, thickness: 0.5),
+
+            // Travel mode + radius picker on same row
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(children: [
+                Text('Travel By:',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+                const SizedBox(width: 12),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.blue[200]!),
                   ),
-                ],
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    GestureDetector(
+                      onTap: () => setState(
+                          () => _isTravelModeExpanded = !_isTravelModeExpanded),
+                      child: Row(children: [
+                        Icon(_getTravelIcon(_travelMode),
+                            color: Colors.blue[800], size: 20),
+                        const SizedBox(width: 4),
+                        Text(
+                          _radiusFromTravelMode >= 1000
+                              ? '${_radiusFromTravelMode ~/ 1000} km'
+                              : '${_radiusFromTravelMode} m',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.blue[700],
+                              fontWeight: FontWeight.w600),
+                        ),
+                        Icon(
+                          _isTravelModeExpanded
+                              ? Icons.arrow_left
+                              : Icons.arrow_drop_down,
+                          color: Colors.blue[800],
+                        ),
+                      ]),
+                    ),
+                    if (_isTravelModeExpanded)
+                      Row(children: [
+                        const VerticalDivider(width: 16),
+                        _buildMiniIconWithReload(TravelMode.walk, Icons.directions_walk),
+                        _buildMiniIconWithReload(TravelMode.motor, Icons.motorcycle),
+                        _buildMiniIconWithReload(TravelMode.drive, Icons.directions_car),
+                      ]),
+                  ]),
+                ),
               ]),
             ),
-          ),
 
-          if (_selectedPrimary != null &&
-              subCategories.containsKey(_selectedPrimary))
-            _buildSecondaryBar(),
-
-          const Divider(height: 1, thickness: 0.5),
-
-          // ── 主列表 + Other nearby places 区块 ──────────────────────────
-          if (sortedPlaces.isEmpty &&
-              sortedGeoapifyPlaces.isEmpty &&
-              !_isLoading)
-            SizedBox(height: 300, child: _buildEmptyState())
-          else ...[
-            // ── Google 地点：主推荐列表 ──────────────────────────────────
-            if (sortedPlaces.isEmpty && !_isLoading)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 24),
-                child: Center(
-                  child: Text(
-                    'No main results — check "Other nearby places" below',
-                    style: TextStyle(fontSize: 13, color: Colors.grey[400]),
-                  ),
-                ),
-              )
-            else
-              ...List.generate(
-                sortedPlaces.length,
-                (index) => Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 8),
-                  child: _buildPlaceCard(sortedPlaces[index]),
-                ),
-              ),
-
-            // ── Geoapify 地点：单独区块，信息不全，仅作补充 ────────────────
-            if (sortedGeoapifyPlaces.isNotEmpty) ...[
-              const Divider(height: 1, thickness: 0.5),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+            // Sort + selected count
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(children: [
-                  Icon(Icons.info_outline_rounded,
-                      size: 14, color: Colors.grey[500]),
-                  const SizedBox(width: 6),
-                  Text('Other nearby places',
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.grey[500],
-                          fontWeight: FontWeight.w600)),
-                  const SizedBox(width: 6),
-                  Text('(limited info)',
-                      style: TextStyle(fontSize: 11, color: Colors.grey[400])),
+                  _buildStyledFilterChip(
+                    label: 'For You',
+                    isSelected: _sortMode == SortMode.recommended,
+                   onTap: () {
+                      setState(() => _sortMode = SortMode.recommended);
+                      _recomputeRanking();
+                    },
+                    icon: Icons.auto_awesome_rounded,
+                  ),
+                  const SizedBox(width: 5),
+                  _buildStyledFilterChip(
+                    label: 'Nearest',
+                    isSelected: _sortMode == SortMode.distance,
+                    onTap: () {
+                      setState(() => _sortMode = SortMode.distance);
+                      _recomputeRanking();
+                    },
+                    icon: Icons.near_me_outlined,
+                  ),
+                  const SizedBox(width: 5),
+                  _buildStyledFilterChip(
+                    label: 'High Rated',
+                    isSelected: _sortMode == SortMode.rating,
+                    onTap: () {
+                      setState(() => _sortMode = SortMode.rating);
+                      _recomputeRanking();
+                    },
+                    icon: Icons.star_outline_rounded,
+                  ),
+                  if (_selectedPlaceIds.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                            color: const Color(0xFF7C4DFF).withOpacity(0.3)),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.check_circle_rounded,
+                            size: 14, color: Color(0xFF7C4DFF)),
+                        const SizedBox(width: 4),
+                        Text('${_selectedPlaceIds.length}',
+                            style: const TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFF7C4DFF),
+                                fontWeight: FontWeight.w600)),
+                      ]),
+                    ),
+                  ],
                 ]),
               ),
-              ...List.generate(
-                sortedGeoapifyPlaces.length,
-                (index) => Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 8),
-                  child: _buildPlaceCard(
-                    sortedGeoapifyPlaces[index],
-                    allowForYouBadge: false,
+            ),
+
+            if (_selectedPrimary != null &&
+                subCategories.containsKey(_selectedPrimary))
+              _buildSecondaryBar(),
+
+            const Divider(height: 1, thickness: 0.5),
+
+            // ── 主列表 + Other nearby places 区块 ──────────────────────────
+            if (sortedPlaces.isEmpty &&
+                sortedGeoapifyPlaces.isEmpty &&
+                !_isLoading)
+              SizedBox(height: 300, child: _buildEmptyState())
+            else ...[
+              // ── Google 地点：主推荐列表 ──────────────────────────────────
+              if (sortedPlaces.isEmpty && !_isLoading)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child: Center(
+                    child: Text(
+                      'No main results — check "Other nearby places" below',
+                      style: TextStyle(fontSize: 13, color: Colors.grey[400]),
+                    ),
+                  ),
+                )
+              else
+                ...List.generate(
+                  sortedPlaces.length,
+                  (index) => Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 8),
+                    child: _buildPlaceCard(sortedPlaces[index]),
                   ),
                 ),
-              ),
+
+              // ── Geoapify 地点：单独区块，信息不全，仅作补充 ────────────────
+              if (sortedGeoapifyPlaces.isNotEmpty) ...[
+                const Divider(height: 1, thickness: 0.5),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                  child: Row(children: [
+                    Icon(Icons.info_outline_rounded,
+                        size: 14, color: Colors.grey[500]),
+                    const SizedBox(width: 6),
+                    Text('Other nearby places',
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey[500],
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 6),
+                    Text('(limited info)',
+                        style: TextStyle(fontSize: 11, color: Colors.grey[400])),
+                  ]),
+                ),
+                ...List.generate(
+                  sortedGeoapifyPlaces.length,
+                  (index) => Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 8),
+                    child: _buildPlaceCard(
+                      sortedGeoapifyPlaces[index],
+                      allowForYouBadge: false,
+                    ),
+                  ),
+                ),
+              ],
             ],
+
+            SizedBox(
+              height: 24 +
+                  MediaQuery.of(context).padding.bottom +
+                  kBottomNavigationBarHeight,
+            ),
           ],
+        ),
 
-          SizedBox(
-            height: 24 +
-                MediaQuery.of(context).padding.bottom +
-                kBottomNavigationBarHeight,
-          ),
-        ],
-      ),
-
-      // ── 悬浮的 Plan Route 按钮 ──────────────────────────────
-      if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
-        Positioned(
-          left: 16,
-          right: 16,
-          bottom: 16 + MediaQuery.of(context).padding.bottom,
-          child: GestureDetector(
-            onTap: _viewSelectedItinerary,
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 24, vertical: 16),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                ),
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [BoxShadow(
-                  color: const Color(0xFF7C4DFF).withOpacity(0.4),
-                  blurRadius: 16,
-                  offset: const Offset(0, 8),
-                )],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.map_rounded,
-                      color: Colors.white, size: 20),
-                  const SizedBox(width: 10),
-                  Text(
-                    'Plan Route (${_selectedPlaceIds.length})',
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold),
+        // ── 悬浮的 Plan Route 按钮 ──────────────────────────────
+        if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 16 + MediaQuery.of(context).padding.bottom,
+            child: GestureDetector(
+              onTap: _viewSelectedItinerary,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 24, vertical: 16),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
                   ),
-                  const SizedBox(width: 10),
-                  const Icon(Icons.arrow_forward_rounded,
-                      color: Colors.white70, size: 18),
-                ],
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [BoxShadow(
+                    color: const Color(0xFF7C4DFF).withOpacity(0.4),
+                    blurRadius: 16,
+                    offset: const Offset(0, 8),
+                  )],
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.map_rounded,
+                        color: Colors.white, size: 20),
+                    const SizedBox(width: 10),
+                    Text(
+                      'Plan Route (${_selectedPlaceIds.length})',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(width: 10),
+                    const Icon(Icons.arrow_forward_rounded,
+                        color: Colors.white70, size: 18),
+                  ],
+                ),
               ),
             ),
           ),
-        ),
-    ],
-  );
-}
+      ],
+    );
+  }
+
+  double _scoreFor(PlaceModel p) {
+    final route = _routeResults[p.id];
+    final effectiveDist = route != null
+        ? route.durationSeconds * _getSpeedMeterPerSecond()
+        : null;
+    return UserPreferenceService.instance.scorePlaceModel(
+      primaryType:    p.primaryType,
+      allTypes:       p.allTypes,
+      distanceMeters: effectiveDist,
+      rating:         p.rating,
+      priceLevel:     p.priceLevel,
+      weather:        _currentWeather,
+    );
+  }
+
+  void _recomputeRanking() {
+    if (!mounted) return;
+
+    final openPlaces = _displayedPlaces.where((p) => p.isOpenNow != false).toList();
+    final google   = openPlaces.where((p) => !p.isGeoapify).toList();
+    final geoapify = openPlaces.where((p) => p.isGeoapify).toList();
+
+    final scores = <String, double>{
+      for (final p in google) p.id: _scoreFor(p),
+    };
+
+    google.sort((a, b) {
+      switch (_sortMode) {
+        case SortMode.recommended:
+          return scores[b.id]!.compareTo(scores[a.id]!);
+        case SortMode.distance:
+          final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
+          final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
+          return aD.compareTo(bD);
+        case SortMode.rating:
+          return (b.rating ?? 0.0).compareTo(a.rating ?? 0.0);
+      }
+    });
+
+    geoapify.sort((a, b) {
+      final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
+      final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
+      return aD.compareTo(bD);
+    });
+
+    setState(() {
+      _rankedGooglePlaces   = google;
+      _rankedGeoapifyPlaces = geoapify;
+      _placeScores          = scores;
+    });
+
+    NearbyPlacesService.instance.precacheOrderedImages(
+      context,
+      orderedPlaces: google,
+    );
+  }
   
   // ─────────────────────────────────────────────
   // Place Card
@@ -1746,18 +1787,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
     // Compute score + reason for "For You" badge
     final isForYouMode = allowForYouBadge && _sortMode == SortMode.recommended;
-    final score = isForYouMode
-        ? UserPreferenceService.instance.scorePlaceModel(
-            primaryType:    place.primaryType,
-            allTypes:       place.allTypes,
-            distanceMeters: routeInfo != null
-                ? routeInfo.durationSeconds * _getSpeedMeterPerSecond()
-                : null,
-            rating:         place.rating,
-            priceLevel:     place.priceLevel,
-            weather:        _currentWeather, 
-          )
-        : 0.0;
+    final score = isForYouMode ? (_placeScores[place.id] ?? 0.0) : 0.0;
     final reason = isForYouMode
         ? UserPreferenceService.instance.getRecommendReason(
             primaryType: place.primaryType,
@@ -1802,24 +1832,24 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: place.photoUrl != null
-                  ? Image.network(
-                      place.photoUrl!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (c, e, s) => Image.asset(
+                    ? CachedNetworkImage(
+                        imageUrl: place.photoUrl!,
+                        fit: BoxFit.cover,
+                        errorWidget: (c, e, s) => Image.asset(
+                          CategoryImageHelper.getAssetPath(
+                            place.primaryType,
+                            place.allTypes,
+                          ),
+                          fit: BoxFit.cover,
+                        ),
+                      )
+                    : Image.asset(
                         CategoryImageHelper.getAssetPath(
                           place.primaryType,
                           place.allTypes,
                         ),
                         fit: BoxFit.cover,
                       ),
-                    )
-                  : Image.asset(
-                      CategoryImageHelper.getAssetPath(
-                        place.primaryType,
-                        place.allTypes,
-                      ),
-                      fit: BoxFit.cover,
-                    ),
                 ),
               ),
               const SizedBox(width: 12),
@@ -1879,11 +1909,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                             color: const Color(0xFF7C4DFF).withOpacity(0.1),
                             borderRadius: BorderRadius.circular(6),
                           ),
-                          child: Row(mainAxisSize: MainAxisSize.min, children: [
-                            const Icon(Icons.auto_awesome_rounded,
+                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                            Icon(Icons.auto_awesome_rounded,
                                 size: 10, color: Color(0xFF7C4DFF)),
-                            const SizedBox(width: 3),
-                            const Text('For You',
+                            SizedBox(width: 3),
+                            Text('For You',
                                 style: TextStyle(
                                     fontSize: 10,
                                     color: Color(0xFF7C4DFF),
@@ -1955,6 +1985,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         setState(() {
           _travelMode           = mode;
           _isTravelModeExpanded = false;
+          _travelModeManuallySet = true;  
         });
         // Radius changed with travel mode — clear cache and reload
         NearbyPlacesService.instance.clearCache();
@@ -1976,6 +2007,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     );
   }
 
+  
+  
   IconData _getTravelIcon(TravelMode mode) {
     switch (mode) {
       case TravelMode.walk:  return Icons.directions_walk;
@@ -2092,10 +2125,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         : _travelMode == TravelMode.motor
             ? TravelMode.drive
             : null;
-
+  
     final nextRadius = nextMode != null
-        ? (nextMode == TravelMode.motor ? 8000 : 15000)
-        : null;
+      ? (nextMode == TravelMode.motor ? 8000 : 12000)   // 🔧 15000 → 12000
+      : null;
 
     final nextLabel = nextRadius != null
         ? '${nextRadius ~/ 1000} km'
@@ -2120,6 +2153,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
               setState(() {
                 _selectedPrimary   = null;
                 _selectedSecondary = 'all';
+                _travelModeManuallySet = true;
               });
               _applyFilter();
             },
@@ -2132,6 +2166,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                 setState(() {
                   _travelMode           = nextMode;
                   _isTravelModeExpanded = false;
+                  _travelModeManuallySet = true;
                 });
                 NearbyPlacesService.instance.clearCache();
                 NearbyPlacesService.instance.clearSearchCache();

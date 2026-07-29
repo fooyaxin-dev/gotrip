@@ -88,6 +88,7 @@ class _OnboardingPageState extends State<OnboardingPage>
 
   final List<Map<String, dynamic>> _travelModes = [
     {'key': 'walk',  'label': 'Walking', 'icon': Icons.directions_walk, 'desc': 'Prefer nearby places'},
+    {'key': 'motor', 'label': 'Motor',   'icon': Icons.motorcycle,      'desc': 'Can go a bit further'},   // 🆕
     {'key': 'drive', 'label': 'Driving', 'icon': Icons.directions_car,  'desc': 'Can go further'},
     {'key': 'both',  'label': 'Both',    'icon': Icons.swap_horiz,      'desc': 'Flexible'},
   ];

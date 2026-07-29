@@ -102,12 +102,16 @@ class _FavouriteButtonState extends State<FavouriteButton>
         );
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Something went wrong, please try again')),
-        );
-      }
-    } finally {
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(e.toString().replaceFirst('Exception: ', '')),
+        backgroundColor: Colors.red[700],
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+} finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }

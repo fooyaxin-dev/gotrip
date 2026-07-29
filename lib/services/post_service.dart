@@ -8,6 +8,21 @@ import '../services/sentiment_service.dart';
 import '../services/userPreference_service.dart';
 import 'storage_service.dart';
 
+
+/// 分页查询结果——带上"最后一条文档"作为下一页的游标(cursor),
+/// 以及 hasMore 判断是否还有下一页
+class PostPage {
+  final List<Post> posts;
+  final DocumentSnapshot? lastDocument;
+  final bool hasMore;
+
+  const PostPage({
+    required this.posts,
+    required this.lastDocument,
+    required this.hasMore,
+  });
+}
+
 class PostService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -212,6 +227,81 @@ class PostService {
         .map((snapshot) =>
             snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList());
   }
+
+  // ═══════════════════════════════════════════════════
+  // 分页查询 —— 用一次性 .get() 代替 .snapshots()，
+  // 每次只拉 [limit] 条，用 startAfterDocument 当游标翻页，
+  // 不再把整个 collection 塞进 stream 里
+  // ═══════════════════════════════════════════════════
+
+  static const int defaultFeedPageSize = 20;
+
+  Future<PostPage> getPublicPostsPaginated({
+    DocumentSnapshot? startAfter,
+    int limit = defaultFeedPageSize,
+  }) async {
+    try {
+      Query query = _firestore
+          .collection('posts')
+          // ★ 关键改动：visibility 过滤放到 query 里做（服务端过滤），
+          // 而不是拉回来再用 .where() 在客户端筛——
+          // 否则 limit(20) 拉回来的 20 条里可能有一半是 private/friends，
+          // 实际显示给用户的 public 帖子会少于 20 条
+          .where('visibility', isEqualTo: 'public')
+          .orderBy('createdAt', descending: true)
+          .limit(limit);
+
+      if (startAfter != null) {
+        query = query.startAfterDocument(startAfter);
+      }
+
+      final snapshot = await query.get();
+      final posts = snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
+
+      return PostPage(
+        posts: posts,
+        lastDocument: snapshot.docs.isNotEmpty ? snapshot.docs.last : null,
+        // 拉回来的数量 == limit，说明大概率还有下一页；
+        // 少于 limit 说明已经到底了
+        hasMore: snapshot.docs.length == limit,
+      );
+    } catch (e) {
+      print('❌ getPublicPostsPaginated: $e');
+      return const PostPage(posts: [], lastDocument: null, hasMore: false);
+    }
+  }
+
+  Future<PostPage> getPostsByCityPaginated({
+    required String city,
+    DocumentSnapshot? startAfter,
+    int limit = defaultFeedPageSize,
+  }) async {
+    try {
+      Query query = _firestore
+          .collection('posts')
+          .where('city', isEqualTo: city)
+          .where('visibility', isEqualTo: 'public')
+          .orderBy('createdAt', descending: true)
+          .limit(limit);
+
+      if (startAfter != null) {
+        query = query.startAfterDocument(startAfter);
+      }
+
+      final snapshot = await query.get();
+      final posts = snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
+
+      return PostPage(
+        posts: posts,
+        lastDocument: snapshot.docs.isNotEmpty ? snapshot.docs.last : null,
+        hasMore: snapshot.docs.length == limit,
+      );
+    } catch (e) {
+      print('❌ getPostsByCityPaginated: $e');
+      return const PostPage(posts: [], lastDocument: null, hasMore: false);
+    }
+  }
+  
 
   // ===== 更新帖子 =====
 

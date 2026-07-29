@@ -86,60 +86,70 @@ class FavouriteService {
   }) async {
     final collection = _favouritesCollection;
     final userDoc = _userDoc;
-    if (collection == null || userDoc == null) throw Exception('User not logged in');
+    if (collection == null || userDoc == null) {
+      throw Exception('You need to be logged in to save favourites');
+    }
 
-    // types 为空时自动 fetch
     List<String> finalTypes = (types != null && types.isNotEmpty)
         ? types
         : await _fetchTypesFromApi(placeId);
 
-  
-    final batch = _firestore.batch();
+    try {
+      final batch = _firestore.batch();
 
-    batch.set(collection.doc(placeId), {
-      'placeId': placeId,
-      'name': name,
-      'address': address,
-      'rating': rating,
-      'photoUrl': photoUrl,
-      'lat': lat,
-      'lng': lng,
-      'types': finalTypes,
-      'savedAt': FieldValue.serverTimestamp(),
-    });
+      batch.set(collection.doc(placeId), {
+        'placeId': placeId,
+        'name': name,
+        'address': address,
+        'rating': rating,
+        'photoUrl': photoUrl,
+        'lat': lat,
+        'lng': lng,
+        'types': finalTypes,
+        'savedAt': FieldValue.serverTimestamp(),
+      });
 
-    // favouriteCount + 1
-    batch.update(userDoc, {
-      'favouriteCount': FieldValue.increment(1),
-    });
+      batch.update(userDoc, {
+        'favouriteCount': FieldValue.increment(1),
+      });
 
-    await batch.commit();
-    print('✅ Added favourite, favouriteCount +1');
+      await batch.commit();
+      print('✅ Added favourite, favouriteCount +1');
+    } catch (e) {
+      print('❌ addFavourite failed: $e');
+      throw Exception('Failed to save to favourites. Please check your connection.');
+    }
   }
 
   static Future<void> removeFavourite(String placeId) async {
     final collection = _favouritesCollection;
     final userDoc = _userDoc;
-    if (collection == null || userDoc == null) throw Exception('User not logged in');
-
-    final batch = _firestore.batch();
-
-    batch.delete(collection.doc(placeId));
-
-    // favouriteCount - 1（最低为 0，防止负数）
-    final userSnapshot = await userDoc.get();
-    final currentCount = (userSnapshot.data() as Map<String, dynamic>?)?['favouriteCount'] ?? 0;
-    if (currentCount > 0) {
-      batch.update(userDoc, {
-        'favouriteCount': FieldValue.increment(-1),
-      });
+    if (collection == null || userDoc == null) {
+      throw Exception('You need to be logged in to manage favourites');
     }
 
-    await batch.commit();
-    print('✅ Removed favourite, favouriteCount -1');
+    try {
+      final batch = _firestore.batch();
+
+      batch.delete(collection.doc(placeId));
+
+      final userSnapshot = await userDoc.get();
+      final currentCount = (userSnapshot.data() as Map<String, dynamic>?)?['favouriteCount'] ?? 0;
+      if (currentCount > 0) {
+        batch.update(userDoc, {
+          'favouriteCount': FieldValue.increment(-1),
+        });
+      }
+
+      await batch.commit();
+      print('✅ Removed favourite, favouriteCount -1');
+    } catch (e) {
+      print('❌ removeFavourite failed: $e');
+      throw Exception('Failed to remove from favourites. Please check your connection.');
+    }
   }
-
-
+    
+    
   static Future<bool> isFavourite(String placeId) async {
     final collection = _favouritesCollection;
     if (collection == null) return false;
