@@ -2,11 +2,26 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'dart:async';
 import '../models/postModel.dart';
 import 'algolia_service.dart';
 import '../services/sentiment_service.dart';
 import '../services/userPreference_service.dart';
 import 'storage_service.dart';
+
+
+extension _SafeStream<T> on Stream<T> {
+  Stream<T> withFallback(T fallback, {String label = ''}) {
+    return transform(
+      StreamTransformer<T, T>.fromHandlers(
+        handleError: (error, stackTrace, sink) {
+          print('⚠️ [$label] stream 查询失败，已用兜底值代替: $error');
+          sink.add(fallback);
+        },
+      ),
+    );
+  }
+}
 
 
 /// 分页查询结果——带上"最后一条文档"作为下一页的游标(cursor),
@@ -146,22 +161,23 @@ class PostService {
     }
   }
 
-  Stream<List<Post>> getUserPosts(String userId) {
-    return _firestore
-        .collection('posts')
-        .where('userId', isEqualTo: userId)
-        .snapshots()
-        .map((snapshot) {
-      List<Post> posts =
-          snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
-      posts.sort((a, b) {
-        if (a.createdAt == null) return 1;
-        if (b.createdAt == null) return -1;
-        return b.createdAt!.compareTo(a.createdAt!);
-      });
-      return posts;
-    });
-  }
+ Stream<List<Post>> getUserPosts(String userId) {
+  return _firestore
+      .collection('posts')
+      .where('userId', isEqualTo: userId)
+      .snapshots()
+      .map((snapshot) {
+        List<Post> posts =
+            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
+        posts.sort((a, b) {
+          if (a.createdAt == null) return 1;
+          if (b.createdAt == null) return -1;
+          return b.createdAt!.compareTo(a.createdAt!);
+        });
+        return posts;
+      })
+      .withFallback(<Post>[], label: 'getUserPosts');
+}
 
   Stream<List<Post>> getPostsByTag(String tag) {
     return _firestore
@@ -170,7 +186,8 @@ class PostService {
         .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) =>
-            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList());
+            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList())
+        .withFallback(<Post>[], label: 'getPostsByTag');
   }
 
   Stream<List<Post>> getPostsByTopic(String topic) {
@@ -180,7 +197,8 @@ class PostService {
         .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) =>
-            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList());
+            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList())
+        .withFallback(<Post>[], label: 'getPostsByTopic');
   }
 
   Stream<List<Post>> getPostsByLocation(String location) {
@@ -190,19 +208,10 @@ class PostService {
         .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) =>
-            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList());
+            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList())
+        .withFallback(<Post>[], label: 'getPostsByLocation');
   }
 
-  Stream<List<Post>> getPublicPosts() {
-    return _firestore
-        .collection('posts')
-        .orderBy('createdAt', descending: true)
-        .snapshots()
-        .map((snapshot) => snapshot.docs
-            .map((doc) => Post.fromFirestore(doc))
-            .where((post) => post.visibility == 'public')
-            .toList());
-  }
 
   Stream<List<Post>> getPostsByCity(String city) {
     return _firestore
@@ -212,7 +221,8 @@ class PostService {
         .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) =>
-            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList());
+            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList())
+        .withFallback(<Post>[], label: 'getPostsByCity');
   }
 
   Stream<List<Post>> getPostsByWishlistCities(List<String> cities) {
@@ -225,7 +235,20 @@ class PostService {
         .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) =>
-            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList());
+            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList())
+        .withFallback(<Post>[], label: 'getPostsByWishlistCities');
+  }
+
+  Stream<List<Post>> getPublicPosts() {
+    return _firestore
+        .collection('posts')
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => Post.fromFirestore(doc))
+            .where((post) => post.visibility == 'public')
+            .toList())
+        .withFallback(<Post>[], label: 'getPublicPosts');
   }
 
   // ═══════════════════════════════════════════════════
@@ -443,7 +466,8 @@ class PostService {
         .limit(limit)
         .snapshots()
         .map((snapshot) =>
-            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList());
+            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList())
+        .withFallback(<Post>[], label: 'getPopularPosts');
   }
 
 /// 同时搜索 标题 + 标签，合并去重，只返回 public 帖子

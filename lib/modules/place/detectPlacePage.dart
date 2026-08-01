@@ -70,7 +70,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   // ── New nearby badge ──────────────────────────────────────────────────────
   bool _hasNewNearby = false;
-  WeatherCondition? _currentWeather;
   static const double _badgeThresholdMetres = 500;
   double? _lastLoadedLat;
   double? _lastLoadedLng;
@@ -98,6 +97,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     {'name': 'All',        'icon': Icons.all_inclusive,          'type': 'all',           'color': Colors.black},
     {'name': 'Food',       'icon': Icons.restaurant,             'type': 'restaurant',    'color': Colors.orange},
     {'name': 'Nature',     'icon': Icons.park,                   'type': 'park',          'color': Colors.green},
+    {'name': 'Attraction', 'icon': Icons.museum_rounded,          'type': 'tourist_attraction',  'color': Colors.brown},
     {'name': 'Entertain',  'icon': Icons.local_activity_rounded, 'type': 'entertainment', 'color': Colors.deepPurple},
     {'name': 'Shopping',   'icon': Icons.shopping_bag,           'type': 'shopping_mall', 'color': Colors.pink},
     {'name': 'Transport',  'icon': Icons.directions_transit,     'type': 'transit',       'color': Colors.blue},
@@ -127,6 +127,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       {'key': 'temple',   'label': 'Temple',     'allowTypes': <String>['hindu_temple', 'buddhist_temple', 'shrine'],                                    'nameKeywords': <String>['temple', 'tokong', 'kuil', 'shrine', '庙', '寺']},
       {'key': 'mosque',   'label': 'Mosque',     'allowTypes': <String>['mosque'],                                                                       'nameKeywords': <String>['mosque', 'masjid', 'surau']},
       {'key': 'church',   'label': 'Church',     'allowTypes': <String>['church'],                                                                       'nameKeywords': <String>['church', 'gereja', 'cathedral', 'chapel']},
+    ],
+    'tourist_attraction': [
+      {'key': 'all',      'label': 'All',       'allowTypes': <String>[],                                                                              'nameKeywords': <String>[]},
+      {'key': 'landmark', 'label': 'Landmark',   'allowTypes': <String>['tourist_attraction', 'historical_landmark', 'cultural_landmark', 'monument'],  'nameKeywords': <String>['heritage', 'historic', 'monument', 'memorial', 'fort', 'landmark']},
+      {'key': 'museum',   'label': 'Museum',     'allowTypes': <String>['museum', 'art_gallery'],                                                       'nameKeywords': <String>['museum', 'gallery', 'muzium']},
     ],
     'entertainment': [
       {'key': 'all',     'label': 'All',        'allowTypes': <String>[],                                                              'nameKeywords': <String>[]},
@@ -172,7 +177,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     // ── Travel mode 现在跟随 UserPreferenceService，实时同步 ─────────────
     _syncTravelModeFromPreference();
     UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged);
-
+    WeatherService.instance.weatherChanged.addListener(_onWeatherChanged); 
     _bootstrap();
 
     _searchFocus.addListener(() {
@@ -189,6 +194,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
     LocationService.instance.addListener(_onLocationChanged);
   }
+
+  void _onWeatherChanged() {
+    if (mounted) _recomputeRanking();
+  }
+
 
 
   void _syncTravelModeFromPreference() {
@@ -236,22 +246,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
 
-  Future<void> _refreshWeather() async {
-    if (_currentPosition == null) return;
-    final w = await WeatherService.instance.getCurrentCondition(
-      lat: _currentPosition!.latitude,
-      lng: _currentPosition!.longitude,
-    );
-    if (mounted) {
-      setState(() => _currentWeather = w);
-      _recomputeRanking(); // 拿到天气后按更准的分数重排一次预加载优先级
-    }
-  }
 
   @override
   void dispose() {
     LocationService.instance.removeListener(_onLocationChanged);
     UserPreferenceService.instance.preferencesChanged.removeListener(_onPreferencesChanged); // 🆕
+    WeatherService.instance.weatherChanged.removeListener(_onWeatherChanged); 
     _searchController.dispose();
     _searchFocus.dispose();
     _debounce?.cancel();
@@ -331,7 +331,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
 
     _applyFilter();
-    _refreshWeather();
+    if (_currentPosition != null) {
+      WeatherService.instance.getCurrentCondition(
+        lat: _currentPosition!.latitude,
+        lng: _currentPosition!.longitude,
+      );
+    }
 
     // Record where we loaded from so _onLocationChanged can detect 500m+ moves
     _lastLoadedLat = _currentPosition?.latitude;
@@ -425,7 +430,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       });
 
       _applyFilter();
-      _refreshWeather();
+      if (_currentPosition != null) {
+        WeatherService.instance.getCurrentCondition(
+          lat: _currentPosition!.latitude,
+          lng: _currentPosition!.longitude,
+        );
+      }
       _animateToFitMarkers(keepZoom: false);
 
     } catch (e) {
@@ -608,7 +618,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
 
     _applyFilter();
-    _refreshWeather();
+    if (_currentPosition != null) {
+    WeatherService.instance.getCurrentCondition(
+      lat: _currentPosition!.latitude,
+      lng: _currentPosition!.longitude,
+    );
+  }
 
     // Update last loaded position so badge resets correctly
     _lastLoadedLat = _currentPosition?.latitude;
@@ -1067,6 +1082,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // ─────────────────────────────────────────────
 
   final ValueNotifier<double> _bottomPaddingNotifier = ValueNotifier(0.4);
+  double _lastAppliedExtent = 0.4;
 
   @override
   Widget build(BuildContext context) {
@@ -1343,7 +1359,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             // ── Bottom sheet ──
             NotificationListener<DraggableScrollableNotification>(
               onNotification: (n) {
-                _bottomPaddingNotifier.value = n.extent;
+                // 只有变化超过阈值才真正更新地图 padding，
+                // 避免拖拽时每帧都触发 GoogleMap 的原生 method channel 调用
+                if ((n.extent - _lastAppliedExtent).abs() > 0.02) {
+                  _lastAppliedExtent = n.extent;
+                  _bottomPaddingNotifier.value = n.extent;
+                }
                 return false;
               },
               child: DraggableScrollableSheet(
@@ -1381,6 +1402,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // ─────────────────────────────────────────────
   // Place List Sheet
   // ─────────────────────────────────────────────
+  //
+  // Rebuilt on top of CustomScrollView + SliverList.builder so that place
+  // cards are only built when they actually scroll into view. Everything
+  // above the place list (drag handle, search-location banner, category
+  // row, travel-mode picker, sort chips, secondary bar) is one static
+  // header sliver — it's built once per rebuild of this method, same as
+  // before, but the (potentially long) place list is no longer built
+  // eagerly in one go.
 
   Widget _buildPlaceListSheet(
     ScrollController scrollController,
@@ -1388,350 +1417,357 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     List<PlaceModel> sortedGeoapifyPlaces) {
   return Stack(
     children: [
-      ListView(
+      CustomScrollView(
         controller: scrollController,
-        padding: EdgeInsets.only(
-          bottom: _selectedPlaceIds.isNotEmpty ? 90 : 0,
-        ),
-        children: [
-          Center(child: Column(children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 45, height: 5,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            const SizedBox(height: 4),
-          ])),
+        slivers: [
+          SliverToBoxAdapter(child: _buildSheetHeader()),
 
-          if (_searchLocationName != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                child: Row(children: [
-                  const Icon(Icons.location_on_rounded,
-                      size: 14, color: Color(0xFF1A73E8)),
-                  const SizedBox(width: 4),
-                  Text(
-                    'Showing results near: $_searchLocationName',
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: Color(0xFF1A73E8),
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: _clearSearch,
-                    child: const Icon(Icons.close_rounded,
-                        size: 16, color: Color(0xFF1A73E8)),
-                  ),
-                ]),
-              ),
-
-            // Primary categories
-            SizedBox(
-              height: 95,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: categories.length,
-                itemBuilder: (context, index) {
-                  final cat = categories[index];
-                  final isSelected = cat['type'] == 'all'
-                      ? _selectedPrimary == null
-                      : _selectedPrimary == cat['type'];
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 12),
-                    child: GestureDetector(
-                      onTap: () => _onPrimaryTap(cat['type']),
-                      child: Column(children: [
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? cat['color']
-                                : Colors.grey[100],
-                            shape: BoxShape.circle,
+          // ── 主列表 + Other nearby places 区块 ──────────────────────────
+          if (sortedPlaces.isEmpty && sortedGeoapifyPlaces.isEmpty && !_isLoading)
+            SliverToBoxAdapter(
+              child: SizedBox(height: 300, child: _buildEmptyState()),
+            )
+          else ...[
+            // ── Google 地点：主推荐列表（懒加载） ─────────────────────────
+            if (sortedPlaces.isEmpty && !_isLoading)
+              SliverToBoxAdapter(
+                child: _sortMode == SortMode.recommended
+                    ? _buildForYouEmptyState()
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 24),
+                        child: Center(
+                          child: Text(
+                            'No main results — check "Other nearby places" below',
+                            style: TextStyle(fontSize: 13, color: Colors.grey[400]),
                           ),
-                          child: Icon(cat['icon'],
-                              color: isSelected
-                                  ? Colors.white
-                                  : Colors.grey[600],
-                              size: 26),
                         ),
-                        const SizedBox(height: 6),
-                        Text(cat['name'], style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: isSelected
-                              ? FontWeight.bold
-                              : FontWeight.normal,
-                          color: isSelected
-                              ? cat['color']
-                              : Colors.grey[700],
-                        )),
-                      ]),
-                    ),
-                  );
-                },
-              ),
-            ),
-
-            const Divider(height: 1, thickness: 0.5),
-
-            // Travel mode + radius picker on same row
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(children: [
-                Text('Travel By:',
-                    style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-                const SizedBox(width: 12),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeInOut,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.blue[50],
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.blue[200]!),
-                  ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    GestureDetector(
-                      onTap: () => setState(
-                          () => _isTravelModeExpanded = !_isTravelModeExpanded),
-                      child: Row(children: [
-                        Icon(_getTravelIcon(_travelMode),
-                            color: Colors.blue[800], size: 20),
-                        const SizedBox(width: 4),
-                        Text(
-                          _radiusFromTravelMode >= 1000
-                              ? '${_radiusFromTravelMode ~/ 1000} km'
-                              : '${_radiusFromTravelMode} m',
-                          style: TextStyle(
-                              fontSize: 11, color: Colors.blue[700],
-                              fontWeight: FontWeight.w600),
-                        ),
-                        Icon(
-                          _isTravelModeExpanded
-                              ? Icons.arrow_left
-                              : Icons.arrow_drop_down,
-                          color: Colors.blue[800],
-                        ),
-                      ]),
-                    ),
-                    if (_isTravelModeExpanded)
-                      Row(children: [
-                        const VerticalDivider(width: 16),
-                        _buildMiniIconWithReload(TravelMode.walk, Icons.directions_walk),
-                        _buildMiniIconWithReload(TravelMode.motor, Icons.motorcycle),
-                        _buildMiniIconWithReload(TravelMode.drive, Icons.directions_car),
-                      ]),
-                  ]),
-                ),
-              ]),
-            ),
-
-            // Sort + selected count
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Row(children: [
-                  _buildStyledFilterChip(
-                    label: 'For You',
-                    isSelected: _sortMode == SortMode.recommended,
-                   onTap: () {
-                      setState(() => _sortMode = SortMode.recommended);
-                      _recomputeRanking();
-                    },
-                    icon: Icons.auto_awesome_rounded,
-                  ),
-                  const SizedBox(width: 5),
-                  _buildStyledFilterChip(
-                    label: 'Nearest',
-                    isSelected: _sortMode == SortMode.distance,
-                    onTap: () {
-                      setState(() => _sortMode = SortMode.distance);
-                      _recomputeRanking();
-                    },
-                    icon: Icons.near_me_outlined,
-                  ),
-                  const SizedBox(width: 5),
-                  _buildStyledFilterChip(
-                    label: 'High Rated',
-                    isSelected: _sortMode == SortMode.rating,
-                    onTap: () {
-                      setState(() => _sortMode = SortMode.rating);
-                      _recomputeRanking();
-                    },
-                    icon: Icons.star_outline_rounded,
-                  ),
-                  if (_selectedPlaceIds.isNotEmpty) ...[
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                            color: const Color(0xFF7C4DFF).withOpacity(0.3)),
                       ),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        const Icon(Icons.check_circle_rounded,
-                            size: 14, color: Color(0xFF7C4DFF)),
-                        const SizedBox(width: 4),
-                        Text('${_selectedPlaceIds.length}',
-                            style: const TextStyle(
-                                fontSize: 12,
-                                color: Color(0xFF7C4DFF),
+              )
+            else
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) => Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: _buildPlaceCard(sortedPlaces[index]),
+                  ),
+                  childCount: sortedPlaces.length,
+                ),
+              ),
+
+            // ── Geoapify 地点：单独区块，信息不全，仅作补充（懒加载） ────────
+            if (sortedGeoapifyPlaces.isNotEmpty) ...[
+              SliverToBoxAdapter(
+                child: Column(
+                  children: [
+                    const Divider(height: 1, thickness: 0.5),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                      child: Row(children: [
+                        Icon(Icons.info_outline_rounded,
+                            size: 14, color: Colors.grey[500]),
+                        const SizedBox(width: 6),
+                        Text('Other nearby places',
+                            style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey[500],
                                 fontWeight: FontWeight.w600)),
+                        const SizedBox(width: 6),
+                        Text('(limited info)',
+                            style: TextStyle(fontSize: 11, color: Colors.grey[400])),
                       ]),
                     ),
                   ],
-                ]),
+                ),
               ),
-            ),
-
-            if (_selectedPrimary != null &&
-                subCategories.containsKey(_selectedPrimary))
-              _buildSecondaryBar(),
-
-            const Divider(height: 1, thickness: 0.5),
-
-            // ── 主列表 + Other nearby places 区块 ──────────────────────────
-            if (sortedPlaces.isEmpty &&
-                sortedGeoapifyPlaces.isEmpty &&
-                !_isLoading)
-              SizedBox(height: 300, child: _buildEmptyState())
-            else ...[
-              // ── Google 地点：主推荐列表 ──────────────────────────────────
-              if (sortedPlaces.isEmpty && !_isLoading)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 24),
-                  child: Center(
-                    child: Text(
-                      'No main results — check "Other nearby places" below',
-                      style: TextStyle(fontSize: 13, color: Colors.grey[400]),
-                    ),
-                  ),
-                )
-              else
-                ...List.generate(
-                  sortedPlaces.length,
-                  (index) => Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 8),
-                    child: _buildPlaceCard(sortedPlaces[index]),
-                  ),
-                ),
-
-              // ── Geoapify 地点：单独区块，信息不全，仅作补充 ────────────────
-              if (sortedGeoapifyPlaces.isNotEmpty) ...[
-                const Divider(height: 1, thickness: 0.5),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                  child: Row(children: [
-                    Icon(Icons.info_outline_rounded,
-                        size: 14, color: Colors.grey[500]),
-                    const SizedBox(width: 6),
-                    Text('Other nearby places',
-                        style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.grey[500],
-                            fontWeight: FontWeight.w600)),
-                    const SizedBox(width: 6),
-                    Text('(limited info)',
-                        style: TextStyle(fontSize: 11, color: Colors.grey[400])),
-                  ]),
-                ),
-                ...List.generate(
-                  sortedGeoapifyPlaces.length,
-                  (index) => Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 8),
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) => Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     child: _buildPlaceCard(
                       sortedGeoapifyPlaces[index],
                       allowForYouBadge: false,
                     ),
                   ),
+                  childCount: sortedGeoapifyPlaces.length,
                 ),
-              ],
+              ),
             ],
+          ],
 
-            SizedBox(
+          SliverToBoxAdapter(
+            child: SizedBox(
               height: 24 +
                   MediaQuery.of(context).padding.bottom +
                   kBottomNavigationBarHeight,
             ),
-          ],
-        ),
+          ),
+        ],
+      ),
 
-        // ── 悬浮的 Plan Route 按钮 ──────────────────────────────
-        if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
-          Positioned(
-            left: 16,
-            right: 16,
-            bottom: 16 + MediaQuery.of(context).padding.bottom,
-            child: GestureDetector(
-              onTap: _viewSelectedItinerary,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 24, vertical: 16),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
+      // ── 悬浮的 Plan Route 按钮 ──────────────────────────────
+      if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
+        Positioned(
+          left: 16,
+          right: 16,
+          bottom: 16 + MediaQuery.of(context).padding.bottom,
+          child: GestureDetector(
+            onTap: _viewSelectedItinerary,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 24, vertical: 16),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                ),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [BoxShadow(
+                  color: const Color(0xFF7C4DFF).withOpacity(0.4),
+                  blurRadius: 16,
+                  offset: const Offset(0, 8),
+                )],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.map_rounded,
+                      color: Colors.white, size: 20),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Plan Route (${_selectedPlaceIds.length})',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold),
                   ),
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [BoxShadow(
-                    color: const Color(0xFF7C4DFF).withOpacity(0.4),
-                    blurRadius: 16,
-                    offset: const Offset(0, 8),
-                  )],
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.map_rounded,
-                        color: Colors.white, size: 20),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Plan Route (${_selectedPlaceIds.length})',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(width: 10),
-                    const Icon(Icons.arrow_forward_rounded,
-                        color: Colors.white70, size: 18),
-                  ],
-                ),
+                  const SizedBox(width: 10),
+                  const Icon(Icons.arrow_forward_rounded,
+                      color: Colors.white70, size: 18),
+                ],
               ),
             ),
           ),
-      ],
-    );
+        ),
+    ],
+  );
   }
 
-  double _scoreFor(PlaceModel p) {
-    final route = _routeResults[p.id];
-    final effectiveDist = route != null
-        ? route.durationSeconds * _getSpeedMeterPerSecond()
-        : null;
-    return UserPreferenceService.instance.scorePlaceModel(
-      primaryType:    p.primaryType,
-      allTypes:       p.allTypes,
-      distanceMeters: effectiveDist,
-      rating:         p.rating,
-      priceLevel:     p.priceLevel,
-      weather:        _currentWeather,
+  // ── Everything above the place list: drag handle, search banner,
+  //    category row, travel-mode picker, sort chips, secondary bar.
+  //    Extracted so it can sit in a single SliverToBoxAdapter.
+  Widget _buildSheetHeader() {
+    return Column(
+      children: [
+        Center(child: Column(children: [
+          const SizedBox(height: 8),
+          Container(
+            width: 45, height: 5,
+            decoration: BoxDecoration(
+              color: Colors.grey[300],
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+          const SizedBox(height: 4),
+        ])),
+
+        if (_searchLocationName != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Row(children: [
+                const Icon(Icons.location_on_rounded,
+                    size: 14, color: Color(0xFF1A73E8)),
+                const SizedBox(width: 4),
+                Text(
+                  'Showing results near: $_searchLocationName',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF1A73E8),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const Spacer(),
+                GestureDetector(
+                  onTap: _clearSearch,
+                  child: const Icon(Icons.close_rounded,
+                      size: 16, color: Color(0xFF1A73E8)),
+                ),
+              ]),
+            ),
+
+          // Primary categories
+          SizedBox(
+            height: 95,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: categories.length,
+              itemBuilder: (context, index) {
+                final cat = categories[index];
+                final isSelected = cat['type'] == 'all'
+                    ? _selectedPrimary == null
+                    : _selectedPrimary == cat['type'];
+                return Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: GestureDetector(
+                    onTap: () => _onPrimaryTap(cat['type']),
+                    child: Column(children: [
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? cat['color']
+                              : Colors.grey[100],
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(cat['icon'],
+                            color: isSelected
+                                ? Colors.white
+                                : Colors.grey[600],
+                            size: 26),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(cat['name'], style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: isSelected
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                        color: isSelected
+                            ? cat['color']
+                            : Colors.grey[700],
+                      )),
+                    ]),
+                  ),
+                );
+              },
+            ),
+          ),
+
+          const Divider(height: 1, thickness: 0.5),
+
+          // Travel mode + radius picker on same row
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(children: [
+              Text('Travel By:',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+              const SizedBox(width: 12),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.blue[200]!),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  GestureDetector(
+                    onTap: () => setState(
+                        () => _isTravelModeExpanded = !_isTravelModeExpanded),
+                    child: Row(children: [
+                      Icon(_getTravelIcon(_travelMode),
+                          color: Colors.blue[800], size: 20),
+                      const SizedBox(width: 4),
+                      Text(
+                        _radiusFromTravelMode >= 1000
+                            ? '${_radiusFromTravelMode ~/ 1000} km'
+                            : '${_radiusFromTravelMode} m',
+                        style: TextStyle(
+                            fontSize: 11, color: Colors.blue[700],
+                            fontWeight: FontWeight.w600),
+                      ),
+                      Icon(
+                        _isTravelModeExpanded
+                            ? Icons.arrow_left
+                            : Icons.arrow_drop_down,
+                        color: Colors.blue[800],
+                      ),
+                    ]),
+                  ),
+                  if (_isTravelModeExpanded)
+                    Row(children: [
+                      const VerticalDivider(width: 16),
+                      _buildMiniIconWithReload(TravelMode.walk, Icons.directions_walk),
+                      _buildMiniIconWithReload(TravelMode.motor, Icons.motorcycle),
+                      _buildMiniIconWithReload(TravelMode.drive, Icons.directions_car),
+                    ]),
+                ]),
+              ),
+            ]),
+          ),
+
+          // Sort + selected count
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(children: [
+                _buildStyledFilterChip(
+                  label: 'For You',
+                  isSelected: _sortMode == SortMode.recommended,
+                 onTap: () {
+                    setState(() => _sortMode = SortMode.recommended);
+                    _recomputeRanking();
+                  },
+                  icon: Icons.auto_awesome_rounded,
+                ),
+                const SizedBox(width: 5),
+                _buildStyledFilterChip(
+                  label: 'Nearest',
+                  isSelected: _sortMode == SortMode.distance,
+                  onTap: () {
+                    setState(() => _sortMode = SortMode.distance);
+                    _recomputeRanking();
+                  },
+                  icon: Icons.near_me_outlined,
+                ),
+                const SizedBox(width: 5),
+                _buildStyledFilterChip(
+                  label: 'High Rated',
+                  isSelected: _sortMode == SortMode.rating,
+                  onTap: () {
+                    setState(() => _sortMode = SortMode.rating);
+                    _recomputeRanking();
+                  },
+                  icon: Icons.star_outline_rounded,
+                ),
+                if (_selectedPlaceIds.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: const Color(0xFF7C4DFF).withOpacity(0.3)),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.check_circle_rounded,
+                          size: 14, color: Color(0xFF7C4DFF)),
+                      const SizedBox(width: 4),
+                      Text('${_selectedPlaceIds.length}',
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF7C4DFF),
+                              fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                ],
+              ]),
+            ),
+          ),
+
+          if (_selectedPrimary != null &&
+              subCategories.containsKey(_selectedPrimary))
+            _buildSecondaryBar(),
+
+          const Divider(height: 1, thickness: 0.5),
+      ],
     );
   }
 
@@ -1739,25 +1775,36 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     if (!mounted) return;
 
     final openPlaces = _displayedPlaces.where((p) => p.isOpenNow != false).toList();
-    final google   = openPlaces.where((p) => !p.isGeoapify).toList();
-    final geoapify = openPlaces.where((p) => p.isGeoapify).toList();
+    final googleAll  = openPlaces.where((p) => !p.isGeoapify).toList();
+    final geoapify   = openPlaces.where((p) => p.isGeoapify).toList();
 
-    final scores = <String, double>{
-      for (final p in google) p.id: _scoreFor(p),
-    };
+    List<PlaceModel> google;
+    Map<String, double> scores = {};
 
-    google.sort((a, b) {
-      switch (_sortMode) {
-        case SortMode.recommended:
-          return scores[b.id]!.compareTo(scores[a.id]!);
-        case SortMode.distance:
-          final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
-          final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
-          return aD.compareTo(bD);
-        case SortMode.rating:
-          return (b.rating ?? 0.0).compareTo(a.rating ?? 0.0);
-      }
-    });
+    if (_sortMode == SortMode.recommended) {
+      final result = UserPreferenceService.instance.buildForYouList(
+        candidates:   googleAll,
+        routeResults: _routeResults,
+        weather: WeatherService.instance.current,
+        requirePhoto: false,   // detect page 卡片有 asset fallback，不强求图
+      );
+      google = result.places;
+      scores = result.scores;
+    } else {
+      google = List<PlaceModel>.from(googleAll);
+      google.sort((a, b) {
+        switch (_sortMode) {
+          case SortMode.distance:
+            final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
+            final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
+            return aD.compareTo(bD);
+          case SortMode.rating:
+            return (b.rating ?? 0.0).compareTo(a.rating ?? 0.0);
+          default:
+            return 0;
+        }
+      });
+    }
 
     geoapify.sort((a, b) {
       final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
@@ -1787,181 +1834,189 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
     // Compute score + reason for "For You" badge
     final isForYouMode = allowForYouBadge && _sortMode == SortMode.recommended;
-    final score = isForYouMode ? (_placeScores[place.id] ?? 0.0) : 0.0;
+ 
     final reason = isForYouMode
         ? UserPreferenceService.instance.getRecommendReason(
             primaryType: place.primaryType,
             allTypes:    place.allTypes,
           )
         : null;
-    final showForYouBadge = isForYouMode && score >= 0.65;
+    final showForYouBadge = isForYouMode; // 能进列表就已经是 match 了
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: InkWell(
-        onTap: () => _showPlaceDetails(place),
-        borderRadius: BorderRadius.circular(15),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? const Color(0xFF7C4DFF).withOpacity(0.05)
-                : Colors.white,
-            borderRadius: BorderRadius.circular(15),
-            boxShadow: [BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 4))],
-            border: Border.all(
+    return RepaintBoundary(
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: InkWell(
+          onTap: () => _showPlaceDetails(place),
+          borderRadius: BorderRadius.circular(15),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
               color: isSelected
-                  ? const Color(0xFF7C4DFF).withOpacity(0.4)
-                  : Colors.grey[100]!,
-              width: isSelected ? 1.5 : 1,
+                  ? const Color(0xFF7C4DFF).withOpacity(0.05)
+                  : Colors.white,
+              borderRadius: BorderRadius.circular(15),
+              boxShadow: [BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4))],
+              border: Border.all(
+                color: isSelected
+                    ? const Color(0xFF7C4DFF).withOpacity(0.4)
+                    : Colors.grey[100]!,
+                width: isSelected ? 1.5 : 1,
+              ),
             ),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Container(
-                width: 56, height: 56,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  color: Colors.blue[50],
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: place.photoUrl != null
-                    ? CachedNetworkImage(
-                        imageUrl: place.photoUrl!,
-                        fit: BoxFit.cover,
-                        errorWidget: (c, e, s) => Image.asset(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Container(
+                  width: 56, height: 56,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.blue[50],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: place.photoUrl != null
+                      ? CachedNetworkImage(
+                          imageUrl: place.photoUrl!,
+                          fit: BoxFit.cover,
+                          // 卡片头像只有 56x56 —— 限制解码尺寸，避免每张
+                          // 滚入视口的卡片都去解码一张原始分辨率的网络图。
+                          memCacheWidth: 112,
+                          memCacheHeight: 112,
+                          errorWidget: (c, e, s) => Image.asset(
+                            CategoryImageHelper.getAssetPath(
+                              place.primaryType,
+                              place.allTypes,
+                            ),
+                            fit: BoxFit.cover,
+                          ),
+                        )
+                      : Image.asset(
                           CategoryImageHelper.getAssetPath(
                             place.primaryType,
                             place.allTypes,
                           ),
                           fit: BoxFit.cover,
                         ),
-                      )
-                    : Image.asset(
-                        CategoryImageHelper.getAssetPath(
-                          place.primaryType,
-                          place.allTypes,
-                        ),
-                        fit: BoxFit.cover,
-                      ),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(place.name,
-                        style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black87),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis),
-                    const SizedBox(height: 4),
-                    Row(children: [
-                      if (place.rating != null) ...[
-                        const Icon(Icons.star_rounded,
-                            color: Colors.orange, size: 16),
-                        const SizedBox(width: 2),
-                        Text(place.rating.toString(),
-                            style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.orange)),
-                        _buildDotSeparator(),
-                      ],
-                      if (routeInfo != null) ...[
-                        Icon(Icons.near_me_rounded,
-                            size: 13, color: Colors.blue[400]),
-                        const SizedBox(width: 3),
-                        Text(
-                          '${(routeInfo.distanceMeters / 1000).toStringAsFixed(1)} km',
-                          style: TextStyle(
-                              fontSize: 12, color: Colors.grey[700]),
-                        ),
-                        _buildDotSeparator(),
-                        Icon(Icons.access_time_filled_rounded,
-                            size: 13, color: Colors.grey[400]),
-                        const SizedBox(width: 3),
-                        Text(
-                          '${routeInfo.durationSeconds ~/ 60} min',
-                          style: TextStyle(
-                              fontSize: 12, color: Colors.grey[700]),
-                        ),
-                      ],
-                    ]),
-                    // ── For You badge + reason ──────────────────────────
-                    if (showForYouBadge) ...[
-                      const SizedBox(height: 5),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(place.name,
+                          style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                      const SizedBox(height: 4),
                       Row(children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(6),
+                        if (place.rating != null) ...[
+                          const Icon(Icons.star_rounded,
+                              color: Colors.orange, size: 16),
+                          const SizedBox(width: 2),
+                          Text(place.rating.toString(),
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.orange)),
+                          _buildDotSeparator(),
+                        ],
+                        if (routeInfo != null) ...[
+                          Icon(Icons.near_me_rounded,
+                              size: 13, color: Colors.blue[400]),
+                          const SizedBox(width: 3),
+                          Text(
+                            '${(routeInfo.distanceMeters / 1000).toStringAsFixed(1)} km',
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[700]),
                           ),
-                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                            Icon(Icons.auto_awesome_rounded,
-                                size: 10, color: Color(0xFF7C4DFF)),
-                            SizedBox(width: 3),
-                            Text('For You',
-                                style: TextStyle(
-                                    fontSize: 10,
-                                    color: Color(0xFF7C4DFF),
-                                    fontWeight: FontWeight.bold)),
-                          ]),
-                        ),
-                        if (reason != null) ...[
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(reason,
-                                style: TextStyle(
-                                    fontSize: 10, color: Colors.grey[500]),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis),
+                          _buildDotSeparator(),
+                          Icon(Icons.access_time_filled_rounded,
+                              size: 13, color: Colors.grey[400]),
+                          const SizedBox(width: 3),
+                          Text(
+                            '${routeInfo.durationSeconds ~/ 60} min',
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[700]),
                           ),
                         ],
                       ]),
+                      // ── For You badge + reason ──────────────────────────
+                      if (showForYouBadge) ...[
+                        const SizedBox(height: 5),
+                        Row(children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                              Icon(Icons.auto_awesome_rounded,
+                                  size: 10, color: Color(0xFF7C4DFF)),
+                              SizedBox(width: 3),
+                              Text('For You',
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      color: Color(0xFF7C4DFF),
+                                      fontWeight: FontWeight.bold)),
+                            ]),
+                          ),
+                          if (reason != null) ...[
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(reason,
+                                  style: TextStyle(
+                                      fontSize: 10, color: Colors.grey[500]),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis),
+                            ),
+                          ],
+                        ]),
+                      ],
                     ],
-                  ],
-                ),
-              ),
-              GestureDetector(
-                onTap: () => _togglePlaceSelection(place),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  width: 36, height: 36,
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? const Color(0xFF7C4DFF)
-                        : Colors.grey[100],
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    isSelected
-                        ? Icons.check_rounded
-                        : Icons.add_rounded,
-                    color: isSelected ? Colors.white : Colors.grey[600],
-                    size: 20,
                   ),
                 ),
-              ),
-            ],
+                GestureDetector(
+                  onTap: () => _togglePlaceSelection(place),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: 36, height: 36,
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? const Color(0xFF7C4DFF)
+                          : Colors.grey[100],
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      isSelected
+                          ? Icons.check_rounded
+                          : Icons.add_rounded,
+                      color: isSelected ? Colors.white : Colors.grey[600],
+                      size: 20,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
+ 
+ 
   Widget _buildDotSeparator() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 5),
@@ -2185,4 +2240,76 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       ],
     ));
   }
+
+  Widget _buildForYouEmptyState() {
+  final nextMode = _travelMode == TravelMode.walk
+      ? TravelMode.motor
+      : _travelMode == TravelMode.motor
+          ? TravelMode.drive
+          : null;
+  final nextRadius = nextMode != null
+      ? (nextMode == TravelMode.motor ? 8000 : 12000)
+      : null;
+  final nextLabel = nextRadius != null ? '${nextRadius ~/ 1000} km' : null;
+
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+    child: Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.auto_awesome_rounded, size: 32, color: Colors.grey[400]),
+          const SizedBox(height: 10),
+          Text(
+            'No places nearby match your preferences',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                fontSize: 13, color: Colors.grey[600], fontWeight: FontWeight.w500),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Try widening your search, or browse all nearby places instead',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              if (nextMode != null)
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    setState(() {
+                      _travelMode = nextMode;
+                      _travelModeManuallySet = true;
+                    });
+                    NearbyPlacesService.instance.clearCache();
+                    NearbyPlacesService.instance.clearSearchCache();
+                    await _bootstrap();
+                  },
+                  icon: const Icon(Icons.radar_rounded, size: 16),
+                  label: Text('Try $nextLabel'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF7C4DFF),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                  ),
+                ),
+              OutlinedButton(
+                onPressed: () {
+                  setState(() => _sortMode = SortMode.distance);
+                  _recomputeRanking();
+                },
+                child: const Text('Show Nearest instead'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 }

@@ -18,6 +18,7 @@ import '../../services/apps_Loading.dart';
 import 'allRecommendedPlacesPage.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/error_handler.dart';
+import '../../services/weather_service.dart';
 
 class MainPage extends StatefulWidget {
   final dynamic username;
@@ -39,8 +40,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   // ── Achievement banner ──
   AchievementTier? _latestBadge;
 
-  final String _weatherCondition    = "sunny";
-  final int _temperature            = 19;
+  WeatherCondition? _currentWeather;
   String _currentLocationText       = "Detecting your location...";
 
   Map<String, RouteResult> _routeResults = {};
@@ -49,6 +49,27 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   String get _effectiveTravelMode =>
       _travelModeOverride ?? UserPreferenceService.instance.current.travelMode;
 
+  // 🆕 travel-mode tier order for progressive widening (walk → motor → drive)
+  static const List<String> _travelModeOrder = ['walk', 'motor', 'drive'];
+
+  // 🆕 next wider tier than current effective mode, or null if already at max
+  String? get _nextWiderTravelMode {
+    final current = _effectiveTravelMode;
+    if (current == 'both') return null; // 'both' 已按最大范围处理
+    final idx = _travelModeOrder.indexOf(current);
+    if (idx == -1 || idx == _travelModeOrder.length - 1) return null;
+    return _travelModeOrder[idx + 1];
+  }
+
+  // 🆕 button label for a given target mode
+  String _labelForMode(String mode) {
+    switch (mode) {
+      case 'motor': return '8 km (Motor)';
+      case 'drive': return '12 km (Drive)';
+      default:      return mode;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -56,8 +77,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     _pageController = PageController(viewportFraction: 0.8);
     _initAndLoad();
     LocationService.instance.addListener(_onLocationChanged);
-    UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged);
+    UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged); 
+    WeatherService.instance.weatherChanged.addListener(_onWeatherChanged); 
     _loadTopBadge();
+  }
+  
+  void _onWeatherChanged() {
+    if (mounted) _buildForYou();
   }
 
   Future<void> _loadTopBadge() async {
@@ -106,6 +132,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     _pageController.dispose();
     LocationService.instance.removeListener(_onLocationChanged);
     UserPreferenceService.instance.preferencesChanged.removeListener(_onPreferencesChanged);
+    WeatherService.instance.weatherChanged.removeListener(_onWeatherChanged); 
     super.dispose();
   }
 
@@ -128,6 +155,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     await _loadNearby();
     _calculateRoutes();
     _buildForYou();   // 内部的 load() 调用变成幂等的重复调用，不影响正确性，但可以顺手拿掉
+    final pos = LocationService.instance.currentPosition;
+    if (pos != null) {
+      WeatherService.instance.getCurrentCondition(lat: pos.latitude, lng: pos.longitude);
+    }
+
   }
 
   Future<void> _initLocation() async {
@@ -178,56 +210,41 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _refreshWeather() async {
+    final pos = LocationService.instance.currentPosition;
+    if (pos == null) return;
+    final w = await WeatherService.instance.getCurrentCondition(
+      lat: pos.latitude,
+      lng: pos.longitude,
+    );
+    if (mounted) {
+      setState(() => _currentWeather = w);
+      _buildForYou(); // 拿到天气后重新算一次分数排序
+    }
+  }
+
   // ─────────────────────────────────────────────
   // For You — 根据 preferences 评分排序
   // ─────────────────────────────────────────────
 
   Future<void> _buildForYou() async {
     await UserPreferenceService.instance.load();
-    if (_nearbyPlaces.isEmpty) return;
+    if (_nearbyPlaces.isEmpty) {
+      setState(() => _forYouPlaces = []);
+      return;
+    }
 
-    final limit = _distanceLimitMeters;
+    final result = UserPreferenceService.instance.buildForYouList(
+      candidates:           _openNearbyPlaces,
+      routeResults:         _routeResults,
+      distanceLimitMeters:  _distanceLimitMeters,
+      weather:              WeatherService.instance.current, 
+      requirePhoto:         true,   // MainPage 的卡片需要图
+    );
 
-    const allowedTypes = {
-      'restaurant', 'park', 'entertainment', 'shopping_mall',
-    };
-
-    final withinRange = _openNearbyPlaces.where((place) {
-      final dist = _routeResults[place.id]?.distanceMeters ?? double.infinity;
-      final isAllowed = allowedTypes.contains(place.primaryType) ||
-          place.allTypes.any((t) => allowedTypes.contains(t));
-      return dist <= limit &&
-          place.photoUrl != null &&
-          place.photoUrl!.isNotEmpty &&
-          isAllowed;
-    }).toList();
-
-    final scored = withinRange.map((place) {
-      final dist  = _routeResults[place.id]?.distanceMeters;
-      final score = UserPreferenceService.instance.scorePlaceModel(
-        primaryType:    place.primaryType,
-        allTypes:       place.allTypes,
-        distanceMeters: dist,
-      );
-      return MapEntry(place, score);
-    }).toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-
-    final filtered = scored
-        .where((e) => e.value > 0)
-        .map((e) => e.key)
-        .toList();   // 🔧 CHANGED — 去掉 .take(7)，存完整列表
-
-    final result = filtered.isNotEmpty
-        ? filtered
-        : (List<PlaceModel>.from(withinRange)
-            ..removeWhere((p) => p.photoUrl == null || p.photoUrl!.isEmpty)
-            ..sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0)));
-            // 🔧 CHANGED — 同样去掉 .take(7)
-
-    setState(() => _forYouPlaces = result);
+    setState(() => _forYouPlaces = result.places);
   }
-  
+    
   // ─────────────────────────────────────────────
   // Load nearby
   // ─────────────────────────────────────────────
@@ -378,13 +395,12 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     );
   }
 
-  // 🆕 For You 为空时，用户可以临时把范围放宽到 drive（20km），
-  // 只在本次 session 生效，不覆盖用户在 Settings 里保存的真正偏好。
-  Future<void> _tryWiderTravelMode() async {
-    if (_effectiveTravelMode == 'drive') return; // 已经是最大范围了
-
+  // 🔧 CHANGED — 现在按 tier 递进 (walk → motor → drive)，接收目标 mode，
+  // 而不是每次都硬编码跳到 'drive'。只在本次 session 生效，不覆盖用户在
+  // Settings 里保存的真正偏好。
+  Future<void> _tryWiderTravelMode(String targetMode) async {
     setState(() {
-      _travelModeOverride = 'drive';
+      _travelModeOverride = targetMode;
       _loadingNearby = true;
     });
 
@@ -392,7 +408,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     try {
       final places = await NearbyPlacesService.instance.loadNearbyPlacesOnce(
         _categories, context,
-        radius: _distanceLimitMeters.toInt(),   // 🆕 这次真的按 20km 去拉数据
+        radius: _distanceLimitMeters.toInt(),   // 🆕 按新 targetMode 对应的半径去拉数据
       );
       if (!mounted) return;
       setState(() {
@@ -536,7 +552,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
       }
 
       if (_forYouPlaces.isEmpty) {
-        final canWiden = _effectiveTravelMode != 'drive';   // 🆕
+        final nextMode = _nextWiderTravelMode;   // 🔧 CHANGED — 计算下一级 tier 而不是写死 drive
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 25),
           child: Container(
@@ -557,12 +573,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                   const SizedBox(height: 4),
                   Text('Try updating your preferences in Settings',
                       style: TextStyle(color: Colors.grey[400], fontSize: 11)),
-                  if (canWiden) ...[   // 🆕
+                  if (nextMode != null) ...[   // 🔧 CHANGED
                     const SizedBox(height: 14),
                     ElevatedButton.icon(
-                      onPressed: _loadingNearby ? null : _tryWiderTravelMode,
+                      onPressed: _loadingNearby
+                          ? null
+                          : () => _tryWiderTravelMode(nextMode),
                       icon: const Icon(Icons.directions_car_filled_rounded, size: 16),
-                      label: const Text('Try 20 km (Drive)'),
+                      label: Text('Try ${_labelForMode(nextMode)}'),   // 🔧 CHANGED
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF7C4DFF),
                         foregroundColor: Colors.white,
@@ -601,20 +619,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   Widget _buildForYouCard(PlaceModel place) {
     final route = _routeResults[place.id];
     final dist  = route != null ? (route.distanceMeters / 1000).toStringAsFixed(1) : "--";
-    final mins  = route != null ? (route.durationSeconds ~/ 60).toString() : "--";
-
-    // 算分显示 match badge
-    final score = UserPreferenceService.instance.scorePlaceModel(
-      primaryType: place.primaryType,
-      allTypes:    place.allTypes,
-    );
 
     final reason = UserPreferenceService.instance.getRecommendReason(
       primaryType: place.primaryType,
       allTypes:    place.allTypes,
     );
-
-    final isHighMatch = score >= 10;
 
     return GestureDetector(
       onTap: () => _openPlaceDetail(place),
@@ -659,28 +668,27 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                 ),
               ),
 
-              // Match badge
-              if (isHighMatch)
-                Positioned(
-                  top: 10, left: 10,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF7C4DFF),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.favorite_rounded, color: Colors.white, size: 10),
-                        SizedBox(width: 4),
-                        Text('For You', style: TextStyle(
-                            color: Colors.white, fontSize: 10,
-                            fontWeight: FontWeight.bold)),
-                      ],
-                    ),
+              // Match badge — 能进 _forYouPlaces 就已经是 preference match 了，常显
+              Positioned(
+                top: 10, left: 10,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF7C4DFF),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.favorite_rounded, color: Colors.white, size: 10),
+                      SizedBox(width: 4),
+                      Text('For You', style: TextStyle(
+                          color: Colors.white, fontSize: 10,
+                          fontWeight: FontWeight.bold)),
+                    ],
                   ),
                 ),
+              ),
 
               // 评分
               if (place.rating != null)
@@ -745,7 +753,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
       ),
     );
   }
-
+    
+  
   Widget _buildPlaceholderBg(PlaceModel place) {
     return Image.asset(
       CategoryImageHelper.getAssetPath(place.primaryType, place.allTypes),

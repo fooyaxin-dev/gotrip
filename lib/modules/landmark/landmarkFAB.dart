@@ -10,15 +10,34 @@ import '../../services/apps_Loading.dart';
 import '../../services/vision_service.dart';
 import 'landmarkResult.dart'; // your ResultPage lives here
 
+// ── Top-level functions for isolate processing ─────────────
+// Must be top-level (or static) so `compute()` can send them to another isolate.
+
+// Fixes EXIF orientation, downsizes to a sane max dimension for recognition,
+// and re-encodes as JPEG. Keeps the payload small for both decoding speed
+// and network upload size.
+Uint8List _fixOrientationAndEncode(Uint8List rawBytes) {
+  final decoded = img.decodeImage(rawBytes)!;
+  var fixed = img.bakeOrientation(decoded);
+  if (fixed.width > 1600) {
+    fixed = img.copyResize(fixed, width: 1600);
+  }
+  return Uint8List.fromList(img.encodeJpg(fixed, quality: 85));
+}
+
+// base64 encoding of a multi-MB image is a synchronous CPU-bound op;
+// push it off the UI isolate too.
+String _encodeBase64(Uint8List bytes) => base64Encode(bytes);
+
 class LandmarkFAB extends StatefulWidget {
   const LandmarkFAB({super.key});
 
-  @override 
+  @override
   State<LandmarkFAB> createState() => _LandmarkFABState();
 }
 
 class _LandmarkFABState extends State<LandmarkFAB>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late AnimationController _scanController;
   bool _loading = false;
   bool _isFlashOn = false;
@@ -26,32 +45,90 @@ class _LandmarkFABState extends State<LandmarkFAB>
 
   CameraController? _cameraController;
   bool _isCameraReady = false;
+  bool _cameraError = false;
   Uint8List? _previewBytes;
+
+  // Staged status text shown under the scan frame while _loading is true.
+  String _statusText = 'Analyzing landmark...';
+
+  // Monotonically increasing id for each capture/pick attempt. Any async
+  // work that completes for a *stale* request (because the user backed out,
+  // or fired a new request meanwhile) is discarded instead of touching state
+  // or navigating — this is our lightweight substitute for a true network
+  // cancellation token.
+  int _requestId = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scanController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
     _previewBytes = null;
-    if (!kIsWeb) _initCamera();
+    _initCamera();
   }
 
   Future<void> _initCamera() async {
-    final cameras = await availableCameras();
-    _cameraController = CameraController(
-      cameras.first,
-      ResolutionPreset.max,
-      enableAudio: false,
-    );
-    await _cameraController!.initialize();
-    if (mounted) setState(() => _isCameraReady = true);
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        throw CameraException('no_camera', 'No camera available on this device');
+      }
+
+      final controller = CameraController(
+        cameras.first,
+        ResolutionPreset.high, // 'max' is overkill for landmark recognition and slows down every downstream step
+        enableAudio: false,
+      );
+      await controller.initialize();
+
+      // Widget may have been disposed while awaiting initialize().
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+
+      _cameraController = controller;
+      setState(() {
+        _isCameraReady = true;
+        _cameraError = false;
+      });
+    } catch (e) {
+      debugPrint('⚠️ Camera init failed: $e');
+      if (mounted) {
+        setState(() {
+          _cameraError = true;
+          _isCameraReady = false;
+        });
+      }
+    }
+  }
+
+  // ── App lifecycle: release/reacquire the camera around backgrounding ──
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      _isFlashOn = false;
+      controller.dispose();
+      _cameraController = null;
+      if (mounted) setState(() => _isCameraReady = false);
+    } else if (state == AppLifecycleState.resumed) {
+      _initCamera();
+    }
   }
 
   @override
   void dispose() {
+    // Bump the request id so any in-flight work discards its result instead
+    // of calling setState/Navigator after this State is gone.
+    _requestId++;
+    WidgetsBinding.instance.removeObserver(this);
     if (_isFlashOn) _cameraController?.setFlashMode(FlashMode.off);
     _cameraController?.dispose();
     _scanController.dispose();
@@ -59,21 +136,36 @@ class _LandmarkFABState extends State<LandmarkFAB>
   }
 
   // ── Core: process bytes → detect → navigate ───────────────
-    Future<void> _processImage(Uint8List bytes) async {
-      setState(() {
-        _previewBytes = bytes;
-        _loading = true;
-      });
+  Future<void> _processImage(Uint8List bytes, int myRequestId) async {
+    setState(() {
+      _previewBytes = bytes;
+      _loading = true;
+      _statusText = 'Processing image...';
+    });
 
-      final base64Image = base64Encode(bytes);
-      debugPrint('🚀 Calling VisionService.detectLandmark...');
+    // Heavy, synchronous CPU work — keep off the UI isolate.
+    final base64Image = await compute(_encodeBase64, bytes);
 
-      final landmarkResult = await VisionService.detectLandmark(base64Image);
+    // A newer request superseded this one (user retriggered, or left the
+    // page) — drop the result silently.
+    if (myRequestId != _requestId || !mounted) return;
 
-      debugPrint('🏛️ Result: ${landmarkResult.landmark} [${landmarkResult.method}]');
+    setState(() => _statusText = 'Identifying landmark...');
+    debugPrint('🚀 Calling VisionService.detectLandmark...');
+
+    try {
+      final landmarkResult = await VisionService
+          .detectLandmark(base64Image)
+          .timeout(const Duration(seconds: 15));
+
+      // Check again — the network call may have outlived the request's
+      // relevance (user navigated away, fired another capture, etc).
+      if (myRequestId != _requestId || !mounted) return;
+
+      debugPrint(
+          '🏛️ Result: ${landmarkResult.landmark} [${landmarkResult.method}]');
+
       setState(() => _loading = false);
-
-      if (!mounted) return;
 
       await Navigator.push<bool>(
         context,
@@ -85,35 +177,91 @@ class _LandmarkFABState extends State<LandmarkFAB>
         ),
       );
 
-      if (mounted) {
+      if (mounted && myRequestId == _requestId) {
         setState(() => _previewBytes = null);
       }
+    } catch (e) {
+      debugPrint('⚠️ detectLandmark failed: $e');
+      if (myRequestId != _requestId || !mounted) return;
+      setState(() {
+        _loading = false;
+        _previewBytes = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('识别失败，请检查网络后重试')),
+      );
     }
+  }
 
   // ── 1. Camera ─────────────────────────────────────────────
   Future<void> _scanWithCamera() async {
-    if (kIsWeb || !_isCameraReady || _cameraController == null) return;
+    // Debounce: ignore taps while a request is already in flight.
+    if (_loading || !_isCameraReady || _cameraController == null) return;
 
-    final file = await _cameraController!.takePicture();
-    final rawBytes = await File(file.path).readAsBytes();
-    final decoded = img.decodeImage(rawBytes)!;
-    final fixed = img.bakeOrientation(decoded);
-    final bytes = Uint8List.fromList(img.encodeJpg(fixed, quality: 90));
+    // Immediate feedback the instant the shutter is tapped, rather than
+    // waiting for takePicture() + decode to finish before anything visibly
+    // changes.
+    final myRequestId = ++_requestId;
+    setState(() {
+      _loading = true;
+      _statusText = 'Capturing...';
+    });
 
-    await _processImage(bytes);
+    try {
+      final file = await _cameraController!.takePicture();
+
+      if (myRequestId != _requestId || !mounted) return;
+
+      final rawBytes = await File(file.path).readAsBytes();
+
+      // Decode/orientation-fix/resize/encode — all off the UI isolate.
+      final bytes = await compute(_fixOrientationAndEncode, rawBytes);
+
+      if (myRequestId != _requestId || !mounted) return;
+
+      await _processImage(bytes, myRequestId);
+    } catch (e) {
+      debugPrint('⚠️ takePicture failed: $e');
+      if (myRequestId != _requestId || !mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('拍照失败，请重试')),
+      );
+    }
   }
 
   // ── 2. Gallery ────────────────────────────────────────────
   Future<void> _pickImage(ImageSource source) async {
-    final XFile? pickedFile =
-        await _picker.pickImage(source: source, imageQuality: 100);
-    if (pickedFile == null) return;
+    // Debounce: ignore taps while a request is already in flight.
+    if (_loading) return;
 
-    final bytes = kIsWeb
-        ? await pickedFile.readAsBytes()
-        : await File(pickedFile.path).readAsBytes();
+    final myRequestId = ++_requestId;
 
-    await _processImage(bytes);
+    try {
+      final XFile? pickedFile =
+          await _picker.pickImage(source: source, imageQuality: 100);
+      if (pickedFile == null) return;
+
+      if (myRequestId != _requestId || !mounted) return;
+      setState(() {
+        _loading = true;
+        _statusText = 'Processing image...';
+      });
+
+      final rawBytes = await File(pickedFile.path).readAsBytes();
+      final bytes = await compute(_fixOrientationAndEncode, rawBytes);
+
+      if (myRequestId != _requestId || !mounted) return;
+
+      await _processImage(bytes, myRequestId);
+    } catch (e) {
+      debugPrint('⚠️ pickImage failed: $e');
+      if (myRequestId != _requestId || !mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('选择图片失败，请重试')),
+      );
+    }
   }
 
   Future<void> _toggleFlash() async {
@@ -141,14 +289,23 @@ class _LandmarkFABState extends State<LandmarkFAB>
   }
 
   Widget _buildPreview() {
-    if (kIsWeb) {
-      return _previewBytes == null
-          ? const Center(child: Icon(Icons.image, color: Colors.white24, size: 80))
-          : Image.memory(_previewBytes!, fit: BoxFit.cover);
+    if (_cameraError) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            '无法访问相机，请检查权限设置后重试',
+            style: TextStyle(color: Colors.white70),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
     }
     if (_isCameraReady && _cameraController != null) {
       return _previewBytes != null
-          ? Image.memory(_previewBytes!, fit: BoxFit.cover)
+          // cacheWidth avoids decoding the full-resolution image just to
+          // display it in a small preview frame — big memory/CPU win.
+          ? Image.memory(_previewBytes!, fit: BoxFit.cover, cacheWidth: 800)
           : CameraPreview(_cameraController!);
     }
     return const Center(child: TravelLoadingIndicator());
@@ -232,7 +389,7 @@ class _LandmarkFABState extends State<LandmarkFAB>
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              _loading ? 'Analyzing landmark...' : 'Position the landmark in the middle',
+              _loading ? _statusText : 'Position the landmark in the middle',
               style: const TextStyle(color: Colors.white, fontSize: 13),
             ),
           ),
@@ -257,7 +414,7 @@ class _LandmarkFABState extends State<LandmarkFAB>
             children: [
               IconButton(
                 icon: const Icon(Icons.photo_library, color: Colors.white, size: 28),
-                onPressed: () => _pickImage(ImageSource.gallery),
+                onPressed: _loading ? null : () => _pickImage(ImageSource.gallery),
               ),
               GestureDetector(
                 onTap: _loading ? null : _scanWithCamera,
@@ -285,7 +442,7 @@ class _LandmarkFABState extends State<LandmarkFAB>
                   _isFlashOn ? Icons.flash_on : Icons.flash_off,
                   color: Colors.white, size: 28,
                 ),
-                onPressed: kIsWeb ? null : _toggleFlash,
+                onPressed: _loading ? null : _toggleFlash,
               ),
             ],
           ),

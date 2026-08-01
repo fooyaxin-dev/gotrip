@@ -129,6 +129,15 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     });
   }
 
+  // 3) 新增这个方法
+    Future<void> _precachePhotos(List<String> urls) async {
+      await Future.wait(
+        urls.map((u) => precacheImage(CachedNetworkImageProvider(u), context)
+            .catchError((_) {})),
+      );
+    }
+
+
   Future<void> _fetchPlaceDetails() async {
     setState(() { loading = true; error = null; });
 
@@ -192,18 +201,19 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
         firstUrl = PlacesApiService.buildPhotoUrl(photos[0]['name'], maxWidth: 400);
       }
 
+      // 2) _fetchPlaceDetails 里：先 precache 完所有照片，才启动 autoplay
       setState(() {
         placeDetail    = data;
         _photoUrls     = urls;
         _firstPhotoUrl = firstUrl;
         loading        = false;
-        // Reset review filter/sort whenever a new place is loaded
         _reviewFilterStars = null;
         _reviewSort = 'relevant';
       });
 
       if (urls.length > 1) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _startAutoPlay(urls.length));
+        await _precachePhotos(urls);          // ← 等图片真的进缓存
+        if (mounted) _startAutoPlay(urls.length);
       }
 
     } catch (e) {
@@ -505,17 +515,23 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
               itemCount: photoUrls.length,
               physics: const PageScrollPhysics(),
               onPageChanged: (index) => setState(() => _currentPhotoIndex = index),
-              itemBuilder: (context, index) => GestureDetector(
-                onTap: () => _showFullScreenPhoto(context, photoUrls, index),
-                child: Container(
-                  decoration: BoxDecoration(
-                    image: DecorationImage(
-                      image: NetworkImage(photoUrls[index]),
-                      fit: BoxFit.cover,
+              // 1) itemBuilder 里换成 CachedNetworkImage,而不是裸的 NetworkImage
+                itemBuilder: (context, index) => GestureDetector(
+                  onTap: () => _showFullScreenPhoto(context, photoUrls, index),
+                  child: CachedNetworkImage(
+                    imageUrl: photoUrls[index],
+                    fit: BoxFit.cover,
+                    fadeInDuration: const Duration(milliseconds: 200),
+                    placeholder: (_, __) => Container(
+                      color: Colors.grey[200],
+                      child: const Center(child: TravelLoadingIndicator()),
+                    ),
+                    errorWidget: (_, __, ___) => Container(
+                      color: Colors.grey[200],
+                      child: Icon(Icons.broken_image_rounded, color: Colors.grey[400]),
                     ),
                   ),
                 ),
-              ),
             ),
           ),
         ),

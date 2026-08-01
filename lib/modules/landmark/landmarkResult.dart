@@ -39,6 +39,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
   Map<String, dynamic>? placeDetails;
   bool placeLoading = true;
+  bool _imagesLoading = true;  
 
   List<String> displayImages = [];
 
@@ -219,11 +220,13 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       // _maybeSaveHistory()，保证"扫一次就存一条记录"。
       Future.wait([_fetchInfo(), _fetchPlaceDetails()]).then((_) {
         _maybeSaveHistory();
+        _precacheDisplayImages(); 
       });
     } else {
       _infoLoading    = false;
       placeLoading    = false;
       admissionLoading = false;
+      _imagesLoading   = false; 
     }
   }
 
@@ -342,6 +345,17 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       detectionMethod: _result.method == DetectionMethod.visionLandmark
           ? 'vision' : 'gemini',
     );
+  }
+
+  Future<void> _precacheDisplayImages() async {
+    if (displayImages.isNotEmpty) {
+      await Future.wait(
+        displayImages.map((u) =>
+            precacheImage(CachedNetworkImageProvider(u), context)
+                .catchError((_) {})),
+      );
+    }
+    if (mounted) setState(() => _imagesLoading = false);
   }
 
   // ============================================================
@@ -700,6 +714,20 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     );
   }
 
+
+  Widget _buildImagePlaceholder() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      height: 220,
+      decoration: BoxDecoration(
+        color: Colors.grey[200],
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: const Center(child: TravelLoadingIndicator()),
+    );
+  }
+
+
   // ============================================================
   // Overview: Summary Content
   // ============================================================
@@ -789,7 +817,11 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
           ],
         ),
         const SizedBox(height: 16),
-        if (displayImages.isNotEmpty) _buildImageCarousel(),
+        if (_imagesLoading)
+          _buildImagePlaceholder()
+        else if (displayImages.isNotEmpty)
+          _buildImageCarousel(),
+          
         if (_displayExtract.isNotEmpty)
           Container(
             padding: const EdgeInsets.only(left: 16),

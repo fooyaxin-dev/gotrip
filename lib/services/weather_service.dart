@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 
 enum WeatherCondition { clear, cloudy, rain, storm, extreme }
 
@@ -27,6 +28,11 @@ class WeatherService {
   DateTime? _cachedAt;
   double? _cachedLat;
   double? _cachedLng;
+
+  WeatherCondition? get current => _cachedCondition;
+  final ValueNotifier<int> weatherChanged = ValueNotifier(0);
+
+
 
   static const _cacheDuration       = Duration(minutes: 20);
   static const _cacheDistanceMeters = 3000.0;
@@ -64,6 +70,7 @@ class WeatherService {
       _cachedAt        = DateTime.now();
       _cachedLat       = lat;
       _cachedLng       = lng;
+      weatherChanged.value++; 
 
       print('🌦️ WeatherService: code=$code → ${condition?.label}');
       return condition;

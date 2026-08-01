@@ -32,6 +32,12 @@ class LocationService extends ChangeNotifier {
   Position? currentPosition;
   StreamSubscription<Position>? _positionStream;
 
+  // 🆕 引用计数——多个页面可以同时"申请"持续追踪，
+  // 只有当所有申请者都释放（计数归零）才真正停止 GPS 流。
+  // 这样 Home tab 和签到页同时打开也不会互相把对方的追踪关掉。
+  int _watcherCount = 0;
+  bool get isTracking => _positionStream != null;
+
   double? get currentLat => currentPosition?.latitude;
   double? get currentLng => currentPosition?.longitude;
 
@@ -78,7 +84,14 @@ class LocationService extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────────
-  // Init & stream
+  // Init — 只负责权限检查 + 拿"这一次"的定位快照
+  //
+  // 🔧 CHANGED: 不再自动开启持续追踪的 GPS 流。之前这里直接
+  // Geolocator.getPositionStream(...).listen(...) 起了一条常驻订阅，
+  // 导致只要调用过 initLocation() 一次（比如 Home tab 一打开），
+  // GPS 就会以 high accuracy 持续跑到 app 被杀掉为止——这也是手机
+  // 发热的主因之一。现在持续追踪改成显式的 startTracking()/
+  // stopTracking()，由真正需要"实时位置"的页面自己申请。
   // ─────────────────────────────────────────────
 
   Future<LocationStatus> initLocation() async {
@@ -99,7 +112,22 @@ class LocationService extends ChangeNotifier {
     _lastFetchLat = currentPosition?.latitude;
     _lastFetchLng = currentPosition?.longitude;
 
-    _positionStream?.cancel();
+    return LocationStatus.success;
+  }
+
+  // ─────────────────────────────────────────────
+  // 🆕 引用计数式追踪控制
+  //
+  // 谁需要持续更新的位置（Home tab 的"移动提示"、行程签到页的
+  // 到达检测），就调用一次 startTracking()；不再需要时调用
+  // stopTracking()。多方同时申请时共享同一条 GPS 订阅，只有当
+  // 所有申请者都释放后才真正关闭。
+  // ─────────────────────────────────────────────
+
+  void startTracking() {
+    _watcherCount++;
+    if (_positionStream != null) return; // 已经在跑，不用重复订阅
+
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
@@ -110,8 +138,16 @@ class LocationService extends ChangeNotifier {
       _checkProximity(pos);
       _checkSignificantMove(pos);
     });
+  }
 
-    return LocationStatus.success;
+  void stopTracking() {
+    if (_watcherCount <= 0) return;
+    _watcherCount--;
+    if (_watcherCount <= 0) {
+      _watcherCount = 0;
+      _positionStream?.cancel();
+      _positionStream = null;
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -130,7 +166,7 @@ class LocationService extends ChangeNotifier {
       print('📍 Moved ${dist.toStringAsFixed(0)}m — notifying all listeners');
       _lastFetchLat = pos.latitude;
       _lastFetchLng = pos.longitude;
-      notifyListeners(); // ← 同時通知所有監聽者
+      notifyListeners();
     }
   }
 

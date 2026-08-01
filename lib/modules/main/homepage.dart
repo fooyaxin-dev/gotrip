@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../services/location_service.dart';
 import '../place/detectPlacePage.dart';
 import '../dashboard/dashboard_page.dart';
 import '../profile/profile.dart';
@@ -29,6 +31,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
   bool _nearbyTabVisited = false; 
+  bool _locationTrackingActive = false;
   String _username = "UserName";
   String _email = "user@email.com";
   String _profileImageUrl = "";
@@ -39,11 +42,15 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _loadCachedData();
     _listenToUserData();
+    _syncLocationTracking(); 
   }
 
   @override
   void dispose() {
     _userSubscription?.cancel();
+    if (_locationTrackingActive) {
+      LocationService.instance.stopTracking(); // 🆕 释放引用
+    }
     super.dispose();
   }
 
@@ -54,6 +61,21 @@ class _HomePageState extends State<HomePage> {
       _email           = prefs.getString('email')           ?? "user@email.com";
       _profileImageUrl = prefs.getString('profileImageUrl') ?? "";
     });
+  }
+
+// 🆕 只有 Home(0) 和 Nearby(1) 这两个 tab 需要"持续更新的实时位置"
+  // （Home 用来提示"你移动很远了、附近地点已更新"；Nearby 地图本身
+  // 就需要跟手的定位点）。Itinerary(3) 和 Profile(4) 只需要
+  // "上一次已知的位置"当快照即可，不需要 GPS 持续跑。
+  void _syncLocationTracking() {
+    final needsTracking = _currentIndex == 0 || _currentIndex == 1;
+    if (needsTracking && !_locationTrackingActive) {
+      LocationService.instance.startTracking();
+      _locationTrackingActive = true;
+    } else if (!needsTracking && _locationTrackingActive) {
+      LocationService.instance.stopTracking();
+      _locationTrackingActive = false;
+    }
   }
 
   void _listenToUserData() {
@@ -208,11 +230,12 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildNavItem(IconData icon, String label, int index) {
     final isSelected = _currentIndex == index;
-    return InkWell(
-          onTap: () => setState(() {
-            _currentIndex = index;
-            if (index == 1) _nearbyTabVisited = true; // ← 加這個
-          }),
+   return InkWell(
+      onTap: () => setState(() {
+        _currentIndex = index;
+        if (index == 1) _nearbyTabVisited = true;
+        _syncLocationTracking(); // 🆕
+      }),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [

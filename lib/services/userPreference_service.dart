@@ -2,8 +2,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import '../models/placeModel.dart';
+import 'route_service.dart';
 import 'sentiment_service.dart';
 import 'weather_service.dart';
+import 'category_mapper.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Budget tier  (set during onboarding)
@@ -38,6 +41,18 @@ extension BudgetTierX on BudgetTier {
     }
   }
 }
+
+// ─────────────────────────────────────────────
+// For You — 唯一判定入口（MainPage / RealTimeDetectPage 共用）
+// ─────────────────────────────────────────────
+
+class ForYouResult {
+  final List<PlaceModel> places;
+  final Map<String, double> scores;
+  ForYouResult(this.places, this.scores);
+}
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -160,7 +175,7 @@ class UserPreferenceService {
     'food':        'restaurant',
     'travel':      'tourist_attraction',
     'photography': 'tourist_attraction',
-    'fitness':     'amusement_park',
+    'fitness':     'entertainment',
     'nature':      'park',
     'shopping':    'shopping_mall',
   };
@@ -175,6 +190,26 @@ class UserPreferenceService {
     '#travelvlog':  'tourist_attraction',
     '#journey':     'tourist_attraction',
     '#transport':   'tourist_attraction',
+  };
+
+  // ─────────────────────────────────────────────
+  // shared cuisine map (used by favourite/post learning + interest score)
+  // ─────────────────────────────────────────────
+
+  static const _typeToCuisine = <String, String>{
+    'chinese_restaurant':   'chinese',
+    'malay_restaurant':     'malay',
+    'malaysian_restaurant': 'malay',
+    'indian_restaurant':    'indian',
+    'western_restaurant':   'western',
+    'american_restaurant':  'western',
+    'japanese_restaurant':  'japanese',
+    'korean_restaurant':    'korean',
+    'dessert_shop':         'dessert',
+    'ice_cream_shop':       'dessert',
+    'bakery':               'dessert',
+    'cafe':                 'cafe',
+    'coffee_shop':          'cafe',
   };
 
   // ─────────────────────────────────────────────
@@ -250,6 +285,11 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
   // Update from favourite (place)
   // 直接整数 +1 / -1，最强信号
+  //
+  // 🔧 CHANGED: primaryType 是否算"可学习分类"，现在统一问
+  // CategoryMapper.isLearnableCategory，不再自己维护一份身份映射表——
+  // 那份表原本只认 5 个字面量，'amusement_park' 也已经跟着 Nearby 页面
+  // 改名成 'entertainment'，两边不会再对不上。
   // ─────────────────────────────────────────────
 
   Future<void> updateFromFavourite({
@@ -260,34 +300,12 @@ class UserPreferenceService {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    const typeToCategory = {
-      'restaurant':         'restaurant',
-      'park':               'park',
-      'tourist_attraction': 'tourist_attraction',
-      'shopping_mall':      'shopping_mall',
-      'amusement_park':     'amusement_park',
-    };
-    const typeToCuisine = {
-      'chinese_restaurant':   'chinese',
-      'malay_restaurant':     'malay',
-      'malaysian_restaurant': 'malay',
-      'indian_restaurant':    'indian',
-      'western_restaurant':   'western',
-      'american_restaurant':  'western',
-      'japanese_restaurant':  'japanese',
-      'korean_restaurant':    'korean',
-      'dessert_shop':         'dessert',
-      'ice_cream_shop':       'dessert',
-      'bakery':               'dessert',
-      'cafe':                 'cafe',
-      'coffee_shop':          'cafe',
-    };
-
     final List<String> involvedKeys = [];
-    final category = typeToCategory[primaryType];
-    if (category != null) involvedKeys.add('cat_$category');
+    if (CategoryMapper.isLearnableCategory(primaryType)) {
+      involvedKeys.add('cat_$primaryType');
+    }
     for (final t in allTypes) {
-      final cuisine = typeToCuisine[t];
+      final cuisine = _typeToCuisine[t];
       if (cuisine != null) involvedKeys.add('cui_$cuisine');
     }
     if (involvedKeys.isEmpty) return;
@@ -303,27 +321,7 @@ class UserPreferenceService {
 
     final updatedCategories = List<String>.from(_prefs.categories);
     final updatedCuisines   = List<String>.from(_prefs.cuisines);
-
-    for (final entry in _favouriteCount.entries) {
-      final key   = entry.key;
-      final count = entry.value;
-      if (key.startsWith('cat_')) {
-        final cat = key.substring(4);
-        if (count >= _minCountToLearn && !updatedCategories.contains(cat)) {
-          updatedCategories.add(cat);
-        } else if (count < _minCountToLearn) {
-          updatedCategories.remove(cat);
-        }
-      }
-      if (key.startsWith('cui_')) {
-        final cui = key.substring(4);
-        if (count >= _minCountToLearn && !updatedCuisines.contains(cui)) {
-          updatedCuisines.add(cui);
-        } else if (count < _minCountToLearn) {
-          updatedCuisines.remove(cui);
-        }
-      }
-    }
+    _applyGate(updatedCategories, updatedCuisines);
 
     _prefs = _prefs.copyWith(
       categories: updatedCategories,
@@ -344,6 +342,14 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
   // Update from Post
   // 发帖 = 直接整数 +1，删帖 = -1
+  //
+  // 🔧 CHANGED: 以前这里自己维护一份只认 5 个字面量的 typeToCategory，
+  // 拿去匹配 placeTypes（真正的 Google raw types，如 'cafe'/'museum'）
+  // 几乎永远命不中——那 5 个字面量本身凑巧也是合法的 Google type，
+  // 但覆盖不到 cafe/coffee_shop/museum/art_gallery 这些常见类型。
+  // 现在改用 CategoryMapper.toPrimaryType(placeTypes) 先算出真正的
+  // primaryType，再判断是否可学习，这样 cafe/museum 这类帖子也能
+  // 正确被学习到。
   // ─────────────────────────────────────────────
 
   Future<void> updateFromPost({
@@ -371,43 +377,14 @@ class UserPreferenceService {
       return;
     }
   
-    // ── 复用跟 updateFromFavourite 完全一样的 type→category / type→cuisine 映射 ──
-    const typeToCategory = {
-      'restaurant':         'restaurant',
-      'park':               'park',
-      'tourist_attraction': 'tourist_attraction',
-      'shopping_mall':      'shopping_mall',
-      'amusement_park':     'amusement_park',
-    };
-    const typeToCuisine = {
-      'chinese_restaurant':   'chinese',
-      'malay_restaurant':     'malay',
-      'malaysian_restaurant': 'malay',
-      'indian_restaurant':    'indian',
-      'western_restaurant':   'western',
-      'american_restaurant':  'western',
-      'japanese_restaurant':  'japanese',
-      'korean_restaurant':    'korean',
-      'dessert_shop':         'dessert',
-      'ice_cream_shop':       'dessert',
-      'bakery':               'dessert',
-      'cafe':                 'cafe',
-      'coffee_shop':          'cafe',
-    };
-  
     final List<String> involvedKeys = [];
-  
-    // primaryType 不直接给到这个方法（post 存的是 placeTypes 这个 List），
-    // 所以这里改成遍历 placeTypes 找第一个匹配的 category
-    for (final t in placeTypes) {
-      final category = typeToCategory[t];
-      if (category != null) {
-        involvedKeys.add('cat_$category');
-        break; // 一个 post 只算一次 category 信号，避免重复加权
-      }
+
+    final primaryCategory = CategoryMapper.toPrimaryType(placeTypes);
+    if (CategoryMapper.isLearnableCategory(primaryCategory)) {
+      involvedKeys.add('cat_$primaryCategory');
     }
     for (final t in placeTypes) {
-      final cuisine = typeToCuisine[t];
+      final cuisine = _typeToCuisine[t];
       if (cuisine != null) {
         involvedKeys.add('cui_$cuisine');
         break; // 一个 post 只算一次 cuisine 信号
@@ -424,27 +401,9 @@ class UserPreferenceService {
       _favouriteCount[key] = (_favouriteCount[key] ?? 0) + 1;
     }
   
-    // ── 重新跑一遍 gate 检查（跟 updateFromFavourite 同样的逻辑）──
     final updatedCategories = List<String>.from(_prefs.categories);
     final updatedCuisines   = List<String>.from(_prefs.cuisines);
-  
-    for (final entry in _favouriteCount.entries) {
-      final key   = entry.key;
-      final count = entry.value;
-  
-      if (key.startsWith('cat_')) {
-        final cat = key.substring(4);
-        if (count >= _minCountToLearn && !updatedCategories.contains(cat)) {
-          updatedCategories.add(cat);
-        }
-      }
-      if (key.startsWith('cui_')) {
-        final cui = key.substring(4);
-        if (count >= _minCountToLearn && !updatedCuisines.contains(cui)) {
-          updatedCuisines.add(cui);
-        }
-      }
-    }
+    _applyGate(updatedCategories, updatedCuisines);
   
     _prefs = _prefs.copyWith(
       categories: updatedCategories,
@@ -692,7 +651,7 @@ class UserPreferenceService {
     if (weather == null) return 0.8;
 
     const outdoorTypes = {
-      'park', 'tourist_attraction', 'amusement_park',
+      'park', 'tourist_attraction', 'entertainment',
     };
     final isOutdoor = (primaryType != null && outdoorTypes.contains(primaryType))
         || allTypes.any((t) => outdoorTypes.contains(t));
@@ -710,30 +669,9 @@ class UserPreferenceService {
     }
   }
   
+  // 🔧 CHANGED: 不再自己维护身份映射表，直接问 CategoryMapper 这个
+  // primaryType 是否可学习。
   double _interestMatchScore(String? primaryType, List<String> allTypes) {
-    const typeToCategory = {
-      'restaurant':         'restaurant',
-      'park':               'park',
-      'tourist_attraction': 'tourist_attraction',
-      'shopping_mall':      'shopping_mall',
-      'amusement_park':     'amusement_park',
-    };
-    const typeToCuisine = {
-      'chinese_restaurant':   'chinese',
-      'malay_restaurant':     'malay',
-      'malaysian_restaurant': 'malay',
-      'indian_restaurant':    'indian',
-      'western_restaurant':   'western',
-      'american_restaurant':  'western',
-      'japanese_restaurant':  'japanese',
-      'korean_restaurant':    'korean',
-      'dessert_shop':         'dessert',
-      'ice_cream_shop':       'dessert',
-      'bakery':               'dessert',
-      'cafe':                 'cafe',
-      'coffee_shop':          'cafe',
-    };
-
     double countToScore(int count) {
       if (count < _minCountToLearn) return 0.0;
       const maxCount = 10;
@@ -743,16 +681,15 @@ class UserPreferenceService {
 
     final scores = <double>[];
 
-    final category = typeToCategory[primaryType ?? ''];
-    if (category != null) {
-      if (_prefs.categories.contains(category)) scores.add(1.0);
-      final cnt = _favouriteCount['cat_$category'] ?? 0;
+    if (primaryType != null && CategoryMapper.isLearnableCategory(primaryType)) {
+      if (_prefs.categories.contains(primaryType)) scores.add(1.0);
+      final cnt = _favouriteCount['cat_$primaryType'] ?? 0;
       final cs  = countToScore(cnt);
       if (cs > 0) scores.add(cs);
     }
 
     for (final t in allTypes) {
-      final cuisine = typeToCuisine[t];
+      final cuisine = _typeToCuisine[t];
       if (cuisine != null) {
         if (_prefs.cuisines.contains(cuisine)) scores.add(1.0);
         final cnt = _favouriteCount['cui_$cuisine'] ?? 0;
@@ -776,15 +713,16 @@ class UserPreferenceService {
     return ((rating - 2.0) / 3.0).clamp(0.0, 1.0);
   }
 
+  // 🔧 CHANGED: 'amusement_park' → 'entertainment'
   double _timeSuitabilityScore(String? primaryType, List<String> allTypes) {
     final hour = DateTime.now().hour;
 
     const suitability = <String, Map<String, double>>{
       'morning':   {'cafe': 1.0, 'restaurant': 0.6, 'park': 0.8, 'tourist_attraction': 0.7},
       'lunch':     {'restaurant': 1.0, 'cafe': 0.5, 'shopping_mall': 0.4},
-      'afternoon': {'tourist_attraction': 1.0, 'park': 1.0, 'shopping_mall': 0.9, 'amusement_park': 0.8, 'restaurant': 0.3},
-      'evening':   {'restaurant': 1.0, 'shopping_mall': 0.7, 'amusement_park': 0.8},
-      'night':     {'amusement_park': 1.0, 'restaurant': 0.7},
+      'afternoon': {'tourist_attraction': 1.0, 'park': 1.0, 'shopping_mall': 0.9, 'entertainment': 0.8, 'restaurant': 0.3},
+      'evening':   {'restaurant': 1.0, 'shopping_mall': 0.7, 'entertainment': 0.8},
+      'night':     {'entertainment': 1.0, 'restaurant': 0.7},
     };
 
     final String period;
@@ -833,27 +771,71 @@ class UserPreferenceService {
         weather:        weather,
       ).total;
 
+
+    // 🔧 CHANGED: 不再自己维护身份映射表
+    bool matchesPreference({
+      required String?      primaryType,
+      required List<String> allTypes,
+    }) {
+      if (primaryType != null && CategoryMapper.isLearnableCategory(primaryType)) {
+        if (_prefs.categories.contains(primaryType)) return true;
+        if ((_favouriteCount['cat_$primaryType'] ?? 0) >= _minCountToLearn) return true;
+      }
+
+      for (final t in allTypes) {
+        final cuisine = _typeToCuisine[t];
+        if (cuisine == null) continue;
+        if (_prefs.cuisines.contains(cuisine)) return true;
+        if ((_favouriteCount['cui_$cuisine'] ?? 0) >= _minCountToLearn) return true;
+      }
+
+      return false;
+    }
+
+    ForYouResult buildForYouList({
+      required List<PlaceModel>     candidates,
+      Map<String, RouteResult>?     routeResults,
+      double?                       distanceLimitMeters,
+      WeatherCondition?             weather,
+      bool                          requirePhoto = false,
+    }) {
+      final matched = <PlaceModel>[];
+      final scores  = <String, double>{};
+
+      for (final p in candidates) {
+        final dist = routeResults?[p.id]?.distanceMeters;
+
+        if (distanceLimitMeters != null) {
+          if (dist == null || dist > distanceLimitMeters) continue;
+        }
+        if (requirePhoto && (p.photoUrl == null || p.photoUrl!.isEmpty)) continue;
+        if (!matchesPreference(primaryType: p.primaryType, allTypes: p.allTypes)) continue;
+
+        matched.add(p);
+        scores[p.id] = scorePlaceModel(
+          primaryType:    p.primaryType,
+          allTypes:       p.allTypes,
+          distanceMeters: dist,
+          rating:         p.rating,
+          priceLevel:     p.priceLevel,
+          weather:        weather,
+        );
+      }
+
+      matched.sort((a, b) => scores[b.id]!.compareTo(scores[a.id]!));
+      return ForYouResult(matched, scores);
+    }
+
+  // 🔧 CHANGED: typeToCategory/categoryToLabel 里的 'amusement_park' →
+  // 'entertainment'，night 时段判断也跟着改。
   String? getRecommendReason({
     required String?      primaryType,
     required List<String> allTypes,
   }) {
-    const typeToCuisine = {
-      'chinese_restaurant': 'Chinese', 'malay_restaurant': 'Malay',
-      'malaysian_restaurant': 'Malay', 'indian_restaurant': 'Indian',
-      'western_restaurant': 'Western', 'american_restaurant': 'Western',
-      'japanese_restaurant': 'Japanese', 'korean_restaurant': 'Korean',
-      'dessert_shop': 'Dessert', 'ice_cream_shop': 'Dessert',
-      'bakery': 'Dessert', 'cafe': 'Cafe', 'coffee_shop': 'Cafe',
-    };
-    const typeToCategory = {
-      'restaurant': 'restaurant', 'park': 'park',
-      'tourist_attraction': 'tourist_attraction',
-      'shopping_mall': 'shopping_mall', 'amusement_park': 'amusement_park',
-    };
     const categoryToLabel = {
       'restaurant': 'Food', 'park': 'Nature',
       'tourist_attraction': 'Historical places',
-      'shopping_mall': 'Shopping', 'amusement_park': 'Entertainment',
+      'shopping_mall': 'Shopping', 'entertainment': 'Entertainment',
     };
 
     final hour = DateTime.now().hour;
@@ -868,19 +850,18 @@ class UserPreferenceService {
     if (hour >= 17 && hour < 20 && primaryType == 'restaurant') {
       return 'Dinner time 🌆 Great for tonight';
     }
-    if ((hour >= 20 || hour < 2) && primaryType == 'amusement_park') {
+    if ((hour >= 20 || hour < 2) && primaryType == 'entertainment') {
       return 'Night out 🌙 Fun nearby';
     }
 
     for (final t in allTypes) {
-      final cuisine = typeToCuisine[t];
+      final cuisine = _typeToCuisine[t];
       if (cuisine != null && _prefs.cuisines.contains(cuisine.toLowerCase())) {
         return 'Because you like $cuisine food';
       }
     }
-    final category = typeToCategory[primaryType ?? ''];
-    if (category != null && _prefs.categories.contains(category)) {
-      return 'Because you like ${categoryToLabel[category] ?? category}';
+    if (primaryType != null && _prefs.categories.contains(primaryType)) {
+      return 'Because you like ${categoryToLabel[primaryType] ?? primaryType}';
     }
     return null;
   }

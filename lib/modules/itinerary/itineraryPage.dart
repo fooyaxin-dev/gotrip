@@ -51,12 +51,15 @@ class _ItineraryPageState extends State<ItineraryPage>
     return null;
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
     final list = await ItineraryService.instance.fetchAll();
     if (!mounted) return;
-    setState(() { _itineraries = list; _loading = false; });
-    _precacheAllPhotos(list); // ← 新增:数据到手就开始预热,不等 tab 切换
+    setState(() {
+      _itineraries = list;
+      _loading = false;
+    });
+    _precacheAllPhotos(list);
   }
 
   void _precacheAllPhotos(List<ItineraryModel> list) {

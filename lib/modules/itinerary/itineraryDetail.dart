@@ -41,12 +41,14 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       vsync: this,
     );
     LocationService.instance.watchItinerary(_itinerary);
+    LocationService.instance.startTracking();
     _arrivalSub = LocationService.instance.arrivalStream.listen(_onArrival);
   }
 
   @override
   void dispose() {
     _arrivalSub?.cancel();
+    LocationService.instance.stopTracking(); 
     _tabController.dispose();
     super.dispose();
   }

@@ -63,12 +63,27 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   bool _isSaving = false;
   Timer? _paddingDebounce;
 
-  final Map<int, _DayLegs> _legsCache = {};
+  // 🆕 legs 缓存改成按天独立的 ValueNotifier —— 某一天的路线数据更新时，
+  // 只有真正监听它的 widget（那一天的汇总条 + 地点列表）会重建，
+  // 不再触发整页 setState()（地图、header、tab 栏、其他天全部跟着
+  // 重建的问题）。
+  final Map<int, ValueNotifier<_DayLegs>> _legsNotifiers = {};
+
+  ValueNotifier<_DayLegs> _legsNotifierFor(int dayIndex) {
+    return _legsNotifiers.putIfAbsent(
+      dayIndex,
+      () => ValueNotifier<_DayLegs>(_DayLegs.empty),
+    );
+  }
 
   // Map
   GoogleMapController? _mapController;
-  Set<Marker> _markers = {};
-  Set<Polyline> _polylines = {};
+
+  // 🆕 markers/polylines 合并成一个 ValueNotifier，地图数据更新时只有
+  // GoogleMap 本身重建，不再牵连整个 State。
+  final ValueNotifier<_MapOverlayData> _mapOverlayNotifier =
+      ValueNotifier<_MapOverlayData>(
+          const _MapOverlayData(markers: {}, polylines: {}));
 
   // Sheet
   final DraggableScrollableController _sheetController =
@@ -177,7 +192,14 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     _mapController?.dispose();
     _sheetController.dispose();
     _sheetExtentNotifier.dispose();
+    _mapOverlayNotifier.dispose();   
+    for (final notifier in _legsNotifiers.values) {
+      notifier.dispose();
+    }
     _paddingDebounce?.cancel();
+    for (final t in _legsFetchDebounce.values) {
+      t.cancel();
+    } 
     super.dispose();
   }
 
@@ -193,29 +215,39 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // ─────────────────────────────────────────────
 
   final Map<int, int> _legsFetchGen = {};
+  final Map<int, Timer> _legsFetchDebounce = {};
+
+  static const _legsFetchDebounceDuration = Duration(milliseconds: 400);
+
+  void _scheduleFetchRealLegs(int dayIndex) {
+    _legsFetchDebounce[dayIndex]?.cancel();
+    _legsFetchDebounce[dayIndex] = Timer(_legsFetchDebounceDuration, () {
+      _legsFetchDebounce.remove(dayIndex);
+      if (mounted) _fetchRealLegsForDay(dayIndex);
+    });
+  }
 
   _DayLegs _legsFor(int dayIndex) {
     if (dayIndex < 0 || dayIndex >= _itinerary.days.length) {
       return _DayLegs.empty;
     }
-    final existing = _legsCache[dayIndex];
-    if (existing != null) return existing;
 
-    // 🆕 先看看这天有没有存过、且签名匹配的路线数据——命中就直接用,不调 API
+    final notifier = _legsNotifierFor(dayIndex);
+    if (!identical(notifier.value, _DayLegs.empty)) return notifier.value;
+
     final day = _itinerary.days[dayIndex];
     final currentSignature = _computeLegsSignature(dayIndex);
     if (day.legsSignature != null &&
         day.legsSignature == currentSignature &&
         day.legsData != null) {
       final hydrated = _DayLegs.fromStoredData(day.legsData!);
-      _legsCache[dayIndex] = hydrated;
+      notifier.value = hydrated;
       return hydrated;
     }
 
-    // 没命中——原来的流程：先垫直线距离，再异步调真实 API
     final fallback = _computeStraightLegsForDay(dayIndex);
-    _legsCache[dayIndex] = fallback;
-    _fetchRealLegsForDay(dayIndex);
+    notifier.value = fallback;
+    _scheduleFetchRealLegs(dayIndex); 
     return fallback;
   }
 
@@ -325,7 +357,6 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     final segments  = results.map((r) => r.points).toList();
     final totalM    = distances.fold<double>(0, (a, b) => a + b);
 
-    setState(() {
     final newLegs = _DayLegs(
       distances: distances,
       minutes:   minutes,
@@ -334,25 +365,28 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       totalMin:  minutes.fold(0, (a, b) => a + b),
       isReal:    true,
     );
-    _legsCache[dayIndex] = newLegs;
 
-    // 🆕 顺便持久化进 _itinerary，下次保存时就带着走
+    // 🔧 CHANGED: 不再用 setState —— 只更新这一天的 legs notifier，
+    // 只有监听它的汇总条/地点列表会重建。
+    _legsNotifierFor(dayIndex).value = newLegs;
+
+    // legsSignature/legsData 只在 _legsFor() 的缓存命中分支和保存行程
+    // 时会被读取，不影响任何已渲染的 UI，所以直接赋值即可，不用 setState。
     final days = List<ItineraryDay>.from(_itinerary.days);
     days[dayIndex] = days[dayIndex].copyWith(
       legsSignature: _computeLegsSignature(dayIndex),
       legsData: newLegs.toStoredData(),
     );
     _itinerary = _itinerary.copyWith(days: days);
-  });
 
     _updateMapOverlays();
   }
 
   void _invalidateLegs(int dayIndex) {
-    _legsCache.remove(dayIndex);
+    // 重置回 empty，_legsFor() 下次调用会正确检测到"需要重算"，
+    // 同时正在监听这个 notifier 的 UI 会立刻收到"变回估算态"的通知。
+    _legsNotifierFor(dayIndex).value = _DayLegs.empty;
 
-    // 🆕 同步清空持久化的签名/数据，避免用户改了地点但没保存前，
-    // _legsFor 又误读到已经过时的 legsData
     final days = List<ItineraryDay>.from(_itinerary.days);
     days[dayIndex] = days[dayIndex].copyWith(clearLegs: true);
     _itinerary = _itinerary.copyWith(days: days);
@@ -428,11 +462,9 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     }
 
     if (!mounted) return;
-    setState(() {
-      _markers   = newMarkers;
-      _polylines = newPolylines;
-    });
-    _fitCamera(allPoints);
+    _mapOverlayNotifier.value =
+        _MapOverlayData(markers: newMarkers, polylines: newPolylines);
+    _fitCamera(allPoints);   // _updateDayOverlays 里保持 _fitCamera(points)
   }
 
   Future<void> _updateDayOverlays(int dayIndex) async {
@@ -489,13 +521,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       ));
     }
 
-    if (!mounted) return;
-    setState(() {
-      _markers   = newMarkers;
-      _polylines = newPolylines;
-    });
-    _fitCamera(points);
-  }
+      if (!mounted) return;                                    // 🔧 加回来
+      _mapOverlayNotifier.value =                               // 🔧 加回来
+          _MapOverlayData(markers: newMarkers, polylines: newPolylines);
+      _fitCamera(points);  
+      }
 
   void _fitCamera(List<LatLng> points) {
     if (_mapController == null || points.isEmpty) return;
@@ -784,28 +814,18 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           .map((idx) => geoPlaces[idx - placeOffset])
           .toList();
 
-      // Times are attached to each place, not to its position — after
-      // reordering, re-assign them sequentially so the schedule still
-      // reads chronologically. Anchor to whichever time was earliest in
-      // the original list, so a day that started at, say, 10:00 stays
-      // starting around 10:00 rather than snapping back to a hardcoded time.
+      // 改之后 —— 复用同一套 _assignSequentialTimes，不传 legsMinutes，
+      // 保持跟之前完全一样的行为（纯时长累加，不含交通时间）
       final startMinutes = places.isEmpty
           ? 9 * 60
           : places
               .map((p) => _parseTimeToMinutes(p.suggestedTime))
               .reduce((a, b) => a < b ? a : b);
 
-      var cursorMinutes = startMinutes;
-      final retimed = reordered.map((p) {
-        final hh = (cursorMinutes ~/ 60) % 24;
-        final mm = cursorMinutes % 60;
-        final updated = p.copyWith(
-          suggestedTime:
-              '${hh.toString().padLeft(2, '0')}:${mm.toString().padLeft(2, '0')}',
-        );
-        cursorMinutes += p.durationMinutes;
-        return updated;
-      }).toList();
+      final retimed = _assignSequentialTimes(
+        reordered,
+        startCursorMinutes: startMinutes,
+      );
 
       if (!mounted) return;
 
@@ -819,6 +839,205 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       if (mounted) setState(() => _reOptimizingDays.remove(dayIndex));
     }
   }
+
+  // 晚上 22:00 之后才结束/开始，视为需要提醒用户"太晚了"
+  static const int _lateNightThresholdMinutes = 22 * 60;
+
+  /// 把"从0点算起的分钟数"转回 "HH:mm" 字符串。
+  /// clamp 到 23:59，避免顺延不小心跨到隔天却毫无提示地悄悄变成"明天的
+  /// 时间"——跨天这种情况应该由 hasLateWarning 提示用户，而不是被默默吞掉。
+  String _minutesToTimeString(int minutes) {
+    final clamped = minutes.clamp(0, 23 * 60 + 59);
+    final hh = (clamped ~/ 60).toString().padLeft(2, '0');
+    final mm = (clamped % 60).toString().padLeft(2, '0');
+    return '$hh:$mm';
+  }
+
+  /// 共用的游标累加逻辑 —— _reOptimizeDay（整天重排）和 _cascadeTimes
+  /// （单点改动后顺延）都调用这一个方法，避免两边各写一套、以后改一处
+  /// 忘了改另一处。
+  ///
+  /// [legsMinutes]（若提供）：legsMinutes[i] = 上一站到 places[i] 的通勤
+  /// 分钟数，跟 _legsFor(dayIndex) 返回的 legs.minutes 对齐。
+  /// [skipFirstLegTravel]：true = 传入列表的第一项不加交通时间（用于
+  /// "整天重排"，第一站的时间本来就是这天的起点，不需要额外交通时间）；
+  /// false = 第一项也要加（用于"级联顺延"，因为这个"第一项"其实是被改
+  /// 动地点后面的下一站，中间确实有一段真实交通时间要算进去）。
+  List<ItineraryPlace> _assignSequentialTimes(
+    List<ItineraryPlace> places, {
+    required int startCursorMinutes,
+    List<int>? legsMinutes,
+    bool skipFirstLegTravel = true,
+  }) {
+    var cursor = startCursorMinutes;
+    final result = <ItineraryPlace>[];
+
+    for (int i = 0; i < places.length; i++) {
+      final applyTravel = legsMinutes != null &&
+          i < legsMinutes.length &&
+          (i > 0 || !skipFirstLegTravel);
+      final travel = applyTravel ? legsMinutes[i] : 0;
+      final start = cursor + travel;
+      result.add(places[i].copyWith(suggestedTime: _minutesToTimeString(start)));
+      cursor = start + places[i].durationMinutes;
+    }
+    return result;
+  }
+
+  /// 从 [placeIndex]（已经套用了新时间/新时长）开始，用真实交通时间
+  /// （_legsFor 算出来的，不是瞎猜）依次顺延同一天后续所有地点。
+  /// 返回顺延后的 places 列表，以及是否触发了"太晚了"的警告。
+  ({List<ItineraryPlace> places, bool hasLateWarning}) _cascadeTimes(
+    int dayIndex,
+    int placeIndex,
+    List<ItineraryPlace> places,
+  ) {
+    final legs = _legsFor(dayIndex);
+    final editedEnd = _parseTimeToMinutes(places[placeIndex].suggestedTime) +
+        places[placeIndex].durationMinutes;
+
+    final tailStart = placeIndex + 1;
+    if (tailStart >= places.length) {
+      // 被改的是当天最后一站，没有后续地点要顺延
+      return (
+        places: places,
+        hasLateWarning: editedEnd >= _lateNightThresholdMinutes,
+      );
+    }
+
+    final tail = places.sublist(tailStart);
+    final tailLegsMinutes =
+        tailStart < legs.minutes.length ? legs.minutes.sublist(tailStart) : null;
+
+    final retimedTail = _assignSequentialTimes(
+      tail,
+      startCursorMinutes: editedEnd,
+      legsMinutes: tailLegsMinutes,
+      skipFirstLegTravel: false, // tail 第一站要算跟被改地点之间的交通时间
+    );
+
+    final updated = [...places.sublist(0, tailStart), ...retimedTail];
+
+    final hasLateWarning = updated.sublist(placeIndex).any((p) {
+      final end = _parseTimeToMinutes(p.suggestedTime) + p.durationMinutes;
+      return end >= _lateNightThresholdMinutes;
+    });
+
+    return (places: updated, hasLateWarning: hasLateWarning);
+  }
+
+  /// 校验用户手动选的新开始时间，是否留了足够的交通时间从上一站赶过来。
+  /// 只在用户改「开始时间」时检查（改时长不影响这个校验）。
+  String? _checkArrivalFeasibility(
+    int dayIndex,
+    int placeIndex,
+    List<ItineraryPlace> places,
+    String newStartTime,
+  ) {
+    if (placeIndex == 0) return null; // 当天第一站，没有"上一站"可比较
+
+    final legs = _legsFor(dayIndex);
+    final travelMinutes =
+        placeIndex < legs.minutes.length ? legs.minutes[placeIndex] : 0;
+
+    final prevPlace = places[placeIndex - 1];
+    final prevEnd = _parseTimeToMinutes(prevPlace.suggestedTime) +
+        prevPlace.durationMinutes;
+    final earliestFeasible = prevEnd + travelMinutes;
+    final chosenStart = _parseTimeToMinutes(newStartTime);
+
+    if (chosenStart < earliestFeasible) {
+      final shortBy = earliestFeasible - chosenStart;
+      return 'Only ${chosenStart - prevEnd} min available to travel from '
+          '"${prevPlace.name}", but it takes about $travelMinutes min. '
+          'You may arrive $shortBy min late.';
+    }
+    return null;
+  }
+
+  /// 统一入口：套用一次时间/时长改动 → 视情况校验交通可行性 → 级联顺延
+  /// 后续地点 → 视情况提醒"太晚了" → 用户确认后才真正写入 _itinerary。
+  /// 用户在任一警告弹窗里选择取消，这次编辑会被完整放弃，不留半改状态。
+  Future<void> _applyTimeChange(
+    int dayIndex,
+    int placeIndex,
+    ItineraryPlace updated, {
+    required bool checkArrivalFeasibility,
+  }) async {
+    final days   = List<ItineraryDay>.from(_itinerary.days);
+    final places = List<ItineraryPlace>.from(days[dayIndex].places);
+
+    if (checkArrivalFeasibility) {
+      final warning = _checkArrivalFeasibility(
+          dayIndex, placeIndex, places, updated.suggestedTime);
+      if (warning != null && mounted) {
+        final proceed = await _showWarningDialog(
+          icon: Icons.directions_walk_rounded,
+          title: 'Tight travel time',
+          message: warning,
+        );
+        if (proceed != true) return;
+      }
+    }
+
+    places[placeIndex] = updated;
+
+    final result = _cascadeTimes(dayIndex, placeIndex, places);
+
+    if (result.hasLateWarning && mounted) {
+      final lastPlace = result.places.last;
+      final lastEnd = (_parseTimeToMinutes(lastPlace.suggestedTime) +
+              lastPlace.durationMinutes)
+          .clamp(0, 23 * 60 + 59);
+      final endLabel = _minutesToTimeString(lastEnd);
+
+      final proceed = await _showWarningDialog(
+        icon: Icons.nightlight_round,
+        title: 'This pushes your day quite late',
+        message: 'With this change, later stops today will shift later — '
+            '"${lastPlace.name}" would now end around $endLabel. Continue?',
+      );
+      if (proceed != true) return;
+    }
+
+    days[dayIndex] = days[dayIndex].copyWith(places: result.places);
+    setState(() => _itinerary = _itinerary.copyWith(days: days));
+    _invalidateLegs(dayIndex);
+  }
+
+  Future<bool?> _showWarningDialog({
+    required IconData icon,
+    required String title,
+    required String message,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(children: [
+          Icon(icon, color: Colors.orange),
+          const SizedBox(width: 8),
+          Expanded(child: Text(title)),
+        ]),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF7C4DFF),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Continue', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
 
   int _parseTimeToMinutes(String t) {
     try {
@@ -945,20 +1164,6 @@ void _addPoolPlaceToPosition(
 }
 
   
-  
-  // ─────────────────────────────────────────────
-  // Time / Duration editing
-  // ─────────────────────────────────────────────
-
-  void _updatePlace(int dayIndex, int placeIndex, ItineraryPlace updated) {
-    final days   = List<ItineraryDay>.from(_itinerary.days);
-    final places = List<ItineraryPlace>.from(days[dayIndex].places);
-    places[placeIndex] = updated;
-    days[dayIndex] = days[dayIndex].copyWith(places: places);
-    setState(() => _itinerary = _itinerary.copyWith(days: days));
-    _invalidateLegs(dayIndex);
-  }
-
   TimeOfDay _parseTime(String t) {
     try {
       final parts = t.split(':');
@@ -970,25 +1175,28 @@ void _addPoolPlaceToPosition(
 
   Future<void> _pickTime(
       int dayIndex, int placeIndex, ItineraryPlace place) async {
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: _parseTime(place.suggestedTime),
-      builder: (context, child) => Theme(
-        data: Theme.of(context).copyWith(
-          colorScheme: const ColorScheme.light(
-            primary: Color(0xFF7C4DFF),
-            onPrimary: Colors.white,
+      final picked = await showTimePicker(
+        context: context,
+        initialTime: _parseTime(place.suggestedTime),
+        builder: (context, child) => Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: Color(0xFF7C4DFF),
+              onPrimary: Colors.white,
+            ),
           ),
+          child: child!,
         ),
-        child: child!,
-      ),
-    );
-    if (picked != null && mounted) {
-      final hh = picked.hour.toString().padLeft(2, '0');
-      final mm = picked.minute.toString().padLeft(2, '0');
-      _updatePlace(dayIndex, placeIndex,
-          place.copyWith(suggestedTime: '$hh:$mm'));
-    }
+      );
+      if (picked != null && mounted) {
+        final hh = picked.hour.toString().padLeft(2, '0');
+        final mm = picked.minute.toString().padLeft(2, '0');
+        await _applyTimeChange(
+          dayIndex, placeIndex,
+          place.copyWith(suggestedTime: '$hh:$mm'),
+          checkArrivalFeasibility: true, // 改了开始时间 → 要查交通时间够不够
+        );
+      }
   }
 
   Future<void> _pickDuration(
@@ -1055,8 +1263,11 @@ void _addPoolPlaceToPosition(
                 child: ElevatedButton(
                   onPressed: () {
                     Navigator.pop(ctx);
-                    _updatePlace(dayIndex, placeIndex,
-                        place.copyWith(durationMinutes: selected));
+                    _applyTimeChange(
+                      dayIndex, placeIndex,
+                      place.copyWith(durationMinutes: selected),
+                      checkArrivalFeasibility: false, // 只改时长，没碰开始时间
+                    );
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF7C4DFF),
@@ -1155,21 +1366,28 @@ void _addPoolPlaceToPosition(
               child: ValueListenableBuilder<double>(
                 valueListenable: _sheetExtentNotifier,
                 builder: (context, extent, _) {
-                  return GoogleMap(
-                    initialCameraPosition: CameraPosition(
-                      target: LatLng(widget.startLat, widget.startLng),
-                      zoom: 13,
-                    ),
-                    markers:   _markers,
-                    polylines: _polylines,
-                    myLocationEnabled: false,
-                    myLocationButtonEnabled: false,
-                    zoomControlsEnabled: false,
-                    padding: EdgeInsets.only(bottom: screenHeight * extent),
-                    onMapCreated: (c) {
-                      _mapController = c;
-                      Future.delayed(const Duration(milliseconds: 400),
-                          () => _updateMapOverlays());
+                  // 🔧 CHANGED: markers/polylines 从独立的 _mapOverlayNotifier
+                  // 读取，地图数据更新时只有这一层重建。
+                  return ValueListenableBuilder<_MapOverlayData>(
+                    valueListenable: _mapOverlayNotifier,
+                    builder: (context, overlay, _) {
+                      return GoogleMap(
+                        initialCameraPosition: CameraPosition(
+                          target: LatLng(widget.startLat, widget.startLng),
+                          zoom: 13,
+                        ),
+                        markers:   overlay.markers,
+                        polylines: overlay.polylines,
+                        myLocationEnabled: false,
+                        myLocationButtonEnabled: false,
+                        zoomControlsEnabled: false,
+                        padding: EdgeInsets.only(bottom: screenHeight * extent),
+                        onMapCreated: (c) {
+                          _mapController = c;
+                          Future.delayed(const Duration(milliseconds: 400),
+                              () => _updateMapOverlays());
+                        },
+                      );
                     },
                   );
                 },
@@ -1550,95 +1768,90 @@ void _addPoolPlaceToPosition(
 
   Widget _buildOverviewDaySection(int dayIndex) {
     final day   = _itinerary.days[dayIndex];
-    final legs  = _legsFor(dayIndex);
     final color = _dayColors[dayIndex % _dayColors.length];
 
-    return DragTarget<_DragPayload>(
-      onWillAccept: (payload) => payload != null,
-      onAccept: (payload) =>
-          _movePlaceToPosition(payload, dayIndex, day.places.length),
-      builder: (context, candidateData, rejectedData) {
-        final isHovering = candidateData.isNotEmpty;
-        return Container(
-          margin: const EdgeInsets.only(bottom: 22),
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            border: Border.all(
-                color: isHovering ? color : Colors.transparent, width: 2),
-            borderRadius: BorderRadius.circular(20),
-            color: isHovering ? color.withOpacity(0.05) : Colors.transparent,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              GestureDetector(
-                onTap: () => _switchTab(dayIndex + 1),
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  child: Row(children: [
-                    Container(
-                        width: 10, height: 10,
-                        decoration:
-                            BoxDecoration(color: color, shape: BoxShape.circle)),
-                    const SizedBox(width: 8),
-                    Text(
-                        'Day ${dayIndex + 1} · ${_formatDayDate(day.date)}',
-                        style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: color)),
-                    const SizedBox(width: 6),
-                    if (day.isCompleted && day.totalCount > 0)
-                      const Icon(Icons.check_circle_rounded,
-                          size: 14, color: Colors.green),
-                    const Spacer(),
-                    if (_reOptimizingDays.contains(dayIndex))
-                      const Padding(
-                        padding: EdgeInsets.only(right: 6),
-                        child: SizedBox(
-                          width: 10, height: 10,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 1.5, color: Colors.grey),
-                        ),
-                      ),
-                    Text(
-                        '${day.places.length} stops · '
-                        '${legs.totalKm.toStringAsFixed(1)} km',
-                        style:
-                            TextStyle(fontSize: 11, color: Colors.grey[500])),
-                    const SizedBox(width: 4),
-                    Icon(Icons.chevron_right_rounded,
-                        size: 16, color: Colors.grey[400]),
-                  ]),
-                ),
+    _legsFor(dayIndex); // 触发一次(需要时)带 debounce 的真实路线请求
+
+    return ValueListenableBuilder<_DayLegs>(
+      valueListenable: _legsNotifierFor(dayIndex),
+      builder: (context, legs, _) {
+        return DragTarget<_DragPayload>(
+          onWillAccept: (payload) => payload != null,
+          onAccept: (payload) =>
+              _movePlaceToPosition(payload, dayIndex, day.places.length),
+          builder: (context, candidateData, rejectedData) {
+            final isHovering = candidateData.isNotEmpty;
+            return Container(
+              margin: const EdgeInsets.only(bottom: 22),
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                border: Border.all(
+                    color: isHovering ? color : Colors.transparent, width: 2),
+                borderRadius: BorderRadius.circular(20),
+                color: isHovering ? color.withOpacity(0.05) : Colors.transparent,
               ),
-              const SizedBox(height: 8),
-              if (day.places.isEmpty)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[50],
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: Colors.grey[200]!),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  GestureDetector(
+                    onTap: () => _switchTab(dayIndex + 1),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      child: Row(children: [
+                        Container(
+                            width: 10, height: 10,
+                            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+                        const SizedBox(width: 8),
+                        Text('Day ${dayIndex + 1} · ${_formatDayDate(day.date)}',
+                            style: TextStyle(
+                                fontSize: 14, fontWeight: FontWeight.bold, color: color)),
+                        const SizedBox(width: 6),
+                        if (day.isCompleted && day.totalCount > 0)
+                          const Icon(Icons.check_circle_rounded, size: 14, color: Colors.green),
+                        const Spacer(),
+                        if (_reOptimizingDays.contains(dayIndex))
+                          const Padding(
+                            padding: EdgeInsets.only(right: 6),
+                            child: SizedBox(
+                              width: 10, height: 10,
+                              child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.grey),
+                            ),
+                          ),
+                        Text('${day.places.length} stops · ${legs.totalKm.toStringAsFixed(1)} km',
+                            style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+                        const SizedBox(width: 4),
+                        Icon(Icons.chevron_right_rounded, size: 16, color: Colors.grey[400]),
+                      ]),
+                    ),
                   ),
-                  child: Center(
-                    child: Text('No places · drag one here',
-                        style:
-                            TextStyle(fontSize: 12, color: Colors.grey[400])),
-                  ),
-                )
-              else
-                ...day.places.asMap().entries.map((entry) =>
-                    _buildDropZoneChip(dayIndex, entry.key, entry.value, color)),
-            ],
-          ),
+                  const SizedBox(height: 8),
+                  if (day.places.isEmpty)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 20),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[50],
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Colors.grey[200]!),
+                      ),
+                      child: Center(
+                        child: Text('No places · drag one here',
+                            style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+                      ),
+                    )
+                  else
+                    ...day.places.asMap().entries.map((entry) =>
+                        _buildDropZoneChip(dayIndex, entry.key, entry.value, color)),
+                ],
+              ),
+            );
+          },
         );
       },
     );
   }
-
+  
+  
   // A drop target wrapping a single chip: dropping any place here — from
   // this same day or any other day — inserts it right at this position.
   Widget _buildDropZoneChip(
@@ -1747,33 +1960,41 @@ void _addPoolPlaceToPosition(
   // ─────────────────────────────────────────────
 
   Widget _buildDayContent(int dayIndex, ScrollController scrollController) {
-    final day  = _itinerary.days[dayIndex];
-    final legs = _legsFor(dayIndex);
+    // 保留"没缓存时触发一次真实路线请求"这个副作用，
+    // 但渲染改成监听这一天的 legs notifier。
+    _legsFor(dayIndex);
 
-    return CustomScrollView(
-      key: ValueKey('day_scroll_$dayIndex'),
-      controller: scrollController,
-      physics: const ClampingScrollPhysics(),
-      slivers: [
-        SliverToBoxAdapter(child: _buildDaySummaryBar(dayIndex, legs)),
-        const SliverToBoxAdapter(child: Divider(height: 1, thickness: 0.5)),
-        if (day.places.isEmpty)
-          SliverToBoxAdapter(child: _emptyDayPlaceholder(dayIndex))
-        else
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-            sliver: SliverReorderableList(
-              itemCount: day.places.length,
-              onReorder: (o, n) => _reorderWithinDay(dayIndex, o, n),
-              itemBuilder: (context, i) => _buildPlaceCard(
-                dayIndex, i, day.places[i], legs,
-                isLast: i == day.places.length - 1,
-                key: ValueKey('${dayIndex}_${day.places[i].placeId}'),
+    return ValueListenableBuilder<_DayLegs>(
+      valueListenable: _legsNotifierFor(dayIndex),
+      builder: (context, legs, _) {
+        final day = _itinerary.days[dayIndex];
+
+        return CustomScrollView(
+          key: ValueKey('day_scroll_$dayIndex'),
+          controller: scrollController,
+          physics: const ClampingScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(child: _buildDaySummaryBar(dayIndex, legs)),
+            const SliverToBoxAdapter(child: Divider(height: 1, thickness: 0.5)),
+            if (day.places.isEmpty)
+              SliverToBoxAdapter(child: _emptyDayPlaceholder(dayIndex))
+            else
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                sliver: SliverReorderableList(
+                  itemCount: day.places.length,
+                  onReorder: (o, n) => _reorderWithinDay(dayIndex, o, n),
+                  itemBuilder: (context, i) => _buildPlaceCard(
+                    dayIndex, i, day.places[i], legs,
+                    isLast: i == day.places.length - 1,
+                    key: ValueKey('${dayIndex}_${day.places[i].placeId}'),
+                  ),
+                ),
               ),
-            ),
-          ),
-        const SliverToBoxAdapter(child: SizedBox(height: 24)),
-      ],
+            const SliverToBoxAdapter(child: SizedBox(height: 24)),
+          ],
+        );
+      },
     );
   }
 
@@ -2101,19 +2322,56 @@ Widget _buildPoolChip(PlaceModel place) {
                             overflow: TextOverflow.ellipsis),
                         const SizedBox(height: 4),
                        Wrap(
-                        spacing: 6,
-                        runSpacing: 4,
-                        children: [
-                          GestureDetector(
-                            onTap: () => _pickTime(dayIndex, index, place),
-                            child: Container(/* 时间chip 原样保留 */),
-                          ),
-                          GestureDetector(
-                            onTap: () => _pickDuration(dayIndex, index, place),
-                            child: Container(/* 时长chip 原样保留 */),
-                          ),
-                        ],
-                      ),
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            GestureDetector(
+                              onTap: () => _pickTime(dayIndex, index, place),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF7C4DFF).withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.access_time_rounded,
+                                        size: 11, color: const Color(0xFF7C4DFF)),
+                                    const SizedBox(width: 3),
+                                    Text(place.suggestedTime,
+                                        style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Color(0xFF7C4DFF),
+                                            fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            GestureDetector(
+                              onTap: () => _pickDuration(dayIndex, index, place),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange.withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.schedule_rounded, size: 11, color: Colors.orange[600]),
+                                    const SizedBox(width: 3),
+                                    Text(_formatDuration(place.durationMinutes),
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.orange[700],
+                                            fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
@@ -2580,6 +2838,12 @@ class _DayLegs {
       isReal:    true, // 存下来的必然是当初已经算好的真实数据
     );
   }
+}
+
+class _MapOverlayData {
+  final Set<Marker> markers;
+  final Set<Polyline> polylines;
+  const _MapOverlayData({required this.markers, required this.polylines});
 }
 
 // A unified drag payload: either an existing itinerary stop being moved
