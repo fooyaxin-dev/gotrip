@@ -72,7 +72,7 @@ class LandmarkHistoryService {
   // ── Save a new scan ──────────────────────────────────────────
   static Future<void> save({
     required String name,
-    String? imageBase64Thumbnail, // pass a compressed thumbnail, not full image
+    String? imageBase64Thumbnail,
     double? lat,
     double? lng,
     String? wikiUrl,
@@ -81,62 +81,33 @@ class LandmarkHistoryService {
     String? photoUrl,
     required String detectionMethod,
   }) async {
-    if (_uid == null) {
-      debugPrint('⚠️ LandmarkHistoryService.save skipped: user not logged in');
-      return;
-    }
+    if (_uid == null) return;
 
-    // ── FIX ──────────────────────────────────────────────────
-    // 这段去重查询 (where + orderBy 不同字段) 需要 Firestore 复合索引。
-    // 如果索引缺失/还没建好，Firestore 会抛 FAILED_PRECONDITION。
-    // 之前这个异常会被外层 catch 吞掉，导致整次 save() 都失败、
-    // 一条 history 都存不进去。现在把这段去重检查单独包一层
-    // try-catch：查询失败就当作"没有重复"处理，不阻断真正的保存。
-    bool isDuplicate = false;
-    try {
-      final recent = await _col
-          .where('name', isEqualTo: name)
-          .orderBy('scannedAt', descending: true)
-          .limit(1)
-          .get();
+    final docId = _makeDocId(name, lat, lng);
 
-      if (recent.docs.isNotEmpty) {
-        final lastScanned =
-            (recent.docs.first['scannedAt'] as Timestamp?)?.toDate();
-        if (lastScanned != null &&
-            DateTime.now().difference(lastScanned).inMinutes < 10) {
-          isDuplicate = true;
-        }
-      }
-    } catch (e) {
-      // 常见原因：缺少复合索引 (name + scannedAt)。
-      // 报错信息里会带一个可以直接建索引的链接，例如：
-      // https://console.firebase.google.com/.../firestore/indexes?create_composite=...
-      debugPrint('⚠️ Duplicate-check query failed (continuing to save anyway): $e');
-    }
+    await _col.doc(docId).set({
+      'name':            name,
+      'imageBase64':     imageBase64Thumbnail,
+      'lat':             lat,
+      'lng':             lng,
+      'wikiUrl':         wikiUrl,
+      'address':         address,
+      'rating':          rating,
+      'photoUrl':        photoUrl,
+      'scannedAt':       FieldValue.serverTimestamp(), // 每次覆盖，更新为最近一次时间
+      'detectionMethod': detectionMethod,
+    }, SetOptions(merge: true));
+  }
 
-    if (isDuplicate) {
-      debugPrint('⏭️ Skipping duplicate history entry for "$name"');
-      return;
+  static String _makeDocId(String name, double? lat, double? lng) {
+    final normalized = name.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '_');
+    if (lat != null && lng != null) {
+      // 经纬度取小数点后3-4位做粗粒度归一，避免GPS漂移导致同一地点算不同ID
+      final latKey = lat.toStringAsFixed(3);
+      final lngKey = lng.toStringAsFixed(3);
+      return '${normalized}_${latKey}_$lngKey';
     }
-
-    try {
-      await _col.add({
-        'name':            name,
-        'imageBase64':     imageBase64Thumbnail,
-        'lat':             lat,
-        'lng':             lng,
-        'wikiUrl':         wikiUrl,
-        'address':         address,
-        'rating':          rating,
-        'photoUrl':        photoUrl,
-        'scannedAt':       FieldValue.serverTimestamp(),
-        'detectionMethod': detectionMethod,
-      });
-      debugPrint('✅ Landmark history saved: $name');
-    } catch (e) {
-      debugPrint('⚠️ LandmarkHistoryService.save error: $e');
-    }
+    return normalized;
   }
 
   // ── Fetch history (latest first) ────────────────────────────

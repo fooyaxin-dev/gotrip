@@ -675,7 +675,7 @@ class _OnboardingPageState extends State<OnboardingPage>
                 ),
                 child: _isSaving
                     ? const SizedBox(width: 22, height: 22,
-                        child: TravelLoadingIndicator())
+                        child: TravelLoadingIndicator(size :22))
                     : Text(
                         isLast
                             ? (widget.isEditing ? 'Save Changes ✓' : "Let's Go! 🚀")

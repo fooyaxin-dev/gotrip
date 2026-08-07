@@ -83,7 +83,9 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   }
   
   void _onWeatherChanged() {
-    if (mounted) _buildForYou();
+    if (!mounted) return;
+    setState(() => _currentWeather = WeatherService.instance.current); // 🆕 天气缓存更新时同步刷新显示
+    _buildForYou();
   }
 
   Future<void> _loadTopBadge() async {
@@ -157,7 +159,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     _buildForYou();   // 内部的 load() 调用变成幂等的重复调用，不影响正确性，但可以顺手拿掉
     final pos = LocationService.instance.currentPosition;
     if (pos != null) {
-      WeatherService.instance.getCurrentCondition(lat: pos.latitude, lng: pos.longitude);
+      final w = await WeatherService.instance.getCurrentCondition(lat: pos.latitude, lng: pos.longitude); // 🔧 加 await + 接收返回值
+      if (mounted) setState(() => _currentWeather = w);
     }
 
   }
@@ -982,10 +985,31 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
-                    // Container(
-                    //   margin: const EdgeInsets.only(left: 10),
-                    //   child: Icon(_getWeatherIcon(_weatherCondition), color: Colors.amber, size: 24),
-                    // ),
+                    if (_currentWeather != null) ...[
+                        const SizedBox(width: 10),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.white.withOpacity(0.2)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(_currentWeather!.emoji, style: const TextStyle(fontSize: 13)),
+                              const SizedBox(width: 4),
+                              Text(
+                                WeatherService.instance.currentTemperature != null
+                                    ? '${WeatherService.instance.currentTemperature!.round()}°C'
+                                    : _currentWeather!.label,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                   ],
                 ),
                 const SizedBox(height: 48),
@@ -1018,31 +1042,30 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               )],
             ),
             child: GestureDetector(
-            onTap: () => _goToDetect(),
-            child: Row(
-              children: [
-                const SizedBox(width: 15),
-                const Icon(Icons.search_rounded, color: Color(0xFF6366F1), size: 24),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () => _goToDetect(),
-                    child: const TextField(
-                      enabled: false,
-                      decoration: InputDecoration(
-                        hintText: "Explore new places...",
-                        hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
-                        border: InputBorder.none,
+              onTap: () => _goToDetect(),
+              child: Row(
+                children: [
+                  const SizedBox(width: 15),
+                  const Icon(Icons.search_rounded, color: Color(0xFF6366F1), size: 24),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () => _goToDetect(),
+                      child: const TextField(
+                        enabled: false,
+                        decoration: InputDecoration(
+                          hintText: "Explore new places...",
+                          hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
+                          border: InputBorder.none,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                Container(height: 20, width: 1, color: Colors.grey.shade200),
-                
-              ],
+                  Container(height: 20, width: 1, color: Colors.grey.shade200),
+                ],
+              ),
             ),
           ),
-        ),
         ),
       ],
     );

@@ -29,6 +29,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   late ItineraryModel _itinerary;
   late TabController  _tabController;
 
+  bool _hasChanges = false; 
+
   final Map<String, GlobalKey> _cardKeys = {};
   StreamSubscription<PlaceArrivalEvent>? _arrivalSub;
 
@@ -99,6 +101,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     days[dayIndex] = days[dayIndex].copyWith(places: places);
 
     setState(() => _itinerary = _itinerary.copyWith(days: days));
+    _hasChanges = true;
 
     LocationService.instance.markArrived(visited.placeId);
     LocationService.instance.watchItinerary(_itinerary);
@@ -204,23 +207,30 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8F6FF),
-      body: NestedScrollView(
-        headerSliverBuilder: (_, __) => [_buildSliverHeader()],
-        body: Column(
-          children: [
-            _buildTabBar(),
-            Expanded(
-              child: TabBarView(
-                controller: _tabController,
-                children: List.generate(
-                  _itinerary.totalDays,
-                  (i) => _buildDayView(i),
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+        Navigator.pop(context, _hasChanges);
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8F6FF),
+        body: NestedScrollView(
+          headerSliverBuilder: (_, __) => [_buildSliverHeader()],
+          body: Column(
+            children: [
+              _buildTabBar(),
+              Expanded(
+                child: TabBarView(
+                  controller: _tabController,
+                  children: List.generate(
+                    _itinerary.totalDays,
+                    (i) => _buildDayView(i),
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -242,13 +252,18 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       leading: IconButton(
         icon: const Icon(Icons.arrow_back_ios_new,
             color: Colors.white, size: 20),
-        onPressed: () => Navigator.pop(context),
+        onPressed: () => Navigator.pop(context,_hasChanges),
       ),
       actions: [
         IconButton(
-          icon: const Icon(Icons.edit_road_rounded, color: Colors.white),
-          tooltip: 'Edit itinerary',
-          onPressed: _editItinerary,
+          icon: Icon(
+            Icons.edit_road_rounded,
+            color: _itinerary.isCompleted ? Colors.white38 : Colors.white,
+          ),
+          tooltip: _itinerary.isCompleted
+              ? 'Completed trips can\'t be re-routed'
+              : 'Edit itinerary',
+          onPressed: _itinerary.isCompleted ? null : _editItinerary,
         ),
         IconButton(
           icon: const Icon(Icons.edit_outlined, color: Colors.white),
@@ -792,6 +807,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
     final daysChanged = updated.days.length != _itinerary.days.length;
     setState(() => _itinerary = updated);
+    _hasChanges = true; 
 
     if (daysChanged) {
       _tabController.dispose();
@@ -836,6 +852,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
               if (ctrl.text.trim().isNotEmpty) {
                 final updated = _itinerary.copyWith(title: ctrl.text.trim());
                 setState(() => _itinerary = updated);
+                _hasChanges = true;
                 if (_itinerary.id.isNotEmpty) {
                   try {
                     await ItineraryService.instance.update(_itinerary);
@@ -1001,9 +1018,14 @@ class _AchievementUnlockedDialog extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(children: [
-                          Text(u.tier.label,
+                          Flexible(
+                            child: Text(
+                              u.tier.label,
                               style: const TextStyle(
-                                  fontSize: 14, fontWeight: FontWeight.bold)),
+                                  fontSize: 14, fontWeight: FontWeight.bold),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
                           const SizedBox(width: 6),
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -1058,6 +1080,10 @@ class _AchievementUnlockedDialog extends StatelessWidget {
       ),
     );
   }
+
+
+
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

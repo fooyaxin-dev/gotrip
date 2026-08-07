@@ -1,5 +1,6 @@
 // services/itinerary_service.dart
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/itineraryModel.dart';
@@ -18,6 +19,7 @@ class ItineraryService {
 
   final _db = FirebaseFirestore.instance;
   String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+  final ValueNotifier<int> itinerariesChanged = ValueNotifier(0);
 
   CollectionReference? get _col => _uid == null
       ? null
@@ -121,25 +123,25 @@ class ItineraryService {
     }
   }
 
-  Future<String?> save(ItineraryModel item) async {
-    if (_uid == null) {
-      print('❌ save: user not logged in');
-      return null;
-    }
-    if (_col == null) return null;
-    try {
-      if (item.id.isEmpty) {
-        final ref = await _col!.add(item.toMap());
-        return ref.id;
-      } else {
-        await _col!.doc(item.id).set(item.toMap());
-        return item.id;
+    Future<String?> save(ItineraryModel item) async {
+      if (_uid == null) {
+        print('❌ save: user not logged in');
+        return null;
       }
-    } catch (e) {
-      print('❌ save: $e');
-      return null;
+      if (_col == null) return null;
+      try {
+        if (item.id.isEmpty) {
+          final ref = await _col!.add(item.toMap());
+          return ref.id;
+        } else {
+          await _col!.doc(item.id).set(item.toMap());
+          return item.id;
+        }
+      } catch (e) {
+        print('❌ save: $e');
+        return null;
+      }
     }
-  }
 
   Future<void> update(ItineraryModel item) async {
     if (_col == null || item.id.isEmpty) return;

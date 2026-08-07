@@ -1,11 +1,12 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
-import '../models/userModel.dart';
+import '../models/userModel.dart'; 
 
 /// Result wrapper so callers know WHY a save failed, not just that it did.
 class UserUpdateResult {
@@ -80,11 +81,31 @@ class UserService {
     }
   }
 
-  // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────
   // Image upload — Firebase Storage
-  // Same shape as StorageService.uploadPostMedia: compress → putData →
-  // getDownloadURL → return the URL (or null on failure, never throws).
   // ─────────────────────────────────────────────
+
+  /// The `image` package can't decode HEIC (iOS's default camera-roll
+  /// format), so a straight `img.decodeImage()` call on those bytes
+  /// returns null even though the file itself is a perfectly valid photo
+  /// (that's why the picker's preview — which uses the OS-native decoder
+  /// via FileImage/Image.file — still shows it fine). This fallback
+  /// re-decodes through Flutter's own native codec (dart:ui), which does
+  /// understand HEIC on iOS, then re-encodes to PNG bytes that `image`
+  /// CAN read, before continuing the normal resize/compress pipeline.
+  Future<Uint8List?> _decodeViaNativeFallback(Uint8List rawBytes) async {
+    try {
+      final codec = await ui.instantiateImageCodec(rawBytes);
+      final frame = await codec.getNextFrame();
+      final byteData = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+      frame.image.dispose();
+      if (byteData == null) return null;
+      return byteData.buffer.asUint8List();
+    } catch (e) {
+      if (kDebugMode) print('❌ Native fallback decode failed: $e');
+      return null;
+    }
+  }
 
   Future<String?> _uploadCompressed({
     required File imageFile,
@@ -101,8 +122,18 @@ class UserService {
 
       final Uint8List rawBytes = await imageFile.readAsBytes();
       img.Image? image = img.decodeImage(rawBytes);
+
+      // 🆕 image 包解不了（多半是 HEIC）→ 走原生解码器兜底一次
       if (image == null) {
-        if (kDebugMode) print('❌ Image decode failed!');
+        if (kDebugMode) print('⚠️ img.decodeImage failed, trying native fallback (likely HEIC)...');
+        final pngBytes = await _decodeViaNativeFallback(rawBytes);
+        if (pngBytes != null) {
+          image = img.decodeImage(pngBytes);
+        }
+      }
+
+      if (image == null) {
+        if (kDebugMode) print('❌ Image decode failed even after fallback!');
         return null;
       }
 

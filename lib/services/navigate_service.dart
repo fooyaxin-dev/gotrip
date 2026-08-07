@@ -136,6 +136,7 @@ class NavigationController extends ChangeNotifier {
   // Ticker — smooth display position interpolation
   // ─────────────────────────────────────────────
 
+  // navigationController.dart -> _onTick()
   void _onTick(Duration _) {
     if (targetLatLng == null) return;
     final current = displayLatLng ?? targetLatLng!;
@@ -144,8 +145,13 @@ class NavigationController extends ChangeNotifier {
       current.latitude  + (targetLatLng!.latitude  - current.latitude)  * t,
       current.longitude + (targetLatLng!.longitude - current.longitude) * t,
     );
-    // FIX: 只通知地图那一路的监听者，不再 notifyListeners() 波及全页。
     positionNotifier.value = displayLatLng;
+
+    // 路线裁剪跟箭头用同一个插值点、同一个频率，两者才会同步顺滑。
+    // nearestIdx 仍然只在真实 GPS fix 时更新（最近点搜索比较重，不用每帧算）。
+    if (polylinePoints.isNotEmpty) {
+      _updateRouteProgress(displayLatLng!);
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -282,27 +288,27 @@ class NavigationController extends ChangeNotifier {
     }
   }
 
-  Future<void> _loadRoute(double fromLat, double fromLng) async {
-    _resetRouteState();
+  Future<void> _loadRoute(double fromLat, double fromLng, {bool isReroute = false}) async {
+    _resetRouteState(isReroute: isReroute);
     notifyListeners();
 
     try {
-      // 🔗 统一走 RouteService，不再自己重复实现一遍 HTTP 请求 + 解析逻辑。
-      // 这里用于两种情况：① 完全没有 initialRoute 时的首次加载；
-      // ② GPS 检测到偏离路线时的重新规划（reroute），这个必须用当前
-      // 实时位置重新请求，没办法预先复用别的数据。
       final result = await RouteService.instance.fetchNavigationRoute(
-        fromLat: fromLat,
-        fromLng: fromLng,
-        toLat:   endLat,
-        toLng:   endLng,
-        mode:    travelMode,
+        fromLat: fromLat, fromLng: fromLng,
+        toLat: endLat,   toLng: endLng,
+        mode: travelMode,
       );
       await _applyRouteResult(result);
     } catch (e) {
-      error   = e.toString();
-      loading = false;
-      notifyListeners();
+      if (isReroute) {
+        // reroute 失败不要把整个导航页干掉，旧路线还在，静默退出即可。
+        isRerouting = false;
+        notifyListeners();
+      } else {
+        error   = e.toString();
+        loading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -313,26 +319,35 @@ class NavigationController extends ChangeNotifier {
   //                      RoutePreviewPage 传进来的）套用到控制器状态里，
   //                      逻辑跟原来 _loadRoute() 成功之后的部分完全一致。
 
-  void _resetRouteState() {
+  void _resetRouteState({bool isReroute = false}) {
     currentStepIndex       = 0;
     steps                  = [];
     stepEndPolylineIdx     = [];
     _stepConfirmCount      = 0;
     _stepConfirmForIndex   = -1;
-    _offRouteCount         = 0;
     _spokenDistanceReminders.clear();
     _lastSpokenInstruction = null;
-    loading                = true;
     error                  = null;
-    isRerouting            = false;
-    walkedPoints           = [];
-    remainingPoints        = [];
-    nearestIdx             = 0;
+
+    // reroute 时不碰 loading / walkedPoints / remainingPoints / nearestIdx /
+    // _offRouteCount —— 旧路线继续显示，直到新路线到了再一次性换上。
+    if (!isReroute) {
+      _offRouteCount    = 0;
+      loading           = true;
+      isRerouting       = false;
+      walkedPoints      = [];
+      remainingPoints   = [];
+      nearestIdx        = 0;
+    }
   }
 
   Future<void> _applyRouteResult(RouteResult result) async {
     final pts      = result.polylinePoints;
     final newSteps = result.steps;
+
+    // reroute 成功后必须复位，否则 banner 永久卡住。
+    isRerouting    = false;
+    _offRouteCount = 0;
 
     if (pts.length >= 2) bearing = _calcBearing(pts[0], pts[1]);
 
@@ -428,7 +443,7 @@ class NavigationController extends ChangeNotifier {
             isRerouting = true;
             notifyListeners();
             await _speak('Off route, recalculating');
-            _loadRoute(raw.latitude, raw.longitude);
+            _loadRoute(raw.latitude, raw.longitude, isReroute: true);
             return;
           }
         } else {
@@ -501,7 +516,6 @@ class NavigationController extends ChangeNotifier {
       // FIX: 让地图那一路的 notifier 也立刻拿到最新目标，不用等下一帧
       // ticker 才追上，避免刚收到 GPS 定位时地图短暂"卡一下"的感觉。
       if (displayLatLng != null) positionNotifier.value = displayLatLng;
-      _updateRouteProgress(snapped);
       notifyListeners();
     });
   }

@@ -365,6 +365,8 @@ class RouteService {
       'units': 'METRIC',
     });
 
+    print('🧭 Requesting route: mode=$mode → travelMode=${_modeString(mode)}');
+
     final resp = await http.post(
       Uri.parse(_routesUrl),
       headers: {

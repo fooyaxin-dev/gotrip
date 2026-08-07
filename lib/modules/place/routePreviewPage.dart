@@ -64,7 +64,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
     TravelMode.walk:  _ModeSummary(mode: TravelMode.walk),
   };
 
-  final Map<TravelMode, RouteResult?> _routeData = {   // ← 类型改成 RouteResult?
+  final Map<TravelMode, RouteResult?> _routeData = {
     TravelMode.drive: null,
     TravelMode.motor: null,
     TravelMode.walk:  null,
@@ -179,8 +179,16 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
       });
     }
   }
-  
+
   // ── Render polyline for selected mode ──
+  //
+  // FIX: 原来这里连着调用了两次 animateCamera —— 第一次算了
+  // topInset/bottomInset 取最大值当 padding，第二次紧接着又用固定
+  // 的 60 调了一次。第二次调用会直接覆盖第一次的相机动画，导致
+  // 第一段计算完全是无效代码，实际生效的 padding 永远是 60。
+  // 结果就是路线较长、或者顶部条/底部面板实际高度超过 60 时，
+  // polyline 的一部分会被压在面板底下看不到。
+  // 现在只保留一次调用，真正用上算出来的 padding。
   void _renderPolyline(TravelMode mode) {
     final data = _routeData[mode];
     if (data == null) return;
@@ -198,22 +206,17 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
         ));
     });
 
-    // Add a small extra inset so the route isn't hidden behind panels
-    final topInset    = (_topBarHeight > 0 ? _topBarHeight : 100) + 16;
-    const bottomInset = 240.0; // bottom sheet height + buffer
+    // Padding needs to clear both the top bar and the bottom sheet,
+    // whichever is taller, with a sane minimum fallback.
+    final double topInset    = (_topBarHeight > 0 ? _topBarHeight : 100.0) + 16.0;
+    const double bottomInset = 240.0; // bottom sheet height + buffer
+    final double padding = <double>[topInset, bottomInset, 60.0]
+        .reduce((a, b) => a > b ? a : b);
 
     _mapController?.animateCamera(
-      CameraUpdate.newLatLngBounds(
-        data.bounds,
-        [topInset, 60, bottomInset, 60].reduce((a, b) => a > b ? a : b) / 1, // use max as fallback
-      ),
+      CameraUpdate.newLatLngBounds(data.bounds, padding),
     );
-
-    // Prefer per-side padding for accurate framing
-    _mapController?.animateCamera(
-      CameraUpdate.newLatLngBounds(data.bounds, 60),
-    );
-  }
+}
 
   void _selectMode(TravelMode mode) {
     if (_selectedMode == mode) return;
@@ -486,7 +489,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
       ]),
     );
   }
- 
+
   Widget _modeTab(TravelMode mode, IconData icon) {
     final summary    = _summaries[mode]!;
     final isSelected = _selectedMode == mode;

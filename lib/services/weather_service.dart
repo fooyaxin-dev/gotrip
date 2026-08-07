@@ -15,6 +15,17 @@ extension WeatherConditionX on WeatherCondition {
       case WeatherCondition.extreme: return 'Extreme';
     }
   }
+
+  // 🆕 给 UI 用的简单 emoji，天气框可以直接拿这个当图标
+  String get emoji {
+    switch (this) {
+      case WeatherCondition.clear:   return '☀️';
+      case WeatherCondition.cloudy:  return '☁️';
+      case WeatherCondition.rain:    return '🌧️';
+      case WeatherCondition.storm:   return '⛈️';
+      case WeatherCondition.extreme: return '❄️';
+    }
+  }
 }
 
 /// Uses Open-Meteo (free, no API key needed, good Malaysia coverage).
@@ -25,14 +36,14 @@ class WeatherService {
   WeatherService._();
 
   WeatherCondition? _cachedCondition;
+  double? _cachedTemperature;   // 🆕 摄氏度
   DateTime? _cachedAt;
   double? _cachedLat;
   double? _cachedLng;
 
   WeatherCondition? get current => _cachedCondition;
+  double? get currentTemperature => _cachedTemperature;   // 🆕 UI 直接读这个
   final ValueNotifier<int> weatherChanged = ValueNotifier(0);
-
-
 
   static const _cacheDuration       = Duration(minutes: 20);
   static const _cacheDistanceMeters = 3000.0;
@@ -46,14 +57,15 @@ class WeatherService {
         DateTime.now().difference(_cachedAt!) < _cacheDuration &&
         _cachedLat != null && _cachedLng != null &&
         _distanceMeters(lat, lng, _cachedLat!, _cachedLng!) < _cacheDistanceMeters) {
-      print('🧠 WeatherService: cache hit (${_cachedCondition!.label})');
+      print('🧠 WeatherService: cache hit (${_cachedCondition!.label}, ${_cachedTemperature?.toStringAsFixed(1)}°C)');
       return _cachedCondition;
     }
 
     try {
       final url = Uri.parse(
         'https://api.open-meteo.com/v1/forecast'
-        '?latitude=$lat&longitude=$lng&current=weather_code,precipitation',
+        '?latitude=$lat&longitude=$lng'
+        '&current=weather_code,precipitation,temperature_2m', // 🆕 加了 temperature_2m
       );
       final response = await http.get(url);
 
@@ -64,15 +76,17 @@ class WeatherService {
 
       final data = json.decode(response.body);
       final code = (data['current']?['weather_code'] as num?)?.toInt();
+      final temp = (data['current']?['temperature_2m'] as num?)?.toDouble(); // 🆕
       final condition = _mapWeatherCode(code);
 
-      _cachedCondition = condition;
-      _cachedAt        = DateTime.now();
-      _cachedLat       = lat;
-      _cachedLng       = lng;
+      _cachedCondition   = condition;
+      _cachedTemperature = temp;   // 🆕
+      _cachedAt          = DateTime.now();
+      _cachedLat         = lat;
+      _cachedLng         = lng;
       weatherChanged.value++; 
 
-      print('🌦️ WeatherService: code=$code → ${condition?.label}');
+      print('🌦️ WeatherService: code=$code temp=$temp°C → ${condition?.label}');
       return condition;
     } catch (e) {
       print('❌ WeatherService exception: $e');

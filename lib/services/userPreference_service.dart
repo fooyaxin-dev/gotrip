@@ -356,6 +356,7 @@ class UserPreferenceService {
     required List<String> placeTypes,    // post.placeTypes（Google types）
     required SentimentLabel sentimentLabel,
     required int sentimentMatchedTokens, // 用来判断是否低置信度
+    int postRating = 0,                  // 用户打的星级(1-5)，0 = 没打分
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -363,28 +364,87 @@ class UserPreferenceService {
     // 没挂地点 / 没有 types，没有学习的对象
     if (placeTypes.isEmpty) return;
   
-    // 只有正面情感才计入学习
-    if (sentimentLabel != SentimentLabel.positive) {
-      print('🧠 updateFromPost: skipped (sentiment=${sentimentLabel.toJson()}, '
-          'not positive — no learning signal)');
-      return;
+    // ── 判断这次体验是"正面"还是"负面"，以及要给多重的权重 ──
+    //
+    // 设计原则：
+    // - rating 是用户明确给的信号（explicit feedback），永远优先决定方向
+    // - sentiment 不是摆设：当它跟 rating 方向一致时，说明这次信号
+    //   特别可信（用户打了高分，文字也确实写得正面），加倍学习权重；
+    //   不一致时（比如打了5星但文字平淡/抱怨），只信 rating，走基础权重，
+    //   不因为文字分析而加码——避免"嘴上说不要身体很诚实"这种混合情况
+    //   被过度解读。
+    // - 完全没打分（postRating == 0，很正常，不是每个人都会点星星）时，
+    //   才完全交给 sentiment 独立判断，权重跟以前一样。
+    final bool hasRating   = postRating > 0;
+    final bool ratingPos   = postRating >= 4;
+    final bool ratingNeg   = postRating <= 2;
+    // postRating == 3 → 中立，不学习也不扣分
+
+    final bool sentimentConfident = sentimentMatchedTokens >= 2;
+    final bool sentimentPos = sentimentConfident && sentimentLabel == SentimentLabel.positive;
+    final bool sentimentNeg = sentimentConfident && sentimentLabel == SentimentLabel.negative;
+
+    bool isPositive;
+    bool isNegative;
+    int  weight; // 1 = 基础权重，2 = 双信号一致，加倍确信
+
+    if (hasRating) {
+      if (!ratingPos && !ratingNeg) {
+        // 3 星，中立体验，不构成学习信号
+        print('🧠 updateFromPost: skipped (rating=3, neutral — no learning signal)');
+        return;
+      }
+      isPositive = ratingPos;
+      isNegative = ratingNeg;
+
+      final agrees = (isPositive && sentimentPos) || (isNegative && sentimentNeg);
+      weight = agrees ? 2 : 1;
+    } else {
+      if (!sentimentPos && !sentimentNeg) {
+        print('🧠 updateFromPost: skipped (no rating, sentiment='
+            '${sentimentLabel.toJson()}, tokens=$sentimentMatchedTokens — too weak)');
+        return;
+      }
+      isPositive = sentimentPos;
+      isNegative = sentimentNeg;
+      weight = 1;
     }
   
-    // 低置信度结果（命中词太少）不可靠，跳过
-    if (sentimentMatchedTokens < 2) { 
-      print('🧠 updateFromPost: skipped (low confidence, '
-          'only $sentimentMatchedTokens sentiment words matched)');
-      return;
-    }
+    // ── 复用跟 updateFromFavourite 完全一样的 type→category / type→cuisine 映射 ──
+    const typeToCategory = {
+      'restaurant':         'restaurant',
+      'park':               'park',
+      'tourist_attraction': 'tourist_attraction',
+      'shopping_mall':      'shopping_mall',
+      'amusement_park':     'amusement_park',
+    };
+    const typeToCuisine = {
+      'chinese_restaurant':   'chinese',
+      'malay_restaurant':     'malay',
+      'malaysian_restaurant': 'malay',
+      'indian_restaurant':    'indian',
+      'western_restaurant':   'western',
+      'american_restaurant':  'western',
+      'japanese_restaurant':  'japanese',
+      'korean_restaurant':    'korean',
+      'dessert_shop':         'dessert',
+      'ice_cream_shop':       'dessert',
+      'bakery':               'dessert',
+      'cafe':                 'cafe',
+      'coffee_shop':          'cafe',
+    };
   
     final List<String> involvedKeys = [];
-
-    final primaryCategory = CategoryMapper.toPrimaryType(placeTypes);
-    if (CategoryMapper.isLearnableCategory(primaryCategory)) {
-      involvedKeys.add('cat_$primaryCategory');
+  
+    for (final t in placeTypes) {
+      final category = typeToCategory[t];
+      if (category != null) {
+        involvedKeys.add('cat_$category');
+        break; // 一个 post 只算一次 category 信号，避免重复加权
+      }
     }
     for (final t in placeTypes) {
-      final cuisine = _typeToCuisine[t];
+      final cuisine = typeToCuisine[t];
       if (cuisine != null) {
         involvedKeys.add('cui_$cuisine');
         break; // 一个 post 只算一次 cuisine 信号
@@ -396,14 +456,40 @@ class UserPreferenceService {
       return;
     }
   
-    // ── 用「post 正面体验」给计数 +1（跟 favourite 共用同一套 _favouriteCount） ──
+    // ── 按 weight 加/减分（正面 +weight，负面 -weight，clamp 到 0 避免负数）──
     for (final key in involvedKeys) {
-      _favouriteCount[key] = (_favouriteCount[key] ?? 0) + 1;
+      if (isPositive) {
+        _favouriteCount[key] = (_favouriteCount[key] ?? 0) + weight;
+      } else {
+        _favouriteCount[key] = ((_favouriteCount[key] ?? 0) - weight).clamp(0, 999);
+      }
     }
   
+    // ── 重新跑一遍 gate 检查（跟 updateFromFavourite 同样的逻辑）──
     final updatedCategories = List<String>.from(_prefs.categories);
     final updatedCuisines   = List<String>.from(_prefs.cuisines);
-    _applyGate(updatedCategories, updatedCuisines);
+  
+    for (final entry in _favouriteCount.entries) {
+      final key   = entry.key;
+      final count = entry.value;
+  
+      if (key.startsWith('cat_')) {
+        final cat = key.substring(4);
+        if (count >= _minCountToLearn && !updatedCategories.contains(cat)) {
+          updatedCategories.add(cat);
+        } else if (count < _minCountToLearn) {
+          updatedCategories.remove(cat);
+        }
+      }
+      if (key.startsWith('cui_')) {
+        final cui = key.substring(4);
+        if (count >= _minCountToLearn && !updatedCuisines.contains(cui)) {
+          updatedCuisines.add(cui);
+        } else if (count < _minCountToLearn) {
+          updatedCuisines.remove(cui);
+        }
+      }
+    }
   
     _prefs = _prefs.copyWith(
       categories: updatedCategories,
@@ -420,7 +506,11 @@ class UserPreferenceService {
       'favouriteTypeCounts': _favouriteCount,
     });
   
-    print('🧠 updateFromPost: learned from positive post — keys=$involvedKeys, '
+    final sourceDesc = hasRating
+        ? 'rating=$postRating${weight == 2 ? " (confirmed by sentiment)" : ""}'
+        : 'sentiment only';
+    print('🧠 updateFromPost: ${isPositive ? "learned +" : "penalized -"}$weight '
+        '($sourceDesc) — keys=$involvedKeys, '
         'updated categories=$updatedCategories, cuisines=$updatedCuisines');
   }
   

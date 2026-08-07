@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../models/userModel.dart';
 import '../../services/user_service.dart';
 import '../../services/apps_Loading.dart';
+import 'package:image_cropper/image_cropper.dart';
 
 class EditProfilePage extends StatefulWidget {
   final UserProfile userProfile;
@@ -67,6 +68,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     return null;
   }
 
+
   Future<void> _pickImage(ImageSource source, bool isProfileImage) async {
     try {
       final XFile? image = await _picker.pickImage(
@@ -78,16 +80,49 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
       if (image == null) return;
 
+      // 🆕 选完图先裁剪，让用户自己框选要显示的区域
+      final cropped = await _cropImage(File(image.path), isProfileImage);
+      if (cropped == null) return; // 用户中途取消裁剪，不改变现有图片
+
       setState(() {
         if (isProfileImage) {
-          _newProfileImage = File(image.path);
+          _newProfileImage = cropped;
         } else {
-          _newBackgroundImage = File(image.path);
+          _newBackgroundImage = cropped;
         }
       });
     } catch (e) {
       _showErrorSnackBar('Could not select image: $e');
     }
+  }
+
+  // 🆕 profile → 圆形裁剪；background → 长方形横幅比例裁剪
+  Future<File?> _cropImage(File imageFile, bool isProfileImage) async {
+    final cropped = await ImageCropper().cropImage(
+      sourcePath: imageFile.path,
+      aspectRatio: isProfileImage
+          ? const CropAspectRatio(ratioX: 1, ratioY: 1)   // 圆形头像用 1:1 画布，裁剪框会以圆形呈现
+          : const CropAspectRatio(ratioX: 16, ratioY: 9),  // 长方形 banner
+      compressQuality: 85,
+      uiSettings: [
+        AndroidUiSettings(
+          toolbarTitle: isProfileImage ? 'Crop Profile Photo' : 'Crop Background Photo',
+          toolbarColor: const Color(0xFF7C4DFF),
+          toolbarWidgetColor: Colors.white,
+          activeControlsWidgetColor: const Color(0xFF7C4DFF),
+          lockAspectRatio: true,
+          cropStyle: isProfileImage ? CropStyle.circle : CropStyle.rectangle, // 🆕 圆形 vs 长方形
+        ),
+        IOSUiSettings(
+          title: isProfileImage ? 'Crop Profile Photo' : 'Crop Background Photo',
+          aspectRatioLockEnabled: true,
+          resetAspectRatioEnabled: false,
+          aspectRatioPickerButtonHidden: true,
+          cropStyle: isProfileImage ? CropStyle.circle : CropStyle.rectangle, // 🆕
+        ),
+      ],
+    );
+    return cropped != null ? File(cropped.path) : null;
   }
 
   void _showImageSourceDialog(bool isProfileImage) {
@@ -232,7 +267,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 ? const SizedBox(
                     width: 20,
                     height: 20,
-                    child: TravelLoadingIndicator(),
+                    child: TravelLoadingIndicator(size: 22),
                   )
                 : const Text(
                     'Save',

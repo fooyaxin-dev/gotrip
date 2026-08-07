@@ -9,7 +9,7 @@ import '../../services/route_service.dart';
 import '../../services/navigate_service.dart';
 import '../../services/apps_Loading.dart';
 
-class GuidePage extends StatefulWidget {
+class GuidePage extends StatefulWidget { 
   final double startLat;
   final double startLng;
   final double endLat;
@@ -205,11 +205,9 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       markers.add(Marker(
         markerId: const MarkerId('me'),
         position: pos,
-        icon:     _nav.arrowIcon ??
+        icon: _nav.arrowIcon ??
             BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-        // FIX: rotation = 0 because the MAP bearing is already set to the
-        // user's direction — the arrow always visually points "up" (forward)
-        rotation: 0,
+        rotation: _nav.cameraBearing,   // 原来写死 0，改成跟相机同源
         anchor:   const Offset(0.5, 0.5),
         flat:     true,
         zIndex:   10,

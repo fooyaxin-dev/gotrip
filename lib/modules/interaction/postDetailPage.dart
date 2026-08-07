@@ -23,6 +23,7 @@ import '../../services/userPreference_service.dart';
 import '../../services/sentiment_service.dart';
 import '../profile/profile.dart';
 import 'editPost.dart';
+import '../../modules/place/detectPlacePage.dart';
 import 'postMedia.dart';
 
 
@@ -86,6 +87,28 @@ class _PostDetailPageState extends State<PostDetailPage> {
     SentimentLabel.negative: Color(0xFFC62828),
   };
 
+  // ── Rating badge ─────────────────────────────────────────────────────────
+  // 只在 post.rating > 0 时才会被调用 —— 没打分的帖子不显示，
+  // 跟下面 Content 区块里完整的 5 星展示保持一致的判断条件。
+  Widget _buildRatingBadge(int rating) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.orange.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.orange.withOpacity(0.3)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.star_rounded, size: 12, color: Colors.orange),
+        const SizedBox(width: 3),
+        Text('$rating.0',
+            style: const TextStyle(
+                fontSize: 10, fontWeight: FontWeight.bold, color: Colors.orange)),
+      ]),
+    );
+  }
+
+
   Widget _buildSentimentBadge(SentimentLabel label) {
     final color = _sentimentColors[label]!;
     return Container(
@@ -104,6 +127,29 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
+  // ── Location tap modal（跟 interactionPage.dart 保持一致）─────────────────
+
+  void _onLocationTap(Post post) {
+    if (post.locationLat != null && post.locationLng != null) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => RealTimeDetectPage(
+            landmarkLat: post.locationLat,
+            landmarkLng: post.locationLng,
+            onBack: () => Navigator.pop(context),
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (post.city != null && post.city!.isNotEmpty) {
+      Navigator.pop(context); // 详情页拿不到 feed 状态，只能退回上一页
+    }
+  }
+ 
+ 
   void _handleDelete(String postId) {
     showDialog(
       context: context,
@@ -236,28 +282,40 @@ class _PostDetailPageState extends State<PostDetailPage> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-                // Location + Sentiment badge（地点 + 大家对这里的感受）
+                // Location + Rating badge + Sentiment badge（地点 + 评分 + 大家对这里的感受）
                 if ((post.city != null && post.city!.isNotEmpty) ||
                     (post.location != null && post.location!.isNotEmpty) ||
+                    post.rating > 0 ||
                     post.hasSentimentResult)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 10),
                     child: Row(children: [
                       if ((post.city != null && post.city!.isNotEmpty) ||
-                          (post.location != null && post.location!.isNotEmpty)) ...[
-                        const Icon(Icons.location_on, size: 14, color: Color(0xFFD35D3E)),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            [
-                              if (post.city != null && post.city!.isNotEmpty) post.city!,
-                              if (post.location != null && post.location!.isNotEmpty && post.location != post.city) post.location!,
-                            ].join(' · '),
-                            style: const TextStyle(fontSize: 13, color: Color(0xFFD35D3E), fontWeight: FontWeight.w500),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                        (post.location != null && post.location!.isNotEmpty)) ...[
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => _onLocationTap(post),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            const Icon(Icons.location_on, size: 14, color: Color(0xFFD35D3E)),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                [
+                                  if (post.city != null && post.city!.isNotEmpty) post.city!,
+                                  if (post.location != null && post.location!.isNotEmpty && post.location != post.city) post.location!,
+                                ].join(' · '),
+                                style: const TextStyle(fontSize: 13, color: Color(0xFFD35D3E), fontWeight: FontWeight.w500),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ]),
                         ),
+                      ),
+                    ],
+                      if (post.rating > 0) ...[
+                        const SizedBox(width: 8),
+                        _buildRatingBadge(post.rating),
                       ],
                       if (post.hasSentimentResult) ...[
                         const SizedBox(width: 8),
@@ -274,7 +332,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                 Text(post.content, style: TextStyle(fontSize: 15, color: Colors.grey[800], height: 1.6)),
                 const SizedBox(height: 14),
 
-                // Rating
+                // Rating（正文下方完整的 5 星展示，跟顶部 badge 是不同层级的信息，保留不删）
                 if (post.rating > 0)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 14),
@@ -392,6 +450,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
       ),
     );
   }
+
+
 
   // ── Media Section ──────────────────────────────────────────────────────────
 

@@ -340,7 +340,7 @@ class _SignupPageState extends State<SignupPage> {
                           child: isLoading
                               ? const SizedBox(
                                   height: 22, width: 22,
-                                  child: TravelLoadingIndicator(),
+                                  child: TravelLoadingIndicator(size: 22),
                                 )
                               : const Text('Sign Up',
                                   style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),

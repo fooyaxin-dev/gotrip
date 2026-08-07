@@ -52,7 +52,8 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   // The resolved Google Place ID — may differ from widget.placeId for Geoapify places
   String? _resolvedGooglePlaceId;
 
-  bool get _isGeoapify => widget.source == 'geoapify';
+  bool get _isGeoapify =>
+    widget.source == 'geoapify' || widget.placeId.startsWith('geo_');
 
   // ── Reviews: filter + sort ─────────────────────────────────
   // NOTE: Google Places Details API only ever returns up to 5 reviews

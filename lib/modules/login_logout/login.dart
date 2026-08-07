@@ -50,8 +50,24 @@ class _LoginPageState extends State<LoginPage> {
         password: pwdController.text.trim(),
       );
 
+      
+
+      // ↓↓↓ 新增的检查,插入在这里 ↓↓↓
+      final user = FirebaseAuth.instance.currentUser;
+      final isGoogleUser = user?.providerData
+              .any((info) => info.providerId == 'google.com') ??
+          false;
+
+      if (user != null && !user.emailVerified && !isGoogleUser) {
+        await FirebaseAuth.instance.signOut();
+        _showError('Please verify your email before logging in');
+        return; // 到这里就停住,不会往下跳转进 App
+      }
+      // ↑↑↑ 新增的检查到这里结束 ↑↑↑
+
       if (mounted) {
         final prefs = await UserPreferenceService.instance.load();
+
         if (!mounted) return;
 
         Navigator.pushReplacement(
@@ -63,14 +79,13 @@ class _LoginPageState extends State<LoginPage> {
           ),
         );
       }
-    } on FirebaseAuthException catch (e) {
+  } on FirebaseAuthException catch (e) {
       String message;
       switch (e.code) {
         case 'user-not-found':
-          message = 'No user found for this email';
-          break;
         case 'wrong-password':
-          message = 'Wrong password';
+        case 'invalid-credential':
+          message = 'Invalid email or password. Please try again';
           break;
         case 'invalid-email':
           message = 'Invalid email format';
@@ -93,7 +108,7 @@ class _LoginPageState extends State<LoginPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Colors.indigoAccent,
+        backgroundColor: Colors.redAccent,
       ),
     );
   }
@@ -215,30 +230,31 @@ class _LoginPageState extends State<LoginPage> {
                                 );
                               }
                             } on FirebaseAuthException catch (e) {
-                              setDialogState(() => isSending = false);
-                              String message;
-                              switch (e.code) {
-                                case 'user-not-found':
-                                  message = 'No account found with this email';
-                                  break;
-                                case 'invalid-email':
-                                  message = 'Invalid email format';
-                                  break;
-                                case 'network-request-failed':
-                                  message = 'Network error. Please try again';
-                                  break;
-                                default:
-                                  message = 'Failed to send reset email';
-                              }
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(message),
-                                    backgroundColor: Colors.redAccent,
-                                  ),
-                                );
-                              }
-                            }
+              setDialogState(() => isSending = false);
+              String message;
+              switch (e.code) {
+                case 'user-not-found':
+                  message = 'No account found with this email';
+                  break;
+                case 'invalid-email':
+                  message = 'Invalid email format';
+                  break;
+                case 'network-request-failed':
+                  message = 'Network error. Please try again';
+                  break;
+                default:
+                  message = 'Failed to send reset email';
+              }
+              if (mounted) {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(message),
+                    backgroundColor: Colors.redAccent,
+                  ),
+                );
+              }
+            }
                           },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF7C4DFF),
@@ -253,7 +269,7 @@ class _LoginPageState extends State<LoginPage> {
                         ? const SizedBox(
                             height: 18,
                             width: 18,
-                            child: TravelLoadingIndicator(),
+                            child: TravelLoadingIndicator(size: 22),
                           )
                         : const Text('Send Link'),
                   ),
@@ -327,11 +343,13 @@ class _LoginPageState extends State<LoginPage> {
   }
   
   // ================= UI =================
-  @override
+    @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: SingleChildScrollView(
+    return GestureDetector(
+      onTap: () => FocusScope.of(context).unfocus(),
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        body: SingleChildScrollView(
         child: SafeArea(
           child: Form(
             key: _formKey,
@@ -474,7 +492,7 @@ class _LoginPageState extends State<LoginPage> {
                               ? const SizedBox(
                                   height: 22,
                                   width: 22,
-                                    child: TravelLoadingIndicator(),
+                                    child: TravelLoadingIndicator(size:22),
                                 )
                               : const Text(
                                   'Login',
@@ -561,6 +579,7 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ),
       ),
+      )
     );
   }
 

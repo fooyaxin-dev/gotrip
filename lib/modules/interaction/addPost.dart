@@ -50,10 +50,11 @@ class _PostingPageState extends State<PostingPage> {
   String? selectedLocation;
   String? selectedPlaceId;              // Google Place ID（没选地点时为 null）
   List<String> selectedPlaceTypes = []; // 该地点的 Google types
+  double? selectedLat;   // 🆕
+  double? selectedLng; 
 
   List<String> selectedTags = [];
   List<String> mentionedFriends = [];
-  String? selectedTopic;
   String selectedVisibility = "public";
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -76,10 +77,6 @@ class _PostingPageState extends State<PostingPage> {
     'nature', 'shopping', 'daily', 'vlog', 'fashion', 'beauty',
   ];
 
-  final List<String> hotTopics = [
-    '#malaysia', '#KLCC', '#penang', '#cameratips', '#foodie',
-    '#travelvlog', '#transport', '#journey', '#niceView', '#happyTravel',
-  ];
 
   Future<void> _loadTopBadge() async {
     final tier = await AchievementService.instance.fetchTopBadge();
@@ -238,6 +235,8 @@ class _PostingPageState extends State<PostingPage> {
         'imagePaths': imagePaths,
         'videoPaths': videoPaths,
         'postType': postType,
+        'locationLat': selectedLat,   // 🆕
+        'locationLng': selectedLng, 
         'rating': rating,
         'isAnonymous': isAnonymous,
         'allowComments': allowComments,
@@ -248,7 +247,6 @@ class _PostingPageState extends State<PostingPage> {
         'placeTypes': selectedPlaceTypes,
         'tags': selectedTags,
         'mentionedFriends': mentionedFriends,
-        'topic': selectedTopic,
         'visibility': selectedVisibility,
         'createdAt': FieldValue.serverTimestamp(),
         'userId': userId,
@@ -285,37 +283,40 @@ class _PostingPageState extends State<PostingPage> {
   /// sentiment 为 positive 时才会真正被学习进偏好（取代旧的用 likes
   /// 判断的逻辑，因为 likes 高不代表体验正面）。
   void _runSentimentAnalysisInBackground(
-    String postId,
-    String content, {
-    required List<String> placeTypes,
-  }) {
-    if (content.trim().isEmpty) return;
+      String postId,
+      String content, {
+      required List<String> placeTypes,
+      required int postRating,   // 🆕 用户在发帖页打的星级，0 = 没打分
+    }) {
+      if (content.trim().isEmpty) return;
 
-    LexiconSentimentAnalyzer.instance.analyze(content).then((result) async {
-      try {
-        await _firestore.collection('posts').doc(postId).update({
-          'sentimentScore': result.score,
-          'sentimentLabel': result.label.toJson(),
-          'sentimentMatchedTokens': result.matchedTokenCount,
-          'sentimentAnalyzedAt': FieldValue.serverTimestamp(),
-        });
-        debugPrint('🧠 Sentiment analyzed for $postId: $result');
+      LexiconSentimentAnalyzer.instance.analyze(content).then((result) async {
+        try {
+          await _firestore.collection('posts').doc(postId).update({
+            'sentimentScore': result.score,
+            'sentimentLabel': result.label.toJson(),
+            'sentimentMatchedTokens': result.matchedTokenCount,
+            'sentimentAnalyzedAt': FieldValue.serverTimestamp(),
+          });
+          debugPrint('🧠 Sentiment analyzed for $postId: $result');
 
-        // 如果帖子挂了真实地点，把这次体验（只有 positive 才算）
-        // 反哺进推荐算法 —— 取代旧的用 likes 判断的逻辑
-        if (placeTypes.isNotEmpty) {
-          await UserPreferenceService.instance.updateFromPost(
-            placeTypes: placeTypes,
-            sentimentLabel: result.label,
-            sentimentMatchedTokens: result.matchedTokenCount,
-          );
+          // 如果帖子挂了真实地点，把这次体验反哺进推荐算法。
+          // 🆕 星级优先：用户打了分就以星级为准（更可靠），
+          // 没打分才退回用情感分析结果判断。
+          if (placeTypes.isNotEmpty) {
+            await UserPreferenceService.instance.updateFromPost(
+              placeTypes: placeTypes,
+              sentimentLabel: result.label,
+              sentimentMatchedTokens: result.matchedTokenCount,
+              postRating: postRating,
+            );
+          }
+        } catch (e) {
+          debugPrint('⚠️ Sentiment update failed for $postId: $e');
         }
-      } catch (e) {
-        debugPrint('⚠️ Sentiment update failed for $postId: $e');
-      }
-    });
-  }
-
+      });
+    }
+  
   Future<void> _pickImagesFromGallery() async {
     try {
       if (_maxMedia - selectedMedia.length <= 0) {
@@ -432,14 +433,16 @@ class _PostingPageState extends State<PostingPage> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _LocationPickerSheet(
-        // ★ 4 个参数：placeName, address, placeId(可为null), types
-        onPlaceSelected: (String placeName, String address, String? placeId, List<String> types) {
+        onPlaceSelected: (String placeName, String address, String? placeId,
+            List<String> types, double? lat, double? lng) {
           final city = _extractCityFromAddress(address);
           setState(() {
             selectedLocation = placeName;
             selectedCity = city;
             selectedPlaceId = placeId;
             selectedPlaceTypes = types;
+            selectedLat = lat;   // 🆕
+            selectedLng = lng;   // 🆕
           });
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text('Location: $placeName${city.isNotEmpty ? ' · $city' : ''}'),
@@ -449,70 +452,9 @@ class _PostingPageState extends State<PostingPage> {
         },
       ),
     );
-  }
+}
 
-  void _showTopicPicker() {
-    _dismissKeyboard();
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) {
-        return Container(
-          height: 350,
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
-          ),
-          child: Column(children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                const Text('Select Topic', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
-              ]),
-            ),
-            Expanded(
-              child: ListView(children: hotTopics.map((topic) {
-                return ListTile(
-                  leading: const Icon(Icons.tag, color: Color(0xFF7C4DFF)),
-                  title: Text(topic),
-                  trailing: selectedTopic == topic ? const Icon(Icons.check, color: Color(0xFF7C4DFF)) : null,
-                  onTap: () { setState(() => selectedTopic = topic); Navigator.pop(context); _showSuccessSnack('Topic added'); },
-                );
-              }).toList()),
-            ),
-          ]),
-        );
-      },
-    );
-  }
-
-  void _showVisibilitySettings() {
-    _dismissKeyboard();
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
-          ),
-          child: SafeArea(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const SizedBox(height: 20),
-              const Text('Who can see', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 20),
-              _buildVisibilityOption('public',  'Visible by everyone',  Icons.public),
-              _buildVisibilityOption('friends', 'Only friends can see', Icons.people),
-              _buildVisibilityOption('private', 'Only me can see',      Icons.lock),
-              const SizedBox(height: 20),
-            ]),
-          ),
-        );
-      },
-    );
-  }
+ 
 
   Widget _buildBadgePill(AchievementTier tier) {
     const tierColors = {
@@ -538,16 +480,6 @@ class _PostingPageState extends State<PostingPage> {
     );
   }
 
-  Widget _buildVisibilityOption(String value, String subtitle, IconData icon) {
-    bool isSelected = selectedVisibility == value;
-    return ListTile(
-      leading: Icon(icon, color: isSelected ? const Color(0xFF7C4DFF) : Colors.grey),
-      title: Text(value, style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
-      subtitle: Text(subtitle),
-      trailing: isSelected ? const Icon(Icons.check, color: Color(0xFF7C4DFF)) : null,
-      onTap: () { setState(() => selectedVisibility = value); Navigator.pop(context); },
-    );
-  }
 
   Future<void> _publishPost() async {
     _dismissKeyboard();
@@ -586,16 +518,19 @@ class _PostingPageState extends State<PostingPage> {
       await _statsService.incrementPostCount();
 
       // 触发后台 sentiment 分析 —— 不 await，不拖慢发布反馈
+      // 触发后台 sentiment 分析 —— 不 await，不拖慢发布反馈
       _runSentimentAnalysisInBackground(
         newPostId,
         _contentController.text.trim(),
         placeTypes: selectedPlaceTypes,
+        postRating: rating,   // 🆕 rating 是页面顶部 star selector 那个 int 字段
       );
 
       Navigator.pop(context);
       _showSuccessSnack('Post published successfully!');
       await Future.delayed(const Duration(milliseconds: 800));
-      if (mounted) Navigator.pop(context);
+      if (mounted) Navigator.pop(context, true); 
+      
     } catch (e) {
       Navigator.pop(context);
       _showErrorDialog('Failed to publish post: $e');
@@ -720,15 +655,8 @@ class _PostingPageState extends State<PostingPage> {
                     hasValue: selectedLocation != null,
                   ),
                   const Divider(height: 20),
-                  _buildFeatureButton(
-                    icon: Icons.tag, label: selectedTopic ?? 'Add Topic',
-                    onTap: _showTopicPicker, hasValue: selectedTopic != null,
-                  ),
-                  const Divider(height: 20),
-                  _buildFeatureButton(
-                    icon: Icons.visibility_outlined, label: 'Visibility: $selectedVisibility',
-                    onTap: _showVisibilitySettings, hasValue: true,
-                  ),
+      
+                 
                 ]),
               ),
               const SizedBox(height: 24),
@@ -969,8 +897,14 @@ class _PostingPageState extends State<PostingPage> {
 // Location Picker Sheet — placeId + types 版本
 // =====================================================
 class _LocationPickerSheet extends StatefulWidget {
-  // ★ 4 个参数：placeName, address, placeId(可为null), types
-  final void Function(String placeName, String address, String? placeId, List<String> types) onPlaceSelected;
+  final void Function(
+    String placeName,
+    String address,
+    String? placeId,
+    List<String> types,
+    double? lat,
+    double? lng,
+  ) onPlaceSelected;
   const _LocationPickerSheet({required this.onPlaceSelected});
 
   @override
@@ -1004,25 +938,25 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
 
     setState(() => _fetchingDetail = true);
     try {
-      // getPlaceLatLng 需要是已经返回 'types' 字段的版本
-      // （第一层改动 1：placesAPI_service.dart）
       final detail = await PlacesApiService.getPlaceLatLng(placeId);
       final address = detail?['address'] as String? ??
           suggestion['secondaryText'] as String? ??
           '';
       final types = (detail?['types'] as List?)?.cast<String>() ?? <String>[];
+      final lat = (detail?['lat'] as num?)?.toDouble();
+      final lng = (detail?['lng'] as num?)?.toDouble();
 
       Navigator.pop(context);
-      widget.onPlaceSelected(placeName, address, placeId, types);
+      widget.onPlaceSelected(placeName, address, placeId, types, lat, lng);
     } catch (_) {
       final address = suggestion['secondaryText'] as String? ?? '';
       Navigator.pop(context);
-      widget.onPlaceSelected(placeName, address, placeId, <String>[]);
+      widget.onPlaceSelected(placeName, address, placeId, <String>[], null, null);
     } finally {
       if (mounted) setState(() => _fetchingDetail = false);
     }
   }
-
+  
   @override
   void dispose() { _ctrl.dispose(); super.dispose(); }
 

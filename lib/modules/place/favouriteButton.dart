@@ -130,7 +130,7 @@ class _FavouriteButtonState extends State<FavouriteButton>
               ? SizedBox(
                   width: widget.iconSize,
                   height: widget.iconSize,
-                  child: TravelLoadingIndicator(),
+                  child: TravelLoadingIndicator(size: 22),
                 )
               : Icon(
                   isFav ? Icons.favorite : Icons.favorite_border,

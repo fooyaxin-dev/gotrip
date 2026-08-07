@@ -317,7 +317,7 @@ class PlacesApiService {
     final url = Uri.parse('$_baseUrl/places/$placeId');
     final response = await http.get(
       url,
-      headers: _headers('displayName,formattedAddress,location'),
+      headers: _headers('displayName,formattedAddress,location,types'), // ← 加 types
     );
 
     if (response.statusCode != 200) {
@@ -331,6 +331,7 @@ class PlacesApiService {
       'address': data['formattedAddress'] ?? '',
       'lat':     data['location']?['latitude'],
       'lng':     data['location']?['longitude'],
+      'types':   (data['types'] as List?)?.cast<String>() ?? <String>[], // ← 加这行
     };
   }
 

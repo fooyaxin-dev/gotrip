@@ -9,14 +9,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 String _extractCity(String address) {
   if (address.isEmpty) return '';
 
-  // Strategy 1: postcode pattern — "50000 Kuala Lumpur"
   final postcodeRegex = RegExp(r'\d{4,6}\s+([A-Za-z][^,]+)');
   final postcodeMatch = postcodeRegex.firstMatch(address);
   if (postcodeMatch != null) {
     return postcodeMatch.group(1)!.trim();
   }
 
-  // Strategy 2: second-to-last segment
   final parts = address.split(',').map((s) => s.trim()).toList();
   if (parts.length >= 2) {
     final candidate = parts[parts.length - 2];
@@ -25,7 +23,6 @@ String _extractCity(String address) {
     }
   }
 
-  // Strategy 3: last segment
   if (parts.isNotEmpty) return parts.last;
   return '';
 }
@@ -42,11 +39,11 @@ class HistoryEntry {
   final DateTime visitedAt;
   final String itineraryId;
   final String itineraryTitle;
-  final String? placeId;      // ← 新增：Google Place ID
-  final String? primaryType;  // ← 新增：e.g. 'restaurant', 'park'
-  final String? city;         // ← 新增：extracted from address
-  final double? lat;   // ★ 新增
-  final double? lng;   // ★ 新增
+  final String? placeId;
+  final String? primaryType;
+  final String? city;
+  final double? lat;
+  final double? lng;
 
   HistoryEntry({
     required this.id,
@@ -59,8 +56,8 @@ class HistoryEntry {
     this.placeId,
     this.primaryType,
     this.city,
-    this.lat,   // ★ 新增
-    this.lng,   // ★ 新增
+    this.lat,
+    this.lng,
   });
 
   factory HistoryEntry.fromMap(String id, Map<String, dynamic> m) =>
@@ -75,8 +72,8 @@ class HistoryEntry {
         placeId:        m['placeId'],
         primaryType:    m['primaryType'],
         city:           m['city'],
-        lat:            (m['lat'] as num?)?.toDouble(),  // ★ 新增
-        lng:            (m['lng'] as num?)?.toDouble(),  // ★ 新增
+        lat:            (m['lat'] as num?)?.toDouble(),
+        lng:            (m['lng'] as num?)?.toDouble(),
       );
 
   Map<String, dynamic> toMap() => {
@@ -171,41 +168,55 @@ class HistoryService {
     }
   }
 
-  // Returns entries grouped by itinerary, newest trip first
+  // Shared grouping logic between the one-off fetch and the live stream —
+  // keeps "group by itineraryId, sort trips newest-first" in exactly one place.
+  List<TripHistory> _groupAndSort(List<HistoryEntry> entries) {
+    final Map<String, TripHistory> grouped = {};
+    for (final e in entries) {
+      if (grouped.containsKey(e.itineraryId)) {
+        grouped[e.itineraryId]!.places.add(e);
+      } else {
+        grouped[e.itineraryId] = TripHistory(
+          itineraryId:    e.itineraryId,
+          itineraryTitle: e.itineraryTitle,
+          places:         [e],
+        );
+      }
+    }
+    final trips = grouped.values.toList()
+      ..sort((a, b) => b.latestVisit.compareTo(a.latestVisit));
+    return trips;
+  }
+
+  // One-off read — kept for callers that just want a snapshot (e.g. a
+  // pull-to-refresh action), not a live subscription.
   Future<List<TripHistory>> fetchGrouped() async {
     if (_col == null) return [];
     try {
-      final snap = await _col!
-          .orderBy('visitedAt', descending: true)
-          .get();
-
+      final snap = await _col!.orderBy('visitedAt', descending: true).get();
       final entries = snap.docs
-          .map((d) => HistoryEntry.fromMap(
-                d.id, d.data() as Map<String, dynamic>))
+          .map((d) => HistoryEntry.fromMap(d.id, d.data() as Map<String, dynamic>))
           .toList();
-
-      // Group by itineraryId
-      final Map<String, TripHistory> grouped = {};
-      for (final e in entries) {
-        if (grouped.containsKey(e.itineraryId)) {
-          grouped[e.itineraryId]!.places.add(e);
-        } else {
-          grouped[e.itineraryId] = TripHistory(
-            itineraryId:    e.itineraryId,
-            itineraryTitle: e.itineraryTitle,
-            places:         [e],
-          );
-        }
-      }
-
-      // Sort trips: most recently visited first
-      final trips = grouped.values.toList()
-        ..sort((a, b) => b.latestVisit.compareTo(a.latestVisit));
-
-      return trips;
+      return _groupAndSort(entries);
     } catch (e) {
       print('❌ HistoryService.fetchGrouped: $e');
       return [];
     }
+  }
+
+  // Live version — use this in the UI (StreamBuilder) so new check-ins from
+  // anywhere in the app (e.g. finishing an itinerary) show up immediately
+  // without needing to leave and re-enter the Profile page.
+  Stream<List<TripHistory>> streamGrouped() {
+    if (_col == null) return Stream.value([]);
+    return _col!
+        .orderBy('visitedAt', descending: true)
+        .snapshots()
+        .map((snap) {
+          final entries = snap.docs
+              .map((d) => HistoryEntry.fromMap(d.id, d.data() as Map<String, dynamic>))
+              .toList();
+          return _groupAndSort(entries);
+        });
   }
 }

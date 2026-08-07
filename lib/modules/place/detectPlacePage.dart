@@ -174,10 +174,24 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   void initState() {
     super.initState();
 
-    // ── Travel mode 现在跟随 UserPreferenceService，实时同步 ─────────────
+    // 🆕 立刻给一个初始相机位置，不等 _bootstrap() —— 让 GoogleMap
+    // 的原生初始化尽早开始，跟后面拿定位/landmark数据的时间重叠，
+    // 而不是叠加在一起。
+    final fallback = widget.landmarkLat != null && widget.landmarkLng != null
+        ? LatLng(widget.landmarkLat!, widget.landmarkLng!)
+        : (LocationService.instance.currentPosition != null
+            ? LatLng(
+                LocationService.instance.currentPosition!.latitude,
+                LocationService.instance.currentPosition!.longitude,
+              )
+            : const LatLng(3.1390, 101.6869)); // 再兜底一个默认城市坐标
+
+    _initialCameraPosition = CameraPosition(target: fallback, zoom: 14);
+
+    // ... 原本其它 initState 逻辑不变
     _syncTravelModeFromPreference();
     UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged);
-    WeatherService.instance.weatherChanged.addListener(_onWeatherChanged); 
+    WeatherService.instance.weatherChanged.addListener(_onWeatherChanged);
     _bootstrap();
 
     _searchFocus.addListener(() {
@@ -1092,7 +1106,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     final List<PlaceModel> sortedGeoapifyPlaces = _rankedGeoapifyPlaces;
 
     if (_initialCameraPosition == null) {
-      return const Scaffold(body: Center(child: TravelLoadingIndicator()));
+      return const Scaffold(body: Center(child: TravelLoadingIndicator(size: 22)));
     }
 
     return Scaffold(
@@ -1341,7 +1355,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                               children: [
                                 SizedBox(
                                   width: 16, height: 16,
-                                  child: TravelLoadingIndicator(),
+                                  child: TravelLoadingIndicator(size: 22),
                                 ),
                                 SizedBox(width: 10),
                                 Text('Searching nearby...',
@@ -2180,14 +2194,16 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         : _travelMode == TravelMode.motor
             ? TravelMode.drive
             : null;
-  
+
     final nextRadius = nextMode != null
-      ? (nextMode == TravelMode.motor ? 8000 : 12000)   // 🔧 15000 → 12000
+      ? (nextMode == TravelMode.motor ? 8000 : 12000)
       : null;
 
     final nextLabel = nextRadius != null
         ? '${nextRadius ~/ 1000} km'
         : null;
+
+    final bool isForYouMode = _sortMode == SortMode.recommended;   // 🆕
 
     return Center(child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -2205,14 +2221,19 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
           OutlinedButton(
             onPressed: () {
-              setState(() {
-                _selectedPrimary   = null;
-                _selectedSecondary = 'all';
-                _travelModeManuallySet = true;
-              });
-              _applyFilter();
+              if (isForYouMode) {                     // 🔧 CHANGED
+                setState(() => _sortMode = SortMode.distance);
+                _recomputeRanking();
+              } else {
+                setState(() {
+                  _selectedPrimary   = null;
+                  _selectedSecondary = 'all';
+                  _travelModeManuallySet = true;
+                });
+                _applyFilter();
+              }
             },
-            child: const Text('Show All'),
+            child: Text(isForYouMode ? 'Show Nearest instead' : 'Show All'),   // 🔧 CHANGED
           ),
           if (nextMode != null) ...[
             const SizedBox(width: 12),
@@ -2240,7 +2261,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       ],
     ));
   }
-
+  
   Widget _buildForYouEmptyState() {
   final nextMode = _travelMode == TravelMode.walk
       ? TravelMode.motor

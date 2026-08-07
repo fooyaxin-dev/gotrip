@@ -281,131 +281,32 @@ class _InteractionPageState extends State<InteractionPage> {
   // ─── Location tap modal ────────────────────────────────────────────────────
 
   void _onLocationTap(Post post) {
-    // 没有 lat/lng → 只筛选城市帖子
-    if (post.locationLat == null || post.locationLng == null) {
-      if (post.city != null && post.city!.isNotEmpty) {
-        setState(() {
-          _isSearchActive = false;
-          _selectedCity      = post.city;
-          _selectedCityLabel = post.city;
-          _searchController.text = post.city!;
-        });
-        _loadFeedFirstPage();
-      }
+    if (post.locationLat != null && post.locationLng != null) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => RealTimeDetectPage(
+            landmarkLat: post.locationLat,
+            landmarkLng: post.locationLng,
+            onBack: () => Navigator.pop(context),
+          ),
+        ),
+      );
       return;
     }
 
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
-        ),
-        padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── 地点标题 ──
-            Row(children: [
-              const Icon(Icons.location_on, color: Color(0xFFD35D3E), size: 18),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  post.location ?? post.city ?? '',
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ]),
-            const SizedBox(height: 20),
-
-            // ── Option 1: Explore nearby ──
-            _buildLocationOption(
-              icon: Icons.explore,
-              color: const Color(0xFF7C4DFF),
-              title: 'Explore ${post.city ?? post.location}',
-              subtitle: 'See nearby places & recommendations',
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => RealTimeDetectPage(
-                      landmarkLat: post.locationLat,
-                      landmarkLng: post.locationLng,
-                      onBack: () => Navigator.pop(context),
-                    ),
-                  ),
-                );
-              },
-            ),
-
-            const SizedBox(height: 12),
-
-            // ── Option 2: Posts about this city ──
-            _buildLocationOption(
-              icon: Icons.article_outlined,
-              color: const Color(0xFFD35D3E),
-              title: 'Posts about ${post.city ?? post.location}',
-              subtitle: 'See what others shared about this place',
-              onTap: () {
-                Navigator.pop(context);
-                if (post.city != null && post.city!.isNotEmpty) {
-                  setState(() {
-                    _isSearchActive = false;
-                    _selectedCity      = post.city;
-                    _selectedCityLabel = post.city;
-                    _searchController.text = post.city!;
-                  });
-                  _loadFeedFirstPage(); // ★ 新增：切换城市后重新拉第一页
-                }
-              },
-            ),
-          ],
-        ),
-      ),
-    );
+    if (post.city != null && post.city!.isNotEmpty) {
+      setState(() {
+        _isSearchActive = false;
+        _selectedCity      = post.city;
+        _selectedCityLabel = post.city;
+        _searchController.text = post.city!;
+      });
+      _loadFeedFirstPage();
+    }
   }
-
-  Widget _buildLocationOption({
-    required IconData icon,
-    required Color color,
-    required String title,
-    required String subtitle,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.05),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withOpacity(0.2)),
-        ),
-        child: Row(children: [
-          Container(
-            width: 44, height: 44,
-            decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle),
-            child: Icon(icon, color: color, size: 22),
-          ),
-          const SizedBox(width: 16),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color)),
-            const SizedBox(height: 2),
-            Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-          ])),
-          Icon(Icons.arrow_forward_ios, size: 14, color: color),
-        ]),
-      ),
-    );
-  }
-
+  
+ 
   // ── Sentiment badge ──────────────────────────────────────────────────────
   // 只在后台情感分析已完成时（post.hasSentimentResult）显示。
   // 颜色随情感极性变化，直接反映社区对这个地点/体验的整体感受。
@@ -434,6 +335,28 @@ class _InteractionPageState extends State<InteractionPage> {
     );
   }
 
+  // ── Rating badge ─────────────────────────────────────────────────────────
+  // 只有 rating > 0 才会调用到这里 —— 用户没打分的帖子完全不显示这个 badge，
+  // 不会被误解成"0星差评"。
+  Widget _buildRatingBadge(int rating) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.orange.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.orange.withOpacity(0.3)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.star_rounded, size: 12, color: Colors.orange),
+        const SizedBox(width: 3),
+        Text('$rating.0',
+            style: const TextStyle(
+                fontSize: 10, fontWeight: FontWeight.bold, color: Colors.orange)),
+      ]),
+    );
+  }
+
+
   // ─── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -461,7 +384,16 @@ class _InteractionPageState extends State<InteractionPage> {
           actions: [
             IconButton(
               icon: const Icon(Icons.add_circle_outline, color: Colors.black, size: 28),
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PostingPage())),
+              onPressed: () async {
+                final posted = await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const PostingPage()),
+                );
+                if (posted == true) {
+                  _userCache.clear();          // 顺手清一下缓存,防止头像/用户名是旧数据
+                  _loadFeedFirstPage();        // 只有真的发布成功才刷新
+                }
+              },
             ),
             const SizedBox(width: 8),
           ],
@@ -569,7 +501,7 @@ class _InteractionPageState extends State<InteractionPage> {
           hintText: 'Search posts, tags...',
           hintStyle: TextStyle(color: Colors.grey[400], fontSize: 13),
           prefixIcon: _isSearchLoading
-            ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: TravelLoadingIndicator()))
+            ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: TravelLoadingIndicator(size: 22)))
             : const Icon(Icons.search, color: Color(0xFF7C4DFF), size: 20),
           suffixIcon: _searchController.text.isNotEmpty
               ? IconButton(icon: const Icon(Icons.close, size: 18, color: Colors.grey), onPressed: _clearSearch)
@@ -712,7 +644,17 @@ class _InteractionPageState extends State<InteractionPage> {
       ),
       const SizedBox(height: 24),
       ElevatedButton.icon(
-        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PostingPage())),
+        onPressed: () async {
+          final posted = await Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const PostingPage()),
+          );
+          print('🔍 posted = $posted'); 
+          if (posted == true) {
+            _userCache.clear();
+            _loadFeedFirstPage();
+          }
+        },
         icon: const Icon(Icons.add),
         label: const Text('Post Story'),
         style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD35D3E), padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12)),
@@ -775,7 +717,14 @@ class _InteractionPageState extends State<InteractionPage> {
                         ]),
                       ),
                     ),
-                  if (post.hasSentimentResult) _buildSentimentBadge(post.sentimentLabel!),
+                  if (post.rating > 0) ...[
+                    const SizedBox(width: 6),
+                    _buildRatingBadge(post.rating),
+                  ],
+                  if (post.hasSentimentResult) ...[
+                    const SizedBox(width: 6),
+                    _buildSentimentBadge(post.sentimentLabel!),
+                  ],
                 ]),
               ),
 

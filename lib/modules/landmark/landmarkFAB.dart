@@ -112,15 +112,15 @@ class _LandmarkFABState extends State<LandmarkFAB>
     final controller = _cameraController;
     if (controller == null || !controller.value.isInitialized) return;
 
-    if (state == AppLifecycleState.inactive ||
+    if (
         state == AppLifecycleState.paused) {
       _isFlashOn = false;
       controller.dispose();
       _cameraController = null;
       if (mounted) setState(() => _isCameraReady = false);
-    } else if (state == AppLifecycleState.resumed) {
-      _initCamera();
-    }
+   } else if (state == AppLifecycleState.resumed) {
+  if (_cameraController == null) _initCamera();
+}
   }
 
   @override
@@ -154,9 +154,8 @@ class _LandmarkFABState extends State<LandmarkFAB>
     debugPrint('🚀 Calling VisionService.detectLandmark...');
 
     try {
-      final landmarkResult = await VisionService
-          .detectLandmark(base64Image)
-          .timeout(const Duration(seconds: 15));
+      final landmarkResult =
+          await VisionService.detectLandmark(base64Image);
 
       // Check again — the network call may have outlived the request's
       // relevance (user navigated away, fired another capture, etc).
@@ -188,7 +187,7 @@ class _LandmarkFABState extends State<LandmarkFAB>
         _previewBytes = null;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('识别失败，请检查网络后重试')),
+        const SnackBar(content: Text('Recognition failed, please try again')),
       );
     }
   }
@@ -209,23 +208,29 @@ class _LandmarkFABState extends State<LandmarkFAB>
 
     try {
       final file = await _cameraController!.takePicture();
+if (myRequestId != _requestId || !mounted) return;
 
-      if (myRequestId != _requestId || !mounted) return;
+final rawBytes = await File(file.path).readAsBytes();
 
-      final rawBytes = await File(file.path).readAsBytes();
+// 立刻冻结画面，不等 orientation-fix
+if (myRequestId == _requestId && mounted) {
+  setState(() {
+    _previewBytes = rawBytes;
+    _loading = true;
+    _statusText = 'Processing image...';
+  });
+}
 
-      // Decode/orientation-fix/resize/encode — all off the UI isolate.
-      final bytes = await compute(_fixOrientationAndEncode, rawBytes);
+final bytes = await compute(_fixOrientationAndEncode, rawBytes);
+if (myRequestId != _requestId || !mounted) return;
 
-      if (myRequestId != _requestId || !mounted) return;
-
-      await _processImage(bytes, myRequestId);
+await _processImage(bytes, myRequestId);
     } catch (e) {
       debugPrint('⚠️ takePicture failed: $e');
       if (myRequestId != _requestId || !mounted) return;
       setState(() => _loading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('拍照失败，请重试')),
+        const SnackBar(content: Text('Failed to take picture, please try again')),
       );
     }
   }
@@ -249,17 +254,25 @@ class _LandmarkFABState extends State<LandmarkFAB>
       });
 
       final rawBytes = await File(pickedFile.path).readAsBytes();
-      final bytes = await compute(_fixOrientationAndEncode, rawBytes);
 
+      if (myRequestId != _requestId || !mounted) return;
+      setState(() {
+        _previewBytes = rawBytes;      // 立刻冻结画面
+        _loading = true;
+        _statusText = 'Processing image...';
+      });
+
+      final bytes = await compute(_fixOrientationAndEncode, rawBytes);
       if (myRequestId != _requestId || !mounted) return;
 
       await _processImage(bytes, myRequestId);
+
     } catch (e) {
       debugPrint('⚠️ pickImage failed: $e');
       if (myRequestId != _requestId || !mounted) return;
       setState(() => _loading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('选择图片失败，请重试')),
+        const SnackBar(content: Text('Failed to pick image, please try again')),
       );
     }
   }
@@ -429,11 +442,11 @@ class _LandmarkFABState extends State<LandmarkFAB>
                       color: Colors.white, shape: BoxShape.circle,
                     ),
                     child: _loading
-                        ? const Padding(
-                            padding: EdgeInsets.all(15),
-                            child: TravelLoadingIndicator(),
-                          )
-                        : const Icon(Icons.camera_alt, color: Colors.black, size: 30),
+                      ? const Padding(
+                          padding: EdgeInsets.all(15),
+                          child: TravelLoadingIndicator(size: 22, color: Colors.black),
+                        )
+                      : const Icon(Icons.camera_alt, color: Colors.black, size: 30),
                   ),
                 ),
               ),

@@ -246,36 +246,10 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
                           style: TextStyle(
                               fontSize: 12, color: Colors.grey[500])),
                     const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        // Detection method badge
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: entry.detectionMethod == 'vision'
-                                ? Colors.blue[50]
-                                : Colors.purple[50],
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            entry.detectionMethod == 'vision'
-                                ? 'Vision' : 'AI Vision',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              color: entry.detectionMethod == 'vision'
-                                  ? Colors.blue[700] : Colors.purple[700],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          _formatDate(entry.scannedAt),
-                          style: TextStyle(
-                              fontSize: 11, color: Colors.grey[400]),
-                        ),
-                      ],
+                    Text(
+                      _formatDate(entry.scannedAt),
+                      style: TextStyle(
+                          fontSize: 11, color: Colors.grey[400]),
                     ),
                   ],
                 ),

@@ -15,7 +15,9 @@ import '../place/routeOptimizerPage.dart';
 import '../../services/connectivity_service.dart';
 
 class GenerateItineraryPage extends StatefulWidget {
-  const GenerateItineraryPage({super.key});
+
+  final VoidCallback? onItinerarySaved;
+  const GenerateItineraryPage({super.key,this.onItinerarySaved});
 
   @override
   State<GenerateItineraryPage> createState() => _GenerateItineraryPageState();
@@ -350,6 +352,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     );
 
     if (saved == true && mounted) {
+      widget.onItinerarySaved?.call(); 
       Navigator.of(context).removeRoute(ModalRoute.of(context)!);
     }
   }
@@ -424,7 +427,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       context:     context,
       initialDate: _startDate,
       firstDate:   DateTime.now(),
-      lastDate:    DateTime.now().add(const Duration(days: 365)),
+      lastDate: DateTime(DateTime.now().year + 15, 12, 31),
+      initialEntryMode: DatePickerEntryMode.calendarOnly,  // 🆕 锁死日历模式，去掉手动输入入口
       builder: (context, child) => Theme(
         data: Theme.of(context).copyWith(
           colorScheme: const ColorScheme.light(primary: Color(0xFF7C4DFF)),
@@ -751,7 +755,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                           children: [
                             const SizedBox(
                               width: 20, height: 20,
-                              child: TravelLoadingIndicator(),
+                              child: TravelLoadingIndicator(size: 22),
                             ),
                             const SizedBox(width: 12),
                             Flexible(
@@ -916,7 +920,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                                 padding: EdgeInsets.all(12),
                                 child: SizedBox(
                                   width: 16, height: 16,
-                                  child: TravelLoadingIndicator(),
+                                  child: TravelLoadingIndicator(size: 22),
                                 ),
                               )
                             : Icon(Icons.place_rounded,

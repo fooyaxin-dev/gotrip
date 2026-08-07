@@ -24,15 +24,31 @@ import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
 
 class TravelLoadingIndicator extends StatelessWidget {
-  /// 不传 = 自动居中撑满可用空间；传了 = 固定小尺寸内联显示
   final double? size;
-
+  final Color? color; 
   static const String _animationPath = 'assets/loading_cat.json';
 
-  const TravelLoadingIndicator({super.key, this.size});
+  // 🆕 低于这个尺寸，Lottie 插画会被压得看不清，改用简洁的圆圈转圈
+  static const double _smallSizeThreshold = 40;
+
+  const TravelLoadingIndicator({super.key, this.size, this.color});
 
   @override
   Widget build(BuildContext context) {
+    // 🆕 小尺寸场景（按钮/inline 加载）——用标准圆圈，不用插画动画
+    if (size != null && size! <= _smallSizeThreshold) {
+      return SizedBox(
+        width: size,
+        height: size,
+        child: CircularProgressIndicator(
+          strokeWidth: 2.2,
+          valueColor: AlwaysStoppedAnimation<Color>(
+            color ?? Colors.white,   // 默认仍是白色，不破坏其它调用点
+          ),
+        ),
+      );
+    }
+
     final double displaySize = size ?? 290;
 
     final animation = Lottie.asset(
@@ -44,7 +60,7 @@ class TravelLoadingIndicator extends StatelessWidget {
         width: displaySize,
         height: displaySize,
         child: Lottie.asset(
-          'assets/travelLoading.json', 
+          'assets/travelLoading.json',
           width: size,
           height: size,
           fit: BoxFit.contain,
@@ -53,12 +69,9 @@ class TravelLoadingIndicator extends StatelessWidget {
       ),
     );
 
-    // 没给固定 size → 自己负责在可用空间里居中，调用方不用再包 Center
     if (size == null) {
       return Center(child: animation);
     }
-
-    // 给了 size → 当作普通内联小 widget，位置交给调用方（Row/按钮等）决定
     return animation;
   }
 }

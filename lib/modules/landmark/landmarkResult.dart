@@ -136,37 +136,6 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
   String get _wikiUrl => _wikiResult?['wikiUrl'] ?? '';
 
-  String get _badgeLabel {
-    switch (_result.method) {
-      case DetectionMethod.visionLandmark: return 'Vision';
-      case DetectionMethod.geminiVision:   return 'AI Vision';
-      case DetectionMethod.notDetected:    return '';
-    }
-  }
-
-  Color get _badgeBg {
-    switch (_result.method) {
-      case DetectionMethod.visionLandmark: return Colors.blue.shade50;
-      case DetectionMethod.geminiVision:   return Colors.purple.shade50;
-      case DetectionMethod.notDetected:    return Colors.grey.shade100;
-    }
-  }
-
-  Color get _badgeColor {
-    switch (_result.method) {
-      case DetectionMethod.visionLandmark: return Colors.blue.shade700;
-      case DetectionMethod.geminiVision:   return Colors.purple.shade700;
-      case DetectionMethod.notDetected:    return Colors.grey;
-    }
-  }
-
-  IconData get _badgeIcon {
-    switch (_result.method) {
-      case DetectionMethod.visionLandmark: return Icons.location_on_rounded;
-      case DetectionMethod.geminiVision:   return Icons.auto_awesome;
-      case DetectionMethod.notDetected:    return Icons.help_outline;
-    }
-  }
 
   // ── Place ID for FavouriteButton ──────────────────────────
   // Use Google Places id if available, fallback to landmark name slug
@@ -669,6 +638,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                 : _buildSummaryContent(),
             const SizedBox(height: 24),
             if (!_infoLoading) _buildMapSection(pos),
+            const SizedBox(height: 24),
           ],
         ],
       ),
@@ -750,9 +720,11 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
             ),
             const SizedBox(width: 8),
             // Language picker
-            PopupMenuButton<String>(
-              initialValue: _selectedLangCode,
-              onSelected: _translateTo,
+            IgnorePointer(
+              ignoring: _translating,
+              child: PopupMenuButton<String>(
+                initialValue: _selectedLangCode,
+                onSelected: _translateTo,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16)),
               itemBuilder: (_) => _languages
@@ -769,7 +741,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
               child: _translating
                   ? const SizedBox(
                       width: 20, height: 20,
-                      child: TravelLoadingIndicator())
+                      child: TravelLoadingIndicator(size: 22))
                   : Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 4),
@@ -791,30 +763,14 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
                         ],
                       ),
                     ),
+              ),
             ),
+
             const SizedBox(width: 8),
             // Detection method badge
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: _badgeBg,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(_badgeIcon, size: 10, color: _badgeColor),
-                  const SizedBox(width: 3),
-                  Text(_badgeLabel,
-                      style: TextStyle(
-                          color: _badgeColor,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold)),
-                ],
-              ),
-            ),
+  
           ],
+          
         ),
         const SizedBox(height: 16),
         if (_imagesLoading)
@@ -822,21 +778,27 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         else if (displayImages.isNotEmpty)
           _buildImageCarousel(),
           
-        if (_displayExtract.isNotEmpty)
+        if (_displayExtract.isNotEmpty || _translating)
           Container(
             padding: const EdgeInsets.only(left: 16),
             decoration: BoxDecoration(
               border: Border(
                   left: BorderSide(color: Colors.grey[300]!, width: 3)),
             ),
-            child: Text(
-              _displayExtract,
-              textAlign: TextAlign.justify,
-              style: TextStyle(
-                  fontSize: 15,
-                  color: Colors.grey[800],
-                  height: 1.7,
-                  fontStyle: FontStyle.italic),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: _translating
+                  ? _buildTranslatingPlaceholder()
+                  : Text(
+                      _displayExtract,
+                      key: const ValueKey('extract'),
+                      textAlign: TextAlign.justify,
+                      style: TextStyle(
+                          fontSize: 15,
+                          color: Colors.grey[800],
+                          height: 1.7,
+                          fontStyle: FontStyle.italic),
+                    ),
             ),
           ),
         const SizedBox(height: 16),
@@ -857,6 +819,33 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       ],
     );
   }
+
+
+Widget _buildTranslatingPlaceholder() {
+  return Padding(
+    key: const ValueKey('translating'),
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          'Translating…',
+          style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey[500],
+              fontStyle: FontStyle.italic),
+        ),
+      ],
+    ),
+  );
+}
+
 
   Widget _buildImageCarousel() {
     final visible =

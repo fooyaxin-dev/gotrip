@@ -31,10 +31,18 @@ class _ItineraryPageState extends State<ItineraryPage>
     _outerTabController = TabController(length: 2, vsync: this);
     _innerTabController = TabController(length: 2, vsync: this);
     _load();
+    ItineraryService.instance.itinerariesChanged.addListener(_onItinerariesChanged); // 🆕
   }
+
+  void _onItinerariesChanged() {
+    if (!mounted) return;
+    _load(silent: true); // 你已有的 silent 参数，静默刷新，不会闪 loading spinner
+  }
+
 
   @override
   void dispose() {
+    ItineraryService.instance.itinerariesChanged.removeListener(_onItinerariesChanged);
     _outerTabController.dispose();
     _innerTabController.dispose();
     super.dispose();
@@ -465,11 +473,8 @@ class _ItineraryPageState extends State<ItineraryPage>
 
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const GenerateItineraryPage(),
-      ),
+      MaterialPageRoute(builder: (_) => const GenerateItineraryPage()),
     );
-    _load(); // generate page pop 回来就 reload
   }
 
 }

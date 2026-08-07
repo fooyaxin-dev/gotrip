@@ -211,7 +211,7 @@ class _EditPostPageState extends State<EditPostPage> {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: _isSaving
-                    ? const SizedBox(width: 14, height: 14, child: TravelLoadingIndicator())
+                    ? const SizedBox(width: 14, height: 14, child: TravelLoadingIndicator(size: 22))
                     : const Text('Save', style: TextStyle(color: Colors.white, fontSize: 14)),
               ),
             ),
@@ -262,19 +262,6 @@ class _EditPostPageState extends State<EditPostPage> {
                 contentPadding: const EdgeInsets.all(16),
               ),
             ),
-
-            const SizedBox(height: 20),
-
-            // ── Visibility ──
-            const Text('Visibility', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black54)),
-            const SizedBox(height: 8),
-            Row(children: [
-              _buildVisibilityChip('public',  Icons.public,  'Public'),
-              const SizedBox(width: 8),
-              _buildVisibilityChip('friends', Icons.people,  'Friends'),
-              const SizedBox(width: 8),
-              _buildVisibilityChip('private', Icons.lock,    'Private'),
-            ]),
 
             const SizedBox(height: 20),
 

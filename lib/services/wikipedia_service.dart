@@ -335,9 +335,7 @@ class WikipediaService {
   // ============================================================
   // 🔁 SEARCH FALLBACK
   // ============================================================
-  static Future<Map<String, dynamic>> searchWikipedia(
-    String query,
-  ) async {
+  static Future<Map<String, dynamic>> searchWikipedia(String query) async {
     try {
       final searchUrl = Uri.parse(
         'https://en.wikipedia.org/w/api.php'
@@ -354,7 +352,19 @@ class WikipediaService {
         final results = data['query']['search'] as List<dynamic>;
 
         if (results.isNotEmpty) {
-          final firstTitle = results.first['title'];
+          final firstTitle = results.first['title'] as String;
+
+          // ── FIX: 全文搜索可能匹配到完全不相关的条目
+          // (例如 "Bali Swing" 搜到 "Stephen Bali" 这种人名条目)。
+          // 加一个标题相似度校验，差太远就宁可返回空，也不要展示错误内容。
+          if (!_isRelevantMatch(query, firstTitle)) {
+            debugPrint(
+              '⚠️ searchWikipedia: "$firstTitle" doesn\'t look related '
+              'to "$query", discarding.',
+            );
+            return _emptyResult(query);
+          }
+
           return _fetchFromWikipedia(firstTitle);
         }
       }
@@ -362,6 +372,26 @@ class WikipediaService {
     } catch (e) {
       return _emptyResult(query);
     }
+  }
+
+  // 简单的词重叠校验：查询词里的关键词，至少要有一部分出现在
+  // 结果标题里，才认为这个匹配靠谱。避免全文搜索把语义无关但
+  // 恰好共享一个词的条目（比如人名）当成答案。
+  static bool _isRelevantMatch(String query, String resultTitle) {
+    final queryWords = query
+        .toLowerCase()
+        .split(RegExp(r'\s+'))
+        .where((w) => w.length > 2) // 忽略太短的词 (of/the/at 等)
+        .toSet();
+
+    if (queryWords.isEmpty) return true; // 查询词太短，不校验
+
+    final titleLower = resultTitle.toLowerCase();
+    final matchedWords =
+        queryWords.where((w) => titleLower.contains(w)).length;
+
+    // 至少一半的关键词要出现在结果标题里
+    return matchedWords / queryWords.length >= 0.5;
   }
 
 

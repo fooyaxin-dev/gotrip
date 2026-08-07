@@ -19,6 +19,7 @@ import 'editProfile.dart';
 import '../../services/apps_Loading.dart';
 import '../interaction/postMedia.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'journalBookPage.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOCAL VIDEO PLAYER
@@ -650,31 +651,23 @@ class _HistoryWidget extends StatefulWidget {
   const _HistoryWidget({super.key});
 
   @override
-  State<_HistoryWidget> createState() => _HistoryWidgetState();
-}
-
-class _HistoryWidgetState extends State<_HistoryWidget> {
-  late Future<List<TripHistory>> _future;
-
-  @override
-  void initState() {
-    super.initState();
-    _future = HistoryService.instance.fetchGrouped();
+    State<_HistoryWidget> createState() => _HistoryWidgetState();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<List<TripHistory>>(
-      future: _future,
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const SizedBox(
-            height: 240,
-            child: Center(child: TravelLoadingIndicator()),
-          );
-        }
-        final trips = snap.data ?? [];
-        if (trips.isEmpty) return _buildEmptyState();
+  class _HistoryWidgetState extends State<_HistoryWidget> {
+    @override
+    Widget build(BuildContext context) {
+      return StreamBuilder<List<TripHistory>>(
+        stream: HistoryService.instance.streamGrouped(),
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const SizedBox(
+              height: 240,
+              child: Center(child: TravelLoadingIndicator()),
+            );
+          }
+          final trips = snap.data ?? [];
+          if (trips.isEmpty) return _buildEmptyState();
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -686,8 +679,24 @@ class _HistoryWidgetState extends State<_HistoryWidget> {
                 children: [
                   const Text('My Trips',
                       style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF1A1A2E), letterSpacing: -0.5)),
-                  Text('${trips.length} trip${trips.length > 1 ? "s" : ""}',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[400], fontWeight: FontWeight.w500)),
+                  Row(
+                    children: [
+                      Text('${trips.length} trip${trips.length > 1 ? "s" : ""}',
+                          style: TextStyle(fontSize: 12, color: Colors.grey[400], fontWeight: FontWeight.w500)),
+                      const SizedBox(width: 10),
+                      GestureDetector(
+                        onTap: trips.isEmpty ? null : () => _openJournalBook(context, trips, trips.first, isOverall: true),
+                        child: Row(
+                          children: [
+                            Icon(Icons.menu_book_rounded, size: 14, color: Color(0xFFD35D3E)),
+                            const SizedBox(width: 3),
+                            Text('View All',
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFD35D3E))),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -701,7 +710,7 @@ class _HistoryWidgetState extends State<_HistoryWidget> {
                 itemBuilder: (_, i) => _TripCard(
                   trip: trips[i],
                   index: i,
-                  onTap: () => _openTripDetail(context, trips[i]),
+                  onTap: () => _openJournalBook(context, [trips[i]], trips[i] , isOverall: false),
                 ),
               ),
             ),
@@ -710,6 +719,20 @@ class _HistoryWidgetState extends State<_HistoryWidget> {
       },
     );
   }
+
+    void _openJournalBook(BuildContext context, List<TripHistory> trips, TripHistory tapped, {required bool isOverall}) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => JournalBookPage(
+            trips: trips,
+            initialItineraryId: tapped.itineraryId,
+            isOverall: isOverall,
+          ),
+        ),
+      );
+    }
 
   Widget _buildEmptyState() {
     return SizedBox(
