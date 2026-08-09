@@ -17,6 +17,15 @@ class CategoryMapper {
     'restaurant', 'cafe', 'coffee_shop', 'bakery', 'bar',
     'fast_food_restaurant', 'food_court', 'dessert_shop',
     'meal_takeaway', 'meal_delivery',
+    // 🆕 Google 常见的"菜系_restaurant"命名变体 —— 之前没收进来，
+    // 会导致这些地点被 toPrimaryType() 误判成 'other'，
+    // 连带影响 favourite/post/placeView 的学习和 buildForYouList 的匹配
+    'chinese_restaurant', 'malaysian_restaurant', 'malay_restaurant',
+    'indian_restaurant', 'western_restaurant', 'american_restaurant',
+    'japanese_restaurant', 'korean_restaurant', 'thai_restaurant',
+    'italian_restaurant', 'vietnamese_restaurant', 'seafood_restaurant',
+    'vegetarian_restaurant', 'buffet_restaurant', 'steak_house',
+    'sushi_restaurant', 'pizza_restaurant', 'ramen_restaurant',
   ];
 
   static const transitTypes = [

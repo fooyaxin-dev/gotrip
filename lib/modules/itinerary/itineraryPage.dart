@@ -22,6 +22,10 @@ class _ItineraryPageState extends State<ItineraryPage>
     with TickerProviderStateMixin {
   List<ItineraryModel> _itineraries = [];
   bool _loading = true;
+
+  String _completedSort = 'newest'; // newest | oldest | name
+  int? _completedYearFilter;        // null = All years
+
   late final TabController _outerTabController; // Ongoing / Completed
   late final TabController _innerTabController; // (inside Ongoing) Ongoing / Planned
 
@@ -155,7 +159,7 @@ class _ItineraryPageState extends State<ItineraryPage>
                   controller: _outerTabController,
                   children: [
                     _buildOngoingOuterTab(ongoing, planned),
-                    _buildFlatTab(completed, 'No completed trips yet'),
+                    _buildCompletedTab(completed),
                   ],
                 ),
     );
@@ -280,6 +284,137 @@ class _ItineraryPageState extends State<ItineraryPage>
       children: items.map(_buildCard).toList(),
     );
   }
+
+  List<int> _availableYears(List<ItineraryModel> items) {
+    final years = items.map((i) => i.createdAt.year).toSet().toList();
+    years.sort((a, b) => b.compareTo(a));
+    return years;
+  }
+
+  List<ItineraryModel> _applyCompletedFilter(List<ItineraryModel> items) {
+    var result = List<ItineraryModel>.from(items);
+    if (_completedYearFilter != null) {
+      result = result.where((i) => i.createdAt.year == _completedYearFilter).toList();
+    }
+    switch (_completedSort) {
+      case 'oldest':
+        result.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+        break;
+      case 'name':
+        result.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+        break;
+      case 'newest':
+      default:
+        result.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    }
+    return result;
+  }
+
+  Widget _buildCompletedTab(List<ItineraryModel> completed) {
+    if (completed.isEmpty) {
+      return _emptyTabMessage('No completed trips yet');
+    }
+    final years    = _availableYears(completed);
+    final filtered = _applyCompletedFilter(completed);
+
+    return Column(
+      children: [
+        _buildCompletedFilterBar(years),
+        const SizedBox(height: 4),
+        Expanded(
+          child: filtered.isEmpty
+              ? _emptyTabMessage('No trips match this filter')
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 100),
+                  children: filtered.map(_buildCard).toList(),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCompletedFilterBar(List<int> years) {
+    const sortOptions = [
+      {'key': 'newest', 'label': 'Recent'},
+      {'key': 'oldest', 'label': 'Latest'},
+      {'key': 'name',   'label': 'A–Z'},
+    ];
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            ...sortOptions.map((o) {
+              final isOn = _completedSort == o['key'];
+              return Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: GestureDetector(
+                  onTap: () => setState(() => _completedSort = o['key']!),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: isOn
+                          ? const Color(0xFF7C4DFF).withOpacity(0.12)
+                          : Colors.grey[100],
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: isOn ? const Color(0xFF7C4DFF) : Colors.transparent,
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Text(o['label']!,
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: isOn ? const Color(0xFF7C4DFF) : Colors.black87)),
+                  ),
+                ),
+              );
+            }),
+            if (years.length > 1) ...[
+              Container(
+                width: 1, height: 20, color: Colors.grey[300],
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+              ),
+              _yearChip(null, 'All years'),
+              ...years.map((y) => _yearChip(y, '$y')),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _yearChip(int? year, String label) {
+    final isOn = _completedYearFilter == year;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: GestureDetector(
+        onTap: () => setState(() => _completedYearFilter = year),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: isOn ? const Color(0xFF2ECC71).withOpacity(0.12) : Colors.grey[100],
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: isOn ? const Color(0xFF2ECC71) : Colors.transparent,
+              width: 1.5,
+            ),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: isOn ? const Color(0xFF2ECC71) : Colors.black87)),
+        ),
+      ),
+    );
+  }
+
 
   Widget _buildCard(ItineraryModel item) {
 

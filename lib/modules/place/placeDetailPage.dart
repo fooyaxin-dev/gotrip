@@ -10,6 +10,7 @@ import 'routePreviewPage.dart';
 import '../../services/categoryImage_Helper.dart';
 import '../../services/apps_Loading.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import '../../services/userPreference_service.dart';
 
 
 class PlaceDetailPage extends StatefulWidget {
@@ -211,6 +212,19 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
         _reviewFilterStars = null;
         _reviewSort = 'relevant';
       });
+
+      // 🆕 现在 placeDetail 已经有真正的数据了，才提取 primaryType/types 记录 time affinity
+      final List<String> types = (data['types'] as List?)
+          ?.map((e) => e.toString())
+          .toList() ?? [];
+      final primaryType = data['primaryType'] as String?
+          ?? (types.isNotEmpty ? types.first : null);
+
+      UserPreferenceService.instance.updateFromPlaceView(
+        primaryType: primaryType,
+        allTypes:    types,
+      );
+
 
       if (urls.length > 1) {
         await _precachePhotos(urls);          // ← 等图片真的进缓存

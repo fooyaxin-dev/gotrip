@@ -45,6 +45,7 @@ class RealTimeDetectPage extends StatefulWidget {
 class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   GoogleMapController? _mapController;
+  bool _mapReady = false;
   Position? _currentPosition;
 
   final Set<Marker> _markers = {};
@@ -1098,7 +1099,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   final ValueNotifier<double> _bottomPaddingNotifier = ValueNotifier(0.4);
   double _lastAppliedExtent = 0.4;
 
-  @override
+@override
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
 
@@ -1132,11 +1133,36 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                   myLocationEnabled: true,
                   myLocationButtonEnabled: false,
                   markers: _markers,
-                  onMapCreated: (c) => _mapController = c,
+                  onMapCreated: (c) {
+                    _mapController = c;
+                    if (mounted && !_mapReady) {
+                      // 给第一帧瓦片一点时间绘制，避免遮罩一撤
+                      // 就露出还没铺好的灰底图
+                      Future.delayed(const Duration(milliseconds: 200), () {
+                        if (mounted) setState(() => _mapReady = true);
+                      });
+                    }
+                  },
                   padding: EdgeInsets.only(
                       bottom: screenHeight * extent, top: 60),
                 );
               },
+            ),
+
+            // ── Map loading overlay: 半透明遮罩，地图初始化完成前显示 ──
+            IgnorePointer(
+              ignoring: _mapReady,
+              child: AnimatedOpacity(
+                opacity: _mapReady ? 0.0 : 1.0,
+                duration: const Duration(milliseconds: 350),
+                curve: Curves.easeOut,
+                child: Container(
+                  color: Colors.white.withOpacity(0.6),
+                  child: const Center(
+                    child: TravelLoadingIndicator(size: 200),
+                  ),
+                ),
+              ),
             ),
 
             // ── Search bar + Back button ──
@@ -1412,7 +1438,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       ),
     );
   }
-
+  
+  
   // ─────────────────────────────────────────────
   // Place List Sheet
   // ─────────────────────────────────────────────

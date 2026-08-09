@@ -62,6 +62,7 @@ class UserPreferences {
   final String       travelMode;
   final BudgetTier   budgetTier;
   final bool         onboardingDone;
+  final String       topPriority;
 
   UserPreferences({
     required this.categories,
@@ -69,6 +70,7 @@ class UserPreferences {
     required this.travelMode,
     required this.budgetTier,
     required this.onboardingDone,
+    this.topPriority = 'interest',
   });
 
   factory UserPreferences.empty() => UserPreferences(
@@ -77,6 +79,7 @@ class UserPreferences {
     travelMode:     'walk',
     budgetTier:     BudgetTier.budget,
     onboardingDone: false,
+    topPriority:    'interest',
   );
 
   factory UserPreferences.fromMap(Map<String, dynamic> map) {
@@ -87,6 +90,7 @@ class UserPreferences {
       travelMode:     prefs['travelMode']  as String? ?? 'walk',
       budgetTier:     BudgetTierX.fromJson(prefs['budgetTier'] as String?),
       onboardingDone: map['onboardingDone'] as bool?  ?? false,
+      topPriority:    prefs['topPriority'] as String? ?? 'interest',
     );
   }
 
@@ -97,6 +101,7 @@ class UserPreferences {
       'cuisines':   cuisines,
       'travelMode': travelMode,
       'budgetTier': budgetTier.toJson(),
+      'topPriority': topPriority,
     },
   };
 
@@ -106,12 +111,14 @@ class UserPreferences {
     String?       travelMode,
     BudgetTier?   budgetTier,
     bool?         onboardingDone,
+    String?       topPriority,
   }) => UserPreferences(
     categories:     categories     ?? this.categories,
     cuisines:       cuisines       ?? this.cuisines,
     travelMode:     travelMode     ?? this.travelMode,
     budgetTier:     budgetTier     ?? this.budgetTier,
     onboardingDone: onboardingDone ?? this.onboardingDone,
+    topPriority:    topPriority    ?? this.topPriority,
   );
 }
 
@@ -163,8 +170,10 @@ class UserPreferenceService {
 
   final Map<String, int>    _favouriteCount    = {};
   final Map<String, double> _searchScoreBuffer = {}; // 小数累积 buffer
+  final Map<String, double> _timeAffinity      = {};
 
   static const int _minCountToLearn = 3;
+  static const double _minCountToLearnTime = 1.0; 
 
   // ─────────────────────────────────────────────
   // shared tag/topic → category maps
@@ -238,7 +247,14 @@ class UserPreferenceService {
       _searchScoreBuffer.clear();
       bufferMap.forEach((k, v) => _searchScoreBuffer[k] = (v as num).toDouble());
 
-      preferencesChanged.value++;   // 🆕 让所有监听者（包括 MainPage）知道数据到位了
+      // 🆕 Load timeAffinity
+      final timeMap =
+          doc.data()!['timeAffinity'] as Map<String, dynamic>? ?? {};
+      _timeAffinity.clear();
+      timeMap.forEach((k, v) => _timeAffinity[k] = (v as num).toDouble());
+
+      preferencesChanged.value++;
+
       return _prefs;
     } catch (e) {
       print('❌ UserPreferenceService.load: $e');
@@ -268,7 +284,8 @@ class UserPreferenceService {
     if (uid == null) return;
     _prefs = UserPreferences.empty().copyWith(onboardingDone: true);
     _favouriteCount.clear();
-    _searchScoreBuffer.clear(); // ← 同时清空 buffer
+    _searchScoreBuffer.clear();
+    _timeAffinity.clear(); // 🆕
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
       'preferences': {
         'categories': [],
@@ -277,7 +294,8 @@ class UserPreferenceService {
         'budgetTier': 'budget',
       },
       'favouriteTypeCounts': {},
-      'searchScoreBuffer':   {}, // ← 同时清空 Firestore 里的 buffer
+      'searchScoreBuffer':   {},
+      'timeAffinity':        {}, // 🆕
     });
     preferencesChanged.value++;
   }
@@ -303,7 +321,11 @@ class UserPreferenceService {
     final List<String> involvedKeys = [];
     if (CategoryMapper.isLearnableCategory(primaryType)) {
       involvedKeys.add('cat_$primaryType');
+      if (isFavouriting) {
+        _recordTimeAffinity(primaryType, weight: 1.0); // 🆕
+      }
     }
+
     for (final t in allTypes) {
       final cuisine = _typeToCuisine[t];
       if (cuisine != null) involvedKeys.add('cui_$cuisine');
@@ -337,6 +359,9 @@ class UserPreferenceService {
       },
       'favouriteTypeCounts': _favouriteCount,
     });
+
+    await _saveTimeAffinity(uid); // 🆕
+
   }
 
   // ─────────────────────────────────────────────
@@ -440,7 +465,10 @@ class UserPreferenceService {
       final category = typeToCategory[t];
       if (category != null) {
         involvedKeys.add('cat_$category');
-        break; // 一个 post 只算一次 category 信号，避免重复加权
+        if (isPositive) {
+          _recordTimeAffinity(category, weight: weight.toDouble()); // 🆕
+        }
+        break;
       }
     }
     for (final t in placeTypes) {
@@ -505,6 +533,8 @@ class UserPreferenceService {
       },
       'favouriteTypeCounts': _favouriteCount,
     });
+
+    await _saveTimeAffinity(uid);
   
     final sourceDesc = hasRating
         ? 'rating=$postRating${weight == 2 ? " (confirmed by sentiment)" : ""}'
@@ -557,6 +587,9 @@ class UserPreferenceService {
     for (final key in involvedKeys) {
       if (isLiking) {
         _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) + 0.7;
+        if (key.startsWith('cat_')) {
+          _recordTimeAffinity(key.substring(4), weight: 0.7); // 🆕
+        }
       } else {
         _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) - 0.7;
         if (_searchScoreBuffer[key]! < 0) _searchScoreBuffer[key] = 0.0;
@@ -564,6 +597,7 @@ class UserPreferenceService {
     }
 
     await _flushBuffer(uid);
+    await _saveTimeAffinity(uid); // 🆕
 
     print('✅ updateFromLike: tags=$postTags topic=$postTopic isLiking=$isLiking '
         '(sentiment gate passed)');
@@ -595,14 +629,59 @@ class UserPreferenceService {
 
     if (involvedKeys.isEmpty) return;
 
-    // 点击帖子 +0.5
     for (final key in involvedKeys) {
       _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) + 0.5;
+      if (key.startsWith('cat_')) {
+        _recordTimeAffinity(key.substring(4), weight: 0.5); // 🆕
+      }
     }
 
     await _flushBuffer(uid);
+    await _saveTimeAffinity(uid); // 🆕
 
     print('✅ updateFromSearch: tags=$postTags topic=$postTopic');
+  }
+
+
+  // ─────────────────────────────────────────────
+  // Update from Place View (点开某个 place detail)
+  // 最高频、最轻信号 — 只用来学 time affinity，
+  // 不学 category/cuisine（点进去看不代表真的喜欢，
+  // category 学习还是交给 favourite/post/like 这些
+  // 更明确的信号，避免被无关兴趣的点击污染）
+  // ─────────────────────────────────────────────
+
+  Future<void> updateFromPlaceView({
+    required String?      primaryType,
+    required List<String> allTypes,
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    // 🔧 FIX: primaryType 传进来的是 Google raw type（如 'western_restaurant'），
+    // 不是 CategoryMapper 认的桶名（如 'restaurant'）。之前直接拿 raw type
+    // 去问 isLearnableCategory，永远匹配不上，导致所有细分类型全部被跳过。
+    // 现在改成跟 updateFromPost 一样，先用 CategoryMapper.toPrimaryType()
+    // 把 raw types 解析成桶名，再判断能不能学。
+    final allRawTypes = [
+      if (primaryType != null) primaryType,
+      ...allTypes,
+    ];
+    if (allRawTypes.isEmpty) {
+      print('👁️ updateFromPlaceView: skipped (no types)');
+      return;
+    }
+
+    final resolvedCategory = CategoryMapper.toPrimaryType(allRawTypes);
+
+    if (!CategoryMapper.isLearnableCategory(resolvedCategory)) {
+      print('👁️ updateFromPlaceView: skipped ($primaryType → $resolvedCategory, not learnable)');
+      return;
+    }
+
+    print('👁️ updateFromPlaceView: recording $resolvedCategory (raw: $primaryType)');
+    _recordTimeAffinity(resolvedCategory, weight: 0.3);
+    await _saveTimeAffinity(uid);
   }
 
   // ─────────────────────────────────────────────
@@ -684,6 +763,34 @@ class UserPreferenceService {
     }
   }
 
+  // ─────────────────────────────────────────────
+  // Time affinity — 记录用户在某个时段对某个 category
+  // 表现出的兴趣，权重依信号强弱而不同
+  // ─────────────────────────────────────────────
+
+  String _currentPeriod() {
+    final hour = DateTime.now().hour;
+    if (hour >= 6  && hour < 11) return 'morning';
+    if (hour >= 11 && hour < 14) return 'lunch';
+    if (hour >= 14 && hour < 17) return 'afternoon';
+    if (hour >= 17 && hour < 20) return 'evening';
+    return 'night';
+  }
+
+  void _recordTimeAffinity(String category, {required double weight}) {
+    final period = _currentPeriod();
+    final key = 'timeAffinity_${category}_$period';
+    _timeAffinity[key] = (_timeAffinity[key] ?? 0.0) + weight;
+    print('⏰ _recordTimeAffinity: $key += $weight → now ${_timeAffinity[key]!.toStringAsFixed(2)} '
+        '(need $_minCountToLearnTime to unlock personal score)');
+  }
+
+  Future<void> _saveTimeAffinity(String uid) async {
+    await FirebaseFirestore.instance.collection('users').doc(uid).update({
+      'timeAffinity': _timeAffinity,
+    });
+  }
+
   /// ═══════════════════════════════════════════════════════════════════
   // RECOMMENDATION SCORE
   //
@@ -705,7 +812,7 @@ class UserPreferenceService {
     required double?      rating,
     required double?      distanceMeters,
     required int?         priceLevel,
-    WeatherCondition?     weather,   // ← 新增，nullable = 没拿到天气数据时不惩罚
+    WeatherCondition?     weather,
   }) {
     final interest = _interestMatchScore(primaryType, allTypes);
     final distance = _distanceScore(distanceMeters);
@@ -714,12 +821,16 @@ class UserPreferenceService {
     final budget   = _budgetSuitabilityScore(priceLevel);
     final weatherS = _weatherScore(weather, primaryType, allTypes);
 
-    final total = (0.30 * interest
-                + 0.20 * distance
-                + 0.15 * weatherS
-                + 0.15 * ratingS
-                + 0.10 * time
-                + 0.10 * budget).clamp(0.0, 1.0);
+    final w = _resolveWeights(); // 🆕
+
+    final total = (
+        (w['interest'] ?? 0.30) * interest
+      + (w['distance'] ?? 0.20) * distance
+      + 0.15 * weatherS   // weather 固定，不受用户排序影响
+      + (w['rating']   ?? 0.15) * ratingS
+      + 0.10 * time       // time 固定，不受用户排序影响
+      + (w['budget']   ?? 0.10) * budget
+    ).clamp(0.0, 1.0);
 
     return RecommendationScore(
       total:             total,
@@ -793,9 +904,23 @@ class UserPreferenceService {
     return (scores.reduce((a, b) => a + b) / scores.length).clamp(0.0, 1.0);
   }
 
-  double _distanceScore(double? distanceMeters) {
-    if (distanceMeters == null || distanceMeters <= 0) return 0.5;
-    return (1.0 - distanceMeters / 12000.0).clamp(0.0, 1.0);   // 目前用 12000 做满分基准
+ double _distanceScore(double? distanceMeters) {
+  if (distanceMeters == null || distanceMeters <= 0) return 0.5;
+  final baseline = _distanceBaselineForMode(_prefs.travelMode);
+  final score = (1.0 - distanceMeters / baseline).clamp(0.0, 1.0);
+  print('📏 _distanceScore: mode=${_prefs.travelMode}, baseline=${baseline}m, '
+      'dist=${distanceMeters.toStringAsFixed(0)}m → score=${score.toStringAsFixed(2)}');
+  return score;
+}
+
+  double _distanceBaselineForMode(String mode) {
+    switch (mode) {
+      case 'walk':  return 3000.0;
+      case 'motor': return 8000.0;   // 🆕 跟 motor 半径 8km 对应
+      case 'drive': return 15000.0;
+      case 'both':
+      default:      return 15000.0;  // 🔧 'both' = 最大范围，应该跟 drive 同级，不该跟 motor 撞车
+    }
   }
 
   double _ratingScore(double? rating) {
@@ -803,10 +928,51 @@ class UserPreferenceService {
     return ((rating - 2.0) / 3.0).clamp(0.0, 1.0);
   }
 
-  // 🔧 CHANGED: 'amusement_park' → 'entertainment'
   double _timeSuitabilityScore(String? primaryType, List<String> allTypes) {
-    final hour = DateTime.now().hour;
+    final period = _currentPeriod();
 
+    final personal = _personalTimeScore(primaryType, allTypes, period);
+    if (personal != null) {
+      print('🎯 PERSONAL time score [$primaryType/$period] = ${personal.toStringAsFixed(2)}');
+      return personal;
+    }
+
+    // global fallback 先不打印，太吵
+    return _globalTimeSuitability(primaryType, allTypes, period);
+  }
+
+  double? _personalTimeScore(
+    String? primaryType,
+    List<String> allTypes,
+    String period,
+  ) {
+    final candidates = <String>[
+      if (primaryType != null) primaryType,
+      ...allTypes,
+    ];
+    for (final t in candidates) {
+      final key   = 'timeAffinity_${t}_$period';
+      final score = _timeAffinity[key] ?? 0.0;
+      if (score >= _minCountToLearnTime) {
+        const maxScore = 15.0;
+        final clamped = score.clamp(_minCountToLearnTime, maxScore);
+        final result = 0.6 + 0.4 * (clamped - _minCountToLearnTime) /
+            (maxScore - _minCountToLearnTime);
+        print('   ✓ found unlocked key "$key" = ${score.toStringAsFixed(2)} → score ${result.toStringAsFixed(2)}');
+        return result;
+      } else if (score > 0) {
+        print('   … key "$key" = ${score.toStringAsFixed(2)} '
+            '(need ${(_minCountToLearnTime - score).toStringAsFixed(2)} more to unlock)');
+      }
+    }
+    return null;
+  }
+
+  double _globalTimeSuitability(
+    String? primaryType,
+    List<String> allTypes,
+    String period,
+  ) {
     const suitability = <String, Map<String, double>>{
       'morning':   {'cafe': 1.0, 'restaurant': 0.6, 'park': 0.8, 'tourist_attraction': 0.7},
       'lunch':     {'restaurant': 1.0, 'cafe': 0.5, 'shopping_mall': 0.4},
@@ -814,21 +980,13 @@ class UserPreferenceService {
       'evening':   {'restaurant': 1.0, 'shopping_mall': 0.7, 'entertainment': 0.8},
       'night':     {'entertainment': 1.0, 'restaurant': 0.7},
     };
-
-    final String period;
-    if      (hour >= 6  && hour < 11) period = 'morning';
-    else if (hour >= 11 && hour < 14) period = 'lunch';
-    else if (hour >= 14 && hour < 17) period = 'afternoon';
-    else if (hour >= 17 && hour < 20) period = 'evening';
-    else                               period = 'night';
-
     final map = suitability[period]!;
     if (primaryType != null && map.containsKey(primaryType)) return map[primaryType]!;
     for (final t in allTypes) {
       if (map.containsKey(t)) return map[t]!;
     }
     return 0.3;
-  }
+}
 
   double _budgetSuitabilityScore(int? priceLevel) {
     if (priceLevel == null) return 1.0;
@@ -843,6 +1001,34 @@ class UserPreferenceService {
     final idx  = (priceLevel - 1).clamp(0, 3);
     return scores[tier]![idx];
   }
+
+  // ─────────────────────────────────────────────
+// Weight personalization — 用户在 onboarding 选的
+// "最看重什么"，决定这 4 项的权重分配。
+// weather/time 不给用户选，保持固定权重。
+// ─────────────────────────────────────────────
+
+  Map<String, double> _resolveWeights() {
+    // 默认顺序（现有写死权重的原始排序）
+    const defaultOrder  = ['interest', 'distance', 'rating', 'budget'];
+    const weightSlots   = [0.30, 0.20, 0.15, 0.10]; // 按顺序分配
+
+    final chosen = _prefs.topPriority;
+    final order = List<String>.from(defaultOrder);
+
+    // 把用户选中的那项挪到最前面，其余保持原有相对顺序
+    if (order.contains(chosen)) {
+      order.remove(chosen);
+      order.insert(0, chosen);
+    }
+
+    final weights = <String, double>{};
+    for (int i = 0; i < order.length; i++) {
+      weights[order[i]] = weightSlots[i];
+    }
+    return weights;
+  }
+
 
   double scorePlaceModel({
     required String?      primaryType,

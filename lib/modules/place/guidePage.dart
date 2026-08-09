@@ -16,7 +16,8 @@ class GuidePage extends StatefulWidget {
   final double endLng;
   final String? destinationName;
   final TravelMode travelMode;
-  final RouteResult? initialRoute;  
+  final RouteResult? initialRoute;
+    
 
   const GuidePage({
     super.key,
@@ -38,6 +39,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   late NavigationController _nav;
 
   GoogleMapController? _mapController;
+  
  
   // Camera follow state
   bool _isFollowing = true;
@@ -48,15 +50,9 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   // Throttle camera updates — only move if >80ms since last move
   static const int _cameraCooldownMs = 80;
 
-  // FIX: 用固定 Timer 重置 _isProgrammaticMove，不再依赖
-  // animateCamera() 的 Future 完成时机（Future 可能因为动画被
-  // 下一次调用打断而提前 resolve，导致标志位过早复位，把系统
-  // 触发的相机移动误判成用户手动拖动）。
   Timer? _programmaticMoveResetTimer;
   static const int _programmaticMoveResetMs = 350;
 
-  // FIX: 目的地 marker 不会变，初始化时建一次就够了，不用每次
-  // 重建地图都重新 new 一个 Marker 对象。
   Marker? _destinationMarker;
 
   @override
@@ -80,17 +76,12 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       infoWindow: InfoWindow(title: widget.destinationName ?? 'Destination'),
     );
 
-    // Wire arrived callback
     _nav.onArrived = _showArrivedDialog;
 
-    // Initialise (loads route + starts GPS + compass)
     _nav.init(this);
 
-    // FIX: 低频状态变化（换 step、ETA、reroute、TTS 开关等）走这个，
-    // 只在真正需要重建 banner/ETA 面板/进度条等 UI 时才触发。
     _nav.addListener(_onNavUpdate);
 
-    // FIX: 高频位置插值单独监听，只负责驱动相机跟随，不触发 setState()。
     _nav.positionNotifier.addListener(_onPositionTick);
   }
 
@@ -104,29 +95,73 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  // ─────────────────────────────────────────────
-  // Nav update handlers
-  // ─────────────────────────────────────────────
-
-  // 低频：真正的导航状态变化才会走到这里（换 step / ETA / reroute / TTS）。
   void _onNavUpdate() {
     if (!mounted) return;
-    setState(() {}); // 重建 banner / ETA 面板 / 进度条这些低频 UI
+    setState(() {});
   }
 
-  // 高频：每次箭头位置插值都会走到这里，只负责相机跟随，
-  // 不调用 setState()，不会波及整页。
   void _onPositionTick() {
     if (_isFollowing && !_isOverview) {
       final pos = _nav.positionNotifier.value;
-      if (pos != null) _moveCamera(pos);
+      // SMOOTHNESS FIX: continuous per-frame following now goes through
+      // _followCamera (instant moveCamera), not _moveCamera
+      // (animateCamera). See _followCamera for why.
+      if (pos != null) _followCamera(pos);
     }
   }
 
-  // ─────────────────────────────────────────────
-  // Camera
-  // ─────────────────────────────────────────────
+  // Throttle for the continuous follow path — moveCamera is cheap (no
+  // native animation to run), so this can be tight, roughly matched to
+  // display refresh rather than the old 80ms.
+  static const int _followCooldownMs = 32;
+  DateTime _lastFollowMove = DateTime.fromMillisecondsSinceEpoch(0);
 
+  void _followCamera(LatLng target) {
+    if (_mapController == null) return;
+
+    final now = DateTime.now();
+    if (now.difference(_lastFollowMove).inMilliseconds < _followCooldownMs) return;
+    _lastFollowMove = now;
+
+    final zoom = _zoomForSpeed(_nav.lastPos?.speed ?? 0);
+    final bearing = _nav.cameraBearing;
+
+    _isProgrammaticMove = true;
+    _programmaticMoveResetTimer?.cancel();
+
+    // SMOOTHNESS FIX: this used to call animateCamera() here, every
+    // ~80ms. Each call starts the native SDK's OWN animation curve
+    // (ease-in/ease-out) toward a target that had already moved again by
+    // the time that animation finished — so you get a pile of short,
+    // overlapping native animations constantly interrupting each other.
+    // That's what looked like "跳".
+    //
+    // NavigationController's positionNotifier is now smoothly
+    // interpolated every frame using real elapsed time (see _onTick /
+    // the smooth-follow animation fields there), so the camera doesn't
+    // need its own animation on top — it just needs to track that
+    // already-smooth target instantly, frame by frame. moveCamera does
+    // exactly that (no built-in animation, no queue to fight with).
+    _mapController!.moveCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(
+          target:  target,
+          zoom:    zoom,
+          tilt:    widget.travelMode == TravelMode.walk ? 0 : 45,
+          bearing: bearing,
+        ),
+      ),
+    );
+
+    _programmaticMoveResetTimer = Timer(
+      const Duration(milliseconds: _programmaticMoveResetMs),
+      () => _isProgrammaticMove = false,
+    );
+  }
+
+  // Kept for one-off, EXPLICIT camera transitions only (recenter tap,
+  // initial camera placement) — those benefit from a real animated
+  // glide since they're single, isolated calls, not a 60x/sec stream.
   void _moveCamera(LatLng target) {
     if (_mapController == null) return;
 
@@ -151,7 +186,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       ),
     );
 
-    // FIX: 固定延迟重置，覆盖动画实际时长，不依赖 Future 完成时机。
     _programmaticMoveResetTimer = Timer(
       const Duration(milliseconds: _programmaticMoveResetMs),
       () => _isProgrammaticMove = false,
@@ -159,28 +193,60 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   }
 
   double _zoomForSpeed(double mps) {
-    if (mps >= 25) return 16.0;
-    if (mps >= 14) return 17.0;
-    if (mps >= 8)  return 18.0;
-    if (mps >= 1)  return 19.0;
-    return 19.5;
+    // Piecewise-linear interpolation between speed/zoom anchor points,
+    // so zoom eases continuously instead of jumping between fixed
+    // levels the instant speed crosses a threshold.
+    final anchors = <MapEntry<double, double>>[
+      const MapEntry(0,  19.5),
+      const MapEntry(1,  19.5),
+      const MapEntry(8,  18.0),
+      const MapEntry(14, 17.0),
+      const MapEntry(25, 16.0),
+    ];
+
+    if (mps <= anchors.first.key) return anchors.first.value;
+    if (mps >= anchors.last.key)  return anchors.last.value;
+
+    for (int i = 0; i < anchors.length - 1; i++) {
+      final a0 = anchors[i], a1 = anchors[i + 1];
+      if (mps >= a0.key && mps <= a1.key) {
+        final t = (mps - a0.key) / (a1.key - a0.key);
+        return a0.value + (a1.value - a0.value) * t;
+      }
+    }
+    return anchors.last.value;
   }
 
   void _recenter() {
+    _programmaticMoveResetTimer?.cancel();
+    _isProgrammaticMove = true;
+
     setState(() { _isFollowing = true; _isOverview = false; });
-    final pos = _nav.positionNotifier.value;
-    if (pos != null) _moveCamera(pos);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final pos = _nav.positionNotifier.value;
+      if (pos != null) _moveCamera(pos);
+    });
+
+    _programmaticMoveResetTimer = Timer(
+      const Duration(milliseconds: _programmaticMoveResetMs),
+      () => _isProgrammaticMove = false,
+    );
   }
 
   Future<void> _toggleOverview() async {
     if (_nav.routeBounds == null) return;
-    setState(() {
-      _isOverview  = !_isOverview;
-      _isFollowing = !_isOverview;
-    });
-    if (_isOverview) {
-      _programmaticMoveResetTimer?.cancel();
-      _isProgrammaticMove = true;
+
+    _programmaticMoveResetTimer?.cancel();
+    _isProgrammaticMove = true;
+
+    final goingToOverview = !_isOverview;
+
+    if (goingToOverview) {
+      setState(() {
+        _isOverview  = true;
+        _isFollowing = false;
+      });
       await _mapController?.animateCamera(
         CameraUpdate.newLatLngBounds(_nav.routeBounds!, 80),
       );
@@ -190,12 +256,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // Build markers + polylines from controller
-  // ─────────────────────────────────────────────
-
-  // FIX: 接收当前位置作为参数，只在地图子树内被调用，
-  // 不再依赖整页 setState() 才能拿到最新位置。
   Set<Marker> _buildMarkers(LatLng? pos) {
     final markers = <Marker>{};
 
@@ -207,7 +267,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         position: pos,
         icon: _nav.arrowIcon ??
             BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-        rotation: _nav.cameraBearing,   // 原来写死 0，改成跟相机同源
+        rotation: _nav.cameraBearing,
         anchor:   const Offset(0.5, 0.5),
         flat:     true,
         zIndex:   10,
@@ -261,10 +321,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // Arrived dialog
-  // ─────────────────────────────────────────────
-
   void _showArrivedDialog() {
     if (!mounted) return;
     showDialog(
@@ -284,8 +340,8 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         actions: [
           ElevatedButton(
             onPressed: () {
-              Navigator.pop(context); // close dialog
-              Navigator.pop(context, true); // back to caller
+              Navigator.pop(context);
+              Navigator.pop(context, true);
             },
             style: ElevatedButton.styleFrom(
                 shape: RoundedRectangleBorder(
@@ -296,10 +352,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       ),
     );
   }
-
-  // ─────────────────────────────────────────────
-  // Maneuver icon
-  // ─────────────────────────────────────────────
 
   IconData _maneuverIcon(String m) {
     if (m.contains('uturn'))                               return Icons.u_turn_left_rounded;
@@ -313,14 +365,10 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     return Icons.straight_rounded;
   }
 
-  // ─────────────────────────────────────────────
-  // Build
-  // ─────────────────────────────────────────────
-
   @override
   Widget build(BuildContext context) {
 
-    // ── Loading ──
+
     if (_nav.loading) {
       return Scaffold(
         backgroundColor: Colors.white,
@@ -340,7 +388,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       );
     }
 
-    // ── Error ──
     if (_nav.error != null) {
       return Scaffold(
         backgroundColor: Colors.white,
@@ -364,23 +411,26 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       );
     }
 
-    final mq      = MediaQuery.of(context);
-    final step    = _nav.currentStep;
-    final nextStep = _nav.nextStep;
-    final svc     = RouteService.instance;
+final mq       = MediaQuery.of(context);
+final step     = _nav.currentStep;
+final nextStep = _nav.nextStep;
+final svc      = RouteService.instance;
+final polylines = _buildPolylines();
 
-    final bannerH = mq.padding.top + (nextStep != null ? 130.0 : 98.0);
-    const panelH  = 90.0;
+final bannerH = mq.padding.top + (nextStep != null ? 130.0 : 98.0);
+const panelH  = 90.0;
+
+const double _cameraFramingRatio = 0.65;
+final double availableHeight = mq.size.height - bannerH - panelH - mq.padding.bottom;
+final double mapTopPadding = _isOverview
+    ? bannerH
+    : bannerH + availableHeight * _cameraFramingRatio;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
       body: Stack(
         children: [
 
-          // ── Google Map ──
-          // FIX: 只有这一块包在 ValueListenableBuilder 里监听高频的
-          // positionNotifier。箭头每次插值只重建这个小组件，banner、
-          // ETA 面板、进度条、按钮这些都在外层 Stack，不会被牵连重建。
           ValueListenableBuilder<LatLng?>(
             valueListenable: _nav.positionNotifier,
             builder: (context, pos, _) {
@@ -392,7 +442,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
                   bearing: _nav.cameraBearing,
                 ),
                 markers:                _buildMarkers(pos),
-                polylines:              _buildPolylines(),
+                polylines:              polylines,
                 circles:                _buildCircles(pos),
                 myLocationEnabled:      false,
                 myLocationButtonEnabled: false,
@@ -401,34 +451,29 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
                 buildingsEnabled:       false,
                 onMapCreated: (c) {
                   _mapController = c;
-                  // Initial camera move after map is ready
                   Future.delayed(const Duration(milliseconds: 400), () {
                     final p = _nav.positionNotifier.value;
                     if (p != null) _moveCamera(p);
                   });
                 },
                 onCameraMoveStarted: () {
-                  // 只要不是我们自己代码触发的移动（_isProgrammaticMove），
-                  // 就认定是用户手指主动拖动/缩放/旋转，立刻退出跟随模式。
                   if (!_isProgrammaticMove) {
                     setState(() => _isFollowing = false);
                   }
                 },
                 padding: EdgeInsets.only(
-                  top:    bannerH,
+                  top:    mapTopPadding,
                   bottom: panelH + mq.padding.bottom,
                 ),
               );
             },
           ),
 
-          // ── Turn-by-turn banner ──
           if (step != null)
             Positioned(
               top: 0, left: 0, right: 0,
               child: Column(
                 children: [
-                  // Current step
                   Container(
                     color: Colors.black87,
                     padding: EdgeInsets.fromLTRB(
@@ -461,7 +506,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
                       ),
                     ]),
                   ),
-                  // Next step preview
                   if (nextStep != null)
                     Container(
                       color: Colors.black.withOpacity(0.75),
@@ -489,7 +533,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
               ),
             ),
 
-          // ── Progress bar (thin strip below banner) ──
           if (!_nav.loading && step != null)
             Positioned(
               top: bannerH,
@@ -499,11 +542,10 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
                 minHeight: 3,
                 backgroundColor: Colors.grey[200],
                 valueColor:
-                    const AlwaysStoppedAnimation<Color>(Color(0xFF1A73E8)),
+                    const AlwaysStoppedAnimation<Color>(Color(0xFF9C27B0)),
               ),
             ),
 
-          // ── Right side buttons ──
           Positioned(
             right: 16,
             bottom: panelH + mq.padding.bottom + 16,
@@ -519,19 +561,17 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
                   const SizedBox(height: 12),
                 ],
                 
-                // Overview toggle
                 _circleBtn(
                   _isOverview
                       ? Icons.navigation_rounded
                       : Icons.map_rounded,
-                  _isOverview ? const Color(0xFF1A73E8) : Colors.white,
+                  _isOverview ? const Color(0xFF9C27B0) : Colors.white,
                   _isOverview ? Colors.white : Colors.black87,
                   _toggleOverview,
                 ),
                 
                 const SizedBox(height: 12),
                 
-                // ── TTS toggle ──
                 _circleBtn(
                   _nav.ttsEnabled
                       ? Icons.volume_up_rounded
@@ -543,7 +583,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
               ]),
           ),
 
-          // ── Bottom ETA panel ──
           Positioned(
             left: 0, right: 0, bottom: 0,
             child: Container(
@@ -593,7 +632,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
                         ],
                       ),
 
-                      // ── 速度显示 ──
                       if (_nav.lastPos != null) ...[
                         const SizedBox(height: 4),
                         Row(children: [
@@ -638,7 +676,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
             ),
           ),
 
-          // ── Rerouting banner ──
           if (_nav.isRerouting)
             Positioned(
               top: bannerH + 8, left: 20, right: 20,
@@ -663,10 +700,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       ),
     );
   }
-
-  // ─────────────────────────────────────────────
-  // Helper widgets
-  // ─────────────────────────────────────────────
 
   Widget _circleBtn(
       IconData icon, Color bg, Color fg, VoidCallback onTap) {

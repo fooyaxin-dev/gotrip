@@ -231,7 +231,12 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────
 
   Future<void> _buildForYou() async {
-    await UserPreferenceService.instance.load();
+    // 🔧 FIX: 去掉了 load() —— current 已经是内存里最新的偏好数据了。
+    // 之前每次调用 _buildForYou 都会重新 load()，而 load() 结尾会
+    // preferencesChanged.value++，这会触发 _onPreferencesChanged()
+    // 再次调用 _buildForYou() → 又 load() → 又 +1 → 又触发...
+    // 形成死循环，这就是你之前看到 log 无限刷屏、根本停不下来的原因。
+    // 首次进页面时 _initAndLoad() 已经显式 load() 过一次，够用了。
     if (_nearbyPlaces.isEmpty) {
       setState(() => _forYouPlaces = []);
       return;

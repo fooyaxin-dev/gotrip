@@ -1020,21 +1020,30 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                       ),
 
                     if (!_useCurrentLocation &&
-                        _selectedLat != null &&
-                        _suggestions.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Row(children: [
+                      _selectedLat != null &&
+                      _suggestions.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
                           const Icon(Icons.check_circle_rounded,
                               size: 14, color: Color(0xFF2ECC71)),
                           const SizedBox(width: 6),
-                          Text('Set to: $_selectedLocationName',
+                          Expanded(
+                            child: Text(
+                              'Set to: $_selectedLocationName',
                               style: const TextStyle(
                                   fontSize: 12,
                                   color: Color(0xFF2ECC71),
-                                  fontWeight: FontWeight.w500)),
-                        ]),
+                                  fontWeight: FontWeight.w500),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
                       ),
+                    ),
                   ],
                 ),
               ),

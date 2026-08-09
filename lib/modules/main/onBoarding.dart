@@ -30,14 +30,16 @@ class _OnboardingPageState extends State<OnboardingPage>
   final Set<String> _selectedCategories = {};
   final Set<String> _selectedCuisines   = {};
   String     _selectedTravelMode        = 'walk';
-  BudgetTier _selectedBudget            = BudgetTier.budget; // ← new
+  BudgetTier _selectedBudget            = BudgetTier.budget; 
+  String _selectedTopPriority = 'interest';
+  int get _totalPages => (_showCuisinePage ? 5 : 4); 
 
   late final AnimationController _fadeCtrl;
   late final Animation<double>    _fadeAnim;
 
   bool get _showCuisinePage => _selectedCategories.contains('restaurant');
   // Pages: category → (cuisine) → budget → travel mode
-  int  get _totalPages      => _showCuisinePage ? 4 : 3;
+
 
   @override
   void initState() {
@@ -53,6 +55,7 @@ class _OnboardingPageState extends State<OnboardingPage>
       _selectedCuisines.addAll(prefs.cuisines);
       _selectedTravelMode = prefs.travelMode;
       _selectedBudget     = prefs.budgetTier;
+      _selectedTopPriority = prefs.topPriority;
     }
   }
 
@@ -159,6 +162,7 @@ class _OnboardingPageState extends State<OnboardingPage>
         travelMode:     _selectedTravelMode,
         budgetTier:     _selectedBudget,
         onboardingDone: true,
+          topPriority:    _selectedTopPriority, 
       );
 
       await UserPreferenceService.instance.save(prefs);
@@ -237,6 +241,7 @@ class _OnboardingPageState extends State<OnboardingPage>
                     _buildCategoryPage(),
                     if (_showCuisinePage) _buildCuisinePage(),
                     _buildBudgetPage(),      // ← new
+                    _buildTopPriorityPage(),
                     _buildTravelModePage(),
                   ],
                 ),
@@ -542,7 +547,105 @@ class _OnboardingPageState extends State<OnboardingPage>
   }
 
   // ─────────────────────────────────────────────
-  // Page 4: Travel Mode
+  // Page 4: Proirity 
+  // ─────────────────────────────────────────────
+
+  final List<Map<String, dynamic>> _priorities = [
+  {'key': 'interest', 'icon': '🎯', 'label': 'What I like',   'desc': 'Show places matching my interests first'},
+  {'key': 'distance', 'icon': '📍', 'label': 'Distance',      'desc': 'Show the closest places first'},
+  {'key': 'rating',   'icon': '⭐', 'label': 'Ratings',       'desc': 'Show the highest-rated places first'},
+  {'key': 'budget',   'icon': '💰', 'label': 'My budget',     'desc': 'Show places that fit my budget first'},
+];
+
+Widget _buildTopPriorityPage() {
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(24, 32, 24, 0),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          widget.isEditing ? '✏️ Update priority' : '🎯 One last thing',
+          style: const TextStyle(fontSize: 14, color: Color(0xFF7C4DFF),
+              fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        const Text('What matters most\nwhen picking a place?',
+            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold,
+                color: Color(0xFF1A1A2E), height: 1.2)),
+        const SizedBox(height: 8),
+        Text('Pick one — you can change this anytime',
+            style: TextStyle(fontSize: 14, color: Colors.grey[500])),
+        const SizedBox(height: 32),
+
+        ..._priorities.map((p) {
+          final isSelected = _selectedTopPriority == p['key'];
+          return GestureDetector(
+            onTap: () => setState(() => _selectedTopPriority = p['key'] as String),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              margin: const EdgeInsets.only(bottom: 14),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? const Color(0xFF7C4DFF).withOpacity(0.08)
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: isSelected ? const Color(0xFF7C4DFF) : Colors.grey[200]!,
+                  width: isSelected ? 2 : 1,
+                ),
+                boxShadow: [BoxShadow(
+                    color: Colors.black.withOpacity(0.04),
+                    blurRadius: 8, offset: const Offset(0, 2))],
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 52, height: 52,
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? const Color(0xFF7C4DFF).withOpacity(0.15)
+                          : Colors.grey[100],
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Center(
+                      child: Text(p['icon'] as String,
+                          style: const TextStyle(fontSize: 24)),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(p['label'] as String,
+                            style: TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.bold,
+                                color: isSelected
+                                    ? const Color(0xFF7C4DFF)
+                                    : Colors.black87)),
+                        const SizedBox(height: 2),
+                        Text(p['desc'] as String,
+                            style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+                      ],
+                    ),
+                  ),
+                  if (isSelected)
+                    const Icon(Icons.check_circle_rounded,
+                        color: Color(0xFF7C4DFF), size: 24),
+                ],
+              ),
+            ),
+          );
+        }),
+      ],
+    ),
+  );
+}
+
+
+  // ─────────────────────────────────────────────
+  // Page 5: Travel Mode
   // ─────────────────────────────────────────────
 
   Widget _buildTravelModePage() {

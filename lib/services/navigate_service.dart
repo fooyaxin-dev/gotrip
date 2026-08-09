@@ -47,6 +47,22 @@ class NavigationController extends ChangeNotifier {
   int           nearestIdx      = 0;
   LatLngBounds? routeBounds;
 
+  // MAP-MATCH: cumulative distance (meters) from route start to each
+  // polyline point. Built once per route in _applyRouteResult(). This is
+  // the backbone of the new matcher — instead of hunting for "nearest
+  // point index" with ad-hoc window sizes, we track *distance travelled
+  // along the route* and bound the search window by how far the vehicle
+  // could plausibly have moved since the last GPS fix. This is the same
+  // basic idea Waze/Google Maps use (distance-along-route map matching),
+  // just without the HMM-level sophistication.
+  List<double> _cumDist = [];
+
+  // MAP-MATCH: distance along the route (meters) of the current matched
+  // position. This — not nearestIdx — is now the real source of truth;
+  // nearestIdx is derived from it for backward-compat with the rest of
+  // the code (stepEndPolylineIdx comparisons, progress splitting, etc).
+  double _matchedDistAlongRoute = 0;
+
   // ── Steps ──
   List<NavStep> steps               = [];
   List<int>     stepEndPolylineIdx  = [];
@@ -66,16 +82,37 @@ class NavigationController extends ChangeNotifier {
   LatLng?   displayLatLng;
   Position? lastPos;
 
-  // FIX: 高频位置更新专用通知器。_onTick 每帧都会跑，之前直接调用
-  // notifyListeners() 会连带触发 GuidePage 整页 setState()（banner、
-  // ETA 面板、进度条等跟位置插值完全无关的 UI 也跟着重建）。
-  // 现在把"箭头平滑移动"这个高频、只影响地图的信号，从主状态通知
-  // 里拆出来，单独走这个 ValueNotifier，只有真正监听它的地图部件
-  // 才会因为它重建。
+  // 高频位置更新专用通知器：只有地图子树监听它，箭头平滑移动不会
+  // 波及 banner / ETA 面板等整页 UI。
   final ValueNotifier<LatLng?> positionNotifier = ValueNotifier<LatLng?>(null);
 
   // ── Heading ──
   double bearing = 0;
+
+  // SMOOTHNESS FIX: the previous approach blended toward the target by a
+  // fixed fraction (t) EVERY RENDERED FRAME, with no notion of real
+  // elapsed time. That converges to a new GPS fix in ~5-6 frames
+  // regardless of how far apart two fixes actually are — so the arrow
+  // sits still, does a fast micro-snap, sits still again. That's the
+  // "跳" (jump) you were seeing, and it's also frame-rate dependent
+  // (120Hz phones converge twice as fast as 60Hz ones).
+  //
+  // What Waze/Google actually do (no proprietary magic involved): when a
+  // new fix arrives, they animate from the CURRENT displayed position to
+  // the new target over the REAL time gap since the previous fix, so the
+  // glide always looks continuous no matter the fix cadence. This is
+  // that same idea.
+  LatLng?   _animFrom;
+  double?   _animFromBearing;
+  Duration? _lastTickElapsed;
+  int       _animElapsedMs  = 0;
+  int       _animDurationMs = 300;
+  DateTime? _lastFixAt;
+
+  /// Smoothed heading used for rendering (map/arrow rotation). `bearing`
+  /// itself is the latest raw TARGET heading; this is the animated value
+  /// that actually gets drawn, advancing in step with displayLatLng.
+  double displayBearing = 0;
 
   // ── State ──
   bool    loading        = true;
@@ -100,7 +137,6 @@ class NavigationController extends ChangeNotifier {
   bool get ttsEnabled => _ttsEnabled;
 
   // Distance reminder dedup — track which distance thresholds already spoken
-  // Key = stepIndex, Value = set of thresholds already announced (300, 100, 30)
   final Map<int, Set<int>> _spokenDistanceReminders = {};
 
   // ─────────────────────────────────────────────
@@ -136,23 +172,49 @@ class NavigationController extends ChangeNotifier {
   // Ticker — smooth display position interpolation
   // ─────────────────────────────────────────────
 
-  // navigationController.dart -> _onTick()
-  void _onTick(Duration _) {
+ void _onTick(Duration elapsed) {
     if (targetLatLng == null) return;
-    final current = displayLatLng ?? targetLatLng!;
-    const t = 0.28;
-    displayLatLng = LatLng(
-      current.latitude  + (targetLatLng!.latitude  - current.latitude)  * t,
-      current.longitude + (targetLatLng!.longitude - current.longitude) * t,
-    );
-    positionNotifier.value = displayLatLng;
 
-    // 路线裁剪跟箭头用同一个插值点、同一个频率，两者才会同步顺滑。
-    // nearestIdx 仍然只在真实 GPS fix 时更新（最近点搜索比较重，不用每帧算）。
-    if (polylinePoints.isNotEmpty) {
-      _updateRouteProgress(displayLatLng!);
+    // Real per-frame delta, clamped so a dropped/late frame can't cause
+    // a huge single jump in the animation progress.
+    final dtMs = _lastTickElapsed == null
+        ? 16
+        : (elapsed - _lastTickElapsed!).inMilliseconds.clamp(0, 100);
+    _lastTickElapsed = elapsed;
+
+    if (_animFrom == null) {
+      // No animation in flight (e.g. very first fix) — just show target.
+      displayLatLng  = targetLatLng;
+      displayBearing = bearing;
+    } else {
+      _animElapsedMs += dtMs;
+      final frac  = (_animElapsedMs / _animDurationMs).clamp(0.0, 1.0);
+      final eased = _easeOutCubic(frac);
+
+      displayLatLng = LatLng(
+        _animFrom!.latitude  + (targetLatLng!.latitude  - _animFrom!.latitude)  * eased,
+        _animFrom!.longitude + (targetLatLng!.longitude - _animFrom!.longitude) * eased,
+      );
+      displayBearing = _lerpBearing(_animFromBearing ?? bearing, bearing, eased);
+
+      // Animation segment complete — hold here until the next GPS fix
+      // kicks off a new one (see step 7 of the tracking listener).
+      if (frac >= 1.0) _animFrom = null;
     }
+
+    // PERF FIX: _updateRouteProgress used to be called here, on every
+    // single tick (60-120Hz) — it allocates two new Lists by
+    // take()/skip()-ing the whole polyline every call. At 60fps that's
+    // constant GC pressure that causes dropped frames, which is what
+    // actually looked like "跳" — not a problem with the interpolation
+    // math itself. The walked/remaining split only needs to move when
+    // nearestIdx changes, which only happens on a new GPS fix, so the
+    // call now lives in the position-stream listener instead (see
+    // _startTracking, step 1.5).
+    positionNotifier.value = displayLatLng;
   }
+
+  double _easeOutCubic(double t) => 1 - pow(1 - t, 3).toDouble();
 
   // ─────────────────────────────────────────────
   // GPS init
@@ -174,8 +236,6 @@ class NavigationController extends ChangeNotifier {
       positionNotifier.value = displayLatLng;
 
       if (initialRoute != null) {
-        // 🔗 复用 RoutePreviewPage 已经打过的这次请求结果，
-        // 不再对同一趟行程重复打一次 Google Routes API。
         _resetRouteState();
         notifyListeners();
         await _applyRouteResult(initialRoute!);
@@ -245,7 +305,6 @@ class NavigationController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // FIX: distance reminder dedup — only speak each threshold once per step
   void _maybeAnnounceDistance(int stepIdx, double dist, String instruction) {
     final spoken = _spokenDistanceReminders.putIfAbsent(stepIdx, () => {});
 
@@ -271,6 +330,10 @@ class NavigationController extends ChangeNotifier {
       final isMoving = (lastPos?.speed ?? 0) > 0.5;
       if (!isMoving) {
         bearing = _lerpBearing(bearing, e.heading!, 0.18);
+        // Stationary case has no GPS-fix-triggered animation running, so
+        // mirror directly into the rendered value instead of leaving it
+        // stuck at whatever the last driving animation ended on.
+        displayBearing = bearing;
         notifyListeners();
       }
     });
@@ -301,7 +364,6 @@ class NavigationController extends ChangeNotifier {
       await _applyRouteResult(result);
     } catch (e) {
       if (isReroute) {
-        // reroute 失败不要把整个导航页干掉，旧路线还在，静默退出即可。
         isRerouting = false;
         notifyListeners();
       } else {
@@ -311,13 +373,6 @@ class NavigationController extends ChangeNotifier {
       }
     }
   }
-
-  // ── 把"清空状态"和"套用路线结果"拆成两个可复用的小方法 ──
-  // _resetRouteState()：无论是首次加载、复用预览页数据、还是 reroute，
-  //                      开始前都要把上一段路线的状态清干净。
-  // _applyRouteResult()：把一份 RouteResult（不管是新请求来的，还是
-  //                      RoutePreviewPage 传进来的）套用到控制器状态里，
-  //                      逻辑跟原来 _loadRoute() 成功之后的部分完全一致。
 
   void _resetRouteState({bool isReroute = false}) {
     currentStepIndex       = 0;
@@ -329,15 +384,14 @@ class NavigationController extends ChangeNotifier {
     _lastSpokenInstruction = null;
     error                  = null;
 
-    // reroute 时不碰 loading / walkedPoints / remainingPoints / nearestIdx /
-    // _offRouteCount —— 旧路线继续显示，直到新路线到了再一次性换上。
     if (!isReroute) {
-      _offRouteCount    = 0;
-      loading           = true;
-      isRerouting       = false;
-      walkedPoints      = [];
-      remainingPoints   = [];
-      nearestIdx        = 0;
+      _offRouteCount         = 0;
+      loading                = true;
+      isRerouting             = false;
+      walkedPoints            = [];
+      remainingPoints         = [];
+      nearestIdx              = 0;
+      _matchedDistAlongRoute  = 0;
     }
   }
 
@@ -345,7 +399,6 @@ class NavigationController extends ChangeNotifier {
     final pts      = result.polylinePoints;
     final newSteps = result.steps;
 
-    // reroute 成功后必须复位，否则 banner 永久卡住。
     isRerouting    = false;
     _offRouteCount = 0;
 
@@ -365,6 +418,15 @@ class NavigationController extends ChangeNotifier {
     _totalRouteMeters = remainingMeters;
     routeBounds       = result.bounds;
     loading           = false;
+
+    // MAP-MATCH: rebuild the cumulative-distance table for the new route
+    // and reset the "distance travelled along route" tracker. This must
+    // happen every time the polyline changes (first load AND reroute),
+    // otherwise the matcher will search against stale distances from the
+    // previous route and jump to nonsense indices.
+    _cumDist               = _buildCumDist(pts);
+    nearestIdx              = 0;
+    _matchedDistAlongRoute  = 0;
 
     if (displayLatLng != null) _updateRouteProgress(displayLatLng!);
 
@@ -401,13 +463,42 @@ class NavigationController extends ChangeNotifier {
       final rawLatLng = LatLng(raw.latitude, raw.longitude);
       final isMoving  = raw.speed > 0.5;
 
-      // ── 1. Update nearest polyline index (wide search window) ──
-      nearestIdx = _findNearestPolylineIndex(
+      // ── 1. Map-match this fix against the route ──
+      // MAP-MATCH: single unified matcher replaces the old two-stage
+      // "wide nearest-index fallback" + separate "_snapToRoute" logic.
+      // It searches only the stretch of route the vehicle could
+      // plausibly have reached since the last fix (bounded by speed),
+      // and uses GPS heading as a tiebreaker so it doesn't jump onto a
+      // parallel road / the far side of a roundabout / an unrelated
+      // nearby segment just because it's geometrically closer.
+      final match = _mapMatch(
         rawLatLng,
-        polylinePoints,
-        start: (nearestIdx - 20).clamp(0, max(polylinePoints.length - 1, 0)),
-        end:   (nearestIdx + 40).clamp(0, max(polylinePoints.length - 1, 0)),
+        speedMps: raw.speed,
+        isMoving: isMoving,
+        gpsHeading: raw.heading, // Position.heading — the LatLng param below has no such field
       );
+
+      LatLng snapped;
+      double perpDistToRoute;
+
+      if (match != null) {
+        nearestIdx             = match.idx;
+        _matchedDistAlongRoute = match.distAlongRoute;
+        perpDistToRoute        = match.perpDist;
+        final threshold = travelMode == TravelMode.walk ? 15.0 : 30.0;
+        snapped = match.perpDist <= threshold ? match.snapped : rawLatLng;
+      } else {
+        snapped          = rawLatLng;
+        perpDistToRoute  = double.infinity;
+      }
+
+      // ── 1.5. Update walked/remaining polyline split ──
+      // PERF FIX: moved here from _onTick. nearestIdx only changes on a
+      // fix (every ~200ms-1s), not every animation frame, so this only
+      // needs to run here — same visual result, far fewer allocations.
+      if (polylinePoints.isNotEmpty) {
+        _updateRouteProgress(snapped);
+      }
 
       // ── 2. Update bearing from polyline look-ahead (moving only) ──
       if (polylinePoints.isNotEmpty && isMoving) {
@@ -435,9 +526,11 @@ class NavigationController extends ChangeNotifier {
       }
 
       // ── 4. Off-route check ──
+      // MAP-MATCH: reuses the perpendicular distance the matcher already
+      // computed instead of re-scanning the route a second time.
       if (isMoving && !isRerouting && polylinePoints.isNotEmpty) {
         final threshold = travelMode == TravelMode.walk ? 25.0 : _offRouteThresh;
-        if (_minDistToRoute(rawLatLng) > threshold) {
+        if (perpDistToRoute > threshold) {
           _offRouteCount++;
           if (_offRouteCount >= _offRouteConfirm) {
             isRerouting = true;
@@ -473,8 +566,6 @@ class NavigationController extends ChangeNotifier {
             _stepConfirmForIndex = -1;
             currentStepIndex++;
             distToTurnEnd = steps[currentStepIndex].distanceMeters;
-
-            // FIX: speak AFTER advancing to the new step
             await _speak(steps[currentStepIndex].instruction);
           }
         } else {
@@ -487,7 +578,7 @@ class NavigationController extends ChangeNotifier {
 
       // ── 6. ETA update ──
       if (steps.isNotEmpty) {
-        final step = steps[currentStepIndex];
+        final step = steps[currentStepIndex]; // physical road segment you're on — used for distance/ETA math only
         distToTurnEnd = _dist(rawLatLng, step.endLocation)
             .clamp(0.0, step.distanceMeters);
 
@@ -502,22 +593,163 @@ class NavigationController extends ChangeNotifier {
         remainingMeters  = distToTurnEnd + futureM;
         remainingSeconds = (step.durationSeconds * ratio).toInt() + futureS;
 
-        // FIX: distance reminders with dedup per step
+        // VOICE FIX: a step's own instruction describes the maneuver
+        // already performed at ITS start — the maneuver you're actually
+        // counting down to (distToTurnEnd → 0) is the NEXT step's
+        // instruction. Announcing the current step's own instruction
+        // here made the 300m/100m/30m reminders name the wrong turn
+        // (mirrors the `currentStep` getter fix below).
+        final upcoming = (currentStepIndex + 1 < steps.length)
+            ? steps[currentStepIndex + 1]
+            : step; // last leg: no further maneuver, just arrival
         _maybeAnnounceDistance(
-            currentStepIndex, distToTurnEnd, step.instruction);
+            currentStepIndex, distToTurnEnd, upcoming.instruction);
       }
 
-      // ── 7. Snap position to route ──
-      final snapped = _snapToRoute(rawLatLng);
+      // ── 7. Kick off a new smooth animation segment toward this fix ──
+      // SMOOTHNESS FIX: animate from wherever the arrow is RIGHT NOW to
+      // the new snapped position, over the REAL time elapsed since the
+      // previous fix (clamped to a sane range). The Ticker (_onTick)
+      // advances this every frame using real dt, so the glide always
+      // matches the actual fix cadence instead of a fixed per-frame %.
+      final now   = DateTime.now();
+      final gapMs = _lastFixAt == null
+          ? 300
+          : now.difference(_lastFixAt!).inMilliseconds;
+      _lastFixAt = now;
+
+      _animFrom        = displayLatLng ?? snapped;
+      _animFromBearing = displayBearing;
+      _animElapsedMs   = 0;
+      _animDurationMs  = gapMs.clamp(150, 900);
+
       lastPos       = raw;
       userLatLng    = snapped;
       targetLatLng  = snapped;
-      displayLatLng ??= snapped;
-      // FIX: 让地图那一路的 notifier 也立刻拿到最新目标，不用等下一帧
-      // ticker 才追上，避免刚收到 GPS 定位时地图短暂"卡一下"的感觉。
-      if (displayLatLng != null) positionNotifier.value = displayLatLng;
       notifyListeners();
     });
+  }
+
+  // ─────────────────────────────────────────────
+  // MAP-MATCH core
+  // ─────────────────────────────────────────────
+
+  /// Result of matching a raw GPS fix onto the route polyline.
+  ///
+  /// [idx] — polyline segment index the fix matched to (kept for
+  /// backward-compat with step-advancement / look-ahead-bearing code).
+  /// [snapped] — the projected point on that segment.
+  /// [perpDist] — perpendicular distance from the raw fix to [snapped].
+  /// [distAlongRoute] — cumulative distance from route start to [snapped].
+  final _matchCache = <int, double>{};
+
+  /// Finds the polyline index whose cumulative distance is >= [d].
+  /// Route sizes here are small enough (a few hundred points) that a
+  /// linear scan is fine — this only runs once per GPS fix, not per frame.
+  int _idxAtDistance(double d) {
+    for (int i = 0; i < _cumDist.length; i++) {
+      if (_cumDist[i] >= d) return i;
+    }
+    return max(_cumDist.length - 1, 0);
+  }
+
+  /// Projects [raw] onto the route, searching only the window of route
+  /// the vehicle could plausibly have reached since the last fix
+  /// (bounded by speed), and using GPS heading as a tiebreaker against
+  /// geometrically-close-but-wrong segments (parallel roads, the far
+  /// side of a roundabout, an overlapping loop in the polyline, etc).
+ _MatchResult? _mapMatch(LatLng raw, {
+    required double speedMps,
+    required bool isMoving,
+    required double gpsHeading,
+  }) {
+    if (polylinePoints.length < 2 || _cumDist.isEmpty) return null;
+
+    final currentDist = _matchedDistAlongRoute;
+
+    // FIX: previously this was `(speedMps * 1.5).clamp(20.0, 200.0)` with
+    // no upper cap other than 200m. A single noisy GPS fix reporting an
+    // inflated speed (common right at a turn, where GPS course/speed is
+    // least reliable) could push the search window past an entire
+    // corner, and the matcher would then snap onto the segment on the
+    // OTHER side of the turn — _updateRouteProgress then draws a
+    // straight line from the current position to that far snapped
+    // point, which is the "抄近路直线" you were seeing. Capping
+    // maxAdvance per travel mode means a single bad speed reading can't
+    // blow the window open wide enough to skip a corner.
+    final double speedCap = travelMode == TravelMode.walk ? 25.0 : 80.0;
+    final double maxAdvance = isMoving
+        ? (speedMps * 1.5).clamp(20.0, speedCap)
+        : 20.0;
+    const double behindSlack = 15.0; // small backward search for jitter near a vertex
+
+    final double windowStart =
+        (currentDist - behindSlack).clamp(0.0, _cumDist.last);
+    final double windowEnd =
+        (currentDist + maxAdvance + 50.0).clamp(0.0, _cumDist.last);
+
+    final int idxStart = _idxAtDistance(windowStart);
+    final int idxEnd    = min(_idxAtDistance(windowEnd) + 1, polylinePoints.length - 1);
+
+    int    bestIdx        = nearestIdx.clamp(0, polylinePoints.length - 2);
+    double bestScore       = double.infinity;
+    double bestPerp        = double.infinity;
+    LatLng bestProjected   = raw;
+    double bestDistAlong   = currentDist;
+
+    for (int i = idxStart; i < idxEnd; i++) {
+      final projected = _projectOntoSegment(raw, polylinePoints[i], polylinePoints[i + 1]);
+      final perp       = _dist(raw, projected);
+
+      // FIX: previously a far-but-well-oriented segment could still win
+      // over a close-but-badly-oriented one purely because of the
+      // additive penalty scoring — near a corner, the segment just past
+      // the turn can score deceptively well the instant the phone's
+      // compass starts swinging toward the new heading, even though the
+      // GPS fix itself is still physically on the pre-turn segment. Skip
+      // any candidate whose raw perpendicular distance is clearly too
+      // far to be a plausible match (>60m) regardless of heading score,
+      // so heading can only break ties between genuinely close segments,
+      // never pull the match across a corner by itself.
+      if (perp > 60.0) continue;
+
+      double penalty = 0;
+      if (isMoving) {
+        final segBearing = _calcBearing(polylinePoints[i], polylinePoints[i + 1]);
+        final diff = ((gpsHeading - segBearing + 540) % 360) - 180;
+        penalty = (diff.abs() / 180.0) * 40.0;
+      }
+
+      final score = perp + penalty;
+      if (score < bestScore) {
+        bestScore     = score;
+        bestPerp      = perp;
+        bestIdx       = i;
+        bestProjected = projected;
+        final segLen = _dist(polylinePoints[i], polylinePoints[i + 1]);
+        final t = segLen > 0
+            ? (_dist(polylinePoints[i], projected) / segLen).clamp(0.0, 1.0)
+            : 0.0;
+        bestDistAlong = _cumDist[i] + segLen * t;
+      }
+    }
+
+    // If every candidate in the window was rejected by the 60m perp-dist
+    // gate above, bestScore never improved from infinity — fall back to
+    // holding the previous match rather than snapping to whatever raw
+    // was closest to (which could still be across the corner).
+    if (bestScore == double.infinity) {
+      return _MatchResult(nearestIdx, raw, double.infinity, currentDist);
+    }
+
+    // Never let matched progress move backward along the route (small
+    // tolerance for GPS jitter right at a vertex) — routes don't reverse.
+    if (bestDistAlong < currentDist - 5.0) {
+      bestDistAlong = currentDist;
+      bestIdx       = nearestIdx;
+    }
+
+    return _MatchResult(bestIdx, bestProjected, bestPerp, bestDistAlong);
   }
 
   // ─────────────────────────────────────────────
@@ -538,42 +770,6 @@ class NavigationController extends ChangeNotifier {
 
     walkedPoints    = walked;
     remainingPoints = remaining;
-  }
-
-  // ─────────────────────────────────────────────
-  // Snap to route — project onto nearest segment
-  // ─────────────────────────────────────────────
-
-  LatLng _snapToRoute(LatLng user) {
-    if (polylinePoints.isEmpty) return user;
-
-    final start = (nearestIdx - 5).clamp(0, polylinePoints.length - 1);
-    final end   = (nearestIdx + 15).clamp(0, polylinePoints.length - 1);
-
-    int    bestIdx       = nearestIdx;
-    double bestSegDist   = double.infinity;
-    LatLng bestProjected = user;
-
-    for (int i = start; i < end && i < polylinePoints.length - 1; i++) {
-      final projected = _projectOntoSegment(
-          user, polylinePoints[i], polylinePoints[i + 1]);
-      final d = _dist(user, projected);
-      if (d < bestSegDist) {
-        bestSegDist   = d;
-        bestIdx       = i;
-        bestProjected = projected;
-      }
-    }
-
-    // Snap threshold: tighter for walk, wider for drive (GPS jitter)
-    final threshold = travelMode == TravelMode.walk ? 15.0 : 30.0;
-    if (bestSegDist > threshold) return user; // off-route, return raw GPS
-
-    // Never snap backwards
-    if (bestIdx < nearestIdx) bestIdx = nearestIdx;
-    nearestIdx = bestIdx;
-
-    return bestProjected;
   }
 
   // ─────────────────────────────────────────────
@@ -598,21 +794,6 @@ class NavigationController extends ChangeNotifier {
     return (current + diff * t + 360) % 360;
   }
 
-  double _minDistToRoute(LatLng p) {
-    if (polylinePoints.isEmpty) return double.infinity;
-    final s = (nearestIdx - 10).clamp(0, polylinePoints.length - 1);
-    final e = (nearestIdx + 30).clamp(0, polylinePoints.length - 1);
-    double min = double.infinity;
-    for (int i = s; i < e && i < polylinePoints.length - 1; i++) {
-      final d = _distToSeg(p, polylinePoints[i], polylinePoints[i + 1]);
-      if (d < min) min = d;
-    }
-    return min;
-  }
-
-  double _distToSeg(LatLng p, LatLng a, LatLng b) =>
-      _dist(p, _projectOntoSegment(p, a, b));
-
   LatLng _projectOntoSegment(LatLng p, LatLng a, LatLng b) {
     final ax = a.longitude, ay = a.latitude;
     final bx = b.longitude, by = b.latitude;
@@ -623,6 +804,15 @@ class NavigationController extends ChangeNotifier {
     final t  = ((px - ax) * dx + (py - ay) * dy) / lenSq;
     final tc = t.clamp(0.0, 1.0);
     return LatLng(ay + tc * dy, ax + tc * dx);
+  }
+
+  List<double> _buildCumDist(List<LatLng> pts) {
+    if (pts.isEmpty) return [];
+    final cum = <double>[0];
+    for (int i = 1; i < pts.length; i++) {
+      cum.add(cum[i - 1] + _dist(pts[i - 1], pts[i]));
+    }
+    return cum;
   }
 
   int _findNearestPolylineIndex(LatLng point, List<LatLng> poly,
@@ -686,27 +876,46 @@ class NavigationController extends ChangeNotifier {
     return (walked / _totalRouteMeters).clamp(0.0, 1.0);
   }
 
-  NavStep? get currentStep =>
-      steps.isNotEmpty ? steps[currentStepIndex] : null;
+  // VOICE/BANNER FIX: this used to return steps[currentStepIndex] — the
+  // segment you're physically driving on, whose instruction describes
+  // the maneuver already performed at ITS start. What the banner (and
+  // voice) should show is the UPCOMING maneuver, paired with
+  // distToTurnEnd counting down to it — that's steps[currentStepIndex+1].
+  // Getter name is kept the same on purpose so GuidePage needs no changes.
+  // Final leg has no further maneuver, so it falls back to the last step
+  // itself (which typically already reads like "Destination on the right").
+  NavStep? get currentStep {
+    if (steps.isEmpty) return null;
+    if (currentStepIndex + 1 < steps.length) return steps[currentStepIndex + 1];
+    return steps[currentStepIndex];
+  }
 
+  // "Then ..." preview — the maneuver AFTER the one currentStep now
+  // points to. Shifted by one index to match the fix above.
   NavStep? get nextStep {
-    if (currentStep == null) return null;
-    // Show next step preview when approaching current turn
+    if (steps.isEmpty) return null;
     final threshold = travelMode == TravelMode.walk ? 60.0 : 300.0;
-    if (currentStepIndex < steps.length - 1 && distToTurnEnd < threshold) {
-      return steps[currentStepIndex + 1];
+    if (currentStepIndex + 2 < steps.length && distToTurnEnd < threshold) {
+      return steps[currentStepIndex + 2];
     }
     return null;
   }
 
-  // FIX: cameraBearing
-  // - Walking + stationary → face north (bearing = 0) so map stays stable
-  // - Walking + moving     → face direction of travel
-  // - Driving/motor        → always face direction of travel
   double get cameraBearing {
     if (travelMode == TravelMode.walk) {
-      return (lastPos?.speed ?? 0) > 1.1 ? bearing : 0;
+      return (lastPos?.speed ?? 0) > 1.1 ? displayBearing : 0;
     }
-    return bearing;
+    return displayBearing;
   }
+}
+
+/// Result of a single map-match: which route segment a raw GPS fix landed
+/// on, the projected point, how far off the route it was, and how far
+/// along the route (in meters from the start) that projection is.
+class _MatchResult {
+  final int idx;
+  final LatLng snapped;
+  final double perpDist;
+  final double distAlongRoute;
+  _MatchResult(this.idx, this.snapped, this.perpDist, this.distAlongRoute);
 }

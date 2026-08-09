@@ -346,151 +346,151 @@ class ItineraryService {
   // ─────────────────────────────────────────────
 
   Future<ItineraryGenerationResult> generate({
-  required String startDate,
-  required int    totalDays,
-  required int    placesPerDay,
-  required String tripTitle,
-  List<String>?   overrideCategories,
-  List<String>?   overrideCuisines,
-  double?         overrideLat,
-  double?         overrideLng,
-  bool            isCurrentLocation = true, 
-  String?         overrideTravelMode,
-}) async {
+    required String startDate,
+    required int    totalDays,
+    required int    placesPerDay,
+    required String tripTitle,
+    List<String>?   overrideCategories,
+    List<String>?   overrideCuisines,
+    double?         overrideLat,
+    double?         overrideLng,
+    bool            isCurrentLocation = true, 
+    String?         overrideTravelMode,
+  }) async {
 
-  final requestedTotal = totalDays * placesPerDay;
+    final requestedTotal = totalDays * placesPerDay;
 
-  try {
-    final cuisines = overrideCuisines
-        ?? UserPreferenceService.instance.current.cuisines;
-    final categories = overrideCategories
-        ?? UserPreferenceService.instance.current.categories;
+    try {
+      final cuisines = overrideCuisines
+          ?? UserPreferenceService.instance.current.cuisines;
+      final categories = overrideCategories
+          ?? UserPreferenceService.instance.current.categories;
 
-    final travelMode = overrideTravelMode
-      ?? UserPreferenceService.instance.current.travelMode;
-    final radius = _radiusFromTravelMode(travelMode);
+      final travelMode = overrideTravelMode
+        ?? UserPreferenceService.instance.current.travelMode;
+      final radius = _radiusFromTravelMode(travelMode);
 
-    print('🎯 [generate] overrideTravelMode=$overrideTravelMode → '
-        'travelMode=$travelMode → radius=${radius}m');
+      print('🎯 [generate] overrideTravelMode=$overrideTravelMode → '
+          'travelMode=$travelMode → radius=${radius}m');
 
-    double? lat = overrideLat;
-    double? lng = overrideLng;
+      double? lat = overrideLat;
+      double? lng = overrideLng;
 
-    if (lat == null || lng == null) {
-      final pos = LocationService.instance.currentPosition;
-      if (pos == null) {
-        print('❌ generate: no location available');
+      if (lat == null || lng == null) {
+        final pos = LocationService.instance.currentPosition;
+        if (pos == null) {
+          print('❌ generate: no location available');
+          return ItineraryGenerationResult(
+            itinerary: null,
+            requestedTotal: requestedTotal,
+            actualTotal: 0,
+            leftoverCandidates: [],
+          );
+        }
+        lat = pos.latitude;
+        lng = pos.longitude;
+      }
+
+      final buildResult = await _buildBalancedPlaces(
+        totalDays,
+        placesPerDay: placesPerDay,
+        lat: lat,
+        lng: lng,
+        categories: categories,
+        isCurrentLocation: isCurrentLocation,
+        radius: radius, 
+      );
+      final validPlaces = buildResult.places;
+      final leftoverCandidates = buildResult.leftovers;
+
+      if (validPlaces.isEmpty) {
+        print('❌ No valid places found');
         return ItineraryGenerationResult(
           itinerary: null,
           requestedTotal: requestedTotal,
           actualTotal: 0,
-          leftoverCandidates: [],
+          leftoverCandidates: leftoverCandidates,
         );
       }
-      lat = pos.latitude;
-      lng = pos.longitude;
-    }
 
-    final buildResult = await _buildBalancedPlaces(
-      totalDays,
-      placesPerDay: placesPerDay,
-      lat: lat,
-      lng: lng,
-      categories: categories,
-      isCurrentLocation: isCurrentLocation,
-      radius: radius, 
-    );
-    final validPlaces = buildResult.places;
-    final leftoverCandidates = buildResult.leftovers;
+      final startDt  = DateTime.parse(startDate);
+      final dayDates = List.generate(totalDays, (i) {
+        final d = startDt.add(Duration(days: i));
+        return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      });
 
-    if (validPlaces.isEmpty) {
-      print('❌ No valid places found');
+      final scheduleResult = _scheduleItinerary(
+        places:       validPlaces,
+        totalDays:    totalDays,
+        placesPerDay: placesPerDay,
+        startDates:   dayDates,
+        cuisines:     cuisines,
+        userLat:      lat,
+        userLng:      lng,
+        leftoverPool: leftoverCandidates,
+      );
+      final days = scheduleResult.days;
+
+      if (days == null || days.isEmpty) {
+        print('❌ Scheduling failed');
+        return ItineraryGenerationResult(
+          itinerary: null,
+          requestedTotal: requestedTotal,
+          actualTotal: 0,
+          leftoverCandidates: leftoverCandidates,
+        );
+      }
+
+      final leftoverIds = <String>{for (final p in leftoverCandidates) p.id};
+      final finalLeftovers = [...leftoverCandidates];
+      for (final p in scheduleResult.unused) {
+        if (leftoverIds.add(p.id)) finalLeftovers.add(p);
+      }
+
+      final actualTotal = days.fold<int>(0, (sum, d) => sum + d.places.length);
+
+      print('✅ Scheduled ${days.length} days');
+      for (int i = 0; i < days.length; i++) {
+        print('  Day ${i + 1}: ${days[i].places.length} places'
+            ' — ${days[i].places.map((p) => p.name).join(', ')}');
+      }
+      print('📊 Final: $actualTotal/$requestedTotal places scheduled');
+      print('🔄 Final leftover pool: ${finalLeftovers.length}');
+
+      final permanentDays = await resolvePermanentPhotosForDays(days);
+
+      final itinerary = ItineraryModel(
+        id:        '',
+        title:     tripTitle,
+        startDate: startDate,
+        totalDays: totalDays,
+        days:      permanentDays,
+        createdAt: DateTime.now(),
+        isOriginCurrentLocation: isCurrentLocation,
+        originLat:  lat,
+        originLng:  lng,
+        originName: null,
+        travelMode: travelMode,
+        leftoverPlaceIds: finalLeftovers.map((p) => p.id).toList(),
+
+      );
+
+      return ItineraryGenerationResult(
+        itinerary: itinerary,
+        requestedTotal: requestedTotal,
+        actualTotal: actualTotal,
+        leftoverCandidates: finalLeftovers,
+      );
+    } catch (e) {
+      print('❌ generate: $e');
       return ItineraryGenerationResult(
         itinerary: null,
         requestedTotal: requestedTotal,
         actualTotal: 0,
-        leftoverCandidates: leftoverCandidates,
+        leftoverCandidates: [],
       );
     }
-
-    final startDt  = DateTime.parse(startDate);
-    final dayDates = List.generate(totalDays, (i) {
-      final d = startDt.add(Duration(days: i));
-      return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-    });
-
-    final scheduleResult = _scheduleItinerary(
-      places:       validPlaces,
-      totalDays:    totalDays,
-      placesPerDay: placesPerDay,
-      startDates:   dayDates,
-      cuisines:     cuisines,
-      userLat:      lat,
-      userLng:      lng,
-      leftoverPool: leftoverCandidates,
-    );
-    final days = scheduleResult.days;
-
-    if (days == null || days.isEmpty) {
-      print('❌ Scheduling failed');
-      return ItineraryGenerationResult(
-        itinerary: null,
-        requestedTotal: requestedTotal,
-        actualTotal: 0,
-        leftoverCandidates: leftoverCandidates,
-      );
-    }
-
-    final leftoverIds = <String>{for (final p in leftoverCandidates) p.id};
-    final finalLeftovers = [...leftoverCandidates];
-    for (final p in scheduleResult.unused) {
-      if (leftoverIds.add(p.id)) finalLeftovers.add(p);
-    }
-
-    final actualTotal = days.fold<int>(0, (sum, d) => sum + d.places.length);
-
-    print('✅ Scheduled ${days.length} days');
-    for (int i = 0; i < days.length; i++) {
-      print('  Day ${i + 1}: ${days[i].places.length} places'
-          ' — ${days[i].places.map((p) => p.name).join(', ')}');
-    }
-    print('📊 Final: $actualTotal/$requestedTotal places scheduled');
-    print('🔄 Final leftover pool: ${finalLeftovers.length}');
-
-    final permanentDays = await resolvePermanentPhotosForDays(days);
-
-    final itinerary = ItineraryModel(
-      id:        '',
-      title:     tripTitle,
-      startDate: startDate,
-      totalDays: totalDays,
-      days:      permanentDays,
-      createdAt: DateTime.now(),
-      isOriginCurrentLocation: isCurrentLocation,
-      originLat:  lat,
-      originLng:  lng,
-      originName: null,
-      travelMode: travelMode,
-      leftoverPlaceIds: finalLeftovers.map((p) => p.id).toList(),
-
-    );
-
-    return ItineraryGenerationResult(
-      itinerary: itinerary,
-      requestedTotal: requestedTotal,
-      actualTotal: actualTotal,
-      leftoverCandidates: finalLeftovers,
-    );
-  } catch (e) {
-    print('❌ generate: $e');
-    return ItineraryGenerationResult(
-      itinerary: null,
-      requestedTotal: requestedTotal,
-      actualTotal: 0,
-      leftoverCandidates: [],
-    );
   }
-}
   
   Future<List<ItineraryDay>> resolvePermanentPhotosForDays(
     List<ItineraryDay> days,
