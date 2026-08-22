@@ -619,6 +619,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     if (!mounted) return;
     setState(() {
       _leftovers = [..._leftovers, ...results.whereType<PlaceModel>()];
+       _pendingLeftoverIds = []; 
       _isHydratingPool = false;
       _poolHydrated = true;
     });
@@ -1142,10 +1143,12 @@ void _addPoolPlaceToPosition(
   targetPlaces.insert(insertAt, newPlace);
   days[targetDayIndex] = days[targetDayIndex].copyWith(places: targetPlaces);
 
-  setState(() {
-    _itinerary = _itinerary.copyWith(days: days);
-    _leftovers.removeWhere((p) => p.id == poolPlace.id);
-  });
+    setState(() {
+      _itinerary = _itinerary.copyWith(days: days);
+      _leftovers.removeWhere((p) => p.id == poolPlace.id);
+      _pendingLeftoverIds.remove(poolPlace.id); // 🔧 用掉了，不该再当候补写回去
+    });
+
   _invalidateLegs(targetDayIndex);
   _updateMapOverlays();
 
@@ -1297,7 +1300,18 @@ void _addPoolPlaceToPosition(
     setState(() => _isSaving = true);
 
     final online = await ConnectivityService.instance.ensureConnected(context, onRetry: _saveAndContinue);
-    if (!online) return;
+    if (!online) {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
+      return;
+    }
+
+    final leftoverIds = <String>{
+      ..._leftovers.map((p) => p.id),
+      ..._pendingLeftoverIds,
+    }.toList();
+
 
     // 🆕 把用户这次 session 里最终的候补池 id 写回去，
     // 这样下次再 edit，候补池还是这次离开时的状态
@@ -2621,6 +2635,7 @@ Widget _buildPoolChip(PlaceModel place) {
     setState(() {
       _itinerary = _itinerary.copyWith(days: days);
       _leftovers.removeWhere((p) => p.id == replacement.id);
+      _pendingLeftoverIds.remove(replacement.id); 
       if (old.lat != null && old.lng != null &&
           !_leftovers.any((p) => p.id == old.placeId)) {
         _leftovers.add(PlaceModel(

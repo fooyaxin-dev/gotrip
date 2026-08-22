@@ -339,6 +339,7 @@ class PostService {
   Future<void> toggleLike(
     String postId,
     bool isLiked, {
+    required List<String>   placeTypes,   // 🆕 补上
     required List<String>   postTags,
     String?                 postTopic,
     required SentimentLabel sentimentLabel,
@@ -350,6 +351,7 @@ class PostService {
       });
 
       await UserPreferenceService.instance.updateFromLike(
+        placeTypes:             placeTypes,
         postTags:               postTags,
         postTopic:              postTopic,
         isLiking:               isLiked,
@@ -388,25 +390,59 @@ class PostService {
 // ================================================================
 
   Future<void> deletePost(String postId) async {
-    try {
-      DocumentSnapshot doc = await _firestore.collection('posts').doc(postId).get();
-      if (doc.exists) {
-        Post post = Post.fromFirestore(doc);
+  try {
+    final currentUserId = _auth.currentUser?.uid;
 
-        // ★ 新增：清理 Storage 里的图片/视频（旧本地路径会被自动跳过）
-        await StorageService.deletePostMedia([...post.images, ...post.videoPaths]);
- 
-        // 原来「删本地图片」那段可以保留（针对老帖子），也可以删掉，
-        // 因为新帖子已经不存本地路径了。
-
-        await _firestore.collection('posts').doc(postId).delete();
-        await AlgoliaService.deletePost(postId);
-        await decrementPostCount();
-      }
-    } catch (e) {
-      throw Exception('Failed to delete post: $e');
+    if (currentUserId == null) {
+      throw Exception('User not logged in');
     }
+
+    final postRef = _firestore.collection('posts').doc(postId);
+
+    final doc = await postRef.get();
+
+    if (!doc.exists) {
+      return;
+    }
+
+    final post = Post.fromFirestore(doc);
+
+    // Always update the actual post owner's postCount
+    final userRef =
+        _firestore.collection('users').doc(post.userId);
+
+    await _firestore.runTransaction((transaction) async {
+      final userSnapshot = await transaction.get(userRef);
+
+      final userData =
+          userSnapshot.data() as Map<String, dynamic>?;
+
+      final currentCount =
+          (userData?['postCount'] as num?)?.toInt() ?? 0;
+
+      // Delete post
+      transaction.delete(postRef);
+
+      // Prevent postCount from going below 0
+      if (currentCount > 0) {
+        transaction.update(userRef, {
+          'postCount': FieldValue.increment(-1),
+        });
+      }
+    });
+
+    // Firestore delete succeeded — clean up media afterwards
+    await StorageService.deletePostMedia(
+      [...post.images, ...post.videoPaths],
+    );
+
+    // Keep original Algolia behaviour
+    await AlgoliaService.deletePost(postId);
+
+  } catch (e) {
+    throw Exception('Failed to delete post: $e');
   }
+}
 
   // ===== 本地存储管理 =====
 

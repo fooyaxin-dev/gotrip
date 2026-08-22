@@ -20,6 +20,7 @@ import '../../services/apps_Loading.dart';
 import '../interaction/postMedia.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'journalBookPage.dart';
+import 'achievementsPage.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOCAL VIDEO PLAYER
@@ -1235,8 +1236,10 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Widget _buildBadgeRow() {
     return GestureDetector(
-      // Tap to see full achievement breakdown tooltip
-      onTap: () => _showBadgeSheet(),
+    onTap: () => Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AchievementsPage()),
+    ),
       child: Wrap(
         spacing: 6,
         runSpacing: 4,

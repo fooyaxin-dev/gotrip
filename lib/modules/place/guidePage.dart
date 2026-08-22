@@ -8,6 +8,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../services/route_service.dart';
 import '../../services/navigate_service.dart';
 import '../../services/apps_Loading.dart';
+import 'navigation_debug_overlay.dart';
 
 class GuidePage extends StatefulWidget { 
   final double startLat;
@@ -55,6 +56,18 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
 
   Marker? _destinationMarker;
 
+  // Keep the GoogleMap widget instance stable across parent setState() calls.
+  //
+  // NavigationController.notifyListeners() is used for ETA, step, debug,
+  // reroute and other chrome updates. Rebuilding the whole GuidePage on every
+  // GPS fix was also recreating the GoogleMap widget configuration, which can
+  // interrupt the native map view periodically even while positionNotifier is
+  // trying to animate smoothly.
+  //
+  // This persistent child is rebuilt ONLY by positionNotifier, so the map
+  // rendering loop is decoupled from the slower navigation/UI state loop.
+  late final Widget _persistentMapLayer;
+
   @override
   void initState() {
     super.initState();
@@ -83,6 +96,8 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     _nav.addListener(_onNavUpdate);
 
     _nav.positionNotifier.addListener(_onPositionTick);
+
+    _persistentMapLayer = _buildPersistentMapLayer();
   }
 
   @override
@@ -110,17 +125,36 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     }
   }
 
-  // Throttle for the continuous follow path — moveCamera is cheap (no
-  // native animation to run), so this can be tight, roughly matched to
-  // display refresh rather than the old 80ms.
-  static const int _followCooldownMs = 32;
+  // Continuous camera follow.
+  //
+  // IMPORTANT:
+  // Do not send a native camera command every 32 ms. GoogleMap is a native
+  // platform view; flooding the platform channel with moveCamera() calls can
+  // make the map background advance in visible chunks even when the marker
+  // itself is interpolating smoothly.
+  //
+  // Instead, let the marker keep its high-frequency interpolation and ask the
+  // native map to perform a much less frequent animated catch-up.
+  // Native camera updates are intentionally limited to ~20 FPS.
+  //
+  // The NavigationController already interpolates displayLatLng every frame.
+  // Therefore the camera must FOLLOW that smooth visual position directly;
+  // it should not start a separate 300-400 ms native animation each time.
+  //
+  // Previous version: animateCamera every 380 ms -> visible catch-up chunks.
+  // Older version: moveCamera every 32 ms -> too many platform-channel calls.
+  // This middle ground tracks the rendered vehicle smoothly without flooding
+  // the native GoogleMap view.
+  static const int _followCooldownMs = 40;
   DateTime _lastFollowMove = DateTime.fromMillisecondsSinceEpoch(0);
 
   void _followCamera(LatLng target) {
     if (_mapController == null) return;
 
     final now = DateTime.now();
-    if (now.difference(_lastFollowMove).inMilliseconds < _followCooldownMs) return;
+    if (now.difference(_lastFollowMove).inMilliseconds < _followCooldownMs) {
+      return;
+    }
     _lastFollowMove = now;
 
     final zoom = _zoomForSpeed(_nav.lastPos?.speed ?? 0);
@@ -129,32 +163,19 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     _isProgrammaticMove = true;
     _programmaticMoveResetTimer?.cancel();
 
-    // SMOOTHNESS FIX: this used to call animateCamera() here, every
-    // ~80ms. Each call starts the native SDK's OWN animation curve
-    // (ease-in/ease-out) toward a target that had already moved again by
-    // the time that animation finished — so you get a pile of short,
-    // overlapping native animations constantly interrupting each other.
-    // That's what looked like "跳".
-    //
-    // NavigationController's positionNotifier is now smoothly
-    // interpolated every frame using real elapsed time (see _onTick /
-    // the smooth-follow animation fields there), so the camera doesn't
-    // need its own animation on top — it just needs to track that
-    // already-smooth target instantly, frame by frame. moveCamera does
-    // exactly that (no built-in animation, no queue to fight with).
     _mapController!.moveCamera(
       CameraUpdate.newCameraPosition(
         CameraPosition(
-          target:  target,
-          zoom:    zoom,
-          tilt:    widget.travelMode == TravelMode.walk ? 0 : 45,
+          target: target,
+          zoom: zoom,
+          tilt: widget.travelMode == TravelMode.walk ? 0 : 45,
           bearing: bearing,
         ),
       ),
     );
 
     _programmaticMoveResetTimer = Timer(
-      const Duration(milliseconds: _programmaticMoveResetMs),
+      const Duration(milliseconds: 180),
       () => _isProgrammaticMove = false,
     );
   }
@@ -277,34 +298,78 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     return markers;
   }
 
-  Set<Polyline> _buildPolylines() {
+  Set<Polyline> _buildPolylines(LatLng? displayPos) {
     final polylines = <Polyline>{};
 
-    if (_nav.walkedPoints.length >= 2) {
+    if (_nav.polylinePoints.length < 2) return polylines;
+
+    final safeIdx =
+        _nav.displayNearestIdx.clamp(0, _nav.polylinePoints.length - 2);
+
+    // IMPORTANT:
+    // Both colours meet at displayPos — the exact position used by the
+    // navigation arrow on screen. This prevents route colour from advancing
+    // before the arrow catches up.
+    final visualPoint = displayPos ??
+        _nav.positionNotifier.value ??
+        _nav.polylinePoints[safeIdx];
+
+    final walkedVisual = <LatLng>[];
+    walkedVisual.addAll(
+      _nav.polylinePoints.take(safeIdx + 1),
+    );
+
+    if (walkedVisual.isEmpty ||
+        _visualDistanceMeters(walkedVisual.last, visualPoint) > 0.5) {
+      walkedVisual.add(visualPoint);
+    }
+
+    final remainingVisual = <LatLng>[visualPoint];
+    remainingVisual.addAll(
+      _nav.polylinePoints.skip(safeIdx + 1),
+    );
+
+    if (walkedVisual.length >= 2) {
       polylines.add(Polyline(
         polylineId: const PolylineId('walked'),
-        points:     _nav.walkedPoints,
-        color:      Colors.grey.shade400,
-        width:      7,
-        startCap:   Cap.roundCap,
-        endCap:     Cap.buttCap,
-        jointType:  JointType.round,
+        points: walkedVisual,
+        color: Colors.grey.shade400,
+        width: 7,
+        startCap: Cap.roundCap,
+        endCap: Cap.roundCap,
+        jointType: JointType.round,
+        zIndex: 2,
       ));
     }
 
-    if (_nav.remainingPoints.length >= 2) {
+    if (remainingVisual.length >= 2) {
       polylines.add(Polyline(
         polylineId: const PolylineId('remaining'),
-        points:     _nav.remainingPoints,
-        color:      const Color(0xFF1A73E8),
-        width:      7,
-        startCap:   Cap.roundCap,
-        endCap:     Cap.roundCap,
-        jointType:  JointType.round,
+        points: remainingVisual,
+        color: const Color(0xFF1A73E8),
+        width: 7,
+        startCap: Cap.roundCap,
+        endCap: Cap.roundCap,
+        jointType: JointType.round,
+        zIndex: 1,
       ));
     }
 
     return polylines;
+  }
+
+  double _visualDistanceMeters(LatLng a, LatLng b) {
+    const earthRadius = 6371000.0;
+    final dLat = (b.latitude - a.latitude) * pi / 180.0;
+    final dLng = (b.longitude - a.longitude) * pi / 180.0;
+    final lat1 = a.latitude * pi / 180.0;
+    final lat2 = b.latitude * pi / 180.0;
+
+    final h = sin(dLat / 2) * sin(dLat / 2) +
+        cos(lat1) * cos(lat2) *
+            sin(dLng / 2) * sin(dLng / 2);
+
+    return 2 * earthRadius * asin(sqrt(h));
   }
 
   Set<Circle> _buildCircles(LatLng? pos) {
@@ -365,6 +430,68 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     return Icons.straight_rounded;
   }
 
+  Widget _buildPersistentMapLayer() {
+    return ValueListenableBuilder<LatLng?>(
+      valueListenable: _nav.positionNotifier,
+      builder: (context, pos, _) {
+        final mq = MediaQuery.of(context);
+        final nextStep = _nav.nextStep;
+
+        final bannerH =
+            mq.padding.top + (nextStep != null ? 130.0 : 98.0);
+        const panelH = 90.0;
+
+        const cameraFramingRatio = 0.65;
+        final availableHeight =
+            mq.size.height -
+            bannerH -
+            panelH -
+            mq.padding.bottom;
+
+        final mapTopPadding = _isOverview
+            ? bannerH
+            : bannerH + availableHeight * cameraFramingRatio;
+
+        return GoogleMap(
+          initialCameraPosition: CameraPosition(
+            target: pos ?? LatLng(widget.startLat, widget.startLng),
+            zoom: 19,
+            tilt: widget.travelMode == TravelMode.walk ? 0 : 45,
+            bearing: _nav.cameraBearing,
+          ),
+          markers: _buildMarkers(pos),
+          polylines: _buildPolylines(pos),
+          circles: _buildCircles(pos),
+          myLocationEnabled: false,
+          myLocationButtonEnabled: false,
+          zoomControlsEnabled: false,
+          compassEnabled: false,
+          buildingsEnabled: false,
+          onMapCreated: (c) {
+            _mapController = c;
+
+            Future.delayed(
+              const Duration(milliseconds: 400),
+              () {
+                final p = _nav.positionNotifier.value;
+                if (p != null) _moveCamera(p);
+              },
+            );
+          },
+          onCameraMoveStarted: () {
+            if (!_isProgrammaticMove) {
+              setState(() => _isFollowing = false);
+            }
+          },
+          padding: EdgeInsets.only(
+            top: mapTopPadding,
+            bottom: panelH + mq.padding.bottom,
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
 
@@ -415,7 +542,6 @@ final mq       = MediaQuery.of(context);
 final step     = _nav.currentStep;
 final nextStep = _nav.nextStep;
 final svc      = RouteService.instance;
-final polylines = _buildPolylines();
 
 final bannerH = mq.padding.top + (nextStep != null ? 130.0 : 98.0);
 const panelH  = 90.0;
@@ -431,43 +557,7 @@ final double mapTopPadding = _isOverview
       body: Stack(
         children: [
 
-          ValueListenableBuilder<LatLng?>(
-            valueListenable: _nav.positionNotifier,
-            builder: (context, pos, _) {
-              return GoogleMap(
-                initialCameraPosition: CameraPosition(
-                  target:  pos ?? LatLng(widget.startLat, widget.startLng),
-                  zoom:    19,
-                  tilt:    widget.travelMode == TravelMode.walk ? 0 : 45,
-                  bearing: _nav.cameraBearing,
-                ),
-                markers:                _buildMarkers(pos),
-                polylines:              polylines,
-                circles:                _buildCircles(pos),
-                myLocationEnabled:      false,
-                myLocationButtonEnabled: false,
-                zoomControlsEnabled:    false,
-                compassEnabled:         false,
-                buildingsEnabled:       false,
-                onMapCreated: (c) {
-                  _mapController = c;
-                  Future.delayed(const Duration(milliseconds: 400), () {
-                    final p = _nav.positionNotifier.value;
-                    if (p != null) _moveCamera(p);
-                  });
-                },
-                onCameraMoveStarted: () {
-                  if (!_isProgrammaticMove) {
-                    setState(() => _isFollowing = false);
-                  }
-                },
-                padding: EdgeInsets.only(
-                  top:    mapTopPadding,
-                  bottom: panelH + mq.padding.bottom,
-                ),
-              );
-            },
-          ),
+          _persistentMapLayer,
 
           if (step != null)
             Positioned(
@@ -675,6 +765,53 @@ final double mapTopPadding = _isOverview
               ]),
             ),
           ),
+
+          // TEMPORARY DEBUG OVERLAY FOR WIRELESS ROAD TESTING
+          Positioned(
+            left: 12,
+            top: bannerH + 14,
+            child: NavigationDebugOverlay(
+              nav: _nav,
+            ),
+          ),
+
+          if (_nav.isOfflineNavigation &&
+              _nav.networkNotice != null)
+            Positioned(
+              top: bannerH + 8,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 9,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.78),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.cloud_off_rounded,
+                      color: Colors.white,
+                      size: 17,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _nav.networkNotice!,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
 
           if (_nav.isRerouting)
             Positioned(

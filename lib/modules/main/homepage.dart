@@ -6,6 +6,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'dart:ui';
+
 import '../../services/location_service.dart';
 import '../place/detectPlacePage.dart';
 import '../dashboard/dashboard_page.dart';
@@ -20,6 +22,7 @@ import 'favourite.dart';
 import '../itinerary/itineraryPage.dart';
 import '../itinerary/itineraryGeneratePage.dart';
 import '../../services/userPreference_service.dart';
+import 'waveBottomNav.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -36,6 +39,15 @@ class _HomePageState extends State<HomePage> {
   String _email = "user@email.com";
   String _profileImageUrl = "";
   StreamSubscription? _userSubscription;
+
+  static const List<int> _navIndexMap = [0, 1, 3, 4]; // slot → 实际 _currentIndex
+  static const List<NavItemData> _navData = [
+    NavItemData(Icons.home_rounded,    "Home"),
+    NavItemData(Icons.explore_rounded, "Nearby"),
+    NavItemData(Icons.book_rounded,    "Itinerary"),
+    NavItemData(Icons.person_rounded,  "Profile"),
+  ];
+
 
   @override
   void initState() {
@@ -204,59 +216,168 @@ class _HomePageState extends State<HomePage> {
             ),
 
       // ── FAB position changes with tab ──
-      floatingActionButtonLocation: isItineraryTab
-          ? FloatingActionButtonLocation.endFloat    // New Trip → bottom right
-          : FloatingActionButtonLocation.centerDocked, // Camera → center notch
+floatingActionButtonLocation: isItineraryTab
+    ? FloatingActionButtonLocation.endFloat
+    : FloatingActionButtonLocation.centerDocked,   // ← 从 centerDocked 改成 centerFloat
 
-      bottomNavigationBar: BottomAppBar(
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        height: 65,
-        shape: const CircularNotchedRectangle(),
-        notchMargin: 8,
-        color: Colors.white,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            _buildNavItem(Icons.home_rounded,    "Home",      0),
-            _buildNavItem(Icons.explore_rounded, "Nearby",    1),
-            const SizedBox(width: 40), // notch spacer
-            _buildNavItem(Icons.book_rounded,    "Itinerary", 3),
-            _buildNavItem(Icons.person_rounded,  "Profile",   4),
-          ],
-        ),
+     bottomNavigationBar: ClipRRect(
+  child: BackdropFilter(
+    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+    child: BottomAppBar(
+      padding: EdgeInsets.zero,
+      height: 62,
+      shape: const CircularNotchedRectangle(),
+      notchMargin: 8,
+      color: Colors.white.withOpacity(0.85),
+      elevation: 0,
+      child: Row(
+        children: [
+          _navTab(Icons.home_outlined, Icons.home_rounded, "Home", 0),
+          _navTab(Icons.explore_outlined, Icons.explore_rounded, "Nearby", 1),
+          const SizedBox(width: 56),
+          _navTab(Icons.book_outlined, Icons.book_rounded, "Itinerary", 3),
+          _navTab(Icons.person_outline, Icons.person_rounded, "Profile", 4),
+        ],
       ),
+    ),
+  ),
+),
     );
   }
 
-  Widget _buildNavItem(IconData icon, String label, int index) {
-    final isSelected = _currentIndex == index;
-   return InkWell(
+  Widget _navTab(IconData outlineIcon, IconData filledIcon, String label, int index) {
+  final selected = _currentIndex == index;
+  return Expanded(
+    child: InkWell(
+      splashFactory: NoSplash.splashFactory,   // ← 关掉水波纹
+      highlightColor: Colors.transparent,  
       onTap: () => setState(() {
         _currentIndex = index;
         if (index == 1) _nearbyTabVisited = true;
-        _syncLocationTracking(); // 🆕
+        _syncLocationTracking();
       }),
       child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon,
-              color: isSelected
-                  ? const Color(0xFF6366F1)
-                  : Colors.blueGrey.shade300),
-          Text(label,
-              style: TextStyle(
+          AnimatedScale(
+            duration: const Duration(milliseconds: 280),
+            curve: Curves.easeOutBack,
+            scale: selected ? 1.18 : 1.0,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: selected
+                    ? [
+                        BoxShadow(
+                          color: const Color(0xFF6366F1).withOpacity(0.35),
+                          blurRadius: 12,
+                          spreadRadius: 1,
+                        ),
+                      ]
+                    : [],
+              ),
+              child: Icon(
+                selected ? filledIcon : outlineIcon,
+                size: 22,
+                color: selected ? const Color(0xFF6366F1) : const Color(0xFFB0B8C1),
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          AnimatedDefaultTextStyle(
+            duration: const Duration(milliseconds: 220),
+            style: TextStyle(
+              fontSize: 10,
+              color: selected ? const Color(0xFF6366F1) : const Color(0xFFB0B8C1),
+              fontWeight: selected ? FontWeight.w700 : FontWeight.normal,
+            ),
+            child: Text(label),
+          ),
+          const SizedBox(height: 3),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOut,
+            width: selected ? 16 : 0,
+            height: 3,
+            decoration: BoxDecoration(
+              color: const Color(0xFF6366F1),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+
+
+Widget _buildNavItem(IconData icon, String label, int index) {
+  final isSelected = _currentIndex == index;
+
+  return Expanded(
+    child: InkWell(
+      borderRadius: BorderRadius.circular(16),
+      splashColor: const Color(0xFF6366F1).withOpacity(0.08),
+      highlightColor: const Color(0xFF6366F1).withOpacity(0.05),
+      onTap: () => setState(() {
+        _currentIndex = index;
+        if (index == 1) _nearbyTabVisited = true;
+        _syncLocationTracking();
+      }),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedSlide(
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOutBack,
+            offset: isSelected ? const Offset(0, -0.15) : Offset.zero,
+            child: AnimatedScale(
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOutBack,
+              scale: isSelected ? 1.15 : 1.0,
+              child: Icon(
+                icon,
+                size: 23,
                 color: isSelected
                     ? const Color(0xFF6366F1)
                     : Colors.blueGrey.shade300,
-                fontSize: 10,
-                fontWeight:
-                    isSelected ? FontWeight.bold : FontWeight.normal,
-              )),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: isSelected
+                  ? const Color(0xFF6366F1)
+                  : Colors.blueGrey.shade300,
+              fontSize: 10,
+              fontWeight: isSelected ? FontWeight.w700 : FontWeight.normal,
+            ),
+          ),
+          const SizedBox(height: 2),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            width: isSelected ? 5 : 0,
+            height: isSelected ? 5 : 0,
+            decoration: const BoxDecoration(
+              color: Color(0xFF6366F1),
+              shape: BoxShape.circle,
+            ),
+          ),
         ],
       ),
-    );
-  }
-
+    ),
+  );
+}
+  
+  
+  
   Widget _buildAppDrawer(BuildContext context) {
     return Drawer(
       child: Column(

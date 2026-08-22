@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'api_Keys.dart';
+import 'userActivity_service.dart';
 
 class FavouriteService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -86,66 +87,94 @@ class FavouriteService {
   }) async {
     final collection = _favouritesCollection;
     final userDoc = _userDoc;
+
     if (collection == null || userDoc == null) {
       throw Exception('You need to be logged in to save favourites');
     }
 
-    List<String> finalTypes = (types != null && types.isNotEmpty)
+    final finalTypes = (types != null && types.isNotEmpty)
         ? types
         : await _fetchTypesFromApi(placeId);
 
+    final favouriteDoc = collection.doc(placeId);
+
     try {
-      final batch = _firestore.batch();
+      await _firestore.runTransaction((transaction) async {
+        final favouriteSnapshot = await transaction.get(favouriteDoc);
 
-      batch.set(collection.doc(placeId), {
-        'placeId': placeId,
-        'name': name,
-        'address': address,
-        'rating': rating,
-        'photoUrl': photoUrl,
-        'lat': lat,
-        'lng': lng,
-        'types': finalTypes,
-        'savedAt': FieldValue.serverTimestamp(),
+        // 已经存在 → 不重复增加 favouriteCount
+        if (favouriteSnapshot.exists) {
+          return;
+        }
+
+        transaction.set(favouriteDoc, {
+          'placeId': placeId,
+          'name': name,
+          'address': address,
+          'rating': rating,
+          'photoUrl': photoUrl,
+          'lat': lat,
+          'lng': lng,
+          'types': finalTypes,
+          'savedAt': FieldValue.serverTimestamp(),
+        });
+
+        transaction.update(userDoc, {
+          'favouriteCount': FieldValue.increment(1),
+        });
       });
+      UserActivityDataService.instance.invalidate();
 
-      batch.update(userDoc, {
-        'favouriteCount': FieldValue.increment(1),
-      });
 
-      await batch.commit();
-      print('✅ Added favourite, favouriteCount +1');
+      print('✅ Favourite added safely');
     } catch (e) {
       print('❌ addFavourite failed: $e');
-      throw Exception('Failed to save to favourites. Please check your connection.');
+      throw Exception(
+        'Failed to save to favourites. Please check your connection.',
+      );
     }
   }
 
   static Future<void> removeFavourite(String placeId) async {
     final collection = _favouritesCollection;
     final userDoc = _userDoc;
+
     if (collection == null || userDoc == null) {
       throw Exception('You need to be logged in to manage favourites');
     }
 
+    final favouriteDoc = collection.doc(placeId);
+
     try {
-      final batch = _firestore.batch();
+      await _firestore.runTransaction((transaction) async {
+        final favouriteSnapshot = await transaction.get(favouriteDoc);
 
-      batch.delete(collection.doc(placeId));
+        // 本来就不存在 → 什么都不用做
+        if (!favouriteSnapshot.exists) {
+          return;
+        }
 
-      final userSnapshot = await userDoc.get();
-      final currentCount = (userSnapshot.data() as Map<String, dynamic>?)?['favouriteCount'] ?? 0;
-      if (currentCount > 0) {
-        batch.update(userDoc, {
-          'favouriteCount': FieldValue.increment(-1),
-        });
-      }
+        final userSnapshot = await transaction.get(userDoc);
+        final userData = userSnapshot.data() as Map<String, dynamic>?;
+        final currentCount = (userData?['favouriteCount'] as num?)?.toInt() ?? 0;
 
-      await batch.commit();
-      print('✅ Removed favourite, favouriteCount -1');
+        transaction.delete(favouriteDoc);
+
+        if (currentCount > 0) {
+          transaction.update(userDoc, {
+            'favouriteCount': FieldValue.increment(-1),
+          });
+        }
+      });
+
+      UserActivityDataService.instance.invalidate();
+
+      print('✅ Favourite removed safely');
     } catch (e) {
       print('❌ removeFavourite failed: $e');
-      throw Exception('Failed to remove from favourites. Please check your connection.');
+      throw Exception(
+        'Failed to remove from favourites. Please check your connection.',
+      );
     }
   }
     

@@ -11,6 +11,7 @@ import '../services/nearbyPlace_service.dart';
 import 'storage_service.dart';
 import '../services/route_service.dart';
 import 'category_mapper.dart';
+import 'userActivity_service.dart';
 
 
 class ItineraryService {
@@ -124,58 +125,72 @@ class ItineraryService {
   }
 
     Future<String?> save(ItineraryModel item) async {
-      if (_uid == null) {
-        print('❌ save: user not logged in');
-        return null;
-      }
-      if (_col == null) return null;
-      try {
-        if (item.id.isEmpty) {
-          final ref = await _col!.add(item.toMap());
-          return ref.id;
-        } else {
-          await _col!.doc(item.id).set(item.toMap());
-          return item.id;
-        }
-      } catch (e) {
-        print('❌ save: $e');
-        return null;
-      }
+    if (_uid == null) {
+      print('❌ save: user not logged in');
+      return null;
     }
 
-  Future<void> update(ItineraryModel item) async {
-    if (_col == null || item.id.isEmpty) return;
+    if (_col == null) return null;
+
     try {
-      await _col!.doc(item.id).update(item.toMap());
+      String savedId;
+
+      if (item.id.isEmpty) {
+        final ref = await _col!.add(item.toMap());
+        savedId = ref.id;
+      } else {
+        await _col!.doc(item.id).set(item.toMap());
+        savedId = item.id;
+      }
+
+      UserActivityDataService.instance.invalidate();
+
+      return savedId;
     } catch (e) {
-      print('❌ update: $e');
+      print('❌ save: $e');
+      return null;
     }
+  }
+
+  Future<void> update(ItineraryModel item) async {
+    if (_col == null || item.id.isEmpty) {
+      throw Exception('Unable to update itinerary');
+    }
+
+    await _col!.doc(item.id).update(item.toMap());
+
+    UserActivityDataService.instance.invalidate();
   }
 
   Future<bool> delete(String id) async {
-    if (_col == null) return false;
-  
-    try {
-      final doc = await _col!.doc(id).get();
-      if (!doc.exists) return false;
-  
-      final itinerary = ItineraryModel.fromMap(
-        doc.id,
-        doc.data() as Map<String, dynamic>,
+  if (_col == null) return false;
+
+  try {
+    final doc = await _col!.doc(id).get();
+    if (!doc.exists) return false;
+
+    final itinerary = ItineraryModel.fromMap(
+      doc.id,
+      doc.data() as Map<String, dynamic>,
+    );
+
+    if (itinerary.isStarted) {
+      print(
+        '🚫 delete blocked: "${itinerary.title}" has been started, cannot delete',
       );
-  
-      if (itinerary.isStarted) {
-        print('🚫 delete blocked: "${itinerary.title}" has been started, cannot delete');
-        return false;
-      }
-  
-      await _col!.doc(id).delete();
-      return true;
-    } catch (e) {
-      print('❌ delete: $e');
       return false;
     }
+
+    await _col!.doc(id).delete();
+
+    UserActivityDataService.instance.invalidate();
+
+    return true;
+  } catch (e) {
+    print('❌ delete: $e');
+    return false;
   }
+}
   
 
   // ─────────────────────────────────────────────

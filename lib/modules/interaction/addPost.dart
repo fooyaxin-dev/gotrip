@@ -59,7 +59,7 @@ class _PostingPageState extends State<PostingPage> {
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  final PostService _statsService = PostService();
+
 
   // ── Top badge for current user ──
   AchievementTier? _topBadge;
@@ -252,7 +252,7 @@ class _PostingPageState extends State<PostingPage> {
         'userId': userId,
         'userName': userName,
         'userPhoto': userPhoto,
-        'userEmail': currentUser.email,
+        'userEmail': isAnonymous ? null : currentUser.email,
         'likes': 0,
         'comments': 0,
         'shares': 0,
@@ -260,15 +260,27 @@ class _PostingPageState extends State<PostingPage> {
         // 分析完成后用 .update() 单独补上
       };
 
-      final docRef = await _firestore.collection('posts').add(postData);
+      final docRef = _firestore.collection('posts').doc();
 
-      // ★ 同步到 Algolia —— 之前漏掉的一步，只有 public 帖子才建索引
-      // （跟 editPost.dart 的逻辑保持一致）
-      if (selectedVisibility == 'public') {
-        await AlgoliaService.syncPost(docRef.id, postData);
-      }
+final batch = _firestore.batch();
 
-      return docRef.id;
+batch.set(docRef, postData);
+
+batch.update(
+  _firestore.collection('users').doc(userId),
+  {
+    'postCount': FieldValue.increment(1),
+  },
+);
+
+await batch.commit();
+
+// Algolia 保持原本逻辑，不动
+if (selectedVisibility == 'public') {
+  await AlgoliaService.syncPost(docRef.id, postData);
+}
+
+return docRef.id;
     } catch (e) {
       throw Exception('Save post failed: $e');
     }
@@ -283,39 +295,40 @@ class _PostingPageState extends State<PostingPage> {
   /// sentiment 为 positive 时才会真正被学习进偏好（取代旧的用 likes
   /// 判断的逻辑，因为 likes 高不代表体验正面）。
   void _runSentimentAnalysisInBackground(
-      String postId,
-      String content, {
-      required List<String> placeTypes,
-      required int postRating,   // 🆕 用户在发帖页打的星级，0 = 没打分
-    }) {
-      if (content.trim().isEmpty) return;
+    String postId,
+    String content, {
+    required List<String> placeTypes,
+    required int postRating,
+    required List<String> postTags,    // 🆕
+    String? postTopic,                  // 🆕
+  }) {
+    if (content.trim().isEmpty) return;
 
-      LexiconSentimentAnalyzer.instance.analyze(content).then((result) async {
-        try {
-          await _firestore.collection('posts').doc(postId).update({
-            'sentimentScore': result.score,
-            'sentimentLabel': result.label.toJson(),
-            'sentimentMatchedTokens': result.matchedTokenCount,
-            'sentimentAnalyzedAt': FieldValue.serverTimestamp(),
-          });
-          debugPrint('🧠 Sentiment analyzed for $postId: $result');
+    LexiconSentimentAnalyzer.instance.analyze(content).then((result) async {
+      try {
+        await _firestore.collection('posts').doc(postId).update({
+          'sentimentScore': result.score,
+          'sentimentLabel': result.label.toJson(),
+          'sentimentMatchedTokens': result.matchedTokenCount,
+          'sentimentAnalyzedAt': FieldValue.serverTimestamp(),
+        });
+        debugPrint('🧠 Sentiment analyzed for $postId: $result');
 
-          // 如果帖子挂了真实地点，把这次体验反哺进推荐算法。
-          // 🆕 星级优先：用户打了分就以星级为准（更可靠），
-          // 没打分才退回用情感分析结果判断。
-          if (placeTypes.isNotEmpty) {
-            await UserPreferenceService.instance.updateFromPost(
-              placeTypes: placeTypes,
-              sentimentLabel: result.label,
-              sentimentMatchedTokens: result.matchedTokenCount,
-              postRating: postRating,
-            );
-          }
-        } catch (e) {
-          debugPrint('⚠️ Sentiment update failed for $postId: $e');
+        if (placeTypes.isNotEmpty || postTags.isNotEmpty || postTopic != null) {
+          await UserPreferenceService.instance.updateFromPost(
+            placeTypes: placeTypes,
+            postTags:   postTags,      // 🆕
+            postTopic:  postTopic,     // 🆕
+            sentimentLabel: result.label,
+            sentimentMatchedTokens: result.matchedTokenCount,
+            postRating: postRating,
+          );
         }
-      });
-    }
+      } catch (e) {
+        debugPrint('⚠️ Sentiment update failed for $postId: $e');
+      }
+    });
+  }
   
   Future<void> _pickImagesFromGallery() async {
     try {
@@ -515,15 +528,16 @@ class _PostingPageState extends State<PostingPage> {
         imagePaths: savedPaths['imagePaths']!,
         videoPaths: savedPaths['videoPaths']!,
       );
-      await _statsService.incrementPostCount();
 
       // 触发后台 sentiment 分析 —— 不 await，不拖慢发布反馈
       // 触发后台 sentiment 分析 —— 不 await，不拖慢发布反馈
-      _runSentimentAnalysisInBackground(
+     _runSentimentAnalysisInBackground(
         newPostId,
         _contentController.text.trim(),
         placeTypes: selectedPlaceTypes,
-        postRating: rating,   // 🆕 rating 是页面顶部 star selector 那个 int 字段
+        postRating: rating,
+        postTags:   selectedTags,   // 🆕
+        postTopic:  null,           // 🆕 这个发帖页面目前没有 topic 选择器，先传 null
       );
 
       Navigator.pop(context);

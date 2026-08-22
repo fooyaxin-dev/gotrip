@@ -4,6 +4,7 @@ import '../place/favouriteButton.dart';
 import '../place/placeDetailPage.dart';
 import '../../services/apps_Loading.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+
 // ─────────────────────────────────────────────
 // 📌 Google Places API types → 自定义分类映射
 // ─────────────────────────────────────────────

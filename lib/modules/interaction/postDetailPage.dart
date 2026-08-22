@@ -387,10 +387,12 @@ class _PostDetailPageState extends State<PostDetailPage> {
                             borderRadius: BorderRadius.circular(12),
                             onTap: () async {
                               final liked = await _likeService.toggleLike(post.id!);
+
                               UserPreferenceService.instance.updateFromLike(
+                                placeTypes: post.placeTypes,
                                 postTags: post.tags,
                                 postTopic: post.topic,
-                                isLiking: isLiked,
+                                isLiking: liked,
                                 sentimentLabel: post.sentimentLabel ?? SentimentLabel.neutral,
                                 sentimentMatchedTokens: post.sentimentMatchedTokens ?? 0,
                               );

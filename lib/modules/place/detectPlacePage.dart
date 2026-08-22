@@ -20,6 +20,7 @@ import '../../services/weather_service.dart';
 import '../../services/apps_Loading.dart';
 import '../../models/itineraryModel.dart';   // ← 新加：ItineraryModel / ItineraryDay / ItineraryPlace
 import 'package:intl/intl.dart';             // ← 新加：DateFormat
+import '../../services/dialog_helper.dart';  // ← 新加：AppDialogs
 
 // ── CHANGE 1: added 'recommended' sort mode ──────────────────────────────────
 enum SortMode { distance, rating, recommended }
@@ -318,8 +319,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       }
 
     } else {
-      final pos = LocationService.instance.currentPosition;
-      if (pos == null) { _showErrorDialog('Error', 'Cannot get location'); return; }
+    final pos = LocationService.instance.currentPosition;
+    if (pos == null) {
+      setState(() => _isLoading = false);
+      AppDialogs.showLocationUnavailable(context);
+      return;
+    }
       _currentPosition = pos;
 
       _initialCameraPosition = CameraPosition(
@@ -903,6 +908,76 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       )],
     ));
   }
+
+  Future<void> _showLocationDisabledDialog() async {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 28, 24, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 48, height: 48,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.location_off_rounded,
+                    color: Color(0xFF7C4DFF)),
+              ),
+              const SizedBox(height: 16),
+              const Text('Location Disabled',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(
+                'Please enable location services to see nearby places.',
+                style: TextStyle(fontSize: 14, color: Colors.grey[600], height: 1.4),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text('Cancel',
+                        style: TextStyle(color: Colors.grey[500])),
+                  ),
+                  const SizedBox(width: 4),
+                  TextButton(
+                    onPressed: () async {
+                      Navigator.pop(context);
+                      // 系统定位服务关了 → 去系统定位设置
+                      // 服务开着但 App 没权限 → 去 App 权限设置
+                      final serviceEnabled =
+                          await Geolocator.isLocationServiceEnabled();
+                      if (!serviceEnabled) {
+                        await Geolocator.openLocationSettings();
+                      } else {
+                        await Geolocator.openAppSettings();
+                      }
+                    },
+                    child: const Text('Open Settings',
+                        style: TextStyle(
+                            color: Color(0xFF7C4DFF),
+                            fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
 
   // ── CHANGE 3: FavouriteButton shows immediately, resolves Google ID in background
   void _showPlaceDetails(PlaceModel place) {

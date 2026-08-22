@@ -110,7 +110,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     // reaches this page — RouteOptimizerPage handles the initial save.
     // Every check-in just keeps Firestore in sync from here on.
     if (_itinerary.id.isNotEmpty) {
-      ItineraryService.instance.update(_itinerary);
+      await ItineraryService.instance.update(_itinerary);
     }
 
     // ── Step 3: Save to history ──
@@ -124,6 +124,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         itineraryTitle: _itinerary.title,
         placeId:        visited.placeId,
         primaryType:    visited.primaryType,
+        lat:            visited.lat,
+        lng:            visited.lng,
       );
     } catch (e) {
       if (mounted) {

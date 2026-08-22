@@ -53,6 +53,7 @@ class AchievementTier {
   final int threshold;      // value needed to unlock this tier
   final bool unlocked;
   final int currentValue;   // user's current progress value
+  final DateTime? unlockedAt; 
 
   const AchievementTier({
     required this.level,
@@ -62,6 +63,7 @@ class AchievementTier {
     required this.threshold,
     required this.unlocked,
     required this.currentValue,
+    this.unlockedAt,    
   });
 
   /// Progress towards this tier: 0.0 – 1.0
@@ -71,6 +73,13 @@ class AchievementTier {
 
   /// How many more units the user needs to unlock this tier.
   int get remaining => unlocked ? 0 : (threshold - currentValue).clamp(0, threshold);
+
+    AchievementTier copyWith({DateTime? unlockedAt}) => AchievementTier(
+      level: level, emoji: emoji, label: label, desc: desc,
+      threshold: threshold, unlocked: unlocked, currentValue: currentValue,
+      unlockedAt: unlockedAt ?? this.unlockedAt,
+    );
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,81 +395,88 @@ class AchievementService {
   // ─────────────────────────────────────────────
   // Build AchievementGroups from stats
   // ─────────────────────────────────────────────
+    List<AchievementGroup> buildGroups(AchievementStats s, [Map<String, DateTime>? unlockedDates]) {
+      final dates = unlockedDates ?? const {};
+      return [
+        // ── Explorer (places visited) ──
+        _group(
+          id: 'explorer', baseEmoji: '📍', title: 'Explorer',
+          unlockedDates: dates,
+          tiers: [
+            (level: 'bronze', emoji: '📍', label: 'Explorer I',   desc: 'Visit 10 places',  threshold: 10,  value: s.placesVisited),
+            (level: 'silver', emoji: '🗺️', label: 'Explorer II',  desc: 'Visit 30 places',  threshold: 30,  value: s.placesVisited),
+            (level: 'gold',   emoji: '🌏', label: 'Explorer III', desc: 'Visit 100 places', threshold: 100, value: s.placesVisited),
+          ],
+        ),
 
-  List<AchievementGroup> buildGroups(AchievementStats s) {
-    return [
-      // ── Explorer (places visited) ──
-      _group(
-        id: 'explorer', baseEmoji: '📍', title: 'Explorer',
-        tiers: [
-          (level: 'bronze', emoji: '📍', label: 'Explorer I',   desc: 'Visit 10 places',  threshold: 10,  value: s.placesVisited),
-          (level: 'silver', emoji: '🗺️', label: 'Explorer II',  desc: 'Visit 30 places',  threshold: 30,  value: s.placesVisited),
-          (level: 'gold',   emoji: '🌏', label: 'Explorer III', desc: 'Visit 100 places', threshold: 100, value: s.placesVisited),
-        ],
-      ),
+        // ── Foodie (food visits) ──
+        _group(
+          id: 'foodie', baseEmoji: '🍜', title: 'Foodie',
+          unlockedDates: dates,
+          tiers: [
+            (level: 'bronze', emoji: '🍜', label: 'Foodie I',   desc: 'Visit 5 food spots',  threshold: 5,  value: s.foodVisits),
+            (level: 'silver', emoji: '🍽️', label: 'Foodie II',  desc: 'Visit 15 food spots', threshold: 15, value: s.foodVisits),
+            (level: 'gold',   emoji: '👨‍🍳', label: 'Foodie III', desc: 'Visit 50 food spots', threshold: 50, value: s.foodVisits),
+          ],
+        ),
 
-      // ── Foodie (food visits) ──
-      _group(
-        id: 'foodie', baseEmoji: '🍜', title: 'Foodie',
-        tiers: [
-          (level: 'bronze', emoji: '🍜', label: 'Foodie I',   desc: 'Visit 5 food spots',  threshold: 5,  value: s.foodVisits),
-          (level: 'silver', emoji: '🍽️', label: 'Foodie II',  desc: 'Visit 15 food spots', threshold: 15, value: s.foodVisits),
-          (level: 'gold',   emoji: '👨‍🍳', label: 'Foodie III', desc: 'Visit 50 food spots', threshold: 50, value: s.foodVisits),
-        ],
-      ),
+        // ── Nature Lover (nature visits) ──
+        _group(
+          id: 'nature', baseEmoji: '🌿', title: 'Nature Lover',
+          unlockedDates: dates,
+          tiers: [
+            (level: 'bronze', emoji: '🌿', label: 'Nature Lover I',   desc: 'Visit 5 nature spots',  threshold: 5,  value: s.natureVisits),
+            (level: 'silver', emoji: '🌲', label: 'Nature Lover II',  desc: 'Visit 15 nature spots', threshold: 15, value: s.natureVisits),
+            (level: 'gold',   emoji: '🏔️', label: 'Nature Lover III', desc: 'Visit 50 nature spots', threshold: 50, value: s.natureVisits),
+          ],
+        ),
 
-      // ── Nature Lover (nature visits) ──
-      _group(
-        id: 'nature', baseEmoji: '🌿', title: 'Nature Lover',
-        tiers: [
-          (level: 'bronze', emoji: '🌿', label: 'Nature Lover I',   desc: 'Visit 5 nature spots',  threshold: 5,  value: s.natureVisits),
-          (level: 'silver', emoji: '🌲', label: 'Nature Lover II',  desc: 'Visit 15 nature spots', threshold: 15, value: s.natureVisits),
-          (level: 'gold',   emoji: '🏔️', label: 'Nature Lover III', desc: 'Visit 50 nature spots', threshold: 50, value: s.natureVisits),
-        ],
-      ),
+        // ── History Buff (attraction visits) ──
+        _group(
+          id: 'history', baseEmoji: '🏛️', title: 'History Buff',
+          unlockedDates: dates,
+          tiers: [
+            (level: 'bronze', emoji: '🏛️', label: 'History Buff I',   desc: 'Visit 5 attractions',  threshold: 5,  value: s.attractionVisits),
+            (level: 'silver', emoji: '🗿', label: 'History Buff II',  desc: 'Visit 15 attractions', threshold: 15, value: s.attractionVisits),
+            (level: 'gold',   emoji: '🏆', label: 'History Buff III', desc: 'Visit 50 attractions', threshold: 50, value: s.attractionVisits),
+          ],
+        ),
 
-      // ── History Buff (attraction visits) ──
-      _group(
-        id: 'history', baseEmoji: '🏛️', title: 'History Buff',
-        tiers: [
-          (level: 'bronze', emoji: '🏛️', label: 'History Buff I',   desc: 'Visit 5 attractions',  threshold: 5,  value: s.attractionVisits),
-          (level: 'silver', emoji: '🗿', label: 'History Buff II',  desc: 'Visit 15 attractions', threshold: 15, value: s.attractionVisits),
-          (level: 'gold',   emoji: '🏆', label: 'History Buff III', desc: 'Visit 50 attractions', threshold: 50, value: s.attractionVisits),
-        ],
-      ),
+        // ── City Hopper (cities explored) ──
+        _group(
+          id: 'city', baseEmoji: '🏙️', title: 'City Hopper',
+          unlockedDates: dates,
+          tiers: [
+            (level: 'bronze', emoji: '🏙️', label: 'City Hopper I',   desc: 'Explore 3 cities',  threshold: 3,  value: s.citiesExplored),
+            (level: 'silver', emoji: '🌆', label: 'City Hopper II',  desc: 'Explore 10 cities', threshold: 10, value: s.citiesExplored),
+            (level: 'gold',   emoji: '🌍', label: 'City Hopper III', desc: 'Explore 25 cities', threshold: 25, value: s.citiesExplored),
+          ],
+        ),
 
-      // ── City Hopper (cities explored) ──
-      _group(
-        id: 'city', baseEmoji: '🏙️', title: 'City Hopper',
-        tiers: [
-          (level: 'bronze', emoji: '🏙️', label: 'City Hopper I',   desc: 'Explore 3 cities',  threshold: 3,  value: s.citiesExplored),
-          (level: 'silver', emoji: '🌆', label: 'City Hopper II',  desc: 'Explore 10 cities', threshold: 10, value: s.citiesExplored),
-          (level: 'gold',   emoji: '🌍', label: 'City Hopper III', desc: 'Explore 25 cities', threshold: 25, value: s.citiesExplored),
-        ],
-      ),
+        // ── Traveller (completed itineraries) ──
+        _group(
+          id: 'traveller', baseEmoji: '✈️', title: 'Traveller',
+          unlockedDates: dates,
+          tiers: [
+            (level: 'bronze', emoji: '✈️', label: 'Traveller I',   desc: 'Complete 1 itinerary',  threshold: 1,  value: s.tripsCompleted),
+            (level: 'silver', emoji: '🧳', label: 'Traveller II',  desc: 'Complete 5 itineraries', threshold: 5,  value: s.tripsCompleted),
+            (level: 'gold',   emoji: '🌐', label: 'Traveller III', desc: 'Complete 15 itineraries', threshold: 15, value: s.tripsCompleted),
+          ],
+        ),
 
-      // ── Traveller (completed itineraries) ──
-      _group(
-        id: 'traveller', baseEmoji: '✈️', title: 'Traveller',
-        tiers: [
-          (level: 'bronze', emoji: '✈️', label: 'Traveller I',   desc: 'Complete 1 itinerary',  threshold: 1,  value: s.tripsCompleted),
-          (level: 'silver', emoji: '🧳', label: 'Traveller II',  desc: 'Complete 5 itineraries', threshold: 5,  value: s.tripsCompleted),
-          (level: 'gold',   emoji: '🌐', label: 'Traveller III', desc: 'Complete 15 itineraries', threshold: 15, value: s.tripsCompleted),
-        ],
-      ),
-
-      // ── Road Warrior (distance km) ──
-      _group(
-        id: 'road', baseEmoji: '🚀', title: 'Road Warrior',
-        tiers: [
-          (level: 'bronze', emoji: '🛵', label: 'Road Warrior I',   desc: 'Travel 50 km',   threshold: 50,  value: s.totalDistanceKm.toInt()),
-          (level: 'silver', emoji: '🚗', label: 'Road Warrior II',  desc: 'Travel 200 km',  threshold: 200, value: s.totalDistanceKm.toInt()),
-          (level: 'gold',   emoji: '🚀', label: 'Road Warrior III', desc: 'Travel 1000 km', threshold: 1000, value: s.totalDistanceKm.toInt()),
-        ],
-      ),
-    ];
-  }
-
+        // ── Road Warrior (distance km) ──
+        _group(
+          id: 'road', baseEmoji: '🚀', title: 'Road Warrior',
+          unlockedDates: dates,
+          tiers: [
+            (level: 'bronze', emoji: '🛵', label: 'Road Warrior I',   desc: 'Travel 50 km',   threshold: 50,  value: s.totalDistanceKm.toInt()),
+            (level: 'silver', emoji: '🚗', label: 'Road Warrior II',  desc: 'Travel 200 km',  threshold: 200, value: s.totalDistanceKm.toInt()),
+            (level: 'gold',   emoji: '🚀', label: 'Road Warrior III', desc: 'Travel 1000 km', threshold: 1000, value: s.totalDistanceKm.toInt()),
+          ],
+        ),
+      ];
+    }
+  
   // ─────────────────────────────────────────────
   // Check for new unlocks (call after a check-in)
   //
@@ -538,13 +554,81 @@ class AchievementService {
     }
   }
 
+  Map<String, DateTime>? _cachedUnlockedDates;
+
+  Future<Map<String, DateTime>> _loadUnlockedDates({bool forceRefresh = false}) async {
+    final uid = _uid;
+    if (uid == null) return {};
+    if (!forceRefresh && _cachedUnlockedDates != null) return _cachedUnlockedDates!;
+
+    try {
+      final doc = await _db.collection('users').doc(uid).get();
+      final raw = doc.data()?['unlockedBadges'] as Map<String, dynamic>? ?? {};
+      final dates = <String, DateTime>{};
+      raw.forEach((k, v) {
+        if (v is Timestamp) dates[k] = v.toDate();
+      });
+      _cachedUnlockedDates = dates;
+      return dates;
+    } catch (e) {
+      if (kDebugMode) print('AchievementService._loadUnlockedDates failed: $e');
+      return {};
+    }
+  }
+
+  Future<void> _saveUnlockedDates(Map<String, DateTime> newDates) async {
+    final uid = _uid;
+    if (uid == null || newDates.isEmpty) return;
+
+    try {
+      final data = <String, dynamic>{};
+      newDates.forEach((key, date) {
+        data['unlockedBadges.$key'] = Timestamp.fromDate(date);   // 点号路径，只补新 key，不覆盖旧的
+      });
+      await _db.collection('users').doc(uid).set(data, SetOptions(merge: true));
+      _cachedUnlockedDates = {...?_cachedUnlockedDates, ...newDates};
+    } catch (e) {
+      if (kDebugMode) print('AchievementService._saveUnlockedDates failed: $e');
+    }
+  }
+
+
   // ─────────────────────────────────────────────
   // Convenience: fetch stats + build groups in one call
   // ─────────────────────────────────────────────
 
   Future<List<AchievementGroup>> fetchGroups({bool forceRefresh = false}) async {
-    final stats = await fetchStats(forceRefresh: forceRefresh);
-    return buildGroups(stats);
+    final stats         = await fetchStats(forceRefresh: forceRefresh);
+    final unlockedDates = await _loadUnlockedDates(forceRefresh: forceRefresh);
+    final groups        = buildGroups(stats, unlockedDates);
+
+    // 找出「已解锁但还没记录时间」的 tier，用当前时间补一条记录
+    final newlyRecorded = <String, DateTime>{};
+    final now = DateTime.now();
+    for (final group in groups) {
+      for (final tier in group.tiers) {
+        final key = '${group.id}_${tier.level}';
+        if (tier.unlocked && !unlockedDates.containsKey(key)) {
+          newlyRecorded[key] = now;
+        }
+      }
+    }
+
+    if (newlyRecorded.isNotEmpty) {
+      await _saveUnlockedDates(newlyRecorded);
+      // 把刚补上的日期直接贴回这次返回的结果，不用重新查一次
+      for (final group in groups) {
+        for (int i = 0; i < group.tiers.length; i++) {
+          final tier = group.tiers[i];
+          final key  = '${group.id}_${tier.level}';
+          if (newlyRecorded.containsKey(key)) {
+            group.tiers[i] = tier.copyWith(unlockedAt: newlyRecorded[key]);
+          }
+        }
+      }
+    }
+
+    return groups;
   }
 
   // ─────────────────────────────────────────────
@@ -596,22 +680,23 @@ class AchievementService {
     required String baseEmoji,
     required String title,
     required List<({String level, String emoji, String label, String desc, int threshold, int value})> tiers,
+    required Map<String, DateTime> unlockedDates,   // ★ 新增
   }) {
     return AchievementGroup(
-      id:        id,
-      baseEmoji: baseEmoji,
-      title:     title,
-      tiers: tiers.map((t) => AchievementTier(
-        level:        t.level,
-        emoji:        t.emoji,
-        label:        t.label,
-        desc:         t.desc,
-        threshold:    t.threshold,
-        unlocked:     t.value >= t.threshold,
-        currentValue: t.value,
-      )).toList(),
+      id: id, baseEmoji: baseEmoji, title: title,
+      tiers: tiers.map((t) {
+        final unlocked = t.value >= t.threshold;
+        final key = '${id}_${t.level}';               // ★ 新增
+        return AchievementTier(
+          level: t.level, emoji: t.emoji, label: t.label, desc: t.desc,
+          threshold: t.threshold,
+          unlocked: unlocked,
+          currentValue: t.value,
+          unlockedAt: unlocked ? unlockedDates[key] : null,   // ★ 新增
+        );
+      }).toList(),
     );
-  }
+}
 
   AchievementStats _emptyStats() => const AchievementStats(
     placesVisited:    0,
@@ -622,4 +707,32 @@ class AchievementService {
     attractionVisits: 0,
     totalDistanceKm:  0,
   );
+
+  Future<List<UnlockedBadge>> fetchAllUnlockedBadges({bool forceRefresh = false}) async {
+  final groups = await AchievementService.instance.fetchGroups();  // ✅
+  final result = <UnlockedBadge>[];
+  for (final g in groups) {
+    for (final t in g.tiers) {
+      if (t.unlocked) result.add(UnlockedBadge(groupTitle: g.title, tier: t));
+    }
+  }
+  result.sort((a, b) {
+    final ad = a.tier.unlockedAt, bd = b.tier.unlockedAt;
+    if (ad == null && bd == null) return 0;
+    if (ad == null) return 1;
+    if (bd == null) return -1;
+    return bd.compareTo(ad); // 新的在前
+  });
+  return result;
 }
+
+  
+}
+
+class UnlockedBadge {
+  final String groupTitle;
+  final AchievementTier tier;
+  const UnlockedBadge({required this.groupTitle, required this.tier});
+}
+
+

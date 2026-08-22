@@ -19,6 +19,7 @@ import 'allRecommendedPlacesPage.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/error_handler.dart';
 import '../../services/weather_service.dart';
+import '../../services/dialog_helper.dart';
 
 class MainPage extends StatefulWidget {
   final dynamic username;
@@ -812,14 +813,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   }
 
   void _showLocationServiceDialog() {
-    showDialog(context: context, builder: (_) => AlertDialog(
-      title: const Text("Location Disabled"),
-      content: const Text("Please enable location services to see nearby places."),
-      actions: [TextButton(
-        onPressed: () { Navigator.pop(context); Geolocator.openLocationSettings(); },
-        child: const Text("Open Settings"),
-      )],
-    ));
+    if (!mounted) return;
+      AppDialogs.showLocationServiceDisabled(context);
   }
 
   void _showPermissionDialog() {

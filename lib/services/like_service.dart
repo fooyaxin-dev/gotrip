@@ -8,25 +8,49 @@ class LikeService {
 
 
   Future<bool> toggleLike(String postId) async {
-    try {
-      String? userId = _auth.currentUser?.uid;
-      if (userId == null) {
-        throw Exception('User not logged in');
-      }
+  try {
+    final userId = _auth.currentUser?.uid;
 
-      bool isLiked = await hasLiked(postId, userId);
+    if (userId == null) {
+      throw Exception('User not logged in');
+    }
 
-      if (isLiked) {
-        await _unlikePost(postId, userId);
+    final postDoc =
+        _firestore.collection('posts').doc(postId);
+
+    final likeDoc =
+        postDoc.collection('likes').doc(userId);
+
+    return await _firestore.runTransaction<bool>((transaction) async {
+      final likeSnapshot = await transaction.get(likeDoc);
+
+      if (likeSnapshot.exists) {
+        // Already liked → unlike
+        transaction.delete(likeDoc);
+
+        transaction.update(postDoc, {
+          'likes': FieldValue.increment(-1),
+        });
+
         return false;
       } else {
-        await _likePost(postId, userId);
+        // Not liked → like
+        transaction.set(likeDoc, {
+          'userId': userId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+
+        transaction.update(postDoc, {
+          'likes': FieldValue.increment(1),
+        });
+
         return true;
       }
-    } catch (e) {
-      throw Exception('Failed to toggle like: $e');
-    }
+    });
+  } catch (e) {
+    throw Exception('Failed to toggle like: $e');
   }
+}
 
   
   Future<void> _likePost(String postId, String userId) async {

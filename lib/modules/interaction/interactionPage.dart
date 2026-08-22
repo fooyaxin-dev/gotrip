@@ -52,6 +52,10 @@ class _InteractionPageState extends State<InteractionPage> {
   String? _selectedCity;
   String? _selectedCityLabel;
 
+  // ── City browsing bar (below search bar) ──
+  List<String> _availableCities = [];
+  bool _citiesLoading = true;
+
   Timer? _debounce;
 
   // ── User info cache ──
@@ -61,11 +65,14 @@ class _InteractionPageState extends State<InteractionPage> {
   // ── Feed pagination state ──
   final ScrollController _feedScrollController = ScrollController();
   static const int _feedPageSize = 20;
+  
   List<Post> _feedPosts = [];
   DocumentSnapshot? _feedLastDoc;
   bool _feedHasMore = true;
   bool _feedInitialLoading = true;
   bool _feedLoadingMore = false;
+
+  int _feedRequestId = 0;
 
 
   @override
@@ -81,7 +88,9 @@ class _InteractionPageState extends State<InteractionPage> {
 
     // ★ 新增：feed 分页
     _loadFeedFirstPage();
+    _loadAvailableCities();
     _feedScrollController.addListener(_onFeedScroll);
+
   }
 
   @override
@@ -120,18 +129,25 @@ class _InteractionPageState extends State<InteractionPage> {
   }
 
   Future<void> _loadFeedFirstPage() async {
+    final requestId = ++_feedRequestId;
+    final requestedCity = _selectedCity;
+
     setState(() {
       _feedInitialLoading = true;
+      _feedLoadingMore = false;
       _feedPosts = [];
       _feedLastDoc = null;
       _feedHasMore = true;
     });
 
-    final page = _selectedCity != null
-        ? await _postService.getPostsByCityPaginated(city: _selectedCity!)
+    final page = requestedCity != null
+        ? await _postService.getPostsByCityPaginated(
+            city: requestedCity,
+          )
         : await _postService.getPublicPostsPaginated();
 
-    if (!mounted) return;
+    if (!mounted || requestId != _feedRequestId) return;
+
     setState(() {
       _feedPosts = page.posts;
       _feedLastDoc = page.lastDocument;
@@ -140,24 +156,72 @@ class _InteractionPageState extends State<InteractionPage> {
     });
   }
 
-  Future<void> _loadMoreFeedPosts() async {
-    if (_feedLoadingMore || !_feedHasMore) return;
-    setState(() => _feedLoadingMore = true);
+Future<void> _loadMoreFeedPosts() async {
+  if (_feedLoadingMore || !_feedHasMore) return;
 
-    final page = _selectedCity != null
-        ? await _postService.getPostsByCityPaginated(
-            city: _selectedCity!, startAfter: _feedLastDoc)
-        : await _postService.getPublicPostsPaginated(startAfter: _feedLastDoc);
+  final requestId = _feedRequestId;
+  final requestedCity = _selectedCity;
+  final requestedLastDoc = _feedLastDoc;
 
-    if (!mounted) return;
+  setState(() => _feedLoadingMore = true);
+
+  final page = requestedCity != null
+      ? await _postService.getPostsByCityPaginated(
+          city: requestedCity,
+          startAfter: requestedLastDoc,
+        )
+      : await _postService.getPublicPostsPaginated(
+          startAfter: requestedLastDoc,
+        );
+
+  if (!mounted || requestId != _feedRequestId) return;
+
+  setState(() {
+    _feedPosts.addAll(page.posts);
+    _feedLastDoc = page.lastDocument;
+    _feedHasMore = page.hasMore;
+    _feedLoadingMore = false;
+  });
+}
+
+  void _onCityChipTap(String? city) {
+    if (_selectedCity == city) return;
     setState(() {
-      _feedPosts.addAll(page.posts);
-      _feedLastDoc = page.lastDocument;
-      _feedHasMore = page.hasMore;
-      _feedLoadingMore = false;
+      _isSearchActive = false;
+      _selectedCity = city;
+      _selectedCityLabel = city;
+      _searchController.clear();
     });
+    _loadFeedFirstPage();
   }
 
+  Future<void> _loadAvailableCities() async {
+    try {
+      final snapshot = await _firestore
+          .collection('posts')
+          .where('visibility', isEqualTo: 'public')   // ✅ 对应 postModel 的 visibility 字段
+          .get();
+
+      final Map<String, int> cityCount = {};
+      for (final doc in snapshot.docs) {
+        final city = (doc.data()['city'] as String?)?.trim();
+        if (city != null && city.isNotEmpty) {
+          cityCount[city] = (cityCount[city] ?? 0) + 1;
+        }
+      }
+      final sorted = cityCount.keys.toList()
+        ..sort((a, b) => cityCount[b]!.compareTo(cityCount[a]!));
+
+      if (!mounted) return;
+      setState(() {
+        _availableCities = sorted;
+        _citiesLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _citiesLoading = false);
+    }
+  }
 
 
 
@@ -219,6 +283,56 @@ class _InteractionPageState extends State<InteractionPage> {
     }
     return set.take(6).toList();
   }
+
+  Widget _buildCityChipsBar() {
+    if (_citiesLoading || _availableCities.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      color: Colors.white,
+      height: 44,
+      padding: const EdgeInsets.only(bottom: 8),
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: [
+          _buildCityChip('All', _selectedCity == null, () => _onCityChipTap(null)),
+          ..._availableCities.map((city) => Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: _buildCityChip(city, _selectedCity == city, () => _onCityChipTap(city)),
+              )),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCityChip(String label, bool isSelected, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF7C4DFF) : Colors.grey[100],
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: isSelected ? const Color(0xFF7C4DFF) : Colors.grey[300]!),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (label != 'All') ...[
+            const Icon(Icons.location_on, size: 12, color: Color(0xFFD35D3E)),
+            const SizedBox(width: 4),
+          ],
+          Text(label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: isSelected ? Colors.white : Colors.black87,
+              )),
+        ]),
+      ),
+    );
+  }
+
   
   // ─── 提交搜索（按回车 / 点搜索键 / 点建议项）→ 替换主列表 ──────────────────
 
@@ -399,11 +513,18 @@ class _InteractionPageState extends State<InteractionPage> {
           ],
           bottom: PreferredSize(preferredSize: const Size.fromHeight(56), child: _buildSearchBar()),
         ),
-        body: Stack(children: [
-          _isSearchActive ? _buildSearchResultsList() : _buildFeedList(),   // ← 改这一行
-          if (_showSuggestions && !_isSearchActive)
-            Positioned(top: 0, left: 0, right: 0, child: _buildSearchDropdown()),
-        ]),
+        body: Column(
+          children: [
+            _buildCityChipsBar(),
+            Expanded(
+              child: Stack(children: [
+                _isSearchActive ? _buildSearchResultsList() : _buildFeedList(),
+                if (_showSuggestions && !_isSearchActive)
+                  Positioned(top: 0, left: 0, right: 0, child: _buildSearchDropdown()),
+              ]),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -590,7 +711,11 @@ class _InteractionPageState extends State<InteractionPage> {
     return InkWell(
       onTap: () {
         _searchController.text = post.title;
-        UserPreferenceService.instance.updateFromSearch(postTags: post.tags, postTopic: post.topic);
+        UserPreferenceService.instance.updateFromSearch(
+          placeTypes: post.placeTypes,
+          postTags:   post.tags,
+          postTopic:  post.topic,
+        );
         _performSearch(post.title);
       },
       child: Padding(
@@ -1031,6 +1156,7 @@ class _InteractionPageState extends State<InteractionPage> {
       final bool isLiked = await _likeService.toggleLike(post.id!);
       // ← 去掉 snackbar，只静默更新偏好
       UserPreferenceService.instance.updateFromLike(
+        placeTypes: post.placeTypes,
         postTags: post.tags,
         postTopic: post.topic,
         isLiking: isLiked,

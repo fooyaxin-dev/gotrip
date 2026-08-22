@@ -169,9 +169,17 @@ class UserPreferenceService {
   final ValueNotifier<int> preferencesChanged = ValueNotifier(0);
 
   final Map<String, int>    _favouriteCount    = {};
-  final Map<String, double> _searchScoreBuffer = {}; // 小数累积 buffer
   final Map<String, double> _timeAffinity      = {};
+  final Map<String, double> _passiveCount = {};
 
+  // 🆕 各来源 × 各数据类型的基础权重
+  static const double _wPostTag      = 0.5;  // 发帖时的 tag/topic
+  static const double _wLikeLocation = 0.7;  // 点赞帖子挂的地点
+  static const double _wLikeTag      = 0.3;  // 点赞帖子的 tag/topic
+  static const double _wSearchLocation = 0.5; // 搜索点开帖子挂的地点
+  static const double _wSearchTag      = 0.2; // 搜索点开帖子的 tag/topic
+    
+    
   static const int _minCountToLearn = 3;
   static const double _minCountToLearnTime = 1.0; 
 
@@ -222,7 +230,7 @@ class UserPreferenceService {
   };
 
   // ─────────────────────────────────────────────
-  // Load  ← 现在同时加载 searchScoreBuffer
+  //  Load  ← 同时加载 favouriteTypeCounts / passiveSignalCount / timeAffinity
   // ─────────────────────────────────────────────
 
   Future<UserPreferences> load() async {
@@ -235,19 +243,17 @@ class UserPreferenceService {
 
       _prefs = UserPreferences.fromMap(doc.data()!);
 
-      // ── Load favouriteTypeCounts ──
       final countMap =
           doc.data()!['favouriteTypeCounts'] as Map<String, dynamic>? ?? {};
       _favouriteCount.clear();
       countMap.forEach((k, v) => _favouriteCount[k] = (v as num).toInt());
 
-      // ── Load searchScoreBuffer ──
-      final bufferMap =
-          doc.data()!['searchScoreBuffer'] as Map<String, dynamic>? ?? {};
-      _searchScoreBuffer.clear();
-      bufferMap.forEach((k, v) => _searchScoreBuffer[k] = (v as num).toDouble());
+      // 🆕 Load passiveSignalCount（取代原本的 searchScoreBuffer）
+      final passiveMap =
+          doc.data()!['passiveSignalCount'] as Map<String, dynamic>? ?? {};
+      _passiveCount.clear();
+      passiveMap.forEach((k, v) => _passiveCount[k] = (v as num).toDouble());
 
-      // 🆕 Load timeAffinity
       final timeMap =
           doc.data()!['timeAffinity'] as Map<String, dynamic>? ?? {};
       _timeAffinity.clear();
@@ -284,18 +290,17 @@ class UserPreferenceService {
     if (uid == null) return;
     _prefs = UserPreferences.empty().copyWith(onboardingDone: true);
     _favouriteCount.clear();
-    _searchScoreBuffer.clear();
-    _timeAffinity.clear(); // 🆕
+    _passiveCount.clear();   // 🔧 取代 _searchScoreBuffer.clear()
+    _timeAffinity.clear();
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
-      'preferences': {
-        'categories': [],
-        'cuisines':   [],
-        'travelMode': 'walk',
-        'budgetTier': 'budget',
-      },
-      'favouriteTypeCounts': {},
-      'searchScoreBuffer':   {},
-      'timeAffinity':        {}, // 🆕
+      'preferences.categories':  [],
+      'preferences.cuisines':    [],
+      'preferences.travelMode':  'walk',
+      'preferences.budgetTier':  'budget',
+      'preferences.topPriority': 'interest',
+      'favouriteTypeCounts':   {},
+      'passiveSignalCount':    {},   // 🔧 取代 'searchScoreBuffer': {}
+      'timeAffinity':          {},
     });
     preferencesChanged.value++;
   }
@@ -351,13 +356,9 @@ class UserPreferenceService {
     );
 
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
-      'preferences': {
-        'categories': updatedCategories,
-        'cuisines':   updatedCuisines,
-        'travelMode': _prefs.travelMode,
-        'budgetTier': _prefs.budgetTier.toJson(),
-      },
-      'favouriteTypeCounts': _favouriteCount,
+      'preferences.categories': updatedCategories,
+      'preferences.cuisines':   updatedCuisines,
+      'favouriteTypeCounts':    _favouriteCount,
     });
 
     await _saveTimeAffinity(uid); // 🆕
@@ -377,33 +378,27 @@ class UserPreferenceService {
   // 正确被学习到。
   // ─────────────────────────────────────────────
 
+  // ─────────────────────────────────────────────
+  // Update from Post
+  // 发帖 = 直接整数 +1（location），删帖 = -1
+  // tag/topic 作为较弱的辅助信号，走 _passiveCount，不参与 gate
+  // ─────────────────────────────────────────────
+
   Future<void> updateFromPost({
-    required List<String> placeTypes,    // post.placeTypes（Google types）
+    required List<String> placeTypes,
+    required List<String> postTags,
+    required String?      postTopic,
     required SentimentLabel sentimentLabel,
-    required int sentimentMatchedTokens, // 用来判断是否低置信度
-    int postRating = 0,                  // 用户打的星级(1-5)，0 = 没打分
+    required int sentimentMatchedTokens,
+    int postRating = 0,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-  
-    // 没挂地点 / 没有 types，没有学习的对象
-    if (placeTypes.isEmpty) return;
-  
-    // ── 判断这次体验是"正面"还是"负面"，以及要给多重的权重 ──
-    //
-    // 设计原则：
-    // - rating 是用户明确给的信号（explicit feedback），永远优先决定方向
-    // - sentiment 不是摆设：当它跟 rating 方向一致时，说明这次信号
-    //   特别可信（用户打了高分，文字也确实写得正面），加倍学习权重；
-    //   不一致时（比如打了5星但文字平淡/抱怨），只信 rating，走基础权重，
-    //   不因为文字分析而加码——避免"嘴上说不要身体很诚实"这种混合情况
-    //   被过度解读。
-    // - 完全没打分（postRating == 0，很正常，不是每个人都会点星星）时，
-    //   才完全交给 sentiment 独立判断，权重跟以前一样。
+    if (placeTypes.isEmpty && postTags.isEmpty && postTopic == null) return;
+
     final bool hasRating   = postRating > 0;
     final bool ratingPos   = postRating >= 4;
     final bool ratingNeg   = postRating <= 2;
-    // postRating == 3 → 中立，不学习也不扣分
 
     final bool sentimentConfident = sentimentMatchedTokens >= 2;
     final bool sentimentPos = sentimentConfident && sentimentLabel == SentimentLabel.positive;
@@ -411,235 +406,209 @@ class UserPreferenceService {
 
     bool isPositive;
     bool isNegative;
-    int  weight; // 1 = 基础权重，2 = 双信号一致，加倍确信
+    int  weight;
 
     if (hasRating) {
       if (!ratingPos && !ratingNeg) {
-        // 3 星，中立体验，不构成学习信号
-        print('🧠 updateFromPost: skipped (rating=3, neutral — no learning signal)');
+        print('🧠 updateFromPost: skipped (rating=3, neutral)');
         return;
       }
       isPositive = ratingPos;
       isNegative = ratingNeg;
-
       final agrees = (isPositive && sentimentPos) || (isNegative && sentimentNeg);
       weight = agrees ? 2 : 1;
     } else {
       if (!sentimentPos && !sentimentNeg) {
-        print('🧠 updateFromPost: skipped (no rating, sentiment='
-            '${sentimentLabel.toJson()}, tokens=$sentimentMatchedTokens — too weak)');
+        print('🧠 updateFromPost: skipped (no rating, sentiment weak)');
         return;
       }
       isPositive = sentimentPos;
       isNegative = sentimentNeg;
       weight = 1;
     }
-  
-    // ── 复用跟 updateFromFavourite 完全一样的 type→category / type→cuisine 映射 ──
-    const typeToCategory = {
-      'restaurant':         'restaurant',
-      'park':               'park',
-      'tourist_attraction': 'tourist_attraction',
-      'shopping_mall':      'shopping_mall',
-      'amusement_park':     'amusement_park',
-    };
-    const typeToCuisine = {
-      'chinese_restaurant':   'chinese',
-      'malay_restaurant':     'malay',
-      'malaysian_restaurant': 'malay',
-      'indian_restaurant':    'indian',
-      'western_restaurant':   'western',
-      'american_restaurant':  'western',
-      'japanese_restaurant':  'japanese',
-      'korean_restaurant':    'korean',
-      'dessert_shop':         'dessert',
-      'ice_cream_shop':       'dessert',
-      'bakery':               'dessert',
-      'cafe':                 'cafe',
-      'coffee_shop':          'cafe',
-    };
-  
-    final List<String> involvedKeys = [];
-  
-    for (final t in placeTypes) {
-      final category = typeToCategory[t];
-      if (category != null) {
-        involvedKeys.add('cat_$category');
-        if (isPositive) {
-          _recordTimeAffinity(category, weight: weight.toDouble()); // 🆕
-        }
-        break;
+
+    // ── strongKeys：location → _favouriteCount，可 gate ──
+    // 🔧 CHANGED: 不再自己维护只认 5 个字面量的 typeToCategory，
+    // 改用 CategoryMapper.toPrimaryType(placeTypes) 算出真正的桶名，
+    // 这样 cafe/museum/chinese_restaurant 这类帖子也能被正确学到。
+    final List<String> strongKeys = [];
+    if (placeTypes.isNotEmpty) {
+      final resolvedCategory = CategoryMapper.toPrimaryType(placeTypes);
+      if (CategoryMapper.isLearnableCategory(resolvedCategory)) {
+        strongKeys.add('cat_$resolvedCategory');
+        if (isPositive) _recordTimeAffinity(resolvedCategory, weight: weight.toDouble());
       }
     }
     for (final t in placeTypes) {
-      final cuisine = typeToCuisine[t];
-      if (cuisine != null) {
-        involvedKeys.add('cui_$cuisine');
-        break; // 一个 post 只算一次 cuisine 信号
-      }
-    }
-  
-    if (involvedKeys.isEmpty) {
-      print('🧠 updateFromPost: skipped (no recognized category/cuisine in placeTypes)');
-      return;
-    }
-  
-    // ── 按 weight 加/减分（正面 +weight，负面 -weight，clamp 到 0 避免负数）──
-    for (final key in involvedKeys) {
-      if (isPositive) {
-        _favouriteCount[key] = (_favouriteCount[key] ?? 0) + weight;
-      } else {
-        _favouriteCount[key] = ((_favouriteCount[key] ?? 0) - weight).clamp(0, 999);
-      }
-    }
-  
-    // ── 重新跑一遍 gate 检查（跟 updateFromFavourite 同样的逻辑）──
-    final updatedCategories = List<String>.from(_prefs.categories);
-    final updatedCuisines   = List<String>.from(_prefs.cuisines);
-  
-    for (final entry in _favouriteCount.entries) {
-      final key   = entry.key;
-      final count = entry.value;
-  
-      if (key.startsWith('cat_')) {
-        final cat = key.substring(4);
-        if (count >= _minCountToLearn && !updatedCategories.contains(cat)) {
-          updatedCategories.add(cat);
-        } else if (count < _minCountToLearn) {
-          updatedCategories.remove(cat);
-        }
-      }
-      if (key.startsWith('cui_')) {
-        final cui = key.substring(4);
-        if (count >= _minCountToLearn && !updatedCuisines.contains(cui)) {
-          updatedCuisines.add(cui);
-        } else if (count < _minCountToLearn) {
-          updatedCuisines.remove(cui);
-        }
-      }
-    }
-  
-    _prefs = _prefs.copyWith(
-      categories: updatedCategories,
-      cuisines:   updatedCuisines,
-    );
-  
-    await FirebaseFirestore.instance.collection('users').doc(uid).update({
-      'preferences': {
-        'categories': updatedCategories,
-        'cuisines':   updatedCuisines,
-        'travelMode': _prefs.travelMode,
-        'budgetTier': _prefs.budgetTier.toJson(),
-      },
-      'favouriteTypeCounts': _favouriteCount,
-    });
-
-    await _saveTimeAffinity(uid);
-  
-    final sourceDesc = hasRating
-        ? 'rating=$postRating${weight == 2 ? " (confirmed by sentiment)" : ""}'
-        : 'sentiment only';
-    print('🧠 updateFromPost: ${isPositive ? "learned +" : "penalized -"}$weight '
-        '($sourceDesc) — keys=$involvedKeys, '
-        'updated categories=$updatedCategories, cuisines=$updatedCuisines');
-  }
-  
-  // ─────────────────────────────────────────────
-  // Update from Like post  ← 新增
-  // Like = +0.7 via buffer，Unlike = -0.7
-  // 权重比搜索(0.5)强，比收藏地点(1.0整数)弱
-  // ─────────────────────────────────────────────
-
-  Future<void> updateFromLike({
-    required List<String>   postTags,
-    required String?        postTopic,
-    required bool           isLiking,
-    required SentimentLabel sentimentLabel,       // ← 新增
-    required int             sentimentMatchedTokens, // ← 新增
-  }) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    if (postTags.isEmpty && postTopic == null) return;
-
-    // 只有 positive 且置信度够高才计入学习，跟 updateFromPost 一致
-    if (sentimentLabel != SentimentLabel.positive) {
-      print('🧠 updateFromLike: skipped (sentiment=${sentimentLabel.toJson()}, not positive)');
-      return;
-    }
-    if (sentimentMatchedTokens < 2) {
-      print('🧠 updateFromLike: skipped (low confidence, only $sentimentMatchedTokens words)');
-      return;
+      final cuisine = _typeToCuisine[t];
+      if (cuisine != null) { strongKeys.add('cui_$cuisine'); break; }
     }
 
-    final involvedKeys = <String>{};
+    // ── weakKeys：tag/topic → _passiveCount，不 gate ──
+    final List<String> weakKeys = [];
     for (final tag in postTags) {
       final cat = _tagToCategory[tag.toLowerCase()];
-      if (cat != null) involvedKeys.add('cat_$cat');
+      if (cat != null) weakKeys.add('cat_$cat');
     }
     if (postTopic != null) {
       final cat = _topicToCategory[postTopic];
-      if (cat != null) involvedKeys.add('cat_$cat');
+      if (cat != null) weakKeys.add('cat_$cat');
     }
 
-    if (involvedKeys.isEmpty) return;
+    if (strongKeys.isEmpty && weakKeys.isEmpty) {
+      print('🧠 updateFromPost: skipped (no recognized signal)');
+      return;
+    }
 
-    for (final key in involvedKeys) {
-      if (isLiking) {
-        _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) + 0.7;
-        if (key.startsWith('cat_')) {
-          _recordTimeAffinity(key.substring(4), weight: 0.7); // 🆕
-        }
-      } else {
-        _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) - 0.7;
-        if (_searchScoreBuffer[key]! < 0) _searchScoreBuffer[key] = 0.0;
+    for (final key in strongKeys) {
+      _favouriteCount[key] = isPositive
+          ? (_favouriteCount[key] ?? 0) + weight
+          : ((_favouriteCount[key] ?? 0) - weight).clamp(0, 999);
+    }
+    for (final key in weakKeys) {
+      final delta = _wPostTag * weight;
+      _passiveCount[key] = isPositive
+          ? (_passiveCount[key] ?? 0) + delta
+          : ((_passiveCount[key] ?? 0) - delta).clamp(0, 999);
+    }
+
+    final updatedCategories = List<String>.from(_prefs.categories);
+    final updatedCuisines   = List<String>.from(_prefs.cuisines);
+    _applyGate(updatedCategories, updatedCuisines); // 只吃 _favouriteCount，weakKeys 不影响 gate
+
+    _prefs = _prefs.copyWith(categories: updatedCategories, cuisines: updatedCuisines);
+
+    await FirebaseFirestore.instance.collection('users').doc(uid).update({
+      'preferences.categories': updatedCategories,
+      'preferences.cuisines':   updatedCuisines,
+      'favouriteTypeCounts':    _favouriteCount,
+      'passiveSignalCount':     _passiveCount,
+    });
+
+    await _saveTimeAffinity(uid);
+
+    print('🧠 updateFromPost: strong=$strongKeys weak=$weakKeys '
+        'categories=$updatedCategories cuisines=$updatedCuisines');
+  }
+  
+// ─────────────────────────────────────────────
+  // Update from Like post
+  // location 信号 +0.7 / -0.7，tag/topic 信号 +0.3 / -0.3，
+  // 全部写入 _passiveCount，不参与 gate（不能单靠点赞让偏好转正）
+  // ─────────────────────────────────────────────
+
+  Future<void> updateFromLike({
+    required List<String>   placeTypes,
+    required List<String>   postTags,
+    required String?        postTopic,
+    required bool           isLiking,
+    required SentimentLabel sentimentLabel,
+    required int             sentimentMatchedTokens,
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    if (placeTypes.isEmpty && postTags.isEmpty && postTopic == null) return;
+
+    if (sentimentLabel != SentimentLabel.positive) {
+      print('🧠 updateFromLike: skipped (sentiment not positive)');
+      return;
+    }
+    if (sentimentMatchedTokens < 2) {
+      print('🧠 updateFromLike: skipped (low confidence)');
+      return;
+    }
+
+    final locationKeys = <String>{};
+    for (final t in placeTypes) {
+      final cat = CategoryMapper.toPrimaryType([t]);
+      if (CategoryMapper.isLearnableCategory(cat)) locationKeys.add('cat_$cat');
+      final cuisine = _typeToCuisine[t];
+      if (cuisine != null) locationKeys.add('cui_$cuisine');
+    }
+
+    final tagKeys = <String>{};
+    for (final tag in postTags) {
+      final cat = _tagToCategory[tag.toLowerCase()];
+      if (cat != null) tagKeys.add('cat_$cat');
+    }
+    if (postTopic != null) {
+      final cat = _topicToCategory[postTopic];
+      if (cat != null) tagKeys.add('cat_$cat');
+    }
+
+    if (locationKeys.isEmpty && tagKeys.isEmpty) return;
+
+    for (final key in locationKeys) {
+      final delta = _wLikeLocation;
+      _passiveCount[key] = isLiking
+          ? (_passiveCount[key] ?? 0) + delta
+          : ((_passiveCount[key] ?? 0) - delta).clamp(0, 999);
+      if (isLiking && key.startsWith('cat_')) {
+        _recordTimeAffinity(key.substring(4), weight: delta);
       }
     }
+    for (final key in tagKeys) {
+      final delta = _wLikeTag;
+      _passiveCount[key] = isLiking
+          ? (_passiveCount[key] ?? 0) + delta
+          : ((_passiveCount[key] ?? 0) - delta).clamp(0, 999);
+    }
 
-    await _flushBuffer(uid);
-    await _saveTimeAffinity(uid); // 🆕
+    await _savePassiveCount(uid);
+    await _saveTimeAffinity(uid);
 
-    print('✅ updateFromLike: tags=$postTags topic=$postTopic isLiking=$isLiking '
-        '(sentiment gate passed)');
+    print('✅ updateFromLike: location=$locationKeys tags=$tagKeys isLiking=$isLiking');
   }
 
-  // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
   // Update from Search (点击搜索结果里的帖子)
-  // 最弱信号 +0.5 via buffer
+  // location 信号 +0.5，tag/topic 信号 +0.2，
+  // 全部写入 _passiveCount，不参与 gate
   // ─────────────────────────────────────────────
 
   Future<void> updateFromSearch({
+    required List<String> placeTypes,  // 🆕
     required List<String> postTags,
     required String?      postTopic,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
+    if (placeTypes.isEmpty && postTags.isEmpty && postTopic == null) return;
 
-    if (postTags.isEmpty && postTopic == null) return;
+    final locationKeys = <String>{};
+    for (final t in placeTypes) {
+      final cat = CategoryMapper.toPrimaryType([t]);
+      if (CategoryMapper.isLearnableCategory(cat)) locationKeys.add('cat_$cat');
+      final cuisine = _typeToCuisine[t];
+      if (cuisine != null) locationKeys.add('cui_$cuisine');
+    }
 
-    final involvedKeys = <String>{};
+    final tagKeys = <String>{};
     for (final tag in postTags) {
       final cat = _tagToCategory[tag.toLowerCase()];
-      if (cat != null) involvedKeys.add('cat_$cat');
+      if (cat != null) tagKeys.add('cat_$cat');
     }
     if (postTopic != null) {
       final cat = _topicToCategory[postTopic];
-      if (cat != null) involvedKeys.add('cat_$cat');
+      if (cat != null) tagKeys.add('cat_$cat');
     }
 
-    if (involvedKeys.isEmpty) return;
+    if (locationKeys.isEmpty && tagKeys.isEmpty) return;
 
-    for (final key in involvedKeys) {
-      _searchScoreBuffer[key] = (_searchScoreBuffer[key] ?? 0.0) + 0.5;
+    for (final key in locationKeys) {
+      _passiveCount[key] = (_passiveCount[key] ?? 0) + _wSearchLocation;
       if (key.startsWith('cat_')) {
-        _recordTimeAffinity(key.substring(4), weight: 0.5); // 🆕
+        _recordTimeAffinity(key.substring(4), weight: _wSearchLocation);
       }
     }
+    for (final key in tagKeys) {
+      _passiveCount[key] = (_passiveCount[key] ?? 0) + _wSearchTag;
+    }
 
-    await _flushBuffer(uid);
-    await _saveTimeAffinity(uid); // 🆕
+    await _savePassiveCount(uid);
+    await _saveTimeAffinity(uid);
 
-    print('✅ updateFromSearch: tags=$postTags topic=$postTopic');
+    print('✅ updateFromSearch: location=$locationKeys tags=$tagKeys');
   }
 
 
@@ -684,52 +653,12 @@ class UserPreferenceService {
     await _saveTimeAffinity(uid);
   }
 
-  // ─────────────────────────────────────────────
-  // _flushBuffer — 把 buffer 里达到整数的分数
-  // 转进 _favouriteCount，更新 Firestore
-  // 所有用到 buffer 的方法都调这个，避免重复代码
-  // ─────────────────────────────────────────────
-
-  Future<void> _flushBuffer(String uid) async {
-    final Map<String, dynamic> firestoreUpdates = {};
-    final updatedCategories = List<String>.from(_prefs.categories);
-    final updatedCuisines   = List<String>.from(_prefs.cuisines);
-
-    _searchScoreBuffer.forEach((key, score) {
-      final wholePoints = score.floor();
-      if (wholePoints > 0) {
-        _favouriteCount[key] = (_favouriteCount[key] ?? 0) + wholePoints;
-        _searchScoreBuffer[key] = score - wholePoints; // 只保留小数
-
-        firestoreUpdates['favouriteTypeCounts.$key'] = _favouriteCount[key];
-      }
+  Future<void> _savePassiveCount(String uid) async {
+    await FirebaseFirestore.instance.collection('users').doc(uid).update({
+      'passiveSignalCount': _passiveCount,
     });
-
-    // Gate 判断
-    _applyGate(updatedCategories, updatedCuisines);
-
-    // preferences 有变化才更新
-    if (updatedCategories.length != _prefs.categories.length ||
-        updatedCuisines.length   != _prefs.cuisines.length) {
-      _prefs = _prefs.copyWith(
-        categories: updatedCategories,
-        cuisines:   updatedCuisines,
-      );
-      firestoreUpdates['preferences.categories'] = updatedCategories;
-      firestoreUpdates['preferences.cuisines']   = updatedCuisines;
-      preferencesChanged.value++;
-    }
-
-    // 永远保存最新 buffer 状态
-    firestoreUpdates['searchScoreBuffer'] = _searchScoreBuffer;
-
-    if (firestoreUpdates.isNotEmpty) {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .update(firestoreUpdates);
-    }
   }
+
 
   // ─────────────────────────────────────────────
   // _applyGate — 根据 _favouriteCount 更新
@@ -851,11 +780,9 @@ class UserPreferenceService {
     // No weather data available → neutral-high, don't penalize
     if (weather == null) return 0.8;
 
-    const outdoorTypes = {
-      'park', 'tourist_attraction', 'entertainment',
-    };
-    final isOutdoor = (primaryType != null && outdoorTypes.contains(primaryType))
-        || allTypes.any((t) => outdoorTypes.contains(t));
+    final specific = CategoryMapper.isOutdoorBySpecificType(allTypes);
+    final isOutdoor = specific ??
+        (primaryType != null && CategoryMapper.outdoorFallbackBuckets.contains(primaryType));
 
     switch (weather) {
       case WeatherCondition.rain:
@@ -870,14 +797,19 @@ class UserPreferenceService {
     }
   }
   
-  // 🔧 CHANGED: 不再自己维护身份映射表，直接问 CategoryMapper 这个
-  // primaryType 是否可学习。
+    // 🔧 CHANGED: 不再自己维护身份映射表，直接问 CategoryMapper 这个
+    // primaryType 是否可学习。
   double _interestMatchScore(String? primaryType, List<String> allTypes) {
     double countToScore(int count) {
       if (count < _minCountToLearn) return 0.0;
       const maxCount = 10;
       final clamped  = count.clamp(_minCountToLearn, maxCount);
       return 0.6 + 0.4 * (clamped - _minCountToLearn) / (maxCount - _minCountToLearn);
+    }
+
+    double passiveScore(double count) {
+      const maxPassive = 8.0;
+      return 0.2 * count.clamp(0, maxPassive) / maxPassive;
     }
 
     final scores = <double>[];
@@ -887,6 +819,9 @@ class UserPreferenceService {
       final cnt = _favouriteCount['cat_$primaryType'] ?? 0;
       final cs  = countToScore(cnt);
       if (cs > 0) scores.add(cs);
+
+      final passiveCnt = _passiveCount['cat_$primaryType'] ?? 0.0;
+      if (passiveCnt > 0) scores.add(0.5 + passiveScore(passiveCnt)); // 🔧 passiveBoost → passiveScore
     }
 
     for (final t in allTypes) {
@@ -896,6 +831,9 @@ class UserPreferenceService {
         final cnt = _favouriteCount['cui_$cuisine'] ?? 0;
         final cs  = countToScore(cnt);
         if (cs > 0) scores.add(cs);
+
+        final passiveCnt = _passiveCount['cui_$cuisine'] ?? 0.0;
+        if (passiveCnt > 0) scores.add(0.5 + passiveScore(passiveCnt)); // 🔧 同上
         break;
       }
     }
@@ -903,7 +841,7 @@ class UserPreferenceService {
     if (scores.isEmpty) return 0.5;
     return (scores.reduce((a, b) => a + b) / scores.length).clamp(0.0, 1.0);
   }
-
+  
  double _distanceScore(double? distanceMeters) {
   if (distanceMeters == null || distanceMeters <= 0) return 0.5;
   final baseline = _distanceBaselineForMode(_prefs.travelMode);
@@ -968,25 +906,22 @@ class UserPreferenceService {
     return null;
   }
 
-  double _globalTimeSuitability(
-    String? primaryType,
-    List<String> allTypes,
-    String period,
-  ) {
-    const suitability = <String, Map<String, double>>{
-      'morning':   {'cafe': 1.0, 'restaurant': 0.6, 'park': 0.8, 'tourist_attraction': 0.7},
-      'lunch':     {'restaurant': 1.0, 'cafe': 0.5, 'shopping_mall': 0.4},
-      'afternoon': {'tourist_attraction': 1.0, 'park': 1.0, 'shopping_mall': 0.9, 'entertainment': 0.8, 'restaurant': 0.3},
-      'evening':   {'restaurant': 1.0, 'shopping_mall': 0.7, 'entertainment': 0.8},
-      'night':     {'entertainment': 1.0, 'restaurant': 0.7},
-    };
-    final map = suitability[period]!;
-    if (primaryType != null && map.containsKey(primaryType)) return map[primaryType]!;
+  double _globalTimeSuitability(String? primaryType, List<String> allTypes, String period) {
+    final specificMap = CategoryMapper.specificTimeSuitability[period]!;
     for (final t in allTypes) {
-      if (map.containsKey(t)) return map[t]!;
+      if (specificMap.containsKey(t)) return specificMap[t]!;
     }
+
+    final bucketMap = CategoryMapper.bucketTimeSuitability[period]!;
+    if (primaryType != null && bucketMap.containsKey(primaryType)) {
+      return bucketMap[primaryType]!;
+    }
+    for (final t in allTypes) {
+      if (bucketMap.containsKey(t)) return bucketMap[t]!;
+    }
+
     return 0.3;
-}
+  }
 
   double _budgetSuitabilityScore(int? priceLevel) {
     if (priceLevel == null) return 1.0;
