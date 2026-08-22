@@ -65,23 +65,69 @@ class UserService {
   // such ceiling and the image itself is compressed before upload.
   // ─────────────────────────────────────────────
 
-  Future<UserUpdateResult> updateUserProfile(UserProfile profile) async {
+  Future<UserUpdateResult> updateUserProfile(
+    UserProfile profile,
+  ) async {
+    final currentUid = _auth.currentUser?.uid;
+
+    if (currentUid == null) {
+      return UserUpdateResult.failure(
+        'You need to be logged in to update your profile.',
+      );
+    }
+
+    // Safety guard:
+    // A user should only update their own profile through this service.
+    if (currentUid != profile.uid) {
+      return UserUpdateResult.failure(
+        'You are not allowed to update this profile.',
+      );
+    }
+
     try {
+      // Only update fields that are actually editable from Edit Profile.
+      //
+      // Do NOT write:
+      // - postCount
+      // - favouriteCount
+      //
+      // Those counters are maintained independently by their own
+      // transaction-based services and must never be overwritten by
+      // a stale UserProfile object.
       await _firestore
           .collection('users')
-          .doc(profile.uid)
-          .set(profile.toMap(), SetOptions(merge: true));
+          .doc(currentUid)
+          .set(
+        {
+          'username': profile.username,
+          'bio': profile.bio,
+          'profileImageUrl': profile.profileImageUrl,
+          'backgroundImageUrl': profile.backgroundImageUrl,
+        },
+        SetOptions(merge: true),
+      );
 
-      if (kDebugMode) print('✅ Firestore update successful!');
+      if (kDebugMode) {
+        print(
+          '✅ User profile editable fields updated successfully',
+        );
+      }
+
       return UserUpdateResult.ok;
     } catch (e) {
-      if (kDebugMode) print('❌ Failed to update user profile: $e');
+      if (kDebugMode) {
+        print(
+          '❌ Failed to update user profile: $e',
+        );
+      }
+
       return UserUpdateResult.failure(
-          'Something went wrong while saving. Please try again.');
+        'Something went wrong while saving. Please try again.',
+      );
     }
   }
-
-    // ─────────────────────────────────────────────
+  
+  // ─────────────────────────────────────────────
   // Image upload — Firebase Storage
   // ─────────────────────────────────────────────
 

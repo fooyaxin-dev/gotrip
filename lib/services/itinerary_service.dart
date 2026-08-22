@@ -163,34 +163,69 @@ class ItineraryService {
   }
 
   Future<bool> delete(String id) async {
-  if (_col == null) return false;
+    final uid = _uid;
 
-  try {
-    final doc = await _col!.doc(id).get();
-    if (!doc.exists) return false;
-
-    final itinerary = ItineraryModel.fromMap(
-      doc.id,
-      doc.data() as Map<String, dynamic>,
-    );
-
-    if (itinerary.isStarted) {
-      print(
-        '🚫 delete blocked: "${itinerary.title}" has been started, cannot delete',
-      );
+    if (uid == null) {
       return false;
     }
 
-    await _col!.doc(id).delete();
+    // Bind the whole delete operation to the user
+    // who initiated it.
+    final collection = _db
+        .collection('users')
+        .doc(uid)
+        .collection('itineraries');
 
-    UserActivityDataService.instance.invalidate();
+    final itineraryDoc = collection.doc(id);
 
-    return true;
-  } catch (e) {
-    print('❌ delete: $e');
-    return false;
+    try {
+      final doc = await itineraryDoc.get();
+
+      // Account may have changed while Firestore was reading.
+      if (_uid != uid) {
+        print(
+          '🚫 delete cancelled: account changed during operation',
+        );
+        return false;
+      }
+
+      if (!doc.exists) {
+        return false;
+      }
+
+      final itinerary = ItineraryModel.fromMap(
+        doc.id,
+        doc.data() as Map<String, dynamic>,
+      );
+
+      // Started itineraries must remain as travel records.
+      if (itinerary.isStarted) {
+        print(
+          '🚫 delete blocked: '
+          '"${itinerary.title}" has been started, cannot delete',
+        );
+        return false;
+      }
+
+      // Final session check before destructive write.
+      if (_uid != uid) {
+        return false;
+      }
+
+      await itineraryDoc.delete();
+
+      // Only invalidate the cache belonging to
+      // the same active session.
+      if (_uid == uid) {
+        UserActivityDataService.instance.invalidate();
+      }
+
+      return true;
+    } catch (e) {
+      print('❌ delete: $e');
+      return false;
+    }
   }
-}
   
 
   // ─────────────────────────────────────────────

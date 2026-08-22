@@ -566,39 +566,51 @@ class NearbyPlacesService {
 
   static const double _cacheLocationToleranceMetres = 500;
 
-  Future<List<PlaceModel>> loadNearbyPlacesOnce(
-    List<Map<String, dynamic>> categories,
-    BuildContext context, {
-    double? lat,
-    double? lng,
-    int radius = 12000,
-    Function(PlaceModel)? onGeoapifyAdd,
-    Function(List<PlaceModel>)? onGeoapifyBatchAdd,
-    Function()? onGeoapifyDone,
-  }) async {
-    if (_hasLoadedOnce && _cachedRadius == radius) {
-      print('🧠 NearbyPlacesService: using cache (radius ${radius}m)');
-      return _allPlacesCache;
-    }
-    if (_isLoading) {
-      print('⏳ NearbyPlacesService: already loading');
-      return _allPlacesCache;
-    }
+Future<List<PlaceModel>> loadNearbyPlacesOnce(
+  List<Map<String, dynamic>> categories,
+  BuildContext context, {
+  double? lat,
+  double? lng,
+  int radius = 12000,
+  Function(PlaceModel)? onGeoapifyAdd,
+  Function(List<PlaceModel>)? onGeoapifyBatchAdd,
+  Function()? onGeoapifyDone,
+}) async {
+  if (_isLoading) {
+    print('⏳ NearbyPlacesService: already loading');
+    return _allPlacesCache;
+  }
 
-    final pos = LocationService.instance.currentPosition;
-    if (pos == null && lat == null) throw Exception('No location');
+  final pos = LocationService.instance.currentPosition;
 
-    final searchLat = lat ?? pos!.latitude;
-    final searchLng = lng ?? pos!.longitude;
+  if (pos == null && lat == null) {
+    throw Exception('No location');
+  }
 
-    final sameLocation = _cachedLat != null && _cachedLng != null &&
-        _haversineMetres(_cachedLat!, _cachedLng!, searchLat, searchLng) <=
-            _cacheLocationToleranceMetres;
+  final searchLat = lat ?? pos!.latitude;
+  final searchLng = lng ?? pos!.longitude;
 
-    if (_hasLoadedOnce && _cachedRadius == radius && sameLocation) {
-      print('🧠 NearbyPlacesService: using cache (radius ${radius}m, same location)');
-      return _allPlacesCache;
-    }
+  final sameLocation =
+      _cachedLat != null &&
+      _cachedLng != null &&
+      _haversineMetres(
+        _cachedLat!,
+        _cachedLng!,
+        searchLat,
+        searchLng,
+      ) <= _cacheLocationToleranceMetres;
+
+  if (_hasLoadedOnce &&
+      _cachedRadius == radius &&
+      sameLocation) {
+    print(
+      '🧠 NearbyPlacesService: using cache '
+      '(radius ${radius}m, same location)',
+    );
+    return _allPlacesCache;
+  }
+
+
 
     final myGeneration = ++_currentGeneration;
     bool isCurrentGeneration() => myGeneration == _currentGeneration;

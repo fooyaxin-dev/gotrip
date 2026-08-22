@@ -164,6 +164,8 @@ class AchievementService {
 
   final _db   = FirebaseFirestore.instance;
   String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+  String? _cachedStatsUid;
+  String? _cachedUnlockedDatesUid;
 
   // ── ★ NEW: short-lived stats cache ────────────────────────────────────────
   // Home / Post / Profile pages each independently call fetchTopBadge() or
@@ -181,7 +183,12 @@ class AchievementService {
   /// stale cached value.
   void invalidateStatsCache() {
     _cachedStats = null;
-    _cachedAt    = null;
+    _cachedAt = null;
+    _cachedStatsUid = null;
+
+    _cachedUnlockedDates = null;
+    _cachedUnlockedDatesUid = null;
+
     UserActivityDataService.instance.invalidate();
   }
 
@@ -235,22 +242,36 @@ class AchievementService {
   // ─────────────────────────────────────────────
 
   
-  Future<AchievementStats> fetchStats({bool forceRefresh = false}) async {
+  Future<AchievementStats> fetchStats({
+    bool forceRefresh = false,
+  }) async {
     final uid = _uid;
-    if (uid == null) return _emptyStats();
-  
+
+    if (uid == null) {
+      return _emptyStats();
+    }
+
+    final sameUser = _cachedStatsUid == uid;
+
     if (!forceRefresh &&
+        sameUser &&
         _cachedStats != null &&
         _cachedAt != null &&
         DateTime.now().difference(_cachedAt!) < _cacheTtl) {
       return _cachedStats!;
     }
-  
-    // ★ 改动：不再自己查 Firestore，改用共享的 UserActivityDataService，
-    // 跟 Dashboard 读的是完全同一份原始数据（同一次 .get() 调用的结果）
-    final activity = await UserActivityDataService.instance.getAll(
+
+    if (!sameUser) {
+      _cachedStats = null;
+      _cachedAt = null;
+      _cachedStatsUid = null;
+    }
+
+    final activity =
+        await UserActivityDataService.instance.getAll(
       forceRefresh: forceRefresh,
     );
+
     final historyDocs     = activity.history;
     final itinerariesDocs = activity.itineraries;
   
@@ -384,10 +405,15 @@ class AchievementService {
       totalDistanceKm:  totalDistanceKm,
     );
   
-    _cachedStats = stats;
-    _cachedAt    = DateTime.now();
-  
-    return stats;
+   if (_uid != uid) {
+    return _emptyStats();
+  }
+
+  _cachedStats = stats;
+  _cachedAt = DateTime.now();
+  _cachedStatsUid = uid;
+
+  return stats;
   }
     
     
@@ -526,52 +552,119 @@ class AchievementService {
 
   Future<void> saveTopBadgeToFirestore() async {
     final uid = _uid;
-    if (uid == null) return;
+
+    if (uid == null) {
+      return;
+    }
 
     try {
       final tier = await fetchTopBadge();
+
+      // The account may have changed while fetchTopBadge()
+      // was calculating / reading Firestore.
+      //
+      // Never write achievement data belonging to a new
+      // session into the previous user's document.
+      if (_uid != uid) {
+        if (kDebugMode) {
+          print(
+            '⚠️ saveTopBadgeToFirestore cancelled: '
+            'user changed during operation',
+          );
+        }
+        return;
+      }
+
       final data = tier == null
-          ? {
+          ? <String, dynamic>{
               'topBadgeEmoji': null,
               'topBadgeLabel': null,
               'topBadgeLevel': null,
             }
-          : {
+          : <String, dynamic>{
               'topBadgeEmoji': tier.emoji,
               'topBadgeLabel': tier.label,
               'topBadgeLevel': tier.level,
             };
 
+      // Check once more immediately before the write.
+      if (_uid != uid) {
+        return;
+      }
+
       await _db
           .collection('users')
           .doc(uid)
-          .set(data, SetOptions(merge: true));
+          .set(
+            data,
+            SetOptions(merge: true),
+          );
     } catch (e) {
       if (kDebugMode) {
-        // ignore: avoid_print
-        print('AchievementService.saveTopBadgeToFirestore failed: $e');
+        print(
+          'AchievementService.saveTopBadgeToFirestore '
+          'failed: $e',
+        );
       }
     }
   }
 
   Map<String, DateTime>? _cachedUnlockedDates;
 
-  Future<Map<String, DateTime>> _loadUnlockedDates({bool forceRefresh = false}) async {
+  Future<Map<String, DateTime>> _loadUnlockedDates({
+    bool forceRefresh = false,
+  }) async {
     final uid = _uid;
-    if (uid == null) return {};
-    if (!forceRefresh && _cachedUnlockedDates != null) return _cachedUnlockedDates!;
+
+    if (uid == null) {
+      return {};
+    }
+
+    final sameUser = _cachedUnlockedDatesUid == uid;
+
+    if (!forceRefresh &&
+        sameUser &&
+        _cachedUnlockedDates != null) {
+      return _cachedUnlockedDates!;
+    }
+
+    if (!sameUser) {
+      _cachedUnlockedDates = null;
+      _cachedUnlockedDatesUid = null;
+    }
 
     try {
-      final doc = await _db.collection('users').doc(uid).get();
-      final raw = doc.data()?['unlockedBadges'] as Map<String, dynamic>? ?? {};
+      final doc =
+          await _db.collection('users').doc(uid).get();
+
+      if (_uid != uid) {
+        return {};
+      }
+
+      final raw =
+          doc.data()?['unlockedBadges']
+                  as Map<String, dynamic>? ??
+              {};
+
       final dates = <String, DateTime>{};
-      raw.forEach((k, v) {
-        if (v is Timestamp) dates[k] = v.toDate();
+
+      raw.forEach((key, value) {
+        if (value is Timestamp) {
+          dates[key] = value.toDate();
+        }
       });
+
       _cachedUnlockedDates = dates;
+      _cachedUnlockedDatesUid = uid;
+
       return dates;
     } catch (e) {
-      if (kDebugMode) print('AchievementService._loadUnlockedDates failed: $e');
+      if (kDebugMode) {
+        print(
+          'AchievementService._loadUnlockedDates failed: $e',
+        );
+      }
+
       return {};
     }
   }
@@ -586,7 +679,14 @@ class AchievementService {
         data['unlockedBadges.$key'] = Timestamp.fromDate(date);   // 点号路径，只补新 key，不覆盖旧的
       });
       await _db.collection('users').doc(uid).set(data, SetOptions(merge: true));
-      _cachedUnlockedDates = {...?_cachedUnlockedDates, ...newDates};
+      if (_uid == uid) {
+        _cachedUnlockedDates = {
+          ...?_cachedUnlockedDates,
+          ...newDates,
+        };
+
+        _cachedUnlockedDatesUid = uid;
+      }
     } catch (e) {
       if (kDebugMode) print('AchievementService._saveUnlockedDates failed: $e');
     }
@@ -708,23 +808,50 @@ class AchievementService {
     totalDistanceKm:  0,
   );
 
-  Future<List<UnlockedBadge>> fetchAllUnlockedBadges({bool forceRefresh = false}) async {
-  final groups = await AchievementService.instance.fetchGroups();  // ✅
-  final result = <UnlockedBadge>[];
-  for (final g in groups) {
-    for (final t in g.tiers) {
-      if (t.unlocked) result.add(UnlockedBadge(groupTitle: g.title, tier: t));
+  Future<List<UnlockedBadge>> fetchAllUnlockedBadges({
+    bool forceRefresh = false,
+  }) async {
+    final groups = await AchievementService.instance.fetchGroups(
+      forceRefresh: forceRefresh,
+    );
+
+    final result = <UnlockedBadge>[];
+
+    for (final group in groups) {
+      for (final tier in group.tiers) {
+        if (tier.unlocked) {
+          result.add(
+            UnlockedBadge(
+              groupTitle: group.title,
+              tier: tier,
+            ),
+          );
+        }
+      }
     }
+
+    // Newest unlocks first.
+    result.sort((a, b) {
+      final aDate = a.tier.unlockedAt;
+      final bDate = b.tier.unlockedAt;
+
+      if (aDate == null && bDate == null) {
+        return 0;
+      }
+
+      if (aDate == null) {
+        return 1;
+      }
+
+      if (bDate == null) {
+        return -1;
+      }
+
+      return bDate.compareTo(aDate);
+    });
+
+    return result;
   }
-  result.sort((a, b) {
-    final ad = a.tier.unlockedAt, bd = b.tier.unlockedAt;
-    if (ad == null && bd == null) return 0;
-    if (ad == null) return 1;
-    if (bd == null) return -1;
-    return bd.compareTo(ad); // 新的在前
-  });
-  return result;
-}
 
   
 }

@@ -444,28 +444,31 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                     width: double.infinity,
                   child: ElevatedButton.icon(
                   onPressed: selected.loading || selected.error != null
-                      ? null
-                      : () => Navigator.pushReplacement(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => GuidePage(
-                                startLat:        widget.startLat,
-                                startLng:        widget.startLng,
-                                endLat:          widget.endLat,
-                                endLng:          widget.endLng,
-                                destinationName: widget.destinationName,
-                                travelMode:      _selectedMode,
-                                // 🔗 drive / walk：复用预览页已经拿到的
-                                // 数据，不再重复打一次 Google Routes API。
-                                // motor：传 null，让 NavigationController
-                                // 自己用正确的 TWO_WHEELER 模式重新请求，
-                                // 保证摩托车导航路线是真实、正确的。
-                                initialRoute: _isRealFetch[_selectedMode] == true
-                                    ? _routeData[_selectedMode]
-                                    : null,
-                              ),
+                    ? null
+                    : () async {
+                        final arrived = await Navigator.push<bool>(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => GuidePage(
+                              startLat:        widget.startLat,
+                              startLng:        widget.startLng,
+                              endLat:          widget.endLat,
+                              endLng:          widget.endLng,
+                              destinationName: widget.destinationName,
+                              travelMode:      _selectedMode,
+                              initialRoute: _isRealFetch[_selectedMode] == true
+                                  ? _routeData[_selectedMode]
+                                  : null,
                             ),
                           ),
+                        );
+
+                        if (!mounted) return;
+
+                        if (arrived == true) {
+                          Navigator.pop(context, true);
+                        }
+                      },
                       icon:  const Icon(Icons.navigation_rounded, size: 18),
                       label: const Text('Start',
                           style: TextStyle(

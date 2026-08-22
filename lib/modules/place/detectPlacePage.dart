@@ -854,19 +854,44 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // Navigation
   // ─────────────────────────────────────────────
 
-  Future<void> _navigateTo(PlaceModel place) async {
-    if (_currentPosition == null) return;
-    await Navigator.push(context, MaterialPageRoute(
-      builder: (_) => RoutePreviewPage(
-        startLat:          _currentPosition!.latitude,
-        startLng:          _currentPosition!.longitude,
-        endLat:            place.lat!,
-        endLng:            place.lng!,
-        destinationName:   place.name,
-        startLocationName: _searchLocationName,
-      ),
-    ));
+ Future<void> _navigateTo(PlaceModel place) async {
+  if (place.lat == null || place.lng == null) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Destination location is unavailable'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+    return;
   }
+
+  // Navigation must always start from the user's REAL current GPS,
+  // not from the landmark/search location used as the exploration centre.
+  final realPosition = LocationService.instance.currentPosition;
+
+  if (realPosition == null) {
+    if (mounted) {
+      AppDialogs.showLocationUnavailable(context);
+    }
+    return;
+  }
+
+  await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => RoutePreviewPage(
+        startLat: realPosition.latitude,
+        startLng: realPosition.longitude,
+        endLat: place.lat!,
+        endLng: place.lng!,
+        destinationName: place.name,
+        startLocationName: 'My Location',
+      ),
+    ),
+  );
+}
 
   // ─────────────────────────────────────────────
   // Connectivity

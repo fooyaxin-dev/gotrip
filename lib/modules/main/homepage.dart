@@ -67,11 +67,33 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadCachedData() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+
+    if (uid == null) {
+      if (!mounted) return;
+
+      setState(() {
+        _username = 'UserName';
+        _email = 'user@email.com';
+        _profileImageUrl = '';
+      });
+
+      return;
+    }
+
     final prefs = await SharedPreferences.getInstance();
+
+    if (!mounted) return;
+
     setState(() {
-      _username        = prefs.getString('username')        ?? "UserName";
-      _email           = prefs.getString('email')           ?? "user@email.com";
-      _profileImageUrl = prefs.getString('profileImageUrl') ?? "";
+      _username =
+          prefs.getString('username_$uid') ?? 'UserName';
+
+      _email =
+          prefs.getString('email_$uid') ?? 'user@email.com';
+
+      _profileImageUrl =
+          prefs.getString('profileImageUrl_$uid') ?? '';
     });
   }
 
@@ -92,30 +114,59 @@ class _HomePageState extends State<HomePage> {
 
   void _listenToUserData() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
+
     if (uid == null) return;
+
+    _userSubscription?.cancel();
 
     _userSubscription = FirebaseFirestore.instance
         .collection('users')
         .doc(uid)
         .snapshots()
         .listen((doc) async {
-      if (doc.exists) {
-        final data             = doc.data()!;
-        final latestUsername   = data['username']       ?? _username;
-        final latestEmail      = data['email']          ?? _email;
-        final latestProfileImg = data['profileImageUrl']?? "";
+      if (!doc.exists) return;
 
+      // Account may have changed while this snapshot was arriving.
+      if (FirebaseAuth.instance.currentUser?.uid != uid) {
+        return;
+      }
+
+      final data = doc.data()!;
+
+      final latestUsername =
+          data['username'] as String? ?? 'UserName';
+
+      final latestEmail =
+          data['email'] as String? ?? 'user@email.com';
+
+      final latestProfileImg =
+          data['profileImageUrl'] as String? ?? '';
+
+      if (mounted) {
         setState(() {
-          _username        = latestUsername;
-          _email           = latestEmail;
+          _username = latestUsername;
+          _email = latestEmail;
           _profileImageUrl = latestProfileImg;
         });
-
-        final prefs = await SharedPreferences.getInstance();
-        prefs.setString('username',        latestUsername);
-        prefs.setString('email',           latestEmail);
-        prefs.setString('profileImageUrl', latestProfileImg);
       }
+
+      final prefs =
+          await SharedPreferences.getInstance();
+
+      await Future.wait([
+        prefs.setString(
+          'username_$uid',
+          latestUsername,
+        ),
+        prefs.setString(
+          'email_$uid',
+          latestEmail,
+        ),
+        prefs.setString(
+          'profileImageUrl_$uid',
+          latestProfileImg,
+        ),
+      ]);
     });
   }
 

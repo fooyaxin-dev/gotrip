@@ -1,6 +1,7 @@
 // services/history_service.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'userActivity_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // City Extractor (same logic as dashboard)
@@ -130,44 +131,78 @@ class HistoryService {
       : _db.collection('users').doc(_uid).collection('history');
 
   Future<void> addEntry({
-    required String placeName,
-    required String address,
-    String? photoUrl,
-    required DateTime visitedAt,
-    required String itineraryId,
-    required String itineraryTitle,
-    String? placeId,
-    String? primaryType,
-    double? lat,
-    double? lng,
-  }) async {
-    if (_col == null) {
-      throw Exception('You need to be logged in to save visit history');
-    }
+  required String placeName,
+  required String address,
+  String? photoUrl,
+  required DateTime visitedAt,
+  required String itineraryId,
+  required String itineraryTitle,
+  String? placeId,
+  String? primaryType,
+  double? lat,
+  double? lng,
+}) async {
+  final uid = _uid;
 
-    final city = _extractCity(address);
-
-    try {
-      await _col!.add(HistoryEntry(
-        id:             '',
-        placeName:      placeName,
-        address:        address,
-        photoUrl:       photoUrl,
-        visitedAt:      visitedAt,
-        itineraryId:    itineraryId,
-        itineraryTitle: itineraryTitle,
-        placeId:        placeId,
-        primaryType:    primaryType,
-        city:           city.isNotEmpty ? city : null,
-        lat:            lat,
-        lng:            lng,
-      ).toMap());
-    } catch (e) {
-      print('❌ HistoryService.addEntry: $e');
-      throw Exception('Failed to save this visit to your history. Your check-in may not appear in Dashboard stats.');
-    }
+  if (uid == null) {
+    throw Exception(
+      'You need to be logged in to save visit history',
+    );
   }
 
+  // Bind this entire operation to the user who started it.
+  final historyCollection = _db
+      .collection('users')
+      .doc(uid)
+      .collection('history');
+
+  final city = _extractCity(address);
+
+  try {
+    // Session must still belong to the same user.
+    if (_uid != uid) {
+      throw Exception(
+        'Your account changed while saving visit history.',
+      );
+    }
+
+    await historyCollection.add(
+      HistoryEntry(
+        id: '',
+        placeName: placeName,
+        address: address,
+        photoUrl: photoUrl,
+        visitedAt: visitedAt,
+        itineraryId: itineraryId,
+        itineraryTitle: itineraryTitle,
+        placeId: placeId,
+        primaryType: primaryType,
+        city: city.isNotEmpty ? city : null,
+        lat: lat,
+        lng: lng,
+      ).toMap(),
+    );
+
+    // Only invalidate cache for the same active session.
+    if (_uid == uid) {
+      UserActivityDataService.instance.invalidate();
+    }
+  } catch (e) {
+    print('❌ HistoryService.addEntry: $e');
+
+    if (e.toString().contains('account changed')) {
+      throw Exception(
+        'Your account changed. Please try the check-in again.',
+      );
+    }
+
+    throw Exception(
+      'Failed to save this visit to your history. '
+      'Your check-in may not appear in Dashboard stats.',
+    );
+  }
+}
+  
   // Shared grouping logic between the one-off fetch and the live stream —
   // keeps "group by itineraryId, sort trips newest-first" in exactly one place.
   List<TripHistory> _groupAndSort(List<HistoryEntry> entries) {

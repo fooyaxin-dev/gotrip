@@ -129,61 +129,153 @@ class _InteractionPageState extends State<InteractionPage> {
   }
 
   Future<void> _loadFeedFirstPage() async {
-    final requestId = ++_feedRequestId;
-    final requestedCity = _selectedCity;
+  final requestId = ++_feedRequestId;
+  final requestedCity = _selectedCity;
 
-    setState(() {
-      _feedInitialLoading = true;
-      _feedLoadingMore = false;
-      _feedPosts = [];
-      _feedLastDoc = null;
-      _feedHasMore = true;
-    });
+  if (!mounted) return;
 
+  setState(() {
+    _feedInitialLoading = true;
+    _feedLoadingMore = false;
+    _feedPosts = [];
+    _feedLastDoc = null;
+    _feedHasMore = true;
+  });
+
+  try {
     final page = requestedCity != null
         ? await _postService.getPostsByCityPaginated(
             city: requestedCity,
           )
         : await _postService.getPublicPostsPaginated();
 
-    if (!mounted || requestId != _feedRequestId) return;
+    // Ignore stale request result.
+    if (!mounted ||
+        requestId != _feedRequestId) {
+      return;
+    }
 
     setState(() {
       _feedPosts = page.posts;
       _feedLastDoc = page.lastDocument;
       _feedHasMore = page.hasMore;
-      _feedInitialLoading = false;
     });
+  } catch (e) {
+    debugPrint(
+      '❌ Failed to load feed first page: $e',
+    );
+
+    // Don't let an old failed request affect
+    // the current city/feed state.
+    if (!mounted ||
+        requestId != _feedRequestId) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Unable to load posts. Please check your connection and try again.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  } finally {
+    // Only the latest request may change the
+    // current loading state.
+    if (mounted &&
+        requestId == _feedRequestId) {
+      setState(() {
+        _feedInitialLoading = false;
+      });
+    }
   }
+}
 
 Future<void> _loadMoreFeedPosts() async {
-  if (_feedLoadingMore || !_feedHasMore) return;
+  if (_feedLoadingMore ||
+      !_feedHasMore ||
+      _feedLastDoc == null) {
+    return;
+  }
 
   final requestId = _feedRequestId;
   final requestedCity = _selectedCity;
   final requestedLastDoc = _feedLastDoc;
 
-  setState(() => _feedLoadingMore = true);
-
-  final page = requestedCity != null
-      ? await _postService.getPostsByCityPaginated(
-          city: requestedCity,
-          startAfter: requestedLastDoc,
-        )
-      : await _postService.getPublicPostsPaginated(
-          startAfter: requestedLastDoc,
-        );
-
-  if (!mounted || requestId != _feedRequestId) return;
+  if (!mounted) return;
 
   setState(() {
-    _feedPosts.addAll(page.posts);
-    _feedLastDoc = page.lastDocument;
-    _feedHasMore = page.hasMore;
-    _feedLoadingMore = false;
+    _feedLoadingMore = true;
   });
-}
 
+  try {
+    final page = requestedCity != null
+        ? await _postService.getPostsByCityPaginated(
+            city: requestedCity,
+            startAfter: requestedLastDoc,
+          )
+        : await _postService.getPublicPostsPaginated(
+            startAfter: requestedLastDoc,
+          );
+
+    // User may have switched city / refreshed the feed
+    // while this pagination request was running.
+    if (!mounted ||
+        requestId != _feedRequestId ||
+        requestedCity != _selectedCity) {
+      return;
+    }
+
+    setState(() {
+      // Extra protection against duplicate posts.
+      final existingIds =
+          _feedPosts
+              .map((post) => post.id)
+              .whereType<String>()
+              .toSet();
+
+      final newPosts = page.posts.where(
+        (post) =>
+            post.id == null ||
+            !existingIds.contains(post.id),
+      );
+
+      _feedPosts.addAll(newPosts);
+
+      _feedLastDoc = page.lastDocument;
+      _feedHasMore = page.hasMore;
+    });
+  } catch (e) {
+    debugPrint(
+      '❌ Failed to load more feed posts: $e',
+    );
+
+    if (!mounted ||
+        requestId != _feedRequestId) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Unable to load more posts. Please try again.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  } finally {
+    // Do not let an outdated request change
+    // the loading flag of a newer feed request.
+    if (mounted &&
+        requestId == _feedRequestId) {
+      setState(() {
+        _feedLoadingMore = false;
+      });
+    }
+  }
+}
+  
   void _onCityChipTap(String? city) {
     if (_selectedCity == city) return;
     setState(() {
@@ -921,52 +1013,123 @@ Future<void> _loadMoreFeedPosts() async {
     );
   }
   
-  void _handleEdit(Post post) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => EditPostPage(post: post)),
-    );
-  }
-  
-  void _handleDelete(Post post) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Post'),
-        content: const Text('Are you sure you want to delete this post?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              try {
-                await _postService.deletePost(post.id!);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Post deleted'),
-                      backgroundColor: Colors.green,
-                    ),
-                  );
-                }
-              } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Failed to delete: $e')),
-                  );
-                }
-              }
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
-        ],
+Future<void> _handleEdit(Post post) async {
+  final updated = await Navigator.push<bool>(
+    context,
+    MaterialPageRoute(
+      builder: (_) => EditPostPage(
+        post: post,
       ),
-    );
+    ),
+  );
+
+  if (!mounted || updated != true) {
+    return;
   }
 
+  // User information / badge data may also have
+  // changed while navigating, so don't keep stale cache.
+  _userCache.clear();
+
+  // Refresh city chips too because visibility may have
+  // changed from public → private/friends or vice versa.
+  _loadAvailableCities();
+
+  if (_isSearchActive) {
+    final query = _lastSearchQuery.trim();
+
+    if (query.isNotEmpty) {
+      await _performSearch(query);
+    }
+  } else {
+    await _loadFeedFirstPage();
+  }
+}
+  
+ void _handleDelete(Post post) {
+  showDialog(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text(
+        'Delete Post',
+      ),
+      content: const Text(
+        'Are you sure you want to delete this post?',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () =>
+              Navigator.pop(dialogContext),
+          child: const Text(
+            'Cancel',
+          ),
+        ),
+        TextButton(
+          onPressed: () async {
+            Navigator.pop(dialogContext);
+
+            final postId = post.id;
+
+            if (postId == null) {
+              return;
+            }
+
+            try {
+              await _postService.deletePost(
+                postId,
+              );
+
+              if (!mounted) return;
+
+              // Remove immediately from all in-memory lists
+              // so the deleted card disappears without
+              // waiting for another network request.
+              setState(() {
+                _feedPosts.removeWhere(
+                  (p) => p.id == postId,
+                );
+
+                _searchResultPosts.removeWhere(
+                  (p) => p.id == postId,
+                );
+              });
+
+              // The available city list/count may also
+              // have changed after deleting this post.
+              _loadAvailableCities();
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Post deleted',
+                  ),
+                  backgroundColor: Colors.green,
+                ),
+              );
+            } catch (e) {
+              if (!mounted) return;
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Failed to delete: $e',
+                  ),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
+          },
+          child: const Text(
+            'Delete',
+            style: TextStyle(
+              color: Colors.red,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildUserInfo(Post post) {
     return FutureBuilder<Map<String, dynamic>>(

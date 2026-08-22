@@ -7,6 +7,7 @@ import 'dart:async';
 import '../../models/postModel.dart';
 import '../../services/algolia_service.dart';
 import '../../services/apps_Loading.dart';
+import '../../services/sentiment_service.dart';
 
 class EditPostPage extends StatefulWidget {
   final Post post;
@@ -122,54 +123,118 @@ class _EditPostPageState extends State<EditPostPage> {
   // ── Save ──────────────────────────────────────────────────────────────────
 
   Future<void> _saveChanges() async {
-    final title   = _titleController.text.trim();
-    final content = _contentController.text.trim();
+  final title = _titleController.text.trim();
+  final content = _contentController.text.trim();
 
-    if (title.isEmpty || content.isEmpty) {
-      _showSnack('Title and content cannot be empty', isError: true);
-      return;
+  if (title.isEmpty || content.isEmpty) {
+    _showSnack(
+      'Title and content cannot be empty',
+      isError: true,
+    );
+    return;
+  }
+
+  if (_isSaving) return;
+
+  setState(() => _isSaving = true);
+
+  try {
+    final bool contentChanged =
+        content != widget.post.content.trim();
+
+    final updates = <String, dynamic>{
+      'title': title,
+      'content': content,
+      'visibility': _selectedVisibility,
+      'tags': _selectedTags,
+    };
+
+    // If the actual review text changed, the old sentiment
+    // no longer represents this post.
+    if (contentChanged) {
+      updates.addAll({
+        'sentimentScore': FieldValue.delete(),
+        'sentimentLabel': FieldValue.delete(),
+        'sentimentMatchedTokens': FieldValue.delete(),
+        'sentimentAnalyzedAt': FieldValue.delete(),
+      });
     }
 
-    setState(() => _isSaving = true);
+    // ── Update Firestore ─────────────────────────────
+    await _firestore
+        .collection('posts')
+        .doc(widget.post.id)
+        .update(updates);
 
-    try {
-      final updates = {
-        'title':      title,
-        'content':    content,
-        'visibility': _selectedVisibility,
-        'tags':       _selectedTags,
-      };
+    // ── Re-analyse sentiment if content changed ──────
+    if (contentChanged) {
+      try {
+        final result =
+            await LexiconSentimentAnalyzer.instance.analyze(
+          content,
+        );
 
-      // ── 更新 Firestore ──
-      await _firestore.collection('posts').doc(widget.post.id).update(updates);
-
-      // ── 同步到 Algolia ──
-      // 只有 public 帖子才在 Algolia 里
-      if (_selectedVisibility == 'public') {
-        await AlgoliaService.syncPost(widget.post.id!, {
-          ...updates,
-          'city':       widget.post.city     ?? '',
-          'location':   widget.post.location ?? '',
-          'userName':   widget.post.isAnonymous ? 'Anonymous' : widget.post.userName,
-          'likes':      widget.post.likes,
-          'visibility': _selectedVisibility,
-          'createdAt':  DateTime.now().millisecondsSinceEpoch,
+        await _firestore
+            .collection('posts')
+            .doc(widget.post.id)
+            .update({
+          'sentimentScore': result.score,
+          'sentimentLabel': result.label.toJson(),
+          'sentimentMatchedTokens':
+              result.matchedTokenCount,
+          'sentimentAnalyzedAt':
+              FieldValue.serverTimestamp(),
         });
-      } else {
-        // 改成 private/friends → 从 Algolia 删掉
-        await AlgoliaService.deletePost(widget.post.id!);
-      }
+      } catch (e) {
+        debugPrint(
+          '⚠️ Sentiment re-analysis failed '
+          'for ${widget.post.id}: $e',
+        );
 
-      if (mounted) {
-        Navigator.pop(context, true); // true = 有改动
-        _showSnack('Post updated successfully!');
+        // Post edit itself is still valid.
+        // Leave sentiment fields empty rather than showing
+        // the previous, incorrect sentiment.
       }
-    } catch (e) {
-      _showSnack('Failed to update: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => _isSaving = false);
+    }
+
+    // ── Sync Algolia ────────────────────────────────
+    if (_selectedVisibility == 'public') {
+      await AlgoliaService.syncPost(
+        widget.post.id!,
+        {
+          ...updates,
+
+          'city': widget.post.city ?? '',
+          'location': widget.post.location ?? '',
+          'userName': widget.post.isAnonymous
+              ? 'Anonymous'
+              : widget.post.userName,
+          'likes': widget.post.likes,
+          'visibility': _selectedVisibility,
+        },
+      );
+    } else {
+      await AlgoliaService.deletePost(
+        widget.post.id!,
+      );
+    }
+
+    if (!mounted) return;
+
+    Navigator.pop(context, true);
+  } catch (e) {
+    if (mounted) {
+      _showSnack(
+        'Failed to update: $e',
+        isError: true,
+      );
+    }
+  } finally {
+    if (mounted) {
+      setState(() => _isSaving = false);
     }
   }
+}
 
   void _showSnack(String message, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(

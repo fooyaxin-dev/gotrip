@@ -293,7 +293,11 @@ class _SettingsPageState extends State<SettingsPage> {
           ElevatedButton(
             onPressed: () async {
               Navigator.pop(context);
+
+              UserPreferenceService.instance.clearLocalSession();
+
               await FirebaseAuth.instance.signOut();
+
               if (mounted) {
                 Navigator.of(context).pushNamedAndRemoveUntil('/', (_) => false);
               }

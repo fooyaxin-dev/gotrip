@@ -11,6 +11,7 @@ import '../profile/profile.dart';
 import '../../services/apps_Loading.dart';
 import '../../services/userActivity_service.dart';
 import '../../services/category_mapper.dart';
+import '../main/favourite.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Data Models
@@ -209,23 +210,52 @@ class _DashboardPageState extends State<DashboardPage> {
   // ─────────────────────────────────────────────
 
     
-  Future<void> _loadRawData({bool forceRefresh = false}) async {
-    setState(() { _isLoading = true; _errorMsg = null; });
-  
+  Future<void> _loadRawData({
+    bool forceRefresh = false,
+  }) async {
+    if (!mounted) return;
+
+    setState(() {
+      _isLoading = true;
+      _errorMsg = null;
+    });
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+
+    if (uid == null) {
+      if (!mounted) return;
+
+      setState(() {
+        _isLoading = false;
+        _rawData = null;
+        _allTimeCache = null;
+        _filteredCache.clear();
+      });
+
+      return;
+    }
+
     try {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
-      if (uid == null) { setState(() => _isLoading = false); return; }
-  
-      // ★ 改动：不再自己 Future.wait 三个 collection().get()，
-      // 改成调用共享的 UserActivityDataService —— 跟 Achievement 读的是
-      // 完全同一份原始数据（同一次 .get() 结果，缓存也共用）
-      final activity = await UserActivityDataService.instance.getAll(
+      final activity =
+          await UserActivityDataService.instance.getAll(
         forceRefresh: forceRefresh,
       );
-  
-      final historySnap     = activity.history;
-      final favouritesSnap  = activity.favourites;
+
+      // Page may have been closed while loading.
+      if (!mounted) return;
+
+      // Account may have changed while the request was running.
+      if (FirebaseAuth.instance.currentUser?.uid != uid) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+        }
+        return;
+      }
+
+      final historySnap = activity.history;
+      final favouritesSnap = activity.favourites;
       final itinerariesSnap = activity.itineraries;
+
   
       // ── Favourites（ActivityDoc 用法：doc.data 不是 doc.data()）──
       final favouriteEntries = <({DateTime savedAt, String placeId, String name, String address, List<String> types, String? photoUrl, double? rating})>[];
@@ -304,23 +334,47 @@ class _DashboardPageState extends State<DashboardPage> {
         }
       }
   
-      setState(() {
-        _rawData = _RawData(
-          visitEvents:      visitEvents,
-          favouriteEntries: favouriteEntries,
-          itineraryModels:  itineraryModels,
-        );
+          if (!mounted) return;
 
-        _allTimeCache = _buildAllTimeCache(_rawData!);  // 新增
-        _filteredCache.clear(); 
-        _prewarmFilteredCache();
-        _isLoading = false;
-
-      });
-    } catch (e) {
-      setState(() { _isLoading = false; _errorMsg = e.toString(); });
-    }
+    // Final session check immediately before committing UI state.
+if (FirebaseAuth.instance.currentUser?.uid != uid) {
+  if (mounted) {
+    setState(() => _isLoading = false);
   }
+  return;
+}
+
+    setState(() {
+      _rawData = _RawData(
+        visitEvents: visitEvents,
+        favouriteEntries: favouriteEntries,
+        itineraryModels: itineraryModels,
+      );
+
+      _allTimeCache = _buildAllTimeCache(_rawData!);
+
+      _filteredCache.clear();
+      _prewarmFilteredCache();
+
+      _isLoading = false;
+    });
+  } catch (e) {
+    if (!mounted) return;
+
+    // Don't show an error from an operation belonging to an old account.
+if (FirebaseAuth.instance.currentUser?.uid != uid) {
+  if (mounted) {
+    setState(() => _isLoading = false);
+  }
+  return;
+}
+
+    setState(() {
+      _isLoading = false;
+      _errorMsg = e.toString();
+    });
+  }
+}
   
   // ─────────────────────────────────────────────
   // Compute in-memory — no extra Firestore calls
@@ -573,7 +627,9 @@ class _DashboardPageState extends State<DashboardPage> {
 
     return RefreshIndicator(
       color: const Color(0xFF6366F1),
-      onRefresh: _loadRawData,
+      onRefresh: () => _loadRawData(
+        forceRefresh: true,
+      ),
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
@@ -735,10 +791,16 @@ class _DashboardPageState extends State<DashboardPage> {
           // Favourites → Profile Post tab
           Expanded(
             child: GestureDetector(
-              onTap: () => Navigator.push(context, MaterialPageRoute(
-                builder: (_) => const ProfilePage(initialTab: 0),
-              )),
-              child: _topStatItem('Favourites', '${data.favPlaces}'),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const FavouritePage(),
+                ),
+              ),
+              child: _topStatItem(
+                'Favourites',
+                '${data.favPlaces}',
+              ),
             ),
           ),
           // Trips Taken → Itinerary page

@@ -37,6 +37,7 @@ class UserActivityDataService {
   List<ActivityDoc>? _itineraryDocs;
   List<ActivityDoc>? _favouriteDocs;
   DateTime? _cachedAt;
+  String? _cachedUid;
 
   static const _cacheTtl = Duration(seconds: 30);
 
@@ -51,58 +52,122 @@ class UserActivityDataService {
   /// (check-in, favourite toggle, itinerary save/delete) so the next read
   /// is guaranteed fresh instead of serving a stale cache.
   void invalidate() {
-    _historyDocs   = null;
+    _historyDocs = null;
     _itineraryDocs = null;
     _favouriteDocs = null;
-    _cachedAt      = null;
-  }
+    _cachedAt = null;
+    _cachedUid = null;
+}
 
-  Future<void> _loadAll({bool forceRefresh = false}) async {
-    if (!forceRefresh && _isFresh) {
-      if (kDebugMode) {
-        // ignore: avoid_print
-        print('🧠 UserActivityDataService: cache hit '
-            '(age: ${DateTime.now().difference(_cachedAt!).inSeconds}s)');
-      }
+  Future<void> _loadAll({
+    bool forceRefresh = false,
+  }) async {
+    final uid = _uid;
+
+    // ── No logged-in user ─────────────────────────────
+    if (uid == null) {
+      _historyDocs = [];
+      _itineraryDocs = [];
+      _favouriteDocs = [];
+      _cachedAt = DateTime.now();
+      _cachedUid = null;
       return;
     }
 
-    final uid = _uid;
-    if (uid == null) {
-      _historyDocs   = [];
-      _itineraryDocs = [];
-      _favouriteDocs = [];
-      _cachedAt      = DateTime.now();
+    // ── Cache can ONLY be reused by the same user ─────
+    final sameUser = _cachedUid == uid;
+
+    if (!forceRefresh && sameUser && _isFresh) {
+      if (kDebugMode) {
+        print(
+          '🧠 UserActivityDataService: cache hit '
+          'for $uid '
+          '(age: ${DateTime.now().difference(_cachedAt!).inSeconds}s)',
+        );
+      }
+
       return;
+    }
+
+    // Account changed while app process is still alive.
+    // Never expose the previous user's cached activity.
+    if (!sameUser) {
+      _historyDocs = null;
+      _itineraryDocs = null;
+      _favouriteDocs = null;
+      _cachedAt = null;
     }
 
     final results = await Future.wait([
-      _db.collection('users').doc(uid).collection('history').get(),
-      _db.collection('users').doc(uid).collection('itineraries').get(),
-      _db.collection('users').doc(uid).collection('favourites').get(),
+      _db
+          .collection('users')
+          .doc(uid)
+          .collection('history')
+          .get(),
+
+      _db
+          .collection('users')
+          .doc(uid)
+          .collection('itineraries')
+          .get(),
+
+      _db
+          .collection('users')
+          .doc(uid)
+          .collection('favourites')
+          .get(),
     ]);
 
-    _historyDocs = (results[0] as QuerySnapshot).docs
-        .map((d) => ActivityDoc(d.id, d.data() as Map<String, dynamic>))
-        .toList();
-    _itineraryDocs = (results[1] as QuerySnapshot).docs
-        .map((d) => ActivityDoc(d.id, d.data() as Map<String, dynamic>))
-        .toList();
-    _favouriteDocs = (results[2] as QuerySnapshot).docs
-        .map((d) => ActivityDoc(d.id, d.data() as Map<String, dynamic>))
+    // User may have logged out / switched account while
+    // Firestore requests were still running.
+    if (_uid != uid) {
+      return;
+    }
+
+    _historyDocs = (results[0] as QuerySnapshot)
+        .docs
+        .map(
+          (d) => ActivityDoc(
+            d.id,
+            d.data() as Map<String, dynamic>,
+          ),
+        )
         .toList();
 
+    _itineraryDocs = (results[1] as QuerySnapshot)
+        .docs
+        .map(
+          (d) => ActivityDoc(
+            d.id,
+            d.data() as Map<String, dynamic>,
+          ),
+        )
+        .toList();
+
+    _favouriteDocs = (results[2] as QuerySnapshot)
+        .docs
+        .map(
+          (d) => ActivityDoc(
+            d.id,
+            d.data() as Map<String, dynamic>,
+          ),
+        )
+        .toList();
+
+    _cachedUid = uid;
     _cachedAt = DateTime.now();
 
     if (kDebugMode) {
-      // ignore: avoid_print
-      print('🌐 UserActivityDataService: fresh read '
-          '(history: ${_historyDocs!.length}, '
-          'itineraries: ${_itineraryDocs!.length}, '
-          'favourites: ${_favouriteDocs!.length})');
+      print(
+        '🌐 UserActivityDataService: fresh read '
+        'for $uid '
+        '(history: ${_historyDocs!.length}, '
+        'itineraries: ${_itineraryDocs!.length}, '
+        'favourites: ${_favouriteDocs!.length})',
+      );
     }
   }
-
+  
   Future<List<ActivityDoc>> getHistoryDocs({bool forceRefresh = false}) async {
     await _loadAll(forceRefresh: forceRefresh);
     return _historyDocs!;

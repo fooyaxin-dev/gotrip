@@ -31,22 +31,34 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
     if (mounted) setState(() { _entries = data; _loading = false; });
   }
 
-  Future<void> _delete(LandmarkHistoryEntry entry) async {
+  Future<void> _delete( 
+    LandmarkHistoryEntry entry,
+  ) async {
     try {
       await LandmarkHistoryService.delete(entry.id);
-      setState(() => _entries.removeWhere((e) => e.id == entry.id));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Removed from history'),
-            behavior: SnackBarBehavior.floating,
-          ),
+
+      if (!mounted) return;
+
+      setState(() {
+        _entries.removeWhere(
+          (e) => e.id == entry.id,
         );
-      }
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Removed from history'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     } catch (e) {
-      if (mounted) {
-        ErrorHandler.showError(context, message: 'Failed to remove item. Please try again.');
-      }
+      if (!mounted) return;
+
+      ErrorHandler.showError(
+        context,
+        message:
+            'Failed to remove item. Please try again.',
+      );
     }
   }
 

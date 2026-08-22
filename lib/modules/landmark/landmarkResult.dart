@@ -167,6 +167,11 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     return (loc?['longitude'] as num?)?.toDouble() ?? _result.lng;
   }
 
+  bool get _canFavourite =>
+    !placeLoading &&
+    placeDetails != null &&
+    (placeDetails?['id'] as String?)?.isNotEmpty == true;
+
   @override
   void initState() {
     super.initState();
@@ -242,54 +247,88 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   }
 
   Future<void> _fetchPlaceDetails() async {
-    final pos = LocationService.instance.currentPosition;
-    try {
-      final results = await PlacesApiService.searchNearbyWithKeyword(
-        lat: pos?.latitude ?? 0,
-        lng: pos?.longitude ?? 0,
-        keyword: _name,
-        radius: 500,
-        maxResultCount: 1,
+  try {
+    final landmarkLat = _result.lat;
+    final landmarkLng = _result.lng;
+
+    if (landmarkLat == null || landmarkLng == null) {
+      debugPrint(
+        '⚠️ _fetchPlaceDetails: no landmark coordinates for "$_name"',
       );
 
-      if (results.isEmpty) {
-        // ── FIX: 之前这里只是 return，现在补上日志方便排查 ──────
-        debugPrint('⚠️ _fetchPlaceDetails: no nearby place matched "$_name"');
-        if (mounted) setState(() => placeLoading = false);
-        return;
+      if (mounted) {
+        setState(() => placeLoading = false);
+      }
+      return;
+    }
+
+    final results = await PlacesApiService.searchNearbyWithKeyword(
+      lat: landmarkLat,
+      lng: landmarkLng,
+      keyword: _name,
+      radius: 500,
+      maxResultCount: 1,
+    );
+
+    if (results.isEmpty) {
+      debugPrint(
+        '⚠️ _fetchPlaceDetails: no nearby place matched "$_name"',
+      );
+
+      if (mounted) {
+        setState(() => placeLoading = false);
+      }
+      return;
+    }
+
+    final placeId = results[0]['id'] as String?;
+
+    if (placeId == null) {
+      debugPrint(
+        '⚠️ _fetchPlaceDetails: matched place has no id',
+      );
+
+      if (mounted) {
+        setState(() => placeLoading = false);
+      }
+      return;
+    }
+
+    final details =
+        await PlacesApiService.getPlaceDetails(placeId);
+
+    final photosRaw = details['photos'] as List?;
+
+    final placePhotos = photosRaw
+            ?.map(
+              (p) =>
+                  (p as Map<String, dynamic>)['photoUri'] as String?,
+            )
+            .whereType<String>()
+            .toList() ??
+        <String>[];
+
+    if (!mounted) return;
+
+    setState(() {
+      placeDetails = details;
+      placeLoading = false;
+
+      if (placePhotos.isNotEmpty) {
+        displayImages = placePhotos;
       }
 
-      final placeId = results[0]['id'] as String?;
-      if (placeId == null) {
-        debugPrint('⚠️ _fetchPlaceDetails: matched place has no id');
-        if (mounted) setState(() => placeLoading = false);
-        return;
-      }
+      _reviewFilterStars = null;
+      _reviewSort = 'relevant';
+    });
+  } catch (e) {
+    debugPrint('⚠️ _fetchPlaceDetails error: $e');
 
-      final details    = await PlacesApiService.getPlaceDetails(placeId);
-      final photosRaw  = details['photos'] as List?;
-      final placePhotos = photosRaw
-              ?.map((p) => (p as Map<String, dynamic>)['photoUri'] as String?)
-              .whereType<String>()
-              .toList() ?? <String>[];
-
-      if (!mounted) return;
-      setState(() {
-        placeDetails = details;
-        placeLoading = false;
-        if (placePhotos.isNotEmpty) displayImages = placePhotos;
-        // Reset review filter/sort whenever new place details are loaded
-        _reviewFilterStars = null;
-        _reviewSort = 'relevant';
-      });
-
-      // ── FIX: 不再在这里调用 _maybeSaveHistory() ──────────────
-    } catch (e) {
-      debugPrint('⚠️ _fetchPlaceDetails error: $e');
-      if (mounted) setState(() => placeLoading = false);
-      // 不 rethrow
+    if (mounted) {
+      setState(() => placeLoading = false);
     }
   }
+}
 
   // ── 统一收口：无论两个请求成功与否，扫一次就存一条记录 ──────
   void _maybeSaveHistory() {
@@ -391,142 +430,228 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // ============================================================
 
   @override
-  Widget build(BuildContext context) {
-    final screenHeight = MediaQuery.of(context).size.height;
-    final pos = LocationService.instance.currentPosition;
+Widget build(BuildContext context) {
+  final screenHeight = MediaQuery.of(context).size.height;
+  final pos = LocationService.instance.currentPosition;
 
-    // Opened from History → no original photo to show, skip the hero
-    // image section entirely and let the sheet content fill the screen.
-    final bool showHeroImage = !widget.skipHistorySave;
+  // Opened from History → no original photo to show, skip the hero
+  // image section entirely and let the sheet content fill the screen.
+  final bool showHeroImage = !widget.skipHistorySave;
 
-    return Scaffold(
-      extendBodyBehindAppBar: showHeroImage,
-      appBar: AppBar(
-        backgroundColor: showHeroImage ? Colors.transparent : Colors.white,
-        foregroundColor: showHeroImage ? null : Colors.black,
-        elevation: 0,
-        leading: showHeroImage
-            ? Padding(
-                padding: const EdgeInsets.only(left: 12, top: 8),
-                child: CircleAvatar(
-                  backgroundColor: Colors.white.withAlpha(200),
-                  child: IconButton(
-                    icon: const Icon(Icons.arrow_back_ios_new,
-                        color: Colors.black, size: 18),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ),
-              )
-            : IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new, size: 18),
-                onPressed: () => Navigator.pop(context),
+  // Only allow favourite after Google Place Details has resolved.
+  // This guarantees FavouriteService always receives the canonical
+  // Google Place ID instead of the temporary landmark-name slug.
+  final String? resolvedGooglePlaceId =
+      placeDetails?['id'] as String?;
+
+  final bool canFavourite =
+      !placeLoading &&
+      resolvedGooglePlaceId != null &&
+      resolvedGooglePlaceId.isNotEmpty;
+
+  return Scaffold(
+    extendBodyBehindAppBar: showHeroImage,
+
+    appBar: AppBar(
+      backgroundColor:
+          showHeroImage ? Colors.transparent : Colors.white,
+      foregroundColor:
+          showHeroImage ? null : Colors.black,
+      elevation: 0,
+
+      leading: showHeroImage
+          ? Padding(
+              padding: const EdgeInsets.only(
+                left: 12,
+                top: 8,
               ),
-        // ── Action buttons: Share + Favourite ────────────────
-        actions: _isDetected
-            ? [
-                // Share button
-                Padding(
-                  padding: EdgeInsets.only(top: showHeroImage ? 8 : 0),
-                  child: showHeroImage
-                      ? CircleAvatar(
-                          backgroundColor: Colors.white.withAlpha(200),
-                          child: IconButton(
-                            icon: const Icon(Icons.share_rounded,
-                                color: Colors.black, size: 20),
-                            onPressed: _shareLandmark,
-                            tooltip: 'Share',
+              child: CircleAvatar(
+                backgroundColor: Colors.white.withAlpha(200),
+                child: IconButton(
+                  icon: const Icon(
+                    Icons.arrow_back_ios_new,
+                    color: Colors.black,
+                    size: 18,
+                  ),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
+            )
+          : IconButton(
+              icon: const Icon(
+                Icons.arrow_back_ios_new,
+                size: 18,
+              ),
+              onPressed: () => Navigator.pop(context),
+            ),
+
+      // ── Action buttons: Share + Favourite ────────────────
+      actions: _isDetected
+          ? [
+              // ── Share ─────────────────────────────────────
+              Padding(
+                padding: EdgeInsets.only(
+                  top: showHeroImage ? 8 : 0,
+                ),
+                child: showHeroImage
+                    ? CircleAvatar(
+                        backgroundColor:
+                            Colors.white.withAlpha(200),
+                        child: IconButton(
+                          icon: const Icon(
+                            Icons.share_rounded,
+                            color: Colors.black,
+                            size: 20,
                           ),
-                        )
-                      : IconButton(
-                          icon: const Icon(Icons.share_rounded, size: 22),
                           onPressed: _shareLandmark,
                           tooltip: 'Share',
                         ),
-                ),
-                const SizedBox(width: 8),
-                // Favourite button
-                Padding(
-                  padding: EdgeInsets.only(
-                      top: showHeroImage ? 8 : 0,
-                      right: showHeroImage ? 12 : 4),
-                  child: showHeroImage
-                      ? CircleAvatar(
-                          backgroundColor: Colors.white.withAlpha(200),
-                          child: FavouriteButton(
-                            placeId:  _placeId,
-                            name:     _name,
-                            address:  _placeAddress,
-                            rating:   _placeRating,
-                            photoUrl: _placePhoto ?? displayImages.firstOrNull,
-                            lat:      _lat,
-                            lng:      _lng,
-                            types:    const ['tourist_attraction'],
-                            iconSize: 20,
-                            activeColor:   Colors.red,
-                            inactiveColor: Colors.black,
-                          ),
-                        )
-                      : FavouriteButton(
-                          placeId:  _placeId,
-                          name:     _name,
-                          address:  _placeAddress,
-                          rating:   _placeRating,
-                          photoUrl: _placePhoto ?? displayImages.firstOrNull,
-                          lat:      _lat,
-                          lng:      _lng,
-                          types:    const ['tourist_attraction'],
-                          iconSize: 24,
-                          activeColor:   Colors.red,
-                          inactiveColor: Colors.black,
+                      )
+                    : IconButton(
+                        icon: const Icon(
+                          Icons.share_rounded,
+                          size: 22,
                         ),
-                ),
-              ]
-            : null,
-      ),
-      body: showHeroImage
-          ? Stack(
-              children: [
-                SizedBox(
-                  height: screenHeight * 0.45,
-                  width: double.infinity,
-                  child: _buildHeroImage(),
-                ),
-                Positioned(
-                  top: 0, left: 0, right: 0,
-                  child: Container(
-                    height: 100,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [Colors.black.withOpacity(0.3), Colors.transparent],
+                        onPressed: _shareLandmark,
+                        tooltip: 'Share',
                       ),
+              ),
+
+              const SizedBox(width: 8),
+
+              // ── Favourite ─────────────────────────────────
+              Padding(
+                padding: EdgeInsets.only(
+                  top: showHeroImage ? 8 : 0,
+                  right: showHeroImage ? 12 : 4,
+                ),
+                child: showHeroImage
+                    ? CircleAvatar(
+                        backgroundColor:
+                            Colors.white.withAlpha(200),
+
+                        // Do not allow favourite until the
+                        // canonical Google Place ID is ready.
+                        child: canFavourite
+                            ? FavouriteButton(
+                                placeId:
+                                    resolvedGooglePlaceId!,
+                                name: _name,
+                                address: _placeAddress,
+                                rating: _placeRating,
+                                photoUrl: _placePhoto ??
+                                    displayImages.firstOrNull,
+                                lat: _lat,
+                                lng: _lng,
+                                types: const [
+                                  'tourist_attraction'
+                                ],
+                                iconSize: 20,
+                                activeColor: Colors.red,
+                                inactiveColor: Colors.black,
+                              )
+                            : const Icon(
+                                Icons.favorite_border,
+                                size: 20,
+                                color: Colors.black38,
+                              ),
+                      )
+
+                    // ── History style AppBar ────────────────
+                    : canFavourite
+                        ? FavouriteButton(
+                            placeId:
+                                resolvedGooglePlaceId!,
+                            name: _name,
+                            address: _placeAddress,
+                            rating: _placeRating,
+                            photoUrl: _placePhoto ??
+                                displayImages.firstOrNull,
+                            lat: _lat,
+                            lng: _lng,
+                            types: const [
+                              'tourist_attraction'
+                            ],
+                            iconSize: 24,
+                            activeColor: Colors.red,
+                            inactiveColor: Colors.black,
+                          )
+                        : const IconButton(
+                            onPressed: null,
+                            icon: Icon(
+                              Icons.favorite_border,
+                              color: Colors.black38,
+                            ),
+                          ),
+              ),
+            ]
+          : null,
+    ),
+
+    body: showHeroImage
+        ? Stack(
+            children: [
+              // ── Hero image ────────────────────────────────
+              SizedBox(
+                height: screenHeight * 0.45,
+                width: double.infinity,
+                child: _buildHeroImage(),
+              ),
+
+              // ── Top gradient ──────────────────────────────
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  height: 100,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withOpacity(0.3),
+                        Colors.transparent,
+                      ],
                     ),
                   ),
                 ),
-                DraggableScrollableSheet(
-                  initialChildSize: 0.55,
-                  minChildSize: 0.55,
-                  maxChildSize: 0.95,
-                  snap: true,
-                  snapSizes: const [0.55, 0.95],
-                  builder: (context, scrollController) =>
-                      _buildSheetContent(scrollController, pos),
-                ),
-              ],
-            )
-          // No hero image → sheet content fills the whole body directly,
-          // no drag handle needed since there's nothing to reveal below it.
-          : SafeArea(
-              child: _buildSheetContent(
-                _fallbackScrollController,
-                pos,
-                showDragHandle: false,
               ),
-            ),
-    );
-  }
 
+              // ── Draggable content sheet ───────────────────
+              DraggableScrollableSheet(
+                initialChildSize: 0.55,
+                minChildSize: 0.55,
+                maxChildSize: 0.95,
+                snap: true,
+                snapSizes: const [
+                  0.55,
+                  0.95,
+                ],
+                builder: (
+                  context,
+                  scrollController,
+                ) =>
+                    _buildSheetContent(
+                  scrollController,
+                  pos,
+                ),
+              ),
+            ],
+          )
+
+        // Opened from History → no hero image.
+        : SafeArea(
+            child: _buildSheetContent(
+              _fallbackScrollController,
+              pos,
+              showDragHandle: false,
+            ),
+          ),
+  );
+}
+  
+  
   // ── Shared sheet content, used both with and without the hero image ──
   Widget _buildSheetContent(
     ScrollController scrollController,
@@ -1589,6 +1714,9 @@ Widget _buildTranslatingPlaceholder() {
           .showSnackBar(const SnackBar(content: Text('Cannot open URL')));
     }
   }
+
+  
+  
 }
 
 class _OpeningDay {

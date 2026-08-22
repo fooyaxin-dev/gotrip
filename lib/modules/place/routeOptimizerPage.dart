@@ -1294,72 +1294,157 @@ void _addPoolPlaceToPosition(
   // Save
   // ─────────────────────────────────────────────
 
-  Future<void> _saveAndContinue() async {
-    final hasAnyPlace = _itinerary.days.any((d) => d.places.isNotEmpty);
-    if (!hasAnyPlace) return;
-    setState(() => _isSaving = true);
+Future<void> _saveAndContinue() async {
+  final hasAnyPlace =
+      _itinerary.days.any((d) => d.places.isNotEmpty);
 
-    final online = await ConnectivityService.instance.ensureConnected(context, onRetry: _saveAndContinue);
+  // No place to save / already saving.
+  if (!hasAnyPlace || _isSaving) {
+    return;
+  }
+
+  setState(() => _isSaving = true);
+
+  try {
+    // ─────────────────────────────────────────────
+    // Step 1: Check connectivity
+    // ─────────────────────────────────────────────
+    final online =
+        await ConnectivityService.instance.ensureConnected(
+      context,
+      onRetry: _saveAndContinue,
+    );
+
     if (!online) {
-      if (mounted) {
-        setState(() => _isSaving = false);
-      }
       return;
     }
 
+    if (!mounted) return;
+
+    // ─────────────────────────────────────────────
+    // Step 2: Preserve the COMPLETE leftover pool
+    // ─────────────────────────────────────────────
+    //
+    // _leftovers:
+    //   leftover candidates already resolved as PlaceModel
+    //
+    // _pendingLeftoverIds:
+    //   leftover IDs that have not yet been resolved/loaded
+    //
+    // Combine both and remove duplicates.
     final leftoverIds = <String>{
       ..._leftovers.map((p) => p.id),
       ..._pendingLeftoverIds,
     }.toList();
 
-
-    // 🆕 把用户这次 session 里最终的候补池 id 写回去，
-    // 这样下次再 edit，候补池还是这次离开时的状态
     _itinerary = _itinerary.copyWith(
-      leftoverPlaceIds: _leftovers.map((p) => p.id).toList(),
+      leftoverPlaceIds: leftoverIds,
     );
-    
+
+    // ─────────────────────────────────────────────
+    // Step 3: Save / update itinerary
+    // ─────────────────────────────────────────────
     String? savedId;
+
     if (_itinerary.id.isEmpty) {
-      savedId = await ItineraryService.instance.save(_itinerary);
+      savedId =
+          await ItineraryService.instance.save(
+        _itinerary,
+      );
     } else {
-      await ItineraryService.instance.update(_itinerary);
+      await ItineraryService.instance.update(
+        _itinerary,
+      );
+
       savedId = _itinerary.id;
     }
 
     if (!mounted) return;
-    setState(() => _isSaving = false);
 
+    // save() may return null, e.g. user not logged in
+    // or Firestore save could not be completed.
     if (savedId == null) {
-      final isLoggedIn = FirebaseAuth.instance.currentUser != null;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(isLoggedIn
-            ? 'Failed to save itinerary'
-            : 'Please log in to save itinerary'),
-        backgroundColor: Colors.red,
-      ));
+      final isLoggedIn =
+          FirebaseAuth.instance.currentUser != null;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            isLoggedIn
+                ? 'Failed to save itinerary. Please try again.'
+                : 'Please log in to save itinerary.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+
       return;
     }
 
-    final saved = ItineraryModel.fromMap(savedId, _itinerary.toMap());
+    // Rebuild the model using the actual saved document ID.
+    final saved = ItineraryModel.fromMap(
+      savedId,
+      _itinerary.toMap(),
+    );
+
+    // ─────────────────────────────────────────────
+    // Step 4: Return / navigate
+    // ─────────────────────────────────────────────
 
     if (widget.isEditingExisting) {
-      // Editing a trip that already has its own ItineraryDetailPage on the
-      // stack below us — just hand the updated itinerary back to it instead
-      // of pushing a second, duplicate detail page on top.
-      Navigator.pop(context, saved);
+      // Existing ItineraryDetailPage is already below
+      // RouteOptimizerPage in the navigation stack.
+      //
+      // Return the updated model instead of opening
+      // another duplicate detail page.
+      Navigator.pop(
+        context,
+        saved,
+      );
       return;
     }
 
-    // `result: true` lets whoever pushed this page (e.g. GenerateItineraryPage)
-    // know the draft was actually confirmed & saved, vs. just backed out of.
+    // New itinerary:
+    // replace RouteOptimizer with its detail page.
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (_) => ItineraryDetailPage(itinerary: saved)),
+      MaterialPageRoute(
+        builder: (_) => ItineraryDetailPage(
+          itinerary: saved,
+        ),
+      ),
       result: true,
     );
-  }
+  } catch (e) {
+    if (!mounted) return;
 
+    debugPrint(
+      '❌ RouteOptimizer save failed: $e',
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Unable to save this itinerary. '
+          'Please check your connection and try again.',
+        ),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  } finally {
+    // Always restore the Save button state,
+    // whether save succeeds, fails, goes offline,
+    // or returns early.
+    if (mounted) {
+      setState(() {
+        _isSaving = false;
+      });
+    }
+  }
+}
+  
+  
   // ─────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────

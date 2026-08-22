@@ -151,47 +151,97 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   }
 
   Future<void> _initAndLoad() async {
-    _travelModeOverride = null;
-    NearbyPlacesService.instance.clearCache(); 
-    await _initLocation();
-    await UserPreferenceService.instance.load();   // 🆕 提前到这里，确保 radius 计算时用的是真实数据
-    await _loadNearby();
-    _calculateRoutes();
-    _buildForYou();   // 内部的 load() 调用变成幂等的重复调用，不影响正确性，但可以顺手拿掉
-    final pos = LocationService.instance.currentPosition;
-    if (pos != null) {
-      final w = await WeatherService.instance.getCurrentCondition(lat: pos.latitude, lng: pos.longitude); // 🔧 加 await + 接收返回值
-      if (mounted) setState(() => _currentWeather = w);
-    }
+  _travelModeOverride = null;
+  NearbyPlacesService.instance.clearCache();
 
+  final locationReady = await _initLocation();
+
+  if (!mounted) return;
+
+  if (!locationReady) {
+    setState(() => _loadingNearby = false);
+    return;
   }
 
-  Future<void> _initLocation() async {
-    final status = await LocationService.instance.initLocation();
-    switch (status) {
-      case LocationStatus.serviceDisabled:
-        _showLocationServiceDialog(); return;
-      case LocationStatus.permissionDenied:
-        _showPermissionDialog(); return;
-      case LocationStatus.permissionDeniedForever:
-        _showPermissionForeverDialog(); return;
-      case LocationStatus.success:
-        break;
-    }
+  await UserPreferenceService.instance.load();
 
-    final pos = LocationService.instance.currentPosition;
-    if (pos != null) {
-      final placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
-      if (placemarks.isNotEmpty) {
-        final p = placemarks.first;
-        final city    = p.locality ?? p.subAdministrativeArea ?? p.administrativeArea ?? "Unknown";
-        final country = p.country ?? "";
-        setState(() {
-          _currentLocationText = country.isNotEmpty ? "$city, $country" : city;
-        });
-      }
+  if (!mounted) return;
+
+  await _loadNearby();
+
+  if (!mounted) return;
+
+  _calculateRoutes();
+  _buildForYou();
+
+  final pos = LocationService.instance.currentPosition;
+
+  if (pos != null) {
+    final w = await WeatherService.instance.getCurrentCondition(
+      lat: pos.latitude,
+      lng: pos.longitude,
+    );
+
+    if (mounted) {
+      setState(() => _currentWeather = w);
     }
   }
+}
+
+  Future<bool> _initLocation() async {
+  final status = await LocationService.instance.initLocation();
+
+  switch (status) {
+    case LocationStatus.serviceDisabled:
+      _showLocationServiceDialog();
+      return false;
+
+    case LocationStatus.permissionDenied:
+      _showPermissionDialog();
+      return false;
+
+    case LocationStatus.permissionDeniedForever:
+      _showPermissionForeverDialog();
+      return false;
+
+    case LocationStatus.success:
+      break;
+  }
+
+  final pos = LocationService.instance.currentPosition;
+
+  if (pos == null) {
+    return false;
+  }
+
+  try {
+    final placemarks = await placemarkFromCoordinates(
+      pos.latitude,
+      pos.longitude,
+    );
+
+    if (placemarks.isNotEmpty && mounted) {
+      final p = placemarks.first;
+
+      final city =
+          p.locality ??
+          p.subAdministrativeArea ??
+          p.administrativeArea ??
+          'Unknown';
+
+      final country = p.country ?? '';
+
+      setState(() {
+        _currentLocationText =
+            country.isNotEmpty ? '$city, $country' : city;
+      });
+    }
+  } catch (e) {
+    debugPrint('Reverse geocoding failed: $e');
+  }
+
+  return true;
+}
 
   double get _distanceLimitMeters =>
       radiusForTravelModeString(_effectiveTravelMode).toDouble();

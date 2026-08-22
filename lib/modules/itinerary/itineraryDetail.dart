@@ -33,6 +33,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
   final Map<String, GlobalKey> _cardKeys = {};
   StreamSubscription<PlaceArrivalEvent>? _arrivalSub;
+  final Set<String> _checkInProgress = {};
+  bool _isArrivalDialogOpen = false;
 
   @override
   void initState() {
@@ -60,119 +62,370 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   // ─────────────────────────────────────────────
 
   void _onArrival(PlaceArrivalEvent event) {
-    if (!mounted) return;
+  if (!mounted) return;
 
-    if (_tabController.index != event.dayIndex) {
-      _tabController.animateTo(event.dayIndex);
+  // Prevent multiple arrival dialogs from stacking.
+  //
+  // LocationService already marks a place as arrived
+  // before emitting the event, so if another dialog is
+  // currently open, re-arm this place so it can trigger
+  // again later instead of being lost permanently.
+  if (_isArrivalDialogOpen) {
+    LocationService.instance.rearmArrival(
+      event.placeId,
+    );
+    return;
+  }
+
+  // Resolve the place again by placeId instead of trusting
+  // the old dayIndex/placeIndex carried by the event.
+  //
+  // The itinerary may have been edited or reordered after
+  // the event was created.
+  int? resolvedDayIndex;
+  int? resolvedPlaceIndex;
+
+  for (int d = 0;
+      d < _itinerary.days.length;
+      d++) {
+    final placeIndex =
+        _itinerary.days[d].places.indexWhere(
+      (place) =>
+          place.placeId == event.placeId,
+    );
+
+    if (placeIndex != -1) {
+      resolvedDayIndex = d;
+      resolvedPlaceIndex = placeIndex;
+      break;
     }
+  }
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => _ArrivedDialog(
-        placeName: event.placeName,
-        onConfirm: () {
-          Navigator.pop(context);
-          _markVisited(event.dayIndex, event.placeIndex);
-        },
-        onDismiss: () => Navigator.pop(context),
-      ),
+  // Place no longer exists in this itinerary.
+  if (resolvedDayIndex == null ||
+      resolvedPlaceIndex == null) {
+    return;
+  }
+
+  final resolvedPlace =
+      _itinerary
+          .days[resolvedDayIndex]
+          .places[resolvedPlaceIndex];
+
+  // Ignore stale arrival events for places that have
+  // already been checked in.
+  if (resolvedPlace.isVisited) {
+    return;
+  }
+
+  _isArrivalDialogOpen = true;
+
+  // Move user to the correct itinerary day.
+  if (_tabController.index !=
+      resolvedDayIndex) {
+    _tabController.animateTo(
+      resolvedDayIndex,
     );
   }
 
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => _ArrivedDialog(
+      placeName: resolvedPlace.name,
+
+      onConfirm: () {
+        Navigator.pop(context);
+
+        _markVisited(
+          resolvedDayIndex!,
+          resolvedPlaceIndex!,
+        );
+      },
+
+      onDismiss: () {
+        Navigator.pop(context);
+
+        // User says they are not ready to check in.
+        // Allow proximity detection for this place again.
+        LocationService.instance.rearmArrival(
+          event.placeId,
+        );
+      },
+    ),
+  ).whenComplete(() {
+    _isArrivalDialogOpen = false;
+  });
+}
+  
   // ─────────────────────────────────────────────
   // Mark visited — with achievement unlock detection
   // ─────────────────────────────────────────────
 
-  Future<void> _markVisited(int dayIndex, int placeIndex) async {
-    // ── Step 1: Snapshot achievements BEFORE the check-in ──
-    final statsBefore = await AchievementService.instance.fetchStats();
-    final groupsBefore = AchievementService.instance.buildGroups(statsBefore);
+ Future<void> _markVisited(
+  int dayIndex,
+  int placeIndex,
+) async {
+  // Safety: ignore invalid day index.
+  if (dayIndex < 0 ||
+      dayIndex >= _itinerary.days.length) {
+    return;
+  }
 
-    // ── Step 2: Update itinerary state ──
-    final days   = List<ItineraryDay>.from(_itinerary.days);
-    final places = List<ItineraryPlace>.from(days[dayIndex].places);
+  final currentDay =
+      _itinerary.days[dayIndex];
 
-    final visited = places[placeIndex].copyWith(
+  // Safety: ignore invalid place index.
+  if (placeIndex < 0 ||
+      placeIndex >= currentDay.places.length) {
+    return;
+  }
+
+  final currentPlace =
+      currentDay.places[placeIndex];
+
+  // Already visited → do nothing.
+  if (currentPlace.isVisited) {
+    return;
+  }
+
+  // Prevent duplicate check-in from multiple arrival sources.
+  //
+  // Possible sources:
+  // 1. LocationService arrivalStream
+  // 2. GuidePage / RoutePreviewPage returning arrived = true
+  //
+  // Both could theoretically trigger before the first async
+  // check-in has finished.
+  if (_checkInProgress.contains(
+    currentPlace.placeId,
+  )) {
+    return;
+  }
+
+  _checkInProgress.add(
+    currentPlace.placeId,
+  );
+
+  try {
+    // ─────────────────────────────────────────────
+    // Step 1: Snapshot achievements BEFORE check-in
+    // ─────────────────────────────────────────────
+
+    final statsBefore =
+        await AchievementService.instance.fetchStats();
+
+    final groupsBefore =
+        AchievementService.instance.buildGroups(
+      statsBefore,
+    );
+
+    if (!mounted) return;
+
+    // Re-check because the itinerary may have changed
+    // while waiting for the achievement fetch.
+    if (dayIndex < 0 ||
+        dayIndex >= _itinerary.days.length) {
+      return;
+    }
+
+    if (placeIndex < 0 ||
+        placeIndex >=
+            _itinerary.days[dayIndex].places.length) {
+      return;
+    }
+
+    final latestPlace =
+        _itinerary.days[dayIndex].places[placeIndex];
+
+    if (latestPlace.isVisited) {
+      return;
+    }
+
+    // ─────────────────────────────────────────────
+    // Step 2: Prepare updated itinerary locally
+    // ─────────────────────────────────────────────
+
+    final days =
+        List<ItineraryDay>.from(
+      _itinerary.days,
+    );
+
+    final places =
+        List<ItineraryPlace>.from(
+      days[dayIndex].places,
+    );
+
+    final visited =
+        places[placeIndex].copyWith(
       isVisited: true,
       visitedAt: DateTime.now(),
     );
+
     places[placeIndex] = visited;
-    days[dayIndex] = days[dayIndex].copyWith(places: places);
 
-    setState(() => _itinerary = _itinerary.copyWith(days: days));
-    _hasChanges = true;
+    days[dayIndex] =
+        days[dayIndex].copyWith(
+      places: places,
+    );
 
-    LocationService.instance.markArrived(visited.placeId);
-    LocationService.instance.watchItinerary(_itinerary);
+    final updatedItinerary =
+        _itinerary.copyWith(
+      days: days,
+    );
 
-    // Itinerary is always already saved (non-empty id) by the time it
-    // reaches this page — RouteOptimizerPage handles the initial save.
-    // Every check-in just keeps Firestore in sync from here on.
-    if (_itinerary.id.isNotEmpty) {
-      await ItineraryService.instance.update(_itinerary);
+    // ─────────────────────────────────────────────
+    // Step 3: Persist itinerary FIRST
+    // ─────────────────────────────────────────────
+
+    try {
+      if (updatedItinerary.id.isNotEmpty) {
+        await ItineraryService.instance.update(
+          updatedItinerary,
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+
+      ErrorHandler.showError(
+        context,
+        message:
+            'Check-in could not be saved. '
+            'Please check your connection and try again.',
+      );
+
+      return;
     }
 
-    // ── Step 3: Save to history ──
+    if (!mounted) return;
+
+    // ─────────────────────────────────────────────
+    // Step 4: Commit local/UI state
+    // ─────────────────────────────────────────────
+
+    setState(() {
+      _itinerary = updatedItinerary;
+    });
+
+    _hasChanges = true;
+
+    LocationService.instance.markArrived(
+      visited.placeId,
+    );
+
+    LocationService.instance.watchItinerary(
+      _itinerary,
+    );
+
+    // ─────────────────────────────────────────────
+    // Step 5: Save visit history
+    // ─────────────────────────────────────────────
+
     try {
       await HistoryService.instance.addEntry(
-        placeName:      visited.name,
-        address:        visited.address,
-        photoUrl:       visited.photoUrl,
-        visitedAt:      visited.visitedAt!,
-        itineraryId:    _itinerary.id,
+        placeName: visited.name,
+        address: visited.address,
+        photoUrl: visited.photoUrl,
+        visitedAt: visited.visitedAt!,
+        itineraryId: _itinerary.id,
         itineraryTitle: _itinerary.title,
-        placeId:        visited.placeId,
-        primaryType:    visited.primaryType,
-        lat:            visited.lat,
-        lng:            visited.lng,
+        placeId: visited.placeId,
+        primaryType: visited.primaryType,
+        lat: visited.lat,
+        lng: visited.lng,
       );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(e.toString().replaceFirst('Exception: ', '')),
-            backgroundColor: Colors.orange[700],
-            behavior: SnackBarBehavior.floating,
-            duration: const Duration(seconds: 4),
+            content: Text(
+              e
+                  .toString()
+                  .replaceFirst(
+                    'Exception: ',
+                    '',
+                  ),
+            ),
+            backgroundColor:
+                Colors.orange[700],
+            behavior:
+                SnackBarBehavior.floating,
+            duration:
+                const Duration(seconds: 4),
           ),
         );
       }
     }
 
-    _scrollToNextPlace(dayIndex);
-
-    _cardKeys.removeWhere((key, _) =>
-        !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key)));
-
-    // ── Step 4: Snapshot achievements AFTER the check-in ──
-    // Small delay to let Firestore writes propagate before re-fetching.
-    await Future.delayed(const Duration(milliseconds: 800));
     if (!mounted) return;
 
-    AchievementService.instance.invalidateStatsCache(); 
-    final statsAfter  = await AchievementService.instance.fetchStats();
-    final groupsAfter = AchievementService.instance.buildGroups(statsAfter);
+    // Scroll to the next unfinished place.
+    _scrollToNextPlace(dayIndex);
 
-    // ── Step 5: Detect new unlocks & show dialog ──
-    final newUnlocks = AchievementService.instance.checkForNewUnlocks(
+    // Remove keys for places no longer in the itinerary.
+    _cardKeys.removeWhere(
+      (key, _) =>
+          !_itinerary.days.any(
+        (d) => d.places.any(
+          (p) => p.placeId == key,
+        ),
+      ),
+    );
+
+    // ─────────────────────────────────────────────
+    // Step 6: Refresh achievements
+    // ─────────────────────────────────────────────
+
+    await Future.delayed(
+      const Duration(milliseconds: 800),
+    );
+
+    if (!mounted) return;
+
+    AchievementService.instance
+        .invalidateStatsCache();
+
+    final statsAfter =
+        await AchievementService.instance.fetchStats();
+
+    if (!mounted) return;
+
+    final groupsAfter =
+        AchievementService.instance.buildGroups(
+      statsAfter,
+    );
+
+    final newUnlocks =
+        AchievementService.instance
+            .checkForNewUnlocks(
       oldGroups: groupsBefore,
       newGroups: groupsAfter,
     );
 
-    // Always persist the current top badge to Firestore after a check-in,
-    // regardless of whether THIS check-in unlocked something new. This keeps
-    // users/{uid}.topBadge* in sync even if a threshold was already crossed
-    // before this write existed, or if a previous check-in's write was missed.
-    if (mounted) {
-      await AchievementService.instance.saveTopBadgeToFirestore();
-    }
+    await AchievementService.instance
+        .saveTopBadgeToFirestore();
 
-    if (newUnlocks.isNotEmpty && mounted) {
-      _showUnlockDialog(newUnlocks);
+    if (!mounted) return;
+
+    if (newUnlocks.isNotEmpty) {
+      _showUnlockDialog(
+        newUnlocks,
+      );
     }
+  } finally {
+    // Always release the lock.
+    //
+    // This must happen even when:
+    // - Firestore fails
+    // - History fails
+    // - page is disposed
+    // - an early return occurs
+    _checkInProgress.remove(
+      currentPlace.placeId,
+    );
   }
-
+}
+  
   // ─────────────────────────────────────────────
   // Achievement unlock celebration dialog
   // ─────────────────────────────────────────────
@@ -186,23 +439,49 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   void _scrollToNextPlace(int dayIndex) {
-    final day       = _itinerary.days[dayIndex];
-    final nextPlace = day.nextPlace;
-    if (nextPlace == null) return;
+  if (!mounted) return;
 
-    final key = _cardKeys[nextPlace.placeId];
-    if (key?.currentContext == null) return;
+  if (dayIndex < 0 ||
+      dayIndex >= _itinerary.days.length) {
+    return;
+  }
 
-    Future.delayed(const Duration(milliseconds: 300), () {
+  final day = _itinerary.days[dayIndex];
+  final nextPlace = day.nextPlace;
+
+  if (nextPlace == null) {
+    return;
+  }
+
+  final key = _cardKeys[nextPlace.placeId];
+
+  if (key == null) {
+    return;
+  }
+
+  Future.delayed(
+    const Duration(milliseconds: 300),
+    () {
+      if (!mounted) {
+        return;
+      }
+
+      // The list may have rebuilt while waiting.
+      final targetContext = key.currentContext;
+
+      if (targetContext == null) {
+        return;
+      }
+
       Scrollable.ensureVisible(
-        key!.currentContext!,
+        targetContext,
         duration: const Duration(milliseconds: 500),
         curve: Curves.easeInOut,
         alignment: 0.15,
       );
-    });
-  }
-
+    },
+  );
+}
   // ─────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────
@@ -826,60 +1105,113 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   // ─────────────────────────────────────────────
 
   void _editTitle() {
-    final ctrl = TextEditingController(text: _itinerary.title);
+    final ctrl =
+        TextEditingController(text: _itinerary.title);
+
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20)),
-        title: const Text('Edit Title',
-            style: TextStyle(fontWeight: FontWeight.bold)),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        title: const Text(
+          'Edit Title',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+          ),
+        ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
           decoration: InputDecoration(
             border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12)),
+              borderRadius: BorderRadius.circular(12),
+            ),
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel',
-                style: TextStyle(color: Colors.grey[600])),
+            onPressed: () =>
+                Navigator.pop(context),
+            child: Text(
+              'Cancel',
+              style: TextStyle(
+                color: Colors.grey[600],
+              ),
+            ),
           ),
           ElevatedButton(
             onPressed: () async {
+              final newTitle = ctrl.text.trim();
+
+              if (newTitle.isEmpty) {
+                return;
+              }
+
               Navigator.pop(context);
-              if (ctrl.text.trim().isNotEmpty) {
-                final updated = _itinerary.copyWith(title: ctrl.text.trim());
-                setState(() => _itinerary = updated);
+
+              // Nothing changed.
+              if (newTitle == _itinerary.title) {
+                return;
+              }
+
+              final previousItinerary = _itinerary;
+
+              final updated =
+                  _itinerary.copyWith(
+                title: newTitle,
+              );
+
+              // Optimistic UI update.
+              if (mounted) {
+                setState(() {
+                  _itinerary = updated;
+                });
+              }
+
+              if (_itinerary.id.isEmpty) {
                 _hasChanges = true;
-                if (_itinerary.id.isNotEmpty) {
-                  try {
-                    await ItineraryService.instance.update(_itinerary);
-                  } catch (e) {
-                    if (mounted) {
-                      ErrorHandler.showError(context, message: 'Failed to save title. Please try again.');
-                    }
-                  }
-                }
+                return;
+              }
+
+              try {
+                await ItineraryService.instance.update(
+                  updated,
+                );
+
+                if (!mounted) return;
+
+                _hasChanges = true;
+              } catch (e) {
+                if (!mounted) return;
+
+                // Firestore failed → restore previous UI state.
+                setState(() {
+                  _itinerary = previousItinerary;
+                });
+
+                ErrorHandler.showError(
+                  context,
+                  message:
+                      'Failed to save title. Please try again.',
+                );
               }
             },
-
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF7C4DFF),
+              backgroundColor:
+                  const Color(0xFF7C4DFF),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
+                borderRadius:
+                    BorderRadius.circular(12),
+              ),
             ),
-            child: const Text('Save',
-                style: TextStyle(color: Colors.white)),
+            child: const Text('Save'),
           ),
         ],
       ),
     );
   }
-
+  
   Future<void> _openDetail(ItineraryPlace place) async {
     final pos    = LocationService.instance.currentPosition;
     final result = await Navigator.push(
@@ -901,40 +1233,82 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     }
   }
 
-  void _navigate(ItineraryPlace place) {
-    if (place.lat == null || place.lng == null) return;
+Future<void> _navigate(
+  ItineraryPlace place,
+) async {
+  if (place.lat == null || place.lng == null) {
+    return;
+  }
 
-    final pos = LocationService.instance.currentPosition;
-    if (pos == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Unable to get your current location')),
+  final pos =
+      LocationService.instance.currentPosition;
+
+  if (pos == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Unable to get your current location',
+        ),
+      ),
+    );
+    return;
+  }
+
+  // GuidePage will handle arrival detection during
+  // active turn-by-turn navigation.
+  //
+  // Keep the shared GPS stream alive for other modules,
+  // but temporarily disable itinerary proximity events.
+  LocationService.instance
+      .pauseItineraryProximity();
+
+  final arrived = await Navigator.push<bool>(
+    context,
+    MaterialPageRoute(
+      builder: (_) => RoutePreviewPage(
+        startLat: pos.latitude,
+        startLng: pos.longitude,
+        endLat: place.lat!,
+        endLng: place.lng!,
+        destinationName: place.name,
+      ),
+    ),
+  );
+
+  if (!mounted) {
+    return;
+  }
+
+  // Restore itinerary proximity detection after
+  // navigation ends or the user backs out.
+  LocationService.instance.watchItinerary(
+    _itinerary,
+  );
+
+  if (arrived != true) {
+    return;
+  }
+
+  // Find the real day/place instead of depending on
+  // whichever tab happens to be selected.
+  for (int dayIndex = 0;
+      dayIndex < _itinerary.days.length;
+      dayIndex++) {
+    final placeIndex =
+        _itinerary.days[dayIndex].places.indexWhere(
+      (p) => p.placeId == place.placeId,
+    );
+
+    if (placeIndex != -1) {
+      await _markVisited(
+        dayIndex,
+        placeIndex,
       );
       return;
     }
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => RoutePreviewPage(
-          startLat:        pos.latitude,
-          startLng:        pos.longitude,
-          endLat:          place.lat!,
-          endLng:          place.lng!,
-          destinationName: place.name,
-        ),
-      ),
-    ).then((arrived) {
-      if (arrived == true && mounted) {
-        final dayIndex   = _tabController.index;
-        final placeIndex = _itinerary.days[dayIndex].places
-            .indexWhere((p) => p.placeId == place.placeId);
-        if (placeIndex != -1) {
-          _markVisited(dayIndex, placeIndex);
-        }
-      }
-    });
   }
+}
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

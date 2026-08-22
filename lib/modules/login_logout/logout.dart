@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:ui'; // 用于模糊效果
 import 'login.dart'; // 假设你有一个登录页面
+import '../../services/userPreference_service.dart';
+
 
 class AuthService {
   static Future<void> logout(BuildContext context) async {
@@ -76,13 +78,17 @@ class AuthService {
     );
 
     if (confirm == true) {
-      await FirebaseAuth.instance.signOut();
+  UserPreferenceService.instance.clearLocalSession();
 
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const LoginPage()),
-        (route) => false,
-      );
-    }
+  await FirebaseAuth.instance.signOut();
+
+  if (!context.mounted) return;
+
+  Navigator.of(context).pushAndRemoveUntil(
+    MaterialPageRoute(builder: (_) => const LoginPage()),
+    (route) => false,
+  );
+}
 
   }
 }

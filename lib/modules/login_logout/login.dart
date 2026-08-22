@@ -289,24 +289,37 @@ class _LoginPageState extends State<LoginPage> {
   final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email']);
 
   Future<void> _handleGoogleSignIn() async {
+    if (isLoading) return;
+
+    setState(() => isLoading = true);
+
     try {
       await _googleSignIn.signOut();
-      
+
       final googleUser = await _googleSignIn.signIn();
-      if (googleUser == null) return;
+
+      if (googleUser == null) {
+        return;
+      }
 
       final googleAuth = await googleUser.authentication;
+
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      final userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
+      final userCredential =
+          await FirebaseAuth.instance.signInWithCredential(credential);
 
-      // 检查是不是新用户，是的话才创建 Firestore 文档
+      // New Google user → create Firestore profile
       if (userCredential.additionalUserInfo?.isNewUser == true) {
         final user = userCredential.user!;
-        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .set({
           'email': user.email ?? '',
           'username': user.displayName ?? 'User',
           'bio': 'Hello! I\'m new here 👋',
@@ -324,21 +337,28 @@ class _LoginPageState extends State<LoginPage> {
         });
       }
 
-      if (mounted) {
-        final prefs = await UserPreferenceService.instance.load();
-        if (!mounted) return;
+      if (!mounted) return;
 
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => prefs.onboardingDone
-                ? const HomePage()
-                : const OnboardingPage(),
-          ),
-        );
-      }
+      final prefs = await UserPreferenceService.instance.load();
+
+      if (!mounted) return;
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => prefs.onboardingDone
+              ? const HomePage()
+              : const OnboardingPage(),
+        ),
+      );
     } catch (e) {
-      _showError('Google login failed: $e');
+      if (mounted) {
+        _showError('Google login failed. Please try again');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => isLoading = false);
+      }
     }
   }
   
@@ -541,7 +561,7 @@ class _LoginPageState extends State<LoginPage> {
                     _socialCircle(
                       FontAwesomeIcons.google,
                       Colors.red,
-                      _handleGoogleSignIn,
+                      isLoading ? null : _handleGoogleSignIn,
                     ),
                     
                   ],

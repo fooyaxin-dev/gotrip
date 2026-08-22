@@ -1076,4 +1076,15 @@ class UserPreferenceService {
     }
     return null;
   }
+
+  void clearLocalSession() {
+    _prefs = UserPreferences.empty();
+
+    _favouriteCount.clear();
+    _passiveCount.clear();
+    _timeAffinity.clear();
+
+    preferencesChanged.value++;
+  }
+
 }

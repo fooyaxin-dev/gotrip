@@ -85,99 +85,221 @@ class FavouriteService {
     double? lng,
     List<String>? types,
   }) async {
-    final collection = _favouritesCollection;
-    final userDoc = _userDoc;
+    final uid = _userId;
 
-    if (collection == null || userDoc == null) {
-      throw Exception('You need to be logged in to save favourites');
+    if (uid == null) {
+      throw Exception(
+        'You need to be logged in to save favourites',
+      );
     }
 
-    final finalTypes = (types != null && types.isNotEmpty)
-        ? types
-        : await _fetchTypesFromApi(placeId);
+    final collection = _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('favourites');
 
-    final favouriteDoc = collection.doc(placeId);
+    final userDoc =
+        _firestore.collection('users').doc(uid);
 
     try {
-      await _firestore.runTransaction((transaction) async {
-        final favouriteSnapshot = await transaction.get(favouriteDoc);
+      final finalTypes =
+          (types != null && types.isNotEmpty)
+              ? types
+              : await _fetchTypesFromApi(placeId);
 
-        // 已经存在 → 不重复增加 favouriteCount
-        if (favouriteSnapshot.exists) {
-          return;
-        }
+      // Account may have changed while place types were loading.
+      if (_userId != uid) {
+        throw Exception(
+          'Your account changed while saving this favourite.',
+        );
+      }
 
-        transaction.set(favouriteDoc, {
-          'placeId': placeId,
-          'name': name,
-          'address': address,
-          'rating': rating,
-          'photoUrl': photoUrl,
-          'lat': lat,
-          'lng': lng,
-          'types': finalTypes,
-          'savedAt': FieldValue.serverTimestamp(),
-        });
+      final favouriteDoc =
+          collection.doc(placeId);
 
-        transaction.update(userDoc, {
-          'favouriteCount': FieldValue.increment(1),
-        });
-      });
-      UserActivityDataService.instance.invalidate();
+      await _firestore.runTransaction(
+        (transaction) async {
+          // Check session again before transaction work.
+          if (_userId != uid) {
+            throw Exception(
+              'Your account changed while saving this favourite.',
+            );
+          }
 
+          final favouriteSnapshot =
+              await transaction.get(favouriteDoc);
+
+          // Already saved → don't double increment count.
+          if (favouriteSnapshot.exists) {
+            return;
+          }
+
+          final userSnapshot =
+              await transaction.get(userDoc);
+
+          if (!userSnapshot.exists) {
+            throw Exception(
+              'User profile no longer exists.',
+            );
+          }
+
+          // Account may still change while transaction retries.
+          if (_userId != uid) {
+            throw Exception(
+              'Your account changed while saving this favourite.',
+            );
+          }
+
+          transaction.set(
+            favouriteDoc,
+            {
+              'placeId': placeId,
+              'name': name,
+              'address': address,
+              'rating': rating,
+              'photoUrl': photoUrl,
+              'lat': lat,
+              'lng': lng,
+              'types': finalTypes,
+              'savedAt':
+                  FieldValue.serverTimestamp(),
+            },
+          );
+
+          transaction.update(
+            userDoc,
+            {
+              'favouriteCount':
+                  FieldValue.increment(1),
+            },
+          );
+        },
+      );
+
+      // Don't invalidate B's cache because an A operation
+      // happened to finish after an account switch.
+      if (_userId == uid) {
+        UserActivityDataService.instance.invalidate();
+      }
 
       print('✅ Favourite added safely');
     } catch (e) {
       print('❌ addFavourite failed: $e');
+
       throw Exception(
-        'Failed to save to favourites. Please check your connection.',
+        e.toString().contains('account changed')
+            ? 'Your account changed. Please try saving again.'
+            : 'Failed to save to favourites. Please check your connection.',
       );
     }
   }
+  
+  static Future<void> removeFavourite(
+  String placeId,
+) async {
+  final uid = _userId;
 
-  static Future<void> removeFavourite(String placeId) async {
-    final collection = _favouritesCollection;
-    final userDoc = _userDoc;
+  if (uid == null) {
+    throw Exception(
+      'You need to be logged in to manage favourites',
+    );
+  }
 
-    if (collection == null || userDoc == null) {
-      throw Exception('You need to be logged in to manage favourites');
+  final collection = _firestore
+      .collection('users')
+      .doc(uid)
+      .collection('favourites');
+
+  final userDoc =
+      _firestore.collection('users').doc(uid);
+
+  final favouriteDoc =
+      collection.doc(placeId);
+
+  try {
+    // Session must still belong to the user who started
+    // this remove operation.
+    if (_userId != uid) {
+      throw Exception(
+        'Your account changed while removing this favourite.',
+      );
     }
 
-    final favouriteDoc = collection.doc(placeId);
+    await _firestore.runTransaction(
+      (transaction) async {
+        // Firestore transactions may retry, so re-check
+        // the authenticated user inside the transaction.
+        if (_userId != uid) {
+          throw Exception(
+            'Your account changed while removing this favourite.',
+          );
+        }
 
-    try {
-      await _firestore.runTransaction((transaction) async {
-        final favouriteSnapshot = await transaction.get(favouriteDoc);
+        final favouriteSnapshot =
+            await transaction.get(favouriteDoc);
 
-        // 本来就不存在 → 什么都不用做
+        // Favourite already removed → nothing to do.
         if (!favouriteSnapshot.exists) {
           return;
         }
 
-        final userSnapshot = await transaction.get(userDoc);
-        final userData = userSnapshot.data() as Map<String, dynamic>?;
-        final currentCount = (userData?['favouriteCount'] as num?)?.toInt() ?? 0;
+        final userSnapshot =
+            await transaction.get(userDoc);
+
+        if (!userSnapshot.exists) {
+          throw Exception(
+            'User profile no longer exists.',
+          );
+        }
+
+        // Account may have changed while reads were running.
+        if (_userId != uid) {
+          throw Exception(
+            'Your account changed while removing this favourite.',
+          );
+        }
+
+        final userData =
+            userSnapshot.data()
+                as Map<String, dynamic>?;
+
+        final currentCount =
+            (userData?['favouriteCount'] as num?)
+                    ?.toInt() ??
+                0;
 
         transaction.delete(favouriteDoc);
 
+        // Never allow the stored counter to go negative.
         if (currentCount > 0) {
-          transaction.update(userDoc, {
-            'favouriteCount': FieldValue.increment(-1),
-          });
+          transaction.update(
+            userDoc,
+            {
+              'favouriteCount':
+                  FieldValue.increment(-1),
+            },
+          );
         }
-      });
+      },
+    );
 
+    // Only invalidate activity cache if this is still
+    // the same authenticated session.
+    if (_userId == uid) {
       UserActivityDataService.instance.invalidate();
-
-      print('✅ Favourite removed safely');
-    } catch (e) {
-      print('❌ removeFavourite failed: $e');
-      throw Exception(
-        'Failed to remove from favourites. Please check your connection.',
-      );
     }
+
+    print('✅ Favourite removed safely');
+  } catch (e) {
+    print('❌ removeFavourite failed: $e');
+
+    throw Exception(
+      e.toString().contains('account changed')
+          ? 'Your account changed. Please try removing the favourite again.'
+          : 'Failed to remove from favourites. Please check your connection.',
+    );
   }
-    
+}
     
   static Future<bool> isFavourite(String placeId) async {
     final collection = _favouritesCollection;
@@ -197,7 +319,22 @@ class FavouriteService {
     double? lng,
     List<String>? types,
   }) async {
-    final isCurrentlyFavourite = await isFavourite(placeId);
+    final uid = _userId;
+
+    if (uid == null) {
+      throw Exception(
+        'You need to be logged in to manage favourites',
+      );
+    }
+
+    final isCurrentlyFavourite =
+        await isFavourite(placeId);
+
+    if (_userId != uid) {
+      throw Exception(
+        'Your account changed. Please try again.',
+      );
+    }
 
     if (isCurrentlyFavourite) {
       await removeFavourite(placeId);

@@ -78,10 +78,22 @@ class LocationService extends ChangeNotifier {
     }
   }
 
+  void pauseItineraryProximity() {
+    // Keep the shared GPS stream running for other modules,
+    // but temporarily stop itinerary arrival detection.
+    _watchedPlaces = [];
+  }
+
+
   void markArrived(String placeId) {
     _alreadyArrived.add(placeId);
     _watchedPlaces.removeWhere((w) => w.placeId == placeId);
   }
+
+  void rearmArrival(String placeId) {
+    _alreadyArrived.remove(placeId);
+  }
+
 
   // ─────────────────────────────────────────────
   // Init — 只负责权限检查 + 拿"这一次"的定位快照
