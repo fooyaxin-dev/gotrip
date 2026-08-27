@@ -390,59 +390,103 @@ class PostService {
 // ================================================================
 
   Future<void> deletePost(String postId) async {
-  try {
-    final currentUserId = _auth.currentUser?.uid;
-
-    if (currentUserId == null) {
-      throw Exception('User not logged in');
-    }
-
-    final postRef = _firestore.collection('posts').doc(postId);
-
-    final doc = await postRef.get();
-
-    if (!doc.exists) {
-      return;
-    }
-
-    final post = Post.fromFirestore(doc);
-
-    // Always update the actual post owner's postCount
-    final userRef =
-        _firestore.collection('users').doc(post.userId);
-
-    await _firestore.runTransaction((transaction) async {
-      final userSnapshot = await transaction.get(userRef);
-
-      final userData =
-          userSnapshot.data() as Map<String, dynamic>?;
-
-      final currentCount =
-          (userData?['postCount'] as num?)?.toInt() ?? 0;
-
-      // Delete post
-      transaction.delete(postRef);
-
-      // Prevent postCount from going below 0
-      if (currentCount > 0) {
-        transaction.update(userRef, {
-          'postCount': FieldValue.increment(-1),
-        });
+    try {
+      final currentUserId = _auth.currentUser?.uid;
+      if (currentUserId == null) {
+        throw Exception('User not logged in');
       }
-    });
 
-    // Firestore delete succeeded — clean up media afterwards
-    await StorageService.deletePostMedia(
-      [...post.images, ...post.videoPaths],
-    );
+      final postRef = _firestore.collection('posts').doc(postId);
+      final doc = await postRef.get();
 
-    // Keep original Algolia behaviour
-    await AlgoliaService.deletePost(postId);
+      // Idempotent delete: the desired final state already exists.
+      if (!doc.exists) return;
 
-  } catch (e) {
-    throw Exception('Failed to delete post: $e');
+      final post = Post.fromFirestore(doc);
+
+      // Never rely on the UI hiding its delete button. Enforce ownership in
+      // the service as well (Firestore security rules should also enforce it).
+      if (post.userId != currentUserId) {
+        throw Exception('You can only delete your own posts');
+      }
+
+      final userRef = _firestore.collection('users').doc(currentUserId);
+
+      // This transaction is the authoritative delete operation. Once it
+      // succeeds, callers may immediately remove the post from the UI.
+      await _firestore.runTransaction((transaction) async {
+        final userSnapshot = await transaction.get(userRef);
+        final userData = userSnapshot.data() as Map<String, dynamic>?;
+        final currentCount =
+            (userData?['postCount'] as num?)?.toInt() ?? 0;
+
+        transaction.delete(postRef);
+
+        if (userSnapshot.exists && currentCount > 0) {
+          transaction.update(userRef, {
+            'postCount': FieldValue.increment(-1),
+          });
+        }
+      });
+
+      // Media and search-index cleanup are secondary. Run them in the
+      // background so a slow cleanup does not delay the successful UI delete.
+      // The helper catches its own failures, preventing false "delete failed"
+      // messages after Firestore has already removed the post.
+      unawaited(
+        _cleanupDeletedPostResources(
+          postId: postId,
+          mediaUrls: [...post.images, ...post.videoPaths],
+        ),
+      );
+    } catch (e) {
+      throw Exception('Failed to delete post: $e');
+    }
   }
-}
+
+  Future<void> _cleanupDeletedPostResources({
+    required String postId,
+    required List<String> mediaUrls,
+  }) async {
+    try {
+      await _deletePostLikeDocuments(postId);
+    } catch (e) {
+      print('⚠️ Post $postId deleted, but likes cleanup failed: $e');
+    }
+
+    try {
+      await StorageService.deletePostMedia(mediaUrls);
+    } catch (e) {
+      print('⚠️ Post $postId deleted, but media cleanup failed: $e');
+    }
+
+    try {
+      await AlgoliaService.deletePost(postId);
+    } catch (e) {
+      print('⚠️ Post $postId deleted, but search cleanup failed: $e');
+    }
+  }
+
+  Future<void> _deletePostLikeDocuments(String postId) async {
+    const batchSize = 400;
+    final likesCollection = _firestore
+        .collection('posts')
+        .doc(postId)
+        .collection('likes');
+
+    while (true) {
+      final snapshot = await likesCollection.limit(batchSize).get();
+      if (snapshot.docs.isEmpty) return;
+
+      final batch = _firestore.batch();
+      for (final doc in snapshot.docs) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+
+      if (snapshot.docs.length < batchSize) return;
+    }
+  }
 
   // ===== 本地存储管理 =====
 
@@ -711,3 +755,4 @@ class PostService {
     }
   }
 }
+

@@ -82,6 +82,8 @@ class NavigationController extends ChangeNotifier {
   double _debugMatchPerpDistance = double.infinity;
   double _debugSpeedMps = 0;
   double _debugGpsAccuracy = 0;
+  double _debugHandleMs = 0;
+  int _debugRouteVersion = 0;
 
   String get debugTrackingState => _debugTrackingState;
   double get debugRecoverySeconds => _debugRecoverySeconds;
@@ -95,6 +97,29 @@ class NavigationController extends ChangeNotifier {
           : nearestIdx;
   double get debugSpeedKmh => (_debugSpeedMps * 3.6).clamp(0.0, 250.0);
   double get debugGpsAccuracy => _debugGpsAccuracy;
+
+  double get debugGpsAgeSeconds {
+    if (_lastGpsStreamEventAt == null) return double.infinity;
+    return DateTime.now()
+            .difference(_lastGpsStreamEventAt!)
+            .inMilliseconds /
+        1000.0;
+  }
+
+  double get debugAcceptedProgressAgeSeconds {
+    if (_lastAcceptedProgressAt == null) return double.infinity;
+    return DateTime.now()
+            .difference(_lastAcceptedProgressAt!)
+            .inMilliseconds /
+        1000.0;
+  }
+
+  double get debugVisualLagMeters =>
+      (_matchedDistAlongRoute - _displayDistAlongRoute).abs();
+
+  int get debugRouteVersion => _debugRouteVersion;
+  int get debugRoutePointCount => polylinePoints.length;
+  double get debugHandleMs => _debugHandleMs;
   double get debugCameraBearing => cameraBearing;
   int get debugNearestSegment => nearestIdx;
   int get debugCurrentStepIndex => currentStepIndex;
@@ -201,6 +226,7 @@ class NavigationController extends ChangeNotifier {
 
   // ── TTS ──
   final FlutterTts _tts = FlutterTts();
+  Future<void>? _ttsReady;
   String? _lastSpokenInstruction;
   bool    _ttsEnabled = true;
   bool get ttsEnabled => _ttsEnabled;
@@ -215,10 +241,16 @@ class NavigationController extends ChangeNotifier {
   Future<void> init(TickerProvider vsync) async {
     _routeSessionStartedAt = DateTime.now();
     _ticker = vsync.createTicker(_onTick)..start();
-    await _initTts();
-    await _createArrowIcon();
-    await _initWithRealLocation();
+
+    // GPS/navigation startup is the critical path.
+    // TTS setup and arrow bitmap creation must not delay location tracking.
     _startCompass();
+
+    _ttsReady = _initTts();
+    unawaited(_ttsReady!);
+    unawaited(_createArrowIcon());
+
+    await _initWithRealLocation();
   }
 
   Future<void> _initTts() async {
@@ -324,44 +356,89 @@ class NavigationController extends ChangeNotifier {
   Future<void> _initWithRealLocation() async {
     try {
       var perm = await Geolocator.checkPermission();
+
       if (perm == LocationPermission.denied) {
         perm = await Geolocator.requestPermission();
       }
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.bestForNavigation,
-      );
-      userLatLng    = LatLng(pos.latitude, pos.longitude);
+
+      // Start the live stream BEFORE waiting for getCurrentPosition().
+      // On real devices the stream can begin producing movement while a
+      // one-shot high-accuracy request is still warming up.
+      _startTracking();
+
+      Position? seedPosition;
+
+      try {
+        seedPosition = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.bestForNavigation,
+        ).timeout(const Duration(milliseconds: 1200));
+      } catch (_) {
+        // The live stream may already have produced a newer fix.
+      }
+
+      final bestPosition = lastPos ?? seedPosition;
+
+      if (bestPosition != null) {
+        final bestLatLng = LatLng(
+          bestPosition.latitude,
+          bestPosition.longitude,
+        );
+
+        // Do not overwrite a newer stream fix with an older one-shot result.
+        if (_lastGpsStreamEventAt == null) {
+          userLatLng    = bestLatLng;
+          targetLatLng  = bestLatLng;
+          displayLatLng = bestLatLng;
+          lastPos       = bestPosition;
+
+          _debugSpeedMps =
+              bestPosition.speed.isFinite ? bestPosition.speed : 0.0;
+          _debugGpsAccuracy = bestPosition.accuracy.isFinite
+              ? bestPosition.accuracy.abs()
+              : double.infinity;
+
+          positionNotifier.value = displayLatLng;
+        }
+
+        final routeSeed = lastPos ?? bestPosition;
+
+        if (initialRoute != null) {
+          _resetRouteState();
+          notifyListeners();
+          await _applyRouteResult(initialRoute!);
+        } else {
+          await _loadRoute(
+            routeSeed.latitude,
+            routeSeed.longitude,
+          );
+        }
+
+        return;
+      }
+
+      // No usable seed yet: keep the live stream running and use the supplied
+      // start coordinate only to bootstrap route loading.
+      userLatLng    = LatLng(startLat, startLng);
       targetLatLng  = userLatLng;
       displayLatLng = userLatLng;
-      lastPos       = pos;
-      _debugSpeedMps = pos.speed.isFinite ? pos.speed : 0.0;
-      _debugGpsAccuracy = pos.accuracy.isFinite
-          ? pos.accuracy.abs()
-          : double.infinity;
       positionNotifier.value = displayLatLng;
-
-      // Start the live stream now, while the route is still loading.
-      // Previously it was started only after _applyRouteResult(), which
-      // created a noticeable startup detection delay on the real device.
-      _startTracking();
 
       if (initialRoute != null) {
         _resetRouteState();
         notifyListeners();
         await _applyRouteResult(initialRoute!);
       } else {
-        await _loadRoute(pos.latitude, pos.longitude);
+        await _loadRoute(startLat, startLng);
       }
     } catch (_) {
+      // Permission/platform fallback. Still start tracking so Android can
+      // recover later if location becomes available.
+      _startTracking();
+
       userLatLng    = LatLng(startLat, startLng);
       targetLatLng  = userLatLng;
       displayLatLng = userLatLng;
       positionNotifier.value = displayLatLng;
-
-      // Keep the same startup order even if the first current-position
-      // request failed; the stream may still recover when Android obtains
-      // a usable fix.
-      _startTracking();
 
       if (initialRoute != null) {
         _resetRouteState();
@@ -372,6 +449,7 @@ class NavigationController extends ChangeNotifier {
       }
     }
   }
+
 
   // ─────────────────────────────────────────────
   // Arrow icon
@@ -409,6 +487,13 @@ class NavigationController extends ChangeNotifier {
   Future<void> _speak(String text) async {
     if (!_ttsEnabled) return;
     if (text == _lastSpokenInstruction) return;
+
+    // TTS initialises in parallel with GPS startup. Wait here only when
+    // speech is actually needed instead of blocking navigation startup.
+    if (_ttsReady != null) {
+      await _ttsReady;
+    }
+
     _lastSpokenInstruction = text;
     await _tts.stop();
     await _tts.speak(text);
@@ -539,6 +624,10 @@ class NavigationController extends ChangeNotifier {
   Future<void> _applyRouteResult(RouteResult result) async {
     final pts      = result.polylinePoints;
     final newSteps = result.steps;
+
+    // Diagnostic only: increments whenever a fresh route is successfully
+    // applied (initial route or reroute).
+    _debugRouteVersion++;
 
     isRerouting     = false;
     _offRouteCount  = 0;
@@ -707,7 +796,7 @@ class NavigationController extends ChangeNotifier {
     _startupFallbackAttempts = 0;
 
     _startupGpsWatchdog = Timer.periodic(
-      const Duration(seconds: 2),
+      const Duration(seconds: 1),
       (timer) async {
         // Stop immediately once the real stream has produced a fix.
         if (_lastGpsStreamEventAt != null) {
@@ -721,7 +810,7 @@ class NavigationController extends ChangeNotifier {
         _startupFallbackAttempts++;
 
         // Startup-only safety net: do not poll forever.
-        if (_startupFallbackAttempts > 5) {
+        if (_startupFallbackAttempts > 4) {
           timer.cancel();
           _startupGpsWatchdog = null;
           return;
@@ -732,7 +821,7 @@ class NavigationController extends ChangeNotifier {
         try {
           final fresh = await Geolocator.getCurrentPosition(
             desiredAccuracy: LocationAccuracy.bestForNavigation,
-          ).timeout(const Duration(seconds: 3));
+          ).timeout(const Duration(milliseconds: 1500));
 
           // If the live stream arrived while this request was in flight,
           // let the stream win and ignore the fallback duplicate.
@@ -751,6 +840,7 @@ class NavigationController extends ChangeNotifier {
   }
 
   Future<void> _handlePosition(Position raw) async {
+      final handleWatch = Stopwatch()..start();
       final now       = DateTime.now();
       final rawLatLng = LatLng(raw.latitude, raw.longitude);
 
@@ -806,6 +896,7 @@ class NavigationController extends ChangeNotifier {
         displayLatLng = rawLatLng;
         positionNotifier.value = rawLatLng;
 
+        _debugHandleMs = handleWatch.elapsedMicroseconds / 1000.0;
         notifyListeners();
         return;
       }
@@ -846,6 +937,7 @@ class NavigationController extends ChangeNotifier {
           _lastRawDistanceToRoute = _distanceToRoute(rawLatLng);
         }
 
+        _debugHandleMs = handleWatch.elapsedMicroseconds / 1000.0;
         notifyListeners();
         return;
       }
@@ -915,7 +1007,13 @@ class NavigationController extends ChangeNotifier {
             : rawLatLng;
       }
 
-      _updateRouteProgress(routePoint);
+      // Do NOT rebuild walkedPoints / remainingPoints on every GPS fix.
+      // GuidePage renders progress directly from polylinePoints +
+      // displayNearestIdx, so these two list allocations are unnecessary in
+      // the hot tracking path and can create periodic GC pauses.
+      //
+      // _updateRouteProgress() is still used when a route is first applied,
+      // where a one-time allocation is harmless.
 
       // ── 2. Independent off-route check ─────────────────────────────
       // Do NOT infer off-route from "matcher failed". Once per ~800 ms,
@@ -1072,6 +1170,7 @@ class NavigationController extends ChangeNotifier {
         );
       }
 
+      _debugHandleMs = handleWatch.elapsedMicroseconds / 1000.0;
       notifyListeners();
   }
 
@@ -1314,12 +1413,68 @@ class NavigationController extends ChangeNotifier {
   double _distanceToRoute(LatLng raw) {
     if (polylinePoints.length < 2) return double.infinity;
 
+    final lastSeg = polylinePoints.length - 2;
+
+    // Hot-path search near the current matched segment.
+    //
+    // The old implementation scanned EVERY segment of the entire route every
+    // 500 ms. On a dense Routes API polyline that means hundreds/thousands of
+    // projections + distance calculations on Flutter's main isolate, which can
+    // periodically stall Ticker, debug overlay, marker and map together.
+    //
+    // A driving vehicle cannot realistically jump from the current segment to
+    // a segment hundreds of points away between two 500 ms checks, so search a
+    // generous local window first.
+    final localFrom = max(0, nearestIdx - 35);
+    final localTo   = min(lastSeg, nearestIdx + 90);
+
     double best = double.infinity;
 
-    // Whole-route scan is throttled to ~1.25 Hz by _startTracking, so this
-    // remains cheap for normal navigation polylines and avoids false
-    // "off-route" caused by map-match uncertainty.
-    for (int i = 0; i < polylinePoints.length - 1; i++) {
+    for (int i = localFrom; i <= localTo; i++) {
+      final projected = _projectOntoSegment(
+        raw,
+        polylinePoints[i],
+        polylinePoints[i + 1],
+      );
+      final d = _dist(raw, projected);
+      if (d < best) best = d;
+
+      // Already clearly on/near the route; no reason to scan more geometry.
+      if (best <= 12.0) return best;
+    }
+
+    // If the local window says we're plausibly near the route, that's enough
+    // for off-route detection.
+    if (best <= 80.0) return best;
+
+    // Recovery / unusual geometry fallback:
+    // coarse-scan the rest of the route rather than checking every segment.
+    // Then refine only around the best coarse candidate.
+    const stride = 8;
+    int coarseBestIdx = localFrom;
+    double coarseBest = best;
+
+    for (int i = 0; i <= lastSeg; i += stride) {
+      if (i >= localFrom && i <= localTo) continue;
+
+      final endIdx = min(i + stride, polylinePoints.length - 1);
+      final projected = _projectOntoSegment(
+        raw,
+        polylinePoints[i],
+        polylinePoints[endIdx],
+      );
+      final d = _dist(raw, projected);
+
+      if (d < coarseBest) {
+        coarseBest = d;
+        coarseBestIdx = i;
+      }
+    }
+
+    final refineFrom = max(0, coarseBestIdx - stride);
+    final refineTo   = min(lastSeg, coarseBestIdx + stride * 2);
+
+    for (int i = refineFrom; i <= refineTo; i++) {
       final projected = _projectOntoSegment(
         raw,
         polylinePoints[i],

@@ -3,10 +3,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'userActivity_service.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// City Extractor (same logic as dashboard)
-// ─────────────────────────────────────────────────────────────────────────────
-
 String _extractCity(String address) {
   if (address.isEmpty) return '';
 
@@ -27,10 +23,6 @@ String _extractCity(String address) {
   if (parts.isNotEmpty) return parts.last;
   return '';
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HistoryEntry
-// ─────────────────────────────────────────────────────────────────────────────
 
 class HistoryEntry {
   final String id;
@@ -63,38 +55,34 @@ class HistoryEntry {
 
   factory HistoryEntry.fromMap(String id, Map<String, dynamic> m) =>
       HistoryEntry(
-        id:             id,
-        placeName:      m['placeName']      ?? '',
-        address:        m['address']        ?? '',
-        photoUrl:       m['photoUrl'],
-        visitedAt:      (m['visitedAt'] as Timestamp).toDate(),
-        itineraryId:    m['itineraryId']    ?? '',
+        id: id,
+        placeName: m['placeName'] ?? '',
+        address: m['address'] ?? '',
+        photoUrl: m['photoUrl'],
+        visitedAt: (m['visitedAt'] as Timestamp).toDate(),
+        itineraryId: m['itineraryId'] ?? '',
         itineraryTitle: m['itineraryTitle'] ?? '',
-        placeId:        m['placeId'],
-        primaryType:    m['primaryType'],
-        city:           m['city'],
-        lat:            (m['lat'] as num?)?.toDouble(),
-        lng:            (m['lng'] as num?)?.toDouble(),
+        placeId: m['placeId'],
+        primaryType: m['primaryType'],
+        city: m['city'],
+        lat: (m['lat'] as num?)?.toDouble(),
+        lng: (m['lng'] as num?)?.toDouble(),
       );
 
   Map<String, dynamic> toMap() => {
-    'placeName':      placeName,
-    'address':        address,
-    'photoUrl':       photoUrl,
-    'visitedAt':      Timestamp.fromDate(visitedAt),
-    'itineraryId':    itineraryId,
-    'itineraryTitle': itineraryTitle,
-    'placeId':        placeId,
-    'primaryType':    primaryType,
-    'city':           city,
-    'lat':            lat,
-    'lng':            lng,
-  };
+        'placeName': placeName,
+        'address': address,
+        'photoUrl': photoUrl,
+        'visitedAt': Timestamp.fromDate(visitedAt),
+        'itineraryId': itineraryId,
+        'itineraryTitle': itineraryTitle,
+        'placeId': placeId,
+        'primaryType': primaryType,
+        'city': city,
+        'lat': lat,
+        'lng': lng,
+      };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TripHistory — one card in the collection view
-// ─────────────────────────────────────────────────────────────────────────────
 
 class TripHistory {
   final String itineraryId;
@@ -104,9 +92,12 @@ class TripHistory {
   DateTime get latestVisit =>
       places.map((p) => p.visitedAt).reduce((a, b) => a.isAfter(b) ? a : b);
 
-  String? get coverPhoto =>
-      places.firstWhere((p) => p.photoUrl != null,
-          orElse: () => places.first).photoUrl;
+  String? get coverPhoto => places
+      .firstWhere(
+        (p) => p.photoUrl != null,
+        orElse: () => places.first,
+      )
+      .photoUrl;
 
   TripHistory({
     required this.itineraryId,
@@ -114,10 +105,6 @@ class TripHistory {
     required this.places,
   });
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HistoryService
-// ─────────────────────────────────────────────────────────────────────────────
 
 class HistoryService {
   static final HistoryService instance = HistoryService._();
@@ -130,107 +117,128 @@ class HistoryService {
       ? null
       : _db.collection('users').doc(_uid).collection('history');
 
+  /// Creates the canonical history payload used by both normal history writes
+  /// and the atomic itinerary check-in batch.
+  Map<String, dynamic> buildEntryData({
+    required String placeName,
+    required String address,
+    String? photoUrl,
+    required DateTime visitedAt,
+    required String itineraryId,
+    required String itineraryTitle,
+    String? placeId,
+    String? primaryType,
+    double? lat,
+    double? lng,
+  }) {
+    final city = _extractCity(address);
+
+    return HistoryEntry(
+      id: '',
+      placeName: placeName,
+      address: address,
+      photoUrl: photoUrl,
+      visitedAt: visitedAt,
+      itineraryId: itineraryId,
+      itineraryTitle: itineraryTitle,
+      placeId: placeId,
+      primaryType: primaryType,
+      city: city.isNotEmpty ? city : null,
+      lat: lat,
+      lng: lng,
+    ).toMap();
+  }
+
   Future<void> addEntry({
-  required String placeName,
-  required String address,
-  String? photoUrl,
-  required DateTime visitedAt,
-  required String itineraryId,
-  required String itineraryTitle,
-  String? placeId,
-  String? primaryType,
-  double? lat,
-  double? lng,
-}) async {
-  final uid = _uid;
+    required String placeName,
+    required String address,
+    String? photoUrl,
+    required DateTime visitedAt,
+    required String itineraryId,
+    required String itineraryTitle,
+    String? placeId,
+    String? primaryType,
+    double? lat,
+    double? lng,
+  }) async {
+    final uid = _uid;
 
-  if (uid == null) {
-    throw Exception(
-      'You need to be logged in to save visit history',
-    );
-  }
+    if (uid == null) {
+      throw Exception('You need to be logged in to save visit history');
+    }
 
-  // Bind this entire operation to the user who started it.
-  final historyCollection = _db
-      .collection('users')
-      .doc(uid)
-      .collection('history');
+    final historyCollection =
+        _db.collection('users').doc(uid).collection('history');
 
-  final city = _extractCity(address);
+    try {
+      if (_uid != uid) {
+        throw Exception('Your account changed while saving visit history.');
+      }
 
-  try {
-    // Session must still belong to the same user.
-    if (_uid != uid) {
+      await historyCollection.add(
+        buildEntryData(
+          placeName: placeName,
+          address: address,
+          photoUrl: photoUrl,
+          visitedAt: visitedAt,
+          itineraryId: itineraryId,
+          itineraryTitle: itineraryTitle,
+          placeId: placeId,
+          primaryType: primaryType,
+          lat: lat,
+          lng: lng,
+        ),
+      );
+
+      if (_uid == uid) {
+        UserActivityDataService.instance.invalidate();
+      }
+    } catch (e) {
+      print('❌ HistoryService.addEntry: $e');
+
+      if (e.toString().contains('account changed')) {
+        throw Exception('Your account changed. Please try the check-in again.');
+      }
+
       throw Exception(
-        'Your account changed while saving visit history.',
+        'Failed to save this visit to your history. '
+        'Your check-in may not appear in Dashboard stats.',
       );
     }
-
-    await historyCollection.add(
-      HistoryEntry(
-        id: '',
-        placeName: placeName,
-        address: address,
-        photoUrl: photoUrl,
-        visitedAt: visitedAt,
-        itineraryId: itineraryId,
-        itineraryTitle: itineraryTitle,
-        placeId: placeId,
-        primaryType: primaryType,
-        city: city.isNotEmpty ? city : null,
-        lat: lat,
-        lng: lng,
-      ).toMap(),
-    );
-
-    // Only invalidate cache for the same active session.
-    if (_uid == uid) {
-      UserActivityDataService.instance.invalidate();
-    }
-  } catch (e) {
-    print('❌ HistoryService.addEntry: $e');
-
-    if (e.toString().contains('account changed')) {
-      throw Exception(
-        'Your account changed. Please try the check-in again.',
-      );
-    }
-
-    throw Exception(
-      'Failed to save this visit to your history. '
-      'Your check-in may not appear in Dashboard stats.',
-    );
   }
-}
-  
-  // Shared grouping logic between the one-off fetch and the live stream —
-  // keeps "group by itineraryId, sort trips newest-first" in exactly one place.
+
   List<TripHistory> _groupAndSort(List<HistoryEntry> entries) {
     final Map<String, TripHistory> grouped = {};
-    for (final e in entries) {
-      if (grouped.containsKey(e.itineraryId)) {
-        grouped[e.itineraryId]!.places.add(e);
+    for (final entry in entries) {
+      if (grouped.containsKey(entry.itineraryId)) {
+        grouped[entry.itineraryId]!.places.add(entry);
       } else {
-        grouped[e.itineraryId] = TripHistory(
-          itineraryId:    e.itineraryId,
-          itineraryTitle: e.itineraryTitle,
-          places:         [e],
+        grouped[entry.itineraryId] = TripHistory(
+          itineraryId: entry.itineraryId,
+          itineraryTitle: entry.itineraryTitle,
+          places: [entry],
         );
       }
     }
+
     final trips = grouped.values.toList()
       ..sort((a, b) => b.latestVisit.compareTo(a.latestVisit));
     return trips;
   }
 
-  // One-off read — kept for callers that just want a snapshot (e.g. a
-  // pull-to-refresh action), not a live subscription.
   Future<List<TripHistory>> fetchGrouped() async {
-    if (_col == null) return [];
+    final collection = _col;
+    if (collection == null) return [];
+
     try {
-      final snap = await _col!.orderBy('visitedAt', descending: true).get();
+      final snap = await collection.orderBy('visitedAt', descending: true).get();
       final entries = snap.docs
-          .map((d) => HistoryEntry.fromMap(d.id, d.data() as Map<String, dynamic>))
+          .map(
+            (d) => HistoryEntry.fromMap(
+              d.id,
+              d.data() as Map<String, dynamic>,
+            ),
+          )
           .toList();
       return _groupAndSort(entries);
     } catch (e) {
@@ -239,19 +247,23 @@ class HistoryService {
     }
   }
 
-  // Live version — use this in the UI (StreamBuilder) so new check-ins from
-  // anywhere in the app (e.g. finishing an itinerary) show up immediately
-  // without needing to leave and re-enter the Profile page.
   Stream<List<TripHistory>> streamGrouped() {
-    if (_col == null) return Stream.value([]);
-    return _col!
+    final collection = _col;
+    if (collection == null) return Stream.value([]);
+
+    return collection
         .orderBy('visitedAt', descending: true)
         .snapshots()
         .map((snap) {
-          final entries = snap.docs
-              .map((d) => HistoryEntry.fromMap(d.id, d.data() as Map<String, dynamic>))
-              .toList();
-          return _groupAndSort(entries);
-        });
+      final entries = snap.docs
+          .map(
+            (d) => HistoryEntry.fromMap(
+              d.id,
+              d.data() as Map<String, dynamic>,
+            ),
+          )
+          .toList();
+      return _groupAndSort(entries);
+    });
   }
 }

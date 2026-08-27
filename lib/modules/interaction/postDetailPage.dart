@@ -16,6 +16,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:async';
 import '../../models/postModel.dart';
 import '../../services/like_service.dart';
 import '../../services/post_service.dart';
@@ -55,6 +56,37 @@ class _PostDetailPageState extends State<PostDetailPage> {
     if (diff.inHours < 24) return '${diff.inHours} hour${diff.inHours > 1 ? 's' : ''} ago';
     if (diff.inDays < 7) return '${diff.inDays} day${diff.inDays > 1 ? 's' : ''} ago';
     return '${dateTime.year}-${dateTime.month.toString().padLeft(2, '0')}-${dateTime.day.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _handleLike(Post post) async {
+    try {
+      final liked = await _likeService.toggleLike(post.id!);
+      unawaited(_learnFromLike(post, liked));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Operation failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _learnFromLike(Post post, bool isLiked) async {
+    try {
+      await UserPreferenceService.instance.updateFromLike(
+        placeTypes: post.placeTypes,
+        postTags: post.tags,
+        postTopic: post.topic,
+        isLiking: isLiked,
+        sentimentLabel:
+            post.sentimentLabel ?? SentimentLabel.neutral,
+        sentimentMatchedTokens:
+            post.sentimentMatchedTokens ?? 0,
+      );
+    } catch (e) {
+      debugPrint(
+        '⚠️ Like succeeded, but preference learning failed: $e',
+      );
+    }
   }
 
   Color _getUserColor(String userId) {
@@ -151,29 +183,55 @@ class _PostDetailPageState extends State<PostDetailPage> {
  
  
   void _handleDelete(String postId) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Post'),
-        content: const Text('Are you sure you want to delete this post?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              try {
-                await _postService.deletePost(postId);
-                if (mounted) Navigator.pop(context);
-              } catch (e) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
-              }
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
-        ],
+  showDialog(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Delete Post'),
+      content: const Text(
+        'Are you sure you want to delete this post?',
       ),
-    );
-  }
+      actions: [
+        TextButton(
+          onPressed: () =>
+              Navigator.pop(dialogContext),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () async {
+            Navigator.pop(dialogContext);
+
+            try {
+              await _postService.deletePost(postId);
+
+              // Do NOT pop this page manually.
+              //
+              // The StreamBuilder listening to this post
+              // will detect that the Firestore document
+              // no longer exists and close PostDetailPage
+              // exactly once.
+            } catch (e) {
+              if (!mounted) return;
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Failed to delete: $e',
+                  ),
+                ),
+              );
+            }
+          },
+          child: const Text(
+            'Delete',
+            style: TextStyle(
+              color: Colors.red,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   // ─── Build ────────────────────────────────────────────────────────────────
 
@@ -385,18 +443,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                           final likeCount = countSnapshot.data ?? post.likes;
                           return InkWell(
                             borderRadius: BorderRadius.circular(12),
-                            onTap: () async {
-                              final liked = await _likeService.toggleLike(post.id!);
-
-                              UserPreferenceService.instance.updateFromLike(
-                                placeTypes: post.placeTypes,
-                                postTags: post.tags,
-                                postTopic: post.topic,
-                                isLiking: liked,
-                                sentimentLabel: post.sentimentLabel ?? SentimentLabel.neutral,
-                                sentimentMatchedTokens: post.sentimentMatchedTokens ?? 0,
-                              );
-                            },
+                            onTap: () => _handleLike(post),
                             child: Padding(
                               padding: const EdgeInsets.symmetric(vertical: 10),
                               child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -426,25 +473,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                     },
                   ),
                 ),
-                Container(width: 1, height: 20, color: Colors.grey[200]),
-                Expanded(
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Comment feature under development...'))),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                        Icon(Icons.chat_bubble_outline, size: 20, color: Colors.grey[700]),
-                        const SizedBox(width: 8),
-                        Text(
-                          post.comments > 0 ? '${post.comments}' : 'Comment',
-                          style: TextStyle(fontSize: 14, color: Colors.grey[700]),
-                        ),
-                      ]),
-                    ),
-                  ),
-                ),
+                
               ]),
             ),
           ]),

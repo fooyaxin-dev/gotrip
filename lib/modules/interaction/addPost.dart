@@ -45,6 +45,8 @@ class _PostingPageState extends State<PostingPage> {
   final FocusNode _titleFocus   = FocusNode();
   final FocusNode _contentFocus = FocusNode();
 
+
+
   // ── Location ──
   String? selectedCity;
   String? selectedLocation;
@@ -931,18 +933,79 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
   bool _loading = false;
   bool _fetchingDetail = false;
 
-  Future<void> _onChanged(String input) async {
-    if (input.trim().length < 2) { setState(() => _suggestions = []); return; }
-    setState(() => _loading = true);
-    try {
-      final results = await PlacesApiService.autocomplete(input: input);
-      setState(() => _suggestions = results);
-    } catch (_) {
-      setState(() => _suggestions = []);
-    } finally {
-      setState(() => _loading = false);
+  int _autocompleteRequestId = 0;
+
+  Future<void> _onChanged(
+  String input,
+) async {
+  final query = input.trim();
+
+  // Every input change invalidates any older
+  // autocomplete request.
+  final requestId =
+      ++_autocompleteRequestId;
+
+  if (query.length < 2) {
+    if (!mounted) return;
+
+    setState(() {
+      _suggestions = [];
+      _loading = false;
+    });
+
+    return;
+  }
+
+  if (!mounted) return;
+
+  setState(() {
+    _loading = true;
+  });
+
+  try {
+    final results =
+        await PlacesApiService.autocomplete(
+      input: query,
+    );
+
+    // Ignore results belonging to an older query,
+    // or a sheet that has already been closed.
+    if (!mounted ||
+        requestId !=
+            _autocompleteRequestId ||
+        _ctrl.text.trim() != query) {
+      return;
+    }
+
+    setState(() {
+      _suggestions = results;
+    });
+  } catch (e) {
+    if (!mounted ||
+        requestId !=
+            _autocompleteRequestId) {
+      return;
+    }
+
+    debugPrint(
+      '⚠️ Location autocomplete failed: $e',
+    );
+
+    setState(() {
+      _suggestions = [];
+    });
+  } finally {
+    // An old request must not turn off the loading
+    // indicator of a newer request.
+    if (mounted &&
+        requestId ==
+            _autocompleteRequestId) {
+      setState(() {
+        _loading = false;
+      });
     }
   }
+}
 
   Future<void> _onSuggestionTap(Map<String, dynamic> suggestion) async {
     final placeId = suggestion['placeId'] as String;
@@ -972,7 +1035,14 @@ class _LocationPickerSheetState extends State<_LocationPickerSheet> {
   }
   
   @override
-  void dispose() { _ctrl.dispose(); super.dispose(); }
+  void dispose() {
+    // Invalidate autocomplete still in flight.
+    _autocompleteRequestId++;
+
+    _ctrl.dispose();
+
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

@@ -8,95 +8,102 @@ class LikeService {
 
 
   Future<bool> toggleLike(String postId) async {
+  final userId = _auth.currentUser?.uid;
+
+  if (userId == null) {
+    throw Exception('User not logged in');
+  }
+
+  final postDoc =
+      _firestore.collection('posts').doc(postId);
+
+  final likeDoc = postDoc
+      .collection('likes')
+      .doc(userId);
+
   try {
-    final userId = _auth.currentUser?.uid;
+    return await _firestore.runTransaction<bool>(
+      (transaction) async {
+        // Firestore requires transaction reads before writes.
+        final likeSnapshot =
+            await transaction.get(likeDoc);
 
-    if (userId == null) {
-      throw Exception('User not logged in');
-    }
+        final postSnapshot =
+            await transaction.get(postDoc);
 
-    final postDoc =
-        _firestore.collection('posts').doc(postId);
+        if (!postSnapshot.exists) {
+          throw Exception(
+            'This post no longer exists',
+          );
+        }
 
-    final likeDoc =
-        postDoc.collection('likes').doc(userId);
+        // The operation belongs to the user who
+        // originally started this toggle.
+        if (_auth.currentUser?.uid != userId) {
+          throw Exception(
+            'Account changed during like operation',
+          );
+        }
 
-    return await _firestore.runTransaction<bool>((transaction) async {
-      final likeSnapshot = await transaction.get(likeDoc);
+        final postData =
+            postSnapshot.data()
+                as Map<String, dynamic>?;
 
-      if (likeSnapshot.exists) {
-        // Already liked → unlike
-        transaction.delete(likeDoc);
+        final currentLikes =
+            (postData?['likes'] as num?)
+                    ?.toInt() ??
+                0;
 
-        transaction.update(postDoc, {
-          'likes': FieldValue.increment(-1),
-        });
+        if (likeSnapshot.exists) {
+          // ── Unlike ───────────────────────────
 
-        return false;
-      } else {
-        // Not liked → like
-        transaction.set(likeDoc, {
-          'userId': userId,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
+          transaction.delete(
+            likeDoc,
+          );
 
-        transaction.update(postDoc, {
-          'likes': FieldValue.increment(1),
-        });
+          // Never allow the counter to become negative.
+          transaction.update(
+            postDoc,
+            {
+              'likes':
+                  currentLikes > 0
+                      ? currentLikes - 1
+                      : 0,
+            },
+          );
+
+          return false;
+        }
+
+        // ── Like ───────────────────────────────
+
+        transaction.set(
+          likeDoc,
+          {
+            'userId': userId,
+            'createdAt':
+                FieldValue.serverTimestamp(),
+          },
+        );
+
+        transaction.update(
+          postDoc,
+          {
+            'likes': currentLikes + 1,
+          },
+        );
 
         return true;
-      }
-    });
+      },
+    );
   } catch (e) {
-    throw Exception('Failed to toggle like: $e');
+    throw Exception(
+      'Failed to toggle like: $e',
+    );
   }
 }
-
   
-  Future<void> _likePost(String postId, String userId) async {
-    WriteBatch batch = _firestore.batch();
-
-    DocumentReference likeDoc = _firestore
-        .collection('posts')
-        .doc(postId)
-        .collection('likes')
-        .doc(userId);
-    
-    batch.set(likeDoc, {
-      'userId': userId,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-
   
-    DocumentReference postDoc = _firestore.collection('posts').doc(postId);
-    batch.update(postDoc, {
-      'likes': FieldValue.increment(1),
-    });
-
-    await batch.commit();
-  }
-
-  Future<void> _unlikePost(String postId, String userId) async {
-    WriteBatch batch = _firestore.batch();
-
-    
-    DocumentReference likeDoc = _firestore
-        .collection('posts')
-        .doc(postId)
-        .collection('likes')
-        .doc(userId);
-    
-    batch.delete(likeDoc);
-
-    DocumentReference postDoc = _firestore.collection('posts').doc(postId);
-    batch.update(postDoc, {
-      'likes': FieldValue.increment(-1),
-    });
-
-    await batch.commit();
-  }
-
-
   Future<bool> hasLiked(String postId, String userId) async {
     try {
       DocumentSnapshot doc = await _firestore

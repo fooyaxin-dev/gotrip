@@ -1,5 +1,6 @@
 // services/itinerary_service.dart
 import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -11,6 +12,7 @@ import '../services/nearbyPlace_service.dart';
 import 'storage_service.dart';
 import '../services/route_service.dart';
 import 'category_mapper.dart';
+import 'history_service.dart';
 import 'userActivity_service.dart';
 
 
@@ -77,6 +79,15 @@ class ItineraryService {
     'park':               60,
   };
 
+  // Keep candidate retrieval and final scheduling on the same meal policy.
+  // A one-stop day should follow the user's attraction preferences instead
+  // of always becoming a restaurant-only itinerary.
+  int _requiredRestaurantsPerDay(int placesPerDay) {
+    if (placesPerDay <= 1) return 0;
+    if (placesPerDay <= 3) return 1;
+    return 2;
+  }
+
   bool _isBlocked(PlaceModel p) {
     if (p.allTypes.any((t) => _blockedTypes.contains(t))) return true;
     final nameLower = p.name.toLowerCase();
@@ -87,18 +98,76 @@ class ItineraryService {
   bool _isSuitableForTravel(PlaceModel p) {
     if (_isBlocked(p)) return false;
     final r = p.rating;
-    if (r != null && r > 4.95) return false;
+    // A 5.0 rating can be legitimate. PlaceModel currently does not retain
+    // userRatingCount for nearby candidates, so rejecting all ratings above
+    // 4.95 would also remove genuine highly-rated places.
     if (r != null && r < 3.5)  return false;
     return true;
   }
 
-  double _score(PlaceModel p) {
+  double _score(
+    PlaceModel p, {
+    required double originLat,
+    required double originLng,
+    required String travelMode,
+  }) {
     final prefs = UserPreferenceService.instance;
+
+    double? approximateDistance;
+
+    if (p.lat != null && p.lng != null) {
+      approximateDistance = _haversineMeters(
+        originLat,
+        originLng,
+        p.lat!,
+        p.lng!,
+      );
+    }
+
     return prefs.recommendationScore(
-      primaryType: p.primaryType, allTypes: p.allTypes,
-      rating: p.rating, distanceMeters: null, priceLevel: p.priceLevel,
+      primaryType: p.primaryType,
+      allTypes: p.allTypes,
+      rating: p.rating,
+      distanceMeters: approximateDistance,
+      priceLevel: p.priceLevel,
+      // Itineraries may be generated for another location or a future date.
+      // Current cached weather would therefore be misleading. A null value
+      // gives every candidate the same neutral weather score (0.8), so weather
+      // does not distort itinerary ranking.
+      weather: null,
+      travelMode: travelMode,
+      useCurrentTime: false,
     ).total;
   }
+
+  double _haversineMeters(
+    double lat1,
+    double lng1,
+    double lat2,
+    double lng2,
+  ) {
+    const earthRadiusMeters = 6371000.0;
+
+    final lat1Rad = lat1 * math.pi / 180.0;
+    final lat2Rad = lat2 * math.pi / 180.0;
+    final deltaLat = (lat2 - lat1) * math.pi / 180.0;
+    final deltaLng = (lng2 - lng1) * math.pi / 180.0;
+
+    final a =
+        math.sin(deltaLat / 2) * math.sin(deltaLat / 2) +
+        math.cos(lat1Rad) *
+            math.cos(lat2Rad) *
+            math.sin(deltaLng / 2) *
+            math.sin(deltaLng / 2);
+
+    final c = 2 * math.atan2(
+      math.sqrt(a),
+      math.sqrt(1 - a),
+    );
+
+    return earthRadiusMeters * c;
+  }
+
 
   // ─────────────────────────────────────────────
   // Radius from travel mode
@@ -124,42 +193,210 @@ class ItineraryService {
     }
   }
 
-    Future<String?> save(ItineraryModel item) async {
-    if (_uid == null) {
-      print('❌ save: user not logged in');
-      return null;
-    }
+    Future<String?> save(
+  ItineraryModel item,
+) async {
+  final uid = _uid;
 
-    if (_col == null) return null;
-
-    try {
-      String savedId;
-
-      if (item.id.isEmpty) {
-        final ref = await _col!.add(item.toMap());
-        savedId = ref.id;
-      } else {
-        await _col!.doc(item.id).set(item.toMap());
-        savedId = item.id;
-      }
-
-      UserActivityDataService.instance.invalidate();
-
-      return savedId;
-    } catch (e) {
-      print('❌ save: $e');
-      return null;
-    }
+  if (uid == null) {
+    print(
+      '❌ save: user not logged in',
+    );
+    return null;
   }
 
-  Future<void> update(ItineraryModel item) async {
-    if (_col == null || item.id.isEmpty) {
-      throw Exception('Unable to update itinerary');
+  // Bind this entire operation to the account
+  // that started the save.
+  final collection = _db
+      .collection('users')
+      .doc(uid)
+      .collection('itineraries');
+
+  try {
+    // Session may already have changed before
+    // the Firestore write starts.
+    if (_uid != uid) {
+      print(
+        '🚫 save cancelled: account changed',
+      );
+      return null;
     }
 
-    await _col!.doc(item.id).update(item.toMap());
+    String savedId;
 
-    UserActivityDataService.instance.invalidate();
+    if (item.id.isEmpty) {
+      final ref = await collection.add(
+        item.toMap(),
+      );
+
+      savedId = ref.id;
+    } else {
+      await collection
+          .doc(item.id)
+          .set(
+        item.toMap(),
+      );
+
+      savedId = item.id;
+    }
+
+    // The write belonged to A.
+    //
+    // If the app has switched to B while the write
+    // was running, do not invalidate B's cache or
+    // continue treating the result as B's operation.
+    if (_uid != uid) {
+      print(
+        '⚠️ save completed for old session $uid '
+        'after account switch',
+      );
+
+      return null;
+    }
+
+    UserActivityDataService.instance
+        .invalidate();
+
+    return savedId;
+  } catch (e) {
+    print(
+      '❌ save: $e',
+    );
+
+    return null;
+  }
+}
+
+  Future<void> update(
+  ItineraryModel item,
+) async {
+  final uid = _uid;
+
+  if (uid == null ||
+      item.id.isEmpty) {
+    throw Exception(
+      'Unable to update itinerary',
+    );
+  }
+
+  // Bind the update to the user who started it.
+  final collection = _db
+      .collection('users')
+      .doc(uid)
+      .collection('itineraries');
+
+  try {
+    if (_uid != uid) {
+      throw Exception(
+        'Account changed during itinerary update',
+      );
+    }
+
+    final itineraryDoc =
+        collection.doc(item.id);
+
+    await itineraryDoc.update(
+      item.toMap(),
+    );
+
+    // Account could have changed while Firestore
+    // was processing the request.
+    if (_uid != uid) {
+      throw Exception(
+        'Account changed during itinerary update',
+      );
+    }
+
+    UserActivityDataService.instance
+        .invalidate();
+  } catch (e) {
+    print(
+      '❌ update itinerary failed: $e',
+    );
+
+    if (e
+        .toString()
+        .contains('Account changed')) {
+      throw Exception(
+        'Your account changed. '
+        'Please try saving the itinerary again.',
+      );
+    }
+
+    rethrow;
+  }
+}
+
+  /// Atomically marks an itinerary place as visited and creates its matching
+  /// history entry. Firestore commits both writes together, so Dashboard and
+  /// Achievement data cannot be left behind when the itinerary update succeeds.
+  Future<void> commitCheckIn({
+    required ItineraryModel itinerary,
+    required ItineraryPlace visitedPlace,
+  }) async {
+    final uid = _uid;
+
+    if (uid == null) {
+      throw Exception('You need to be logged in to check in.');
+    }
+    if (itinerary.id.isEmpty) {
+      throw Exception('This itinerary has not been saved yet.');
+    }
+    if (!visitedPlace.isVisited || visitedPlace.visitedAt == null) {
+      throw Exception('Invalid check-in data.');
+    }
+
+    final userDoc = _db.collection('users').doc(uid);
+    final itineraryDoc =
+        userDoc.collection('itineraries').doc(itinerary.id);
+
+    // A deterministic document id makes a retried check-in idempotent instead
+    // of creating duplicate history cards.
+    final safePlaceId = visitedPlace.placeId.replaceAll('/', '_');
+    final historyDoc = userDoc
+        .collection('history')
+        .doc('${itinerary.id}_$safePlaceId');
+
+    try {
+      if (_uid != uid) {
+        throw Exception('Account changed during check-in');
+      }
+
+      final historyData = HistoryService.instance.buildEntryData(
+        placeName: visitedPlace.name,
+        address: visitedPlace.address,
+        photoUrl: visitedPlace.photoUrl,
+        visitedAt: visitedPlace.visitedAt!,
+        itineraryId: itinerary.id,
+        itineraryTitle: itinerary.title,
+        placeId: visitedPlace.placeId,
+        primaryType: visitedPlace.primaryType,
+        lat: visitedPlace.lat,
+        lng: visitedPlace.lng,
+      );
+
+      final batch = _db.batch();
+      batch.update(itineraryDoc, itinerary.toMap());
+      batch.set(historyDoc, historyData);
+
+      await batch.commit();
+
+      // The batch is already safely committed to the initiating account. Only
+      // touch shared in-memory state if that account is still active.
+      if (_uid == uid) {
+        UserActivityDataService.instance.invalidate();
+      }
+    } catch (e) {
+      print('❌ atomic check-in failed: $e');
+
+      if (e.toString().contains('Account changed')) {
+        throw Exception(
+          'Your account changed. Please try the check-in again.',
+        );
+      }
+
+      rethrow;
+    }
   }
 
   Future<bool> delete(String id) async {
@@ -305,23 +542,32 @@ class ItineraryService {
     required List<String> categories,
     required bool isCurrentLocation,
     required int radius,
+    required String travelMode,
   }) async {
     print('🎯 [_buildBalancedPlaces] received radius=${radius}m');
 
-    final minRestaurantsPerDay = placesPerDay <= 2 ? 1 : 2;
+    final minRestaurantsPerDay =
+        _requiredRestaurantsPerDay(placesPerDay);
     final targetAttractionsPerDay = placesPerDay - minRestaurantsPerDay;
     final totalAttractionsNeeded = totalDays * targetAttractionsPerDay;
     final perCategory = totalAttractionsNeeded.clamp(4, 20);
 
     final totalRestaurantsNeeded = totalDays * minRestaurantsPerDay;
-    final restaurantCount = totalRestaurantsNeeded.clamp(4, 30);
+    final restaurantCount = totalRestaurantsNeeded == 0
+        ? 0
+        : totalRestaurantsNeeded.clamp(4, 30);
 
     final byType = await _fetchPlacesForItinerary(
       lat: lat, lng: lng, categories: categories,
       isCurrentLocation: isCurrentLocation, radius: radius, 
     );
 
-    double score(PlaceModel p) => _score(p);
+    double score(PlaceModel p) => _score(
+      p,
+      originLat: lat,
+      originLng: lng,
+      travelMode: travelMode,
+    );
 
     bool wants(String type) => categories.isEmpty || categories.contains(type);
 
@@ -406,6 +652,7 @@ class ItineraryService {
     double?         overrideLng,
     bool            isCurrentLocation = true, 
     String?         overrideTravelMode,
+    int?            overrideRadius,
   }) async {
 
     final requestedTotal = totalDays * placesPerDay;
@@ -418,10 +665,13 @@ class ItineraryService {
 
       final travelMode = overrideTravelMode
         ?? UserPreferenceService.instance.current.travelMode;
-      final radius = _radiusFromTravelMode(travelMode);
+      final radius = (overrideRadius ?? _radiusFromTravelMode(travelMode))
+          .clamp(500, 20000)
+          .toInt();
 
       print('🎯 [generate] overrideTravelMode=$overrideTravelMode → '
-          'travelMode=$travelMode → radius=${radius}m');
+          'travelMode=$travelMode → overrideRadius=$overrideRadius '
+          '→ radius=${radius}m');
 
       double? lat = overrideLat;
       double? lng = overrideLng;
@@ -448,7 +698,8 @@ class ItineraryService {
         lng: lng,
         categories: categories,
         isCurrentLocation: isCurrentLocation,
-        radius: radius, 
+        radius: radius,
+        travelMode: travelMode,
       );
       final validPlaces = buildResult.places;
       final leftoverCandidates = buildResult.leftovers;
@@ -477,6 +728,7 @@ class ItineraryService {
         cuisines:     cuisines,
         userLat:      lat,
         userLng:      lng,
+        travelMode:   travelMode,
         leftoverPool: leftoverCandidates,
       );
       final days = scheduleResult.days;
@@ -583,123 +835,362 @@ class ItineraryService {
   // Scheduler
   // ─────────────────────────────────────────────
 
-  ({List<ItineraryDay>? days, List<PlaceModel> unused}) _scheduleItinerary({
-    required List<PlaceModel> places,
-    required int              totalDays,
-    required int              placesPerDay,
-    required List<String>     startDates,
-    required List<String>     cuisines,
-    required double            userLat,
-    required double            userLng,
-    List<PlaceModel>?          leftoverPool,
-  }) {
-    final restaurants = places.where((p) => p.primaryType == 'restaurant').toList();
-    final others      = places.where((p) => p.primaryType != 'restaurant').toList();
+ ({
+  List<ItineraryDay>? days,
+  List<PlaceModel> unused,
+}) _scheduleItinerary({
+  required List<PlaceModel> places,
+  required int totalDays,
+  required int placesPerDay,
+  required List<String> startDates,
+  required List<String> cuisines,
+  required double userLat,
+  required double userLng,
+  required String travelMode,
+  List<PlaceModel>? leftoverPool,
+}) {
+  // ─────────────────────────────────────────────
+  // Unified category classification
+  //
+  // Do NOT rely on:
+  //   p.primaryType == 'restaurant'
+  //
+  // CategoryMapper now decides whether a place is
+  // Food based on both primaryType and allTypes.
+  // This keeps cafes, bakeries, coffee shops,
+  // cuisine-specific restaurants, etc. consistent
+  // across the entire app.
+  // ─────────────────────────────────────────────
 
-    final minRestaurantsPerDay = placesPerDay <= 2 ? 1 : 2;
-    final targetAttractionsPerDay = placesPerDay - minRestaurantsPerDay;
-
-    final clusters = _geoClusters(others, totalDays, userLat: userLat, userLng: userLng);
-    final dayCenters = List.generate(totalDays, (i) {
-      final seed = clusters[i].isNotEmpty ? clusters[i] : others;
-      return _centroid(seed);
-    });
-
-    final usedIds = <String>{};
-    final List<List<PlaceModel>> dayPlaces = List.generate(totalDays, (_) => []);
-
-    for (int round = 0; round < placesPerDay; round++) {
-      for (int day = 0; day < totalDays; day++) {
-        if (dayPlaces[day].length >= placesPerDay) continue;
-
-        final currentRestaurantCount =
-            dayPlaces[day].where((p) => p.primaryType == 'restaurant').length;
-        final currentOthersCount = dayPlaces[day].length - currentRestaurantCount;
-
-        final needsRestaurant = currentRestaurantCount < minRestaurantsPerDay;
-        final needsAttraction = currentOthersCount < targetAttractionsPerDay;
-
-        PlaceModel? picked;
-
-        if (needsRestaurant) {
-          picked = _pickClosestUnused(restaurants, dayCenters[day], usedIds, cuisines);
-        }
-        if (needsAttraction) {
-          picked ??= _pickClosestUnused(clusters[day], dayCenters[day], usedIds, null)
-                ?? _pickClosestUnused(others, dayCenters[day], usedIds, null);
-        }
-        picked ??= _pickClosestUnused(restaurants, dayCenters[day], usedIds, cuisines)
-              ?? _pickClosestUnused(clusters[day], dayCenters[day], usedIds, null)
-              ?? _pickClosestUnused(others, dayCenters[day], usedIds, null);
-
-        if (picked != null) {
-          usedIds.add(picked.id);
-          dayPlaces[day].add(picked);
-        }
-      }
-    }
-
-    if (leftoverPool != null && leftoverPool.isNotEmpty) {
-      for (int day = 0; day < totalDays; day++) {
-        final dayList = dayPlaces[day];
-        for (int i = 0; i < dayList.length; i++) {
-          final current = dayList[i];
-          if (current.primaryType == 'restaurant') continue;
-
-          final currentScore = _score(current);
-          final currentDist = (current.lat != null && current.lng != null)
-              ? _distSq(current.lat!, current.lng!, dayCenters[day].lat, dayCenters[day].lng)
-              : double.infinity;
-
-          PlaceModel? better;
-          double bestScore = currentScore;
-
-          for (final candidate in leftoverPool) {
-            if (usedIds.contains(candidate.id)) continue;
-            if (candidate.lat == null || candidate.lng == null) continue;
-
-            final candScore = _score(candidate);
-            if (candScore <= bestScore + 0.05) continue;
-
-            final candDist = _distSq(
-                candidate.lat!, candidate.lng!, dayCenters[day].lat, dayCenters[day].lng);
-            if (candDist > currentDist * 2.5) continue;
-
-            bestScore = candScore;
-            better = candidate;
-          }
-
-          if (better != null) {
-            usedIds.remove(current.id);
-            usedIds.add(better.id);
-            dayList[i] = better;
-            print('🔄 Quality swap Day ${day + 1}: ${current.name}'
-                '(${currentScore.toStringAsFixed(2)}) → ${better.name}'
-                '(${bestScore.toStringAsFixed(2)})');
-          }
-        }
-      }
-    }
-
-    final allCandidates = [...restaurants, ...others];
-    final unused = allCandidates.where((p) => !usedIds.contains(p.id)).toList();
-
-    final days = <ItineraryDay>[];
-    for (int i = 0; i < totalDays; i++) {
-      final dayRestaurants = dayPlaces[i].where((p) => p.primaryType == 'restaurant').toList();
-      final dayAttractions = dayPlaces[i].where((p) => p.primaryType != 'restaurant').toList();
-
-      final scheduled = _assignTimeSlots(dayAttractions, dayRestaurants, placesPerDay);
-
-      days.add(ItineraryDay(
-        dayNumber: i + 1,
-        date:      startDates[i],
-        places:    scheduled,
-      ));
-    }
-
-    return (days: days, unused: unused);
+  bool isRestaurant(PlaceModel place) {
+    return CategoryMapper.isRestaurant(
+      place.primaryType,
+      place.allTypes,
+    );
   }
+
+  final restaurants =
+      places.where(isRestaurant).toList();
+
+  final others =
+      places.where((p) => !isRestaurant(p)).toList();
+
+  // 1 place/day  → no forced food stop
+  // 2–3/day      → 1 food stop
+  // 4+ places/day → 2 food stops
+  final minRestaurantsPerDay =
+      _requiredRestaurantsPerDay(placesPerDay);
+
+  final targetAttractionsPerDay =
+      placesPerDay - minRestaurantsPerDay;
+
+  // ─────────────────────────────────────────────
+  // Geographic clustering uses non-food places
+  // ─────────────────────────────────────────────
+
+  final clusters = _geoClusters(
+    others,
+    totalDays,
+    userLat: userLat,
+    userLng: userLng,
+  );
+
+  final dayCenters = List.generate(
+    totalDays,
+    (i) {
+      final seed =
+          clusters[i].isNotEmpty
+              ? clusters[i]
+              : others;
+
+      return _centroid(seed);
+    },
+  );
+
+  final usedIds = <String>{};
+
+  final List<List<PlaceModel>> dayPlaces =
+      List.generate(
+    totalDays,
+    (_) => <PlaceModel>[],
+  );
+
+  // ─────────────────────────────────────────────
+  // Balanced daily assignment
+  // ─────────────────────────────────────────────
+
+  for (int round = 0;
+      round < placesPerDay;
+      round++) {
+    for (int day = 0;
+        day < totalDays;
+        day++) {
+      if (dayPlaces[day].length >=
+          placesPerDay) {
+        continue;
+      }
+
+      final currentRestaurantCount =
+          dayPlaces[day]
+              .where(isRestaurant)
+              .length;
+
+      final currentOthersCount =
+          dayPlaces[day].length -
+              currentRestaurantCount;
+
+      final needsRestaurant =
+          currentRestaurantCount <
+              minRestaurantsPerDay;
+
+      final needsAttraction =
+          currentOthersCount <
+              targetAttractionsPerDay;
+
+      PlaceModel? picked;
+
+      // Food gets priority while the day's required
+      // food slots have not yet been satisfied.
+      if (needsRestaurant) {
+        picked = _pickClosestUnused(
+          restaurants,
+          dayCenters[day],
+          usedIds,
+          cuisines,
+        );
+      }
+
+      // Then fill the non-food requirement.
+      if (needsAttraction) {
+        picked ??=
+            _pickClosestUnused(
+              clusters[day],
+              dayCenters[day],
+              usedIds,
+              null,
+            ) ??
+            _pickClosestUnused(
+              others,
+              dayCenters[day],
+              usedIds,
+              null,
+            );
+      }
+
+      // Final fallback:
+      // use any remaining suitable place so the
+      // itinerary does not become unnecessarily short.
+      picked ??=
+          _pickClosestUnused(
+            restaurants,
+            dayCenters[day],
+            usedIds,
+            cuisines,
+          ) ??
+          _pickClosestUnused(
+            clusters[day],
+            dayCenters[day],
+            usedIds,
+            null,
+          ) ??
+          _pickClosestUnused(
+            others,
+            dayCenters[day],
+            usedIds,
+            null,
+          );
+
+      if (picked != null) {
+        usedIds.add(
+          picked.id,
+        );
+
+        dayPlaces[day].add(
+          picked,
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Quality improvement using leftover candidates
+  // ─────────────────────────────────────────────
+
+  if (leftoverPool != null &&
+      leftoverPool.isNotEmpty) {
+    for (int day = 0;
+        day < totalDays;
+        day++) {
+      final dayList =
+          dayPlaces[day];
+
+      for (int i = 0;
+          i < dayList.length;
+          i++) {
+        final current =
+            dayList[i];
+
+        // Do not replace meal stops during the
+        // quality-swap phase.
+        if (isRestaurant(current)) {
+          continue;
+        }
+
+        final currentScore = _score(
+          current,
+          originLat: userLat,
+          originLng: userLng,
+          travelMode: travelMode,
+        );
+
+        final currentDist =
+            (current.lat != null &&
+                    current.lng != null)
+                ? _distSq(
+                    current.lat!,
+                    current.lng!,
+                    dayCenters[day].lat,
+                    dayCenters[day].lng,
+                  )
+                : double.infinity;
+
+        PlaceModel? better;
+        double bestScore =
+            currentScore;
+
+        for (final candidate
+            in leftoverPool) {
+          if (usedIds.contains(
+            candidate.id,
+          )) {
+            continue;
+          }
+
+          if (candidate.lat == null ||
+              candidate.lng == null) {
+            continue;
+          }
+
+          final candScore = _score(
+            candidate,
+            originLat: userLat,
+            originLng: userLng,
+            travelMode: travelMode,
+          );
+
+          if (candScore <=
+              bestScore + 0.05) {
+            continue;
+          }
+
+          final candDist =
+              _distSq(
+            candidate.lat!,
+            candidate.lng!,
+            dayCenters[day].lat,
+            dayCenters[day].lng,
+          );
+
+          if (candDist >
+              currentDist * 2.5) {
+            continue;
+          }
+
+          bestScore =
+              candScore;
+
+          better =
+              candidate;
+        }
+
+        if (better != null) {
+          usedIds.remove(
+            current.id,
+          );
+
+          usedIds.add(
+            better.id,
+          );
+
+          dayList[i] =
+              better;
+
+          print(
+            '🔄 Quality swap Day ${day + 1}: '
+            '${current.name}'
+            '(${currentScore.toStringAsFixed(2)}) '
+            '→ ${better.name}'
+            '(${bestScore.toStringAsFixed(2)})',
+          );
+        }
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Unused candidates
+  // ─────────────────────────────────────────────
+
+  final allCandidates = [
+    ...restaurants,
+    ...others,
+  ];
+
+  final unused =
+      allCandidates
+          .where(
+            (p) =>
+                !usedIds.contains(p.id),
+          )
+          .toList();
+
+  // ─────────────────────────────────────────────
+  // Convert daily selections into time slots
+  // ─────────────────────────────────────────────
+
+  final days =
+      <ItineraryDay>[];
+
+  for (int i = 0;
+      i < totalDays;
+      i++) {
+    final dayRestaurants =
+        dayPlaces[i]
+            .where(isRestaurant)
+            .toList();
+
+    final dayAttractions =
+        dayPlaces[i]
+            .where(
+              (p) =>
+                  !isRestaurant(p),
+            )
+            .toList();
+
+    final scheduled =
+        _assignTimeSlots(
+      dayAttractions,
+      dayRestaurants,
+      placesPerDay,
+    );
+
+    days.add(
+      ItineraryDay(
+        dayNumber: i + 1,
+        date: startDates[i],
+        places: scheduled,
+      ),
+    );
+  }
+
+  return (
+    days: days,
+    unused: unused,
+  );
+}
+
+
+
 
 PlaceModel? _pickClosestUnused(
   List<PlaceModel> pool,

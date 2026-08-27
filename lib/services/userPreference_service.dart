@@ -1,4 +1,6 @@
 // services/user_preference_service.dart
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -172,6 +174,40 @@ class UserPreferenceService {
   final Map<String, double> _timeAffinity      = {};
   final Map<String, double> _passiveCount = {};
 
+  // All learning signals mutate shared in-memory maps and then persist those
+  // maps to Firestore. Serialising the complete operations prevents an older
+  // async write from finishing after, and overwriting, a newer signal.
+  Future<void> _learningQueue = Future<void>.value();
+
+  Future<void> _enqueueLearningForCurrentUser(
+    Future<void> Function() operation,
+  ) {
+    final requestedUid = FirebaseAuth.instance.currentUser?.uid;
+    if (requestedUid == null) return Future<void>.value();
+
+    final completer = Completer<void>();
+
+    _learningQueue = _learningQueue.then((_) async {
+      try {
+        // A queued signal belongs to the account that triggered it. Never let
+        // a logout/login between queueing and execution write it to another
+        // user's preference document.
+        if (FirebaseAuth.instance.currentUser?.uid != requestedUid) {
+          print('⚠️ Preference signal skipped: account changed while queued');
+          completer.complete();
+          return;
+        }
+
+        await operation();
+        completer.complete();
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+
+    return completer.future;
+  }
+
   // 🆕 各来源 × 各数据类型的基础权重
   static const double _wPostTag      = 0.5;  // 发帖时的 tag/topic
   static const double _wLikeLocation = 0.7;  // 点赞帖子挂的地点
@@ -319,6 +355,18 @@ class UserPreferenceService {
     required String       primaryType,
     required List<String> allTypes,
     required bool         isFavouriting,
+  }) => _enqueueLearningForCurrentUser(
+    () => _updateFromFavouriteInternal(
+      primaryType: primaryType,
+      allTypes: allTypes,
+      isFavouriting: isFavouriting,
+    ),
+  );
+
+  Future<void> _updateFromFavouriteInternal({
+    required String       primaryType,
+    required List<String> allTypes,
+    required bool         isFavouriting,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -385,6 +433,24 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> updateFromPost({
+    required List<String> placeTypes,
+    required List<String> postTags,
+    required String?      postTopic,
+    required SentimentLabel sentimentLabel,
+    required int sentimentMatchedTokens,
+    int postRating = 0,
+  }) => _enqueueLearningForCurrentUser(
+    () => _updateFromPostInternal(
+      placeTypes: placeTypes,
+      postTags: postTags,
+      postTopic: postTopic,
+      sentimentLabel: sentimentLabel,
+      sentimentMatchedTokens: sentimentMatchedTokens,
+      postRating: postRating,
+    ),
+  );
+
+  Future<void> _updateFromPostInternal({
     required List<String> placeTypes,
     required List<String> postTags,
     required String?      postTopic,
@@ -503,6 +569,24 @@ class UserPreferenceService {
     required String?        postTopic,
     required bool           isLiking,
     required SentimentLabel sentimentLabel,
+    required int            sentimentMatchedTokens,
+  }) => _enqueueLearningForCurrentUser(
+    () => _updateFromLikeInternal(
+      placeTypes: placeTypes,
+      postTags: postTags,
+      postTopic: postTopic,
+      isLiking: isLiking,
+      sentimentLabel: sentimentLabel,
+      sentimentMatchedTokens: sentimentMatchedTokens,
+    ),
+  );
+
+  Future<void> _updateFromLikeInternal({
+    required List<String>   placeTypes,
+    required List<String>   postTags,
+    required String?        postTopic,
+    required bool           isLiking,
+    required SentimentLabel sentimentLabel,
     required int             sentimentMatchedTokens,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -567,6 +651,18 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> updateFromSearch({
+    required List<String> placeTypes,
+    required List<String> postTags,
+    required String?      postTopic,
+  }) => _enqueueLearningForCurrentUser(
+    () => _updateFromSearchInternal(
+      placeTypes: placeTypes,
+      postTags: postTags,
+      postTopic: postTopic,
+    ),
+  );
+
+  Future<void> _updateFromSearchInternal({
     required List<String> placeTypes,  // 🆕
     required List<String> postTags,
     required String?      postTopic,
@@ -621,6 +717,16 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> updateFromPlaceView({
+    required String?      primaryType,
+    required List<String> allTypes,
+  }) => _enqueueLearningForCurrentUser(
+    () => _updateFromPlaceViewInternal(
+      primaryType: primaryType,
+      allTypes: allTypes,
+    ),
+  );
+
+  Future<void> _updateFromPlaceViewInternal({
     required String?      primaryType,
     required List<String> allTypes,
   }) async {
@@ -742,11 +848,18 @@ class UserPreferenceService {
     required double?      distanceMeters,
     required int?         priceLevel,
     WeatherCondition?     weather,
+    String?               travelMode,
+    bool                  useCurrentTime = true,
   }) {
     final interest = _interestMatchScore(primaryType, allTypes);
-    final distance = _distanceScore(distanceMeters);
+    final distance = _distanceScore(
+      distanceMeters,
+      travelMode: travelMode,
+    );
     final ratingS  = _ratingScore(rating);
-    final time     = _timeSuitabilityScore(primaryType, allTypes);
+    final time = useCurrentTime
+        ? _timeSuitabilityScore(primaryType, allTypes)
+        : 0.5;
     final budget   = _budgetSuitabilityScore(priceLevel);
     final weatherS = _weatherScore(weather, primaryType, allTypes);
 
@@ -842,22 +955,37 @@ class UserPreferenceService {
     return (scores.reduce((a, b) => a + b) / scores.length).clamp(0.0, 1.0);
   }
   
- double _distanceScore(double? distanceMeters) {
-  if (distanceMeters == null || distanceMeters <= 0) return 0.5;
-  final baseline = _distanceBaselineForMode(_prefs.travelMode);
-  final score = (1.0 - distanceMeters / baseline).clamp(0.0, 1.0);
-  print('📏 _distanceScore: mode=${_prefs.travelMode}, baseline=${baseline}m, '
-      'dist=${distanceMeters.toStringAsFixed(0)}m → score=${score.toStringAsFixed(2)}');
-  return score;
-}
+  double _distanceScore(
+    double? distanceMeters, {
+    String? travelMode,
+  }) {
+    if (distanceMeters == null || distanceMeters <= 0) return 0.5;
+
+    final resolvedTravelMode = travelMode ?? _prefs.travelMode;
+    final baseline = _distanceBaselineForMode(resolvedTravelMode);
+    final score = (1.0 - distanceMeters / baseline).clamp(0.0, 1.0);
+
+    print('📏 _distanceScore: mode=$resolvedTravelMode, baseline=${baseline}m, '
+        'dist=${distanceMeters.toStringAsFixed(0)}m → score=${score.toStringAsFixed(2)}');
+    return score;
+  }
 
   double _distanceBaselineForMode(String mode) {
     switch (mode) {
-      case 'walk':  return 3000.0;
-      case 'motor': return 8000.0;   // 🆕 跟 motor 半径 8km 对应
-      case 'drive': return 15000.0;
+      case 'walk':
+        return 2000.0;
+
+      case 'motor':
+        return 8000.0;
+
+      case 'drive':
+        return 12000.0;
+
       case 'both':
-      default:      return 15000.0;  // 🔧 'both' = 最大范围，应该跟 drive 同级，不该跟 motor 撞车
+        return 12000.0;
+
+      default:
+        return 12000.0;
     }
   }
 
@@ -972,6 +1100,8 @@ class UserPreferenceService {
     double?               rating,
     int?                  priceLevel,
     WeatherCondition?     weather,
+    String?               travelMode,
+    bool                  useCurrentTime = true,
   }) =>
       recommendationScore(
         primaryType:    primaryType,
@@ -980,6 +1110,8 @@ class UserPreferenceService {
         distanceMeters: distanceMeters,
         priceLevel:     priceLevel,
         weather:        weather,
+        travelMode:     travelMode,
+        useCurrentTime: useCurrentTime,
       ).total;
 
 
@@ -1088,3 +1220,4 @@ class UserPreferenceService {
   }
 
 }
+

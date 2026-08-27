@@ -37,6 +37,10 @@ class _InteractionPageState extends State<InteractionPage> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
 
+  final Map<String, bool> _optimisticLiked = {};
+  final Map<String, int> _optimisticLikeCount = {};
+
+
   // ── Committed search（按下搜索/回车后，主列表被替换成的结果）──
   bool _isSearchActive = false;
   bool _isSearchLoading = false;
@@ -73,6 +77,7 @@ class _InteractionPageState extends State<InteractionPage> {
   bool _feedLoadingMore = false;
 
   int _feedRequestId = 0;
+  int _searchRequestId = 0;
 
 
   @override
@@ -320,48 +325,94 @@ Future<void> _loadMoreFeedPosts() async {
   // ─── 打字时的即时建议（dropdown，小数量）────────────────────────────────
 
   void _onSearchChanged(String query) {
-    _debounce?.cancel();
-    final trimmed = query.trim();
+  _debounce?.cancel();
 
-    if (trimmed.isEmpty) {
-      setState(() {
-        _isSearchActive = false;
-        _searchResultPosts = [];
-        _keywordSuggestions = [];
-        _showSuggestions = false;
-        _isSearchLoading = false;
-      });
-      return;
-    }
+  final trimmed = query.trim();
+
+  // Every input change invalidates all older searches.
+  final requestId = ++_searchRequestId;
+
+  if (trimmed.isEmpty) {
+    if (!mounted) return;
 
     setState(() {
-      _isSearchActive = true;   // ← 主列表立刻切换成"搜索模式"
-      _isSearchLoading = true;
+      _isSearchActive = false;
+      _searchResultPosts = [];
+      _keywordSuggestions = [];
+      _showSuggestions = false;
+      _isSearchLoading = false;
+      _lastSearchQuery = '';
     });
 
-    _debounce = Timer(const Duration(milliseconds: 400), () async {
-      if (!mounted) return;
+    return;
+  }
+
+  if (!mounted) return;
+
+  setState(() {
+    _isSearchActive = true;
+    _isSearchLoading = true;
+  });
+
+  _debounce = Timer(
+    const Duration(milliseconds: 400),
+    () async {
+      if (!mounted ||
+          requestId != _searchRequestId) {
+        return;
+      }
+
       try {
-        final results = await AlgoliaService.searchPosts(trimmed, hitsPerPage: 10);
-        if (!mounted) return;
+        final results =
+            await AlgoliaService.searchPosts(
+          trimmed,
+          hitsPerPage: 10,
+        );
+
+        // A newer query may have started while
+        // this Algolia request was running.
+        if (!mounted ||
+            requestId != _searchRequestId ||
+            _searchController.text.trim() != trimmed) {
+          return;
+        }
+
         setState(() {
           _searchResultPosts = results;
           _lastSearchQuery = trimmed;
           _isSearchLoading = false;
-          _keywordSuggestions = _buildKeywordSuggestions(results, trimmed);
-          // 只有 focus 还在输入框上时才继续显示下拉
-          _showSuggestions = _searchFocus.hasFocus && _keywordSuggestions.isNotEmpty;
+
+          _keywordSuggestions =
+              _buildKeywordSuggestions(
+            results,
+            trimmed,
+          );
+
+          _showSuggestions =
+              _searchFocus.hasFocus &&
+              _keywordSuggestions.isNotEmpty;
         });
-      } catch (_) {
-        if (!mounted) return;
+      } catch (e) {
+        if (!mounted ||
+            requestId != _searchRequestId) {
+          return;
+        }
+
+        debugPrint(
+          '❌ Search suggestion failed: $e',
+        );
+
         setState(() {
           _searchResultPosts = [];
+          _keywordSuggestions = [];
+          _showSuggestions = false;
           _isSearchLoading = false;
         });
       }
-    });
-  }
-
+    },
+  );
+}
+  
   /// 从搜索结果里提炼出「关键词」文字建议：命中的标题 + 命中的标签，去重取前 6 个
   List<String> _buildKeywordSuggestions(List<Post> results, String query) {
     final qLower = query.toLowerCase();
@@ -429,36 +480,66 @@ Future<void> _loadMoreFeedPosts() async {
   // ─── 提交搜索（按回车 / 点搜索键 / 点建议项）→ 替换主列表 ──────────────────
 
   Future<void> _performSearch(String query) async {
-    final trimmed = query.trim();
-    _debounce?.cancel();
-    if (trimmed.isEmpty) {
-      _clearSearch();
+  final trimmed = query.trim();
+
+  _debounce?.cancel();
+
+  // Invalidate every older typing / committed search.
+  final requestId = ++_searchRequestId;
+
+  if (trimmed.isEmpty) {
+    _clearSearch();
+    return;
+  }
+
+  if (!mounted) return;
+
+  setState(() {
+    _isSearchActive = true;
+    _isSearchLoading = true;
+    _lastSearchQuery = trimmed;
+    _showSuggestions = false;
+  });
+
+  try {
+    final results =
+        await AlgoliaService.searchPosts(
+      trimmed,
+      hitsPerPage: 10,
+    );
+
+    if (!mounted ||
+        requestId != _searchRequestId) {
       return;
     }
 
     setState(() {
-      _isSearchActive = true;
-      _isSearchLoading = true;
-      _lastSearchQuery = trimmed;
-      _showSuggestions = false;
+      _searchResultPosts = results;
+      _keywordSuggestions =
+          _buildKeywordSuggestions(
+        results,
+        trimmed,
+      );
+      _isSearchLoading = false;
     });
-
-    try {
-      final results = await AlgoliaService.searchPosts(trimmed, hitsPerPage: 10);
-      if (!mounted) return;
-      setState(() {
-        _searchResultPosts = results;
-        _isSearchLoading = false;
-        _keywordSuggestions = _buildKeywordSuggestions(results, trimmed);
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _searchResultPosts = [];
-        _isSearchLoading = false;
-      });
+  } catch (e) {
+    if (!mounted ||
+        requestId != _searchRequestId) {
+      return;
     }
+
+    debugPrint(
+      '❌ Post search failed: $e',
+    );
+
+    setState(() {
+      _searchResultPosts = [];
+      _keywordSuggestions = [];
+      _showSuggestions = false;
+      _isSearchLoading = false;
+    });
   }
+}
 
   void _selectKeyword(String keyword) {
     _searchController.text = keyword;
@@ -470,6 +551,11 @@ Future<void> _loadMoreFeedPosts() async {
   }
 
   void _clearSearch() {
+    _debounce?.cancel();
+
+    // Invalidate any Algolia request that is still running.
+    _searchRequestId++;
+
     setState(() {
       _selectedCity = null;
       _selectedCityLabel = null;
@@ -480,6 +566,7 @@ Future<void> _loadMoreFeedPosts() async {
       _searchResultPosts = [];
       _lastSearchQuery = '';
     });
+
     _searchController.clear();
     _searchFocus.unfocus();
   }
@@ -849,36 +936,66 @@ Future<void> _loadMoreFeedPosts() async {
   }
 
   Widget _buildEmptyState() {
-    return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      Icon(_selectedCity != null ? Icons.location_off : Icons.post_add, size: 80, color: Colors.grey[400]),
-      const SizedBox(height: 16),
-      Text(_selectedCity != null ? 'No posts in $_selectedCity yet' : 'No posts yet',
-          style: TextStyle(color: Colors.grey[600], fontSize: 18, fontWeight: FontWeight.bold)),
-      const SizedBox(height: 8),
-      Text(
-        _selectedCity != null ? 'Be the first to share your $_selectedCity travel experience!' : 'Tap + to share your first travel story!',
-        style: TextStyle(color: Colors.grey[500], fontSize: 13), textAlign: TextAlign.center,
-      ),
-      const SizedBox(height: 24),
-      ElevatedButton.icon(
-        onPressed: () async {
-          final posted = await Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const PostingPage()),
-          );
-          print('🔍 posted = $posted'); 
-          if (posted == true) {
-            _userCache.clear();
-            _loadFeedFirstPage();
-          }
-        },
-        icon: const Icon(Icons.add),
-        label: const Text('Post Story'),
-        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD35D3E), padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12)),
-      ),
-    ]));
-  }
+    const purple = Color(0xFF7C4DFF);
 
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 120,
+            height: 120,
+            decoration: BoxDecoration(
+              color: purple.withOpacity(0.08),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              _selectedCity != null ? Icons.location_off_outlined : Icons.travel_explore_outlined,
+              size: 56,
+              color: purple.withOpacity(0.6),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            _selectedCity != null ? 'No posts in $_selectedCity yet' : 'No posts yet',
+            style: const TextStyle(color: Colors.black87, fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _selectedCity != null
+                ? 'Be the first to share your $_selectedCity travel experience!'
+                : 'Tap + to share your first travel story!',
+            style: TextStyle(color: Colors.grey[500], fontSize: 13),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: () async {
+              final posted = await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const PostingPage()),
+              );
+              if (posted == true) {
+                _userCache.clear();
+                _loadFeedFirstPage();
+              }
+            },
+            icon: const Icon(Icons.add),
+            label: const Text('Post Story'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: purple,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  
   Widget _buildPostCard(Post post) {
     return GestureDetector(
       onTap: () => Navigator.push(
@@ -994,11 +1111,7 @@ Future<void> _loadMoreFeedPosts() async {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildSocialBtn(
-                    Icons.chat_bubble_outline,
-                    post.comments > 0 ? '${post.comments}' : 'Comments',
-                    () => _handleComment(post),
-                    false),
+                
                 StreamBuilder<bool>(
                   stream: _likeService.likeStatusStream(post.id!),
                   initialData: false,
@@ -1276,28 +1389,30 @@ Future<void> _handleEdit(Post post) async {
       return buildPostImage(path, height: height, fit: BoxFit.cover);
     }
 
-  Widget _buildLikeButton(Post post, bool isLiked) {
-    return StreamBuilder<int>(
-      stream: _likeService.likeCountStream(post.id!),
-      initialData: post.likes,
-      builder: (context, snapshot) {
-        int likeCount = snapshot.data ?? post.likes;
-        return InkWell(
-          onTap: () => _handleLike(post),
-          borderRadius: BorderRadius.circular(20),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(children: [
-              Icon(isLiked ? Icons.thumb_up : Icons.thumb_up_outlined, size: 20, color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700]),
-              const SizedBox(width: 6),
-              Text(likeCount > 0 ? '$likeCount' : 'Like',
-                  style: TextStyle(color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700], fontSize: 13, fontWeight: isLiked ? FontWeight.bold : FontWeight.normal)),
-            ]),
-          ),
-        );
-      },
-    );
-  }
+Widget _buildLikeButton(Post post, bool isLikedFromStream) {
+  return StreamBuilder<int>(
+    stream: _likeService.likeCountStream(post.id!),
+    initialData: post.likes,
+    builder: (context, snapshot) {
+      final bool isLiked = _optimisticLiked[post.id!] ?? isLikedFromStream;
+      final int likeCount = _optimisticLikeCount[post.id!] ?? (snapshot.data ?? post.likes);
+
+      return InkWell(
+        onTap: () => _handleLike(post, isLiked, likeCount),
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(children: [
+            Icon(isLiked ? Icons.thumb_up : Icons.thumb_up_outlined, size: 20, color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700]),
+            const SizedBox(width: 6),
+            Text(likeCount > 0 ? '$likeCount' : 'Like',
+                style: TextStyle(color: isLiked ? const Color(0xFFD35D3E) : Colors.grey[700], fontSize: 13, fontWeight: isLiked ? FontWeight.bold : FontWeight.normal)),
+          ]),
+        ),
+      );
+    },
+  );
+}
 
   Widget _buildSocialBtn(IconData icon, String label, VoidCallback onTap, bool isActive) {
     return InkWell(
@@ -1314,30 +1429,75 @@ Future<void> _handleEdit(Post post) async {
     );
   }
 
-  void _handleLike(Post post) async {
+ void _handleLike(Post post, bool currentlyLiked, int currentCount) async {
+  final postId = post.id!;
+  final newLiked = !currentlyLiked;
+  final newCount = currentlyLiked ? currentCount - 1 : currentCount + 1;
+
+  // 立即本地翻转,不等服务器
+  setState(() {
+    _optimisticLiked[postId] = newLiked;
+    _optimisticLikeCount[postId] = newCount;
+  });
+
+  try {
+    final bool serverLiked = await _likeService.toggleLike(postId);
+
+    // Like/unlike is the authoritative action. Preference learning is a
+    // secondary background task and must not turn a successful like into a
+    // false UI failure if its Firestore update encounters a problem.
+    unawaited(_learnFromLike(post, serverLiked));
+
+    if (!mounted) return;
+
+    if (serverLiked != newLiked) {
+      // 服务器结果跟乐观猜测不一致（比如多设备并发），以服务器为准
+      setState(() {
+        _optimisticLiked[postId] = serverLiked;
+      });
+    }
+
+    // 稍等一下再清掉本地覆盖，让 Firestore stream 数据接管
+    Future.delayed(const Duration(milliseconds: 800), () {
+      if (mounted) {
+        setState(() {
+          _optimisticLiked.remove(postId);
+          _optimisticLikeCount.remove(postId);
+        });
+      }
+    });
+  } catch (e) {
+    if (!mounted) return;
+    // 失败，回滚
+    setState(() {
+      _optimisticLiked[postId] = currentlyLiked;
+      _optimisticLikeCount[postId] = currentCount;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Operation failed: $e')),
+    );
+  }
+}
+
+  Future<void> _learnFromLike(Post post, bool isLiked) async {
     try {
-      final bool isLiked = await _likeService.toggleLike(post.id!);
-      // ← 去掉 snackbar，只静默更新偏好
-      UserPreferenceService.instance.updateFromLike(
+      await UserPreferenceService.instance.updateFromLike(
         placeTypes: post.placeTypes,
         postTags: post.tags,
         postTopic: post.topic,
         isLiking: isLiked,
-        sentimentLabel: post.sentimentLabel ?? SentimentLabel.neutral,
-        sentimentMatchedTokens: post.sentimentMatchedTokens ?? 0,
+        sentimentLabel:
+            post.sentimentLabel ?? SentimentLabel.neutral,
+        sentimentMatchedTokens:
+            post.sentimentMatchedTokens ?? 0,
       );
     } catch (e) {
-      // 出错才提示
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Operation failed: $e')),
-        );
-      }
+      debugPrint(
+        '⚠️ Like succeeded, but preference learning failed: $e',
+      );
     }
   }
-
-  void _handleComment(Post post) => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Comment feature under development...')));
-
+  
   Widget _buildUserAvatar(String userName, String? userPhoto, String userId, bool isAnonymous) {
     if (isAnonymous) return CircleAvatar(radius: 20, backgroundColor: _getUserColor(userId), child: const Icon(Icons.person_outline, color: Colors.white, size: 22));
     if (userPhoto != null && userPhoto.isNotEmpty) {

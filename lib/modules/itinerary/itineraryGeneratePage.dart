@@ -289,6 +289,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
         overrideLng:        _useCurrentLocation ? null : _selectedLng,
         isCurrentLocation:  _useCurrentLocation,
         overrideTravelMode: _activeTravelMode,
+        overrideRadius:     overrideRadius,
       );
 
       if (!mounted) return;
@@ -300,7 +301,10 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
 
       // 🆕 候选不足——提示用户，并给出补救选项
       if (result.isShortfall) {
-        _showShortfallDialog(result);
+        _showShortfallDialog(
+          result,
+          attemptedRadius: overrideRadius,
+        );
         return;   // 让用户决定：接受当前结果 / 放宽范围重试
       }
 
@@ -357,7 +361,21 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     }
   }
 
-  void _showShortfallDialog(ItineraryGenerationResult result) {
+  int? _nextWiderRadius(int currentRadius) {
+    if (currentRadius < 8000) return 8000;
+    if (currentRadius < 12000) return 12000;
+    if (currentRadius < 20000) return 20000;
+    return null;
+  }
+
+  void _showShortfallDialog(
+    ItineraryGenerationResult result, {
+    int? attemptedRadius,
+  }) {
+    final currentRadius = attemptedRadius ??
+        radiusForTravelModeString(_activeTravelMode);
+    final nextRadius = _nextWiderRadius(currentRadius);
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -389,16 +407,19 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
             child: Text('Adjust settings',
                 style: TextStyle(color: Colors.grey[600])),
           ),
-          if (_activeTravelMode != 'drive')
+          if (nextRadius != null)
             TextButton(
               onPressed: () {
                 Navigator.pop(ctx);
-                setState(() => _activeTravelMode =
-                    _activeTravelMode == 'walk' ? 'both' : 'drive');
-                _generate();
+                _generate(overrideRadius: nextRadius);
               },
-              child: const Text('Try wider range',
-                  style: TextStyle(color: Color(0xFF7C4DFF), fontWeight: FontWeight.w600)),
+              child: Text(
+                'Try ${nextRadius ~/ 1000} km range',
+                style: const TextStyle(
+                  color: Color(0xFF7C4DFF),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
           ElevatedButton(
             onPressed: () async {
@@ -1370,3 +1391,5 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     );
   }
 }
+
+

@@ -151,6 +151,20 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     return ((fixedChromeHeight + bottomInset) / screenHeight).clamp(0.18, 0.40);
   }
 
+  bool _isDayLocked(int dayIndex) {
+    if (dayIndex < 0 ||
+        dayIndex >= _itinerary.days.length) {
+      return true;
+    }
+
+    final day = _itinerary.days[dayIndex];
+
+    return widget.isEditingExisting &&
+        day.totalCount > 0 &&
+        day.isCompleted;
+  }
+
+
   // ─────────────────────────────────────────────
   // Lifecycle
   // ─────────────────────────────────────────────
@@ -589,12 +603,19 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // ─────────────────────────────────────────────
 
   void _switchTab(int index) {
-    if (_selectedIndex == index) return;
-    setState(() => _selectedIndex = index);
+    if (_selectedIndex == index) {
+      return;
+    }
+
+    setState(() {
+      _selectedIndex = index;
+    });
+
     _updateMapOverlays();
 
-    // 🆕 第一次点进 More Places tab 才去补全候补池详情
-    if (index == _poolTabIndex && !_poolHydrated && !_isHydratingPool) {
+    if (index == _poolTabIndex &&
+        !_poolHydrated &&
+        !_isHydratingPool) {
       _hydrateLeftoverPool();
     }
   }
@@ -603,45 +624,140 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // 单个 id 失败（place 下架/无效）不影响其他的，直接跳过。
   Future<void> _hydrateLeftoverPool() async {
     if (_pendingLeftoverIds.isEmpty) {
-      _poolHydrated = true;
+      if (mounted) {
+        setState(() {
+          _poolHydrated = true;
+          _isHydratingPool = false;
+        });
+      }
       return;
     }
-    setState(() => _isHydratingPool = true);
-
-    final results = await Future.wait(_pendingLeftoverIds.map((id) async {
-      try {
-        return await PlacesApiService.getPlaceModelDetails(id);
-      } catch (_) {
-        return null;
-      }
-    }));
 
     if (!mounted) return;
+
     setState(() {
-      _leftovers = [..._leftovers, ...results.whereType<PlaceModel>()];
-       _pendingLeftoverIds = []; 
-      _isHydratingPool = false;
-      _poolHydrated = true;
+      _isHydratingPool = true;
     });
+
+    // Work from a snapshot so the source list cannot
+    // change while the async requests are running.
+    final idsToHydrate =
+        List<String>.from(_pendingLeftoverIds);
+
+    final successfulPlaces = <PlaceModel>[];
+    final failedIds = <String>[];
+
+    await Future.wait(
+      idsToHydrate.map((id) async {
+        try {
+          final place =
+              await PlacesApiService.getPlaceModelDetails(
+            id,
+          );
+
+          successfulPlaces.add(place);
+        } catch (e) {
+          // IMPORTANT:
+          // A temporary API/network/cache failure must NOT
+          // permanently remove this candidate from the pool.
+          failedIds.add(id);
+
+          debugPrint(
+            '⚠️ Failed to hydrate leftover place '
+            '$id: $e',
+          );
+        }
+      }),
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      // Add successful candidates without duplicates.
+      final existingIds =
+          _leftovers.map((p) => p.id).toSet();
+
+      for (final place in successfulPlaces) {
+        if (existingIds.add(place.id)) {
+          _leftovers.add(place);
+        }
+      }
+
+      // Keep ONLY failed IDs pending.
+      //
+      // They remain stored and can be retried later.
+      _pendingLeftoverIds = failedIds;
+
+      _isHydratingPool = false;
+
+      // Fully hydrated only when nothing remains unresolved.
+      _poolHydrated = _pendingLeftoverIds.isEmpty;
+    });
+
+    debugPrint(
+      '✅ Leftover hydration: '
+      '${successfulPlaces.length} loaded, '
+      '${failedIds.length} pending retry',
+    );
   }
 
   // ─────────────────────────────────────────────
   // Reorder / Remove / Undo / Re-optimize (within a day)
   // ─────────────────────────────────────────────
 
-  void _reorderWithinDay(int dayIndex, int oldIndex, int newIndex) {
-    if (newIndex > oldIndex) newIndex--;
-    final days   = List<ItineraryDay>.from(_itinerary.days);
-    final places = List<ItineraryPlace>.from(days[dayIndex].places);
-    final item   = places.removeAt(oldIndex);
-    places.insert(newIndex, item);
-    days[dayIndex] = days[dayIndex].copyWith(places: places);
-    setState(() => _itinerary = _itinerary.copyWith(days: days));
+  void _reorderWithinDay(
+    int dayIndex,
+    int oldIndex,
+    int newIndex,
+  ) {
+    if (_isDayLocked(dayIndex)) {
+      return;
+    }
+
+    if (newIndex > oldIndex) {
+      newIndex--;
+    }
+
+    final days =
+        List<ItineraryDay>.from(
+      _itinerary.days,
+    );
+
+    final places =
+        List<ItineraryPlace>.from(
+      days[dayIndex].places,
+    );
+
+    final item =
+        places.removeAt(oldIndex);
+
+    places.insert(
+      newIndex,
+      item,
+    );
+
+    days[dayIndex] =
+        days[dayIndex].copyWith(
+      places: places,
+    );
+
+    setState(() {
+      _itinerary =
+          _itinerary.copyWith(
+        days: days,
+      );
+    });
+
     _invalidateLegs(dayIndex);
     _updateMapOverlays();
   }
 
   void _removePlace(int dayIndex, int placeIndex) {
+
+    if (_isDayLocked(dayIndex)) {
+      return;
+    }
+
     final days   = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
     final removed = places[placeIndex];
@@ -731,6 +847,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   }
 
   Future<void> _reOptimizeDay(int dayIndex) async {
+
+    if (_isDayLocked(dayIndex)) {
+      return;
+    }
+
     final places = _itinerary.days[dayIndex].places;
     if (places.length < 2) return; // nothing meaningful to reorder
 
@@ -1055,21 +1176,44 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // ─────────────────────────────────────────────
 
   void _movePlaceToPosition(
-    _DragPayload payload, int targetDayIndex, int targetIndex) {
-  if (payload.isFromPool) {
-    _addPoolPlaceToPosition(payload.poolPlace!, targetDayIndex, targetIndex);
-    return;
-  }
+    _DragPayload payload,
+    int targetDayIndex,
+    int targetIndex,
+  ) {
+    // Cannot modify a completed target day.
+    if (_isDayLocked(targetDayIndex)) {
+      return;
+    }
 
-  final sourceDayIndex   = payload.dayIndex!;
-  final sourcePlaceIndex = payload.placeIndex!;
+    if (payload.isFromPool) {
+      _addPoolPlaceToPosition(
+        payload.poolPlace!,
+        targetDayIndex,
+        targetIndex,
+      );
+      return;
+    }
 
-  // Dropping onto its own current spot — nothing to do.
-  if (sourceDayIndex == targetDayIndex &&
-      (sourcePlaceIndex == targetIndex ||
-          sourcePlaceIndex == targetIndex - 1)) {
-    return;
-  }
+    final sourceDayIndex =
+        payload.dayIndex!;
+
+    final sourcePlaceIndex =
+        payload.placeIndex!;
+
+    // Cannot remove/reorder anything from a
+    // completed historical day either.
+    if (_isDayLocked(sourceDayIndex)) {
+      return;
+    }
+
+    if (sourceDayIndex ==
+            targetDayIndex &&
+        (sourcePlaceIndex ==
+                targetIndex ||
+            sourcePlaceIndex ==
+                targetIndex - 1)) {
+      return;
+    }
 
   final days = List<ItineraryDay>.from(_itinerary.days);
 
@@ -1116,6 +1260,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 // it can't be dropped in twice.
 void _addPoolPlaceToPosition(
     PlaceModel poolPlace, int targetDayIndex, int targetIndex) {
+
+      if (_isDayLocked(targetDayIndex)) {
+        return;
+      }
+
   final days = List<ItineraryDay>.from(_itinerary.days);
   final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
   final insertAt = targetIndex.clamp(0, targetPlaces.length);
@@ -2076,20 +2225,77 @@ Future<void> _saveAndContinue() async {
             SliverToBoxAdapter(child: _buildDaySummaryBar(dayIndex, legs)),
             const SliverToBoxAdapter(child: Divider(height: 1, thickness: 0.5)),
             if (day.places.isEmpty)
-              SliverToBoxAdapter(child: _emptyDayPlaceholder(dayIndex))
-            else
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-                sliver: SliverReorderableList(
-                  itemCount: day.places.length,
-                  onReorder: (o, n) => _reorderWithinDay(dayIndex, o, n),
-                  itemBuilder: (context, i) => _buildPlaceCard(
-                    dayIndex, i, day.places[i], legs,
-                    isLast: i == day.places.length - 1,
-                    key: ValueKey('${dayIndex}_${day.places[i].placeId}'),
+            SliverToBoxAdapter(
+              child: _emptyDayPlaceholder(
+                dayIndex,
+              ),
+            )
+          else if (_isDayLocked(dayIndex))
+            SliverPadding(
+              padding:
+                  const EdgeInsets.fromLTRB(
+                20,
+                12,
+                20,
+                8,
+              ),
+              sliver: SliverList(
+                delegate:
+                    SliverChildBuilderDelegate(
+                  (context, i) =>
+                      _buildPlaceCard(
+                    dayIndex,
+                    i,
+                    day.places[i],
+                    legs,
+                    isLast:
+                        i ==
+                            day.places.length -
+                                1,
+                    key: ValueKey(
+                      '${dayIndex}_${day.places[i].placeId}',
+                    ),
+                  ),
+                  childCount:
+                      day.places.length,
+                ),
+              ),
+            )
+          else
+            SliverPadding(
+              padding:
+                  const EdgeInsets.fromLTRB(
+                20,
+                12,
+                20,
+                8,
+              ),
+              sliver: SliverReorderableList(
+                itemCount:
+                    day.places.length,
+                onReorder: (o, n) =>
+                    _reorderWithinDay(
+                  dayIndex,
+                  o,
+                  n,
+                ),
+                itemBuilder:
+                    (context, i) =>
+                        _buildPlaceCard(
+                  dayIndex,
+                  i,
+                  day.places[i],
+                  legs,
+                  isLast:
+                      i ==
+                          day.places.length -
+                              1,
+                  key: ValueKey(
+                    '${dayIndex}_${day.places[i].placeId}',
                   ),
                 ),
               ),
+            ),
             const SliverToBoxAdapter(child: SizedBox(height: 24)),
           ],
         );
@@ -2331,188 +2537,420 @@ Widget _buildPoolChip(PlaceModel place) {
   // ── Place card ─────────────────────────────
 
   Widget _buildPlaceCard(
-    int dayIndex,
-    int index,
-    ItineraryPlace place,
-    _DayLegs legs, {
-    required bool isLast,
-    required Key key,
-  }) {
-    final dayColor = _dayColors[dayIndex % _dayColors.length];
-    final numColor = _stopColor(
-        index, _itinerary.days[dayIndex].places.length, dayColor);
+  int dayIndex,
+  int index,
+  ItineraryPlace place,
+  _DayLegs legs, {
+  required bool isLast,
+  required Key key,
+}) {
+  final dayColor =
+      _dayColors[dayIndex % _dayColors.length];
 
-    return Container(
-      key: key,
-      margin: const EdgeInsets.only(bottom: 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          ReorderableDelayedDragStartListener(
-            index: index,
-            child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Colors.grey[100]!),
-              boxShadow: [BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3))],
+  final numColor = _stopColor(
+    index,
+    _itinerary.days[dayIndex].places.length,
+    dayColor,
+  );
+
+  final locked = _isDayLocked(dayIndex);
+
+  final card = Container(
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(
+        color: Colors.grey[100]!,
+      ),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withOpacity(0.05),
+          blurRadius: 8,
+          offset: const Offset(0, 3),
+        ),
+      ],
+    ),
+    child: Row(
+      crossAxisAlignment:
+          CrossAxisAlignment.center,
+      children: [
+        // ─────────────────────────────────────────
+        // Drag / Lock indicator
+        // ─────────────────────────────────────────
+        Container(
+          width: 40,
+          height: 76,
+          color: Colors.transparent,
+          child: Column(
+            mainAxisAlignment:
+                MainAxisAlignment.center,
+            children: [
+              Icon(
+                locked
+                    ? Icons.lock_outline_rounded
+                    : Icons.drag_indicator_rounded,
+                color: Colors.grey[400],
+                size: 20,
+              ),
+            ],
+          ),
+        ),
+
+        // ─────────────────────────────────────────
+        // Stop number
+        // ─────────────────────────────────────────
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: numColor,
+            shape: BoxShape.circle,
+          ),
+          child: Center(
+            child: Text(
+              '${index + 1}',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Container(
-                  width: 40, height: 76,
-                  color: Colors.transparent,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+          ),
+        ),
+
+        const SizedBox(width: 10),
+
+        // ─────────────────────────────────────────
+        // Image
+        // ─────────────────────────────────────────
+        ClipRRect(
+          borderRadius:
+              BorderRadius.circular(10),
+          child: place.photoUrl != null
+              ? CachedNetworkImage(
+                  imageUrl: place.photoUrl!,
+                  width: 52,
+                  height: 52,
+                  fit: BoxFit.cover,
+                  errorWidget:
+                      (_, __, ___) =>
+                          _photoPlaceholder(),
+                )
+              : _photoPlaceholder(),
+        ),
+
+        const SizedBox(width: 10),
+
+        // ─────────────────────────────────────────
+        // Place info
+        // ─────────────────────────────────────────
+        Expanded(
+          child: GestureDetector(
+            // Even locked days can still open
+            // the place detail page.
+            onTap: () =>
+                _openPlaceDetailFromItinerary(
+              place,
+            ),
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(
+                vertical: 12,
+              ),
+              child: Column(
+                crossAxisAlignment:
+                    CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    place.name,
+                    style:
+                        const TextStyle(
+                      fontSize: 14,
+                      fontWeight:
+                          FontWeight.bold,
+                      color:
+                          Color(0xFF1A1A2E),
+                    ),
+                    maxLines: 1,
+                    overflow:
+                        TextOverflow.ellipsis,
+                  ),
+
+                  const SizedBox(height: 3),
+
+                  Text(
+                    place.address,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey[500],
+                    ),
+                    maxLines: 1,
+                    overflow:
+                        TextOverflow.ellipsis,
+                  ),
+
+                  const SizedBox(height: 4),
+
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
                     children: [
-                      Icon(Icons.drag_indicator_rounded,
-                          color: Colors.grey[400], size: 20),
+                      // ─────────────────────────────
+                      // Suggested time
+                      // ─────────────────────────────
+                      GestureDetector(
+                        onTap: locked
+                            ? null
+                            : () =>
+                                _pickTime(
+                                  dayIndex,
+                                  index,
+                                  place,
+                                ),
+                        child: Container(
+                          padding:
+                              const EdgeInsets
+                                  .symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration:
+                              BoxDecoration(
+                            color: locked
+                                ? Colors
+                                    .grey[100]
+                                : const Color(
+                                        0xFF7C4DFF)
+                                    .withOpacity(
+                                        0.08),
+                            borderRadius:
+                                BorderRadius
+                                    .circular(8),
+                          ),
+                          child: Row(
+                            mainAxisSize:
+                                MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons
+                                    .access_time_rounded,
+                                size: 11,
+                                color: locked
+                                    ? Colors
+                                        .grey[500]
+                                    : const Color(
+                                        0xFF7C4DFF),
+                              ),
+                              const SizedBox(
+                                  width: 3),
+                              Text(
+                                place
+                                    .suggestedTime,
+                                style:
+                                    TextStyle(
+                                  fontSize: 10,
+                                  color: locked
+                                      ? Colors
+                                          .grey[600]
+                                      : const Color(
+                                          0xFF7C4DFF),
+                                  fontWeight:
+                                      FontWeight
+                                          .w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      // ─────────────────────────────
+                      // Duration
+                      // ─────────────────────────────
+                      GestureDetector(
+                        onTap: locked
+                            ? null
+                            : () =>
+                                _pickDuration(
+                                  dayIndex,
+                                  index,
+                                  place,
+                                ),
+                        child: Container(
+                          padding:
+                              const EdgeInsets
+                                  .symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration:
+                              BoxDecoration(
+                            color: locked
+                                ? Colors
+                                    .grey[100]
+                                : Colors.orange
+                                    .withOpacity(
+                                        0.08),
+                            borderRadius:
+                                BorderRadius
+                                    .circular(8),
+                          ),
+                          child: Row(
+                            mainAxisSize:
+                                MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons
+                                    .schedule_rounded,
+                                size: 11,
+                                color: locked
+                                    ? Colors
+                                        .grey[500]
+                                    : Colors
+                                        .orange[600],
+                              ),
+                              const SizedBox(
+                                  width: 3),
+                              Text(
+                                _formatDuration(
+                                  place
+                                      .durationMinutes,
+                                ),
+                                style:
+                                    TextStyle(
+                                  fontSize: 10,
+                                  color: locked
+                                      ? Colors
+                                          .grey[600]
+                                      : Colors
+                                          .orange[700],
+                                  fontWeight:
+                                      FontWeight
+                                          .w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   ),
-                ),
-                Container(
-                  width: 28, height: 28,
-                  decoration:
-                      BoxDecoration(color: numColor, shape: BoxShape.circle),
-                  child: Center(
-                    child: Text('${index + 1}',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold)),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: place.photoUrl != null
-                    ? CachedNetworkImage(
-                        imageUrl: place.photoUrl!,
-                        width: 52, height: 52, fit: BoxFit.cover,
-                        errorWidget: (_, __, ___) => _photoPlaceholder(),
-                      )
-                    : _photoPlaceholder(),
-                ),
-                const SizedBox(width: 10),
-               Expanded(
-                child: GestureDetector(   // 🆕 点击看详情
-                  onTap: () => _openPlaceDetailFromItinerary(place),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(place.name,
-                            style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF1A1A2E)),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis),
-                        const SizedBox(height: 3),
-                        Text(place.address,
-                            style: TextStyle(
-                                fontSize: 11, color: Colors.grey[500]),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis),
-                        const SizedBox(height: 4),
-                       Wrap(
-                          spacing: 6,
-                          runSpacing: 4,
-                          children: [
-                            GestureDetector(
-                              onTap: () => _pickTime(dayIndex, index, place),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF7C4DFF).withOpacity(0.08),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.access_time_rounded,
-                                        size: 11, color: const Color(0xFF7C4DFF)),
-                                    const SizedBox(width: 3),
-                                    Text(place.suggestedTime,
-                                        style: const TextStyle(
-                                            fontSize: 10,
-                                            color: Color(0xFF7C4DFF),
-                                            fontWeight: FontWeight.w600)),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            GestureDetector(
-                              onTap: () => _pickDuration(dayIndex, index, place),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: Colors.orange.withOpacity(0.08),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.schedule_rounded, size: 11, color: Colors.orange[600]),
-                                    const SizedBox(width: 3),
-                                    Text(_formatDuration(place.durationMinutes),
-                                        style: TextStyle(
-                                            fontSize: 10,
-                                            color: Colors.orange[700],
-                                            fontWeight: FontWeight.w600)),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                ),
-                GestureDetector(   // 🆕 换一个
-                  onTap: () => _showSwapSheet(dayIndex, index, place),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    child: Container(
-                      width: 32, height: 32,
-                      decoration: BoxDecoration(
-                        color: Colors.blue[50], shape: BoxShape.circle,
-                      ),
-                      child: Icon(Icons.swap_horiz_rounded,
-                          size: 16, color: Colors.blue[400]),
-                    ),
-                  ),
-                ),
-                GestureDetector(
-                  onTap: () => _removePlace(dayIndex, index),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Container(
-                      width: 32, height: 32,
-                      decoration: BoxDecoration(
-                          color: Colors.red[50], shape: BoxShape.circle),
-                      child: Icon(Icons.close_rounded,
-                          size: 16, color: Colors.red[400]),
-                    ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-          ),
-          if (!isLast) _buildLegConnector(legs, index + 1),
-        ],
-      ),
-    );
-  }
+        ),
 
+        // ─────────────────────────────────────────
+        // Swap button
+        // Only editable days can swap.
+        // ─────────────────────────────────────────
+        if (!locked)
+          GestureDetector(
+            onTap: () =>
+                _showSwapSheet(
+              dayIndex,
+              index,
+              place,
+            ),
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(
+                horizontal: 6,
+              ),
+              child: Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.swap_horiz_rounded,
+                  size: 16,
+                  color: Colors.blue[400],
+                ),
+              ),
+            ),
+          ),
+
+        // ─────────────────────────────────────────
+        // Remove button
+        // Only editable days can remove.
+        // ─────────────────────────────────────────
+        if (!locked)
+          GestureDetector(
+            onTap: () =>
+                _removePlace(
+              dayIndex,
+              index,
+            ),
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(
+                horizontal: 12,
+              ),
+              child: Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: Colors.red[50],
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.close_rounded,
+                  size: 16,
+                  color: Colors.red[400],
+                ),
+              ),
+            ),
+          ),
+
+        // Keep some right spacing on locked cards,
+        // because swap/delete are hidden.
+        if (locked)
+          const SizedBox(width: 12),
+      ],
+    ),
+  );
+
+  // ─────────────────────────────────────────────
+  // Editable day:
+  // wrap card with reorder listener.
+  //
+  // Completed day:
+  // plain card only, no drag behavior.
+  // ─────────────────────────────────────────────
+
+  final cardContent = locked
+      ? card
+      : ReorderableDelayedDragStartListener(
+          index: index,
+          child: card,
+        );
+
+  return Container(
+    key: key,
+    margin:
+        const EdgeInsets.only(
+      bottom: 14,
+    ),
+    child: Column(
+      crossAxisAlignment:
+          CrossAxisAlignment.start,
+      children: [
+        cardContent,
+
+        if (!isLast)
+          _buildLegConnector(
+            legs,
+            index + 1,
+          ),
+      ],
+    ),
+  );
+}
+  
   String _formatDuration(int mins) {
     if (mins < 60) return '$mins min';
     final h = mins ~/ 60;
@@ -2706,6 +3144,11 @@ Widget _buildPoolChip(PlaceModel place) {
   // 🆕 用候补池里的某个地点，替换某天某个位置原本的地点。
   // 被替换下来的原地点会重新放回候补池，避免用户换来换去丢失选项。
   void _swapPlace(int dayIndex, int placeIndex, PlaceModel replacement) {
+
+    if (_isDayLocked(dayIndex)) {
+      return;
+    }
+
     final days   = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
     final old    = places[placeIndex];

@@ -19,7 +19,6 @@ class Post {
   final List<String> videoPaths;
   final int rating;
   final bool isAnonymous;
-  final bool allowComments;
   final bool allowShare;
   final String? location;
   final String? city;
@@ -47,7 +46,6 @@ class Post {
   final String? userPhoto;
   final String? userEmail;
   final int likes;
-  final int comments;
   final int shares;
 
   Post({
@@ -58,7 +56,6 @@ class Post {
     this.videoPaths = const [],
     this.rating = 0,
     this.isAnonymous = false,
-    this.allowComments = true,
     this.allowShare = true,
     this.location,
     this.city,
@@ -80,7 +77,6 @@ class Post {
     this.userPhoto,
     this.userEmail,
     this.likes = 0,
-    this.comments = 0,
     this.shares = 0,
   });
 
@@ -107,7 +103,6 @@ class Post {
       videoPaths: List<String>.from(data['videoPaths'] ?? []),
       rating: data['rating'] ?? 0,
       isAnonymous: data['isAnonymous'] ?? false,
-      allowComments: data['allowComments'] ?? true,
       allowShare: data['allowShare'] ?? true,
       location: data['location'],
       city: data['city'],
@@ -135,7 +130,6 @@ class Post {
       userPhoto: data['userPhoto'],
       userEmail: data['userEmail'],
       likes: data['likes'] ?? 0,
-      comments: data['comments'] ?? 0,
       shares: data['shares'] ?? 0,
     );
   }
@@ -149,7 +143,6 @@ class Post {
       'videoPaths': videoPaths,
       'rating': rating,
       'isAnonymous': isAnonymous,
-      'allowComments': allowComments,
       'allowShare': allowShare,
       'location': location,
       'city': city,
@@ -179,7 +172,6 @@ class Post {
       'userPhoto': userPhoto,
       'userEmail': userEmail,
       'likes': likes,
-      'comments': comments,
       'shares': shares,
     };
   }
@@ -226,7 +218,6 @@ class Post {
       videoPaths: videoPaths ?? this.videoPaths,
       rating: rating ?? this.rating,
       isAnonymous: isAnonymous ?? this.isAnonymous,
-      allowComments: allowComments ?? this.allowComments,
       allowShare: allowShare ?? this.allowShare,
       location: location ?? this.location,
       city: city ?? this.city,
@@ -249,7 +240,6 @@ class Post {
       userPhoto: userPhoto ?? this.userPhoto,
       userEmail: userEmail ?? this.userEmail,
       likes: likes ?? this.likes,
-      comments: comments ?? this.comments,
       shares: shares ?? this.shares,
     );
   }

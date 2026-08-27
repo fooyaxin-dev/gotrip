@@ -68,6 +68,16 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   // rendering loop is decoupled from the slower navigation/UI state loop.
   late final Widget _persistentMapLayer;
 
+  Set<Polyline> _cachedVisualPolylines = <Polyline>{};
+  Set<Circle> _cachedVisualCircles = <Circle>{};
+  DateTime _lastHeavyMapOverlayUpdate =
+      DateTime.fromMillisecondsSinceEpoch(0);
+
+  // Heavy polyline/circle diffing does not need marker-level frequency.
+  // 100ms keeps the grey/blue boundary visually responsive while avoiding
+  // rebuilding long point lists on every 40ms marker frame.
+  static const int _heavyMapOverlayCooldownMs = 100;
+
   @override
   void initState() {
     super.initState();
@@ -148,14 +158,39 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   static const int _followCooldownMs = 40;
   DateTime _lastFollowMove = DateTime.fromMillisecondsSinceEpoch(0);
 
+  // Native GoogleMap camera calls cross the platform channel.
+  // Never allow them to queue up: if one call is still in flight, keep only
+  // the latest target and send it as soon as the native side is ready.
+  bool _cameraMoveInFlight = false;
+  LatLng? _pendingCameraTarget;
+
   void _followCamera(LatLng target) {
     if (_mapController == null) return;
 
+    // Always retain the newest requested target.
+    _pendingCameraTarget = target;
+
     final now = DateTime.now();
-    if (now.difference(_lastFollowMove).inMilliseconds < _followCooldownMs) {
+    if (now.difference(_lastFollowMove).inMilliseconds <
+        _followCooldownMs) {
       return;
     }
+
+    // Critical backpressure: do not queue native camera operations.
+    if (_cameraMoveInFlight) return;
+
     _lastFollowMove = now;
+    unawaited(_flushFollowCamera());
+  }
+
+  Future<void> _flushFollowCamera() async {
+    if (_mapController == null || _cameraMoveInFlight) return;
+
+    final target = _pendingCameraTarget;
+    if (target == null) return;
+
+    _pendingCameraTarget = null;
+    _cameraMoveInFlight = true;
 
     final zoom = _zoomForSpeed(_nav.lastPos?.speed ?? 0);
     final bearing = _nav.cameraBearing;
@@ -163,22 +198,43 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     _isProgrammaticMove = true;
     _programmaticMoveResetTimer?.cancel();
 
-    _mapController!.moveCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: target,
-          zoom: zoom,
-          tilt: widget.travelMode == TravelMode.walk ? 0 : 45,
-          bearing: bearing,
+    try {
+      await _mapController!.moveCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: target,
+            zoom: zoom,
+            tilt: widget.travelMode == TravelMode.walk ? 0 : 45,
+            bearing: bearing,
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      _cameraMoveInFlight = false;
 
-    _programmaticMoveResetTimer = Timer(
-      const Duration(milliseconds: 180),
-      () => _isProgrammaticMove = false,
-    );
+      _programmaticMoveResetTimer = Timer(
+        const Duration(milliseconds: 180),
+        () => _isProgrammaticMove = false,
+      );
+    }
+
+    // If positions arrived while native GoogleMap was busy, immediately use
+    // the newest one. Intermediate stale targets are deliberately discarded.
+    if (_pendingCameraTarget != null &&
+        _isFollowing &&
+        !_isOverview &&
+        mounted) {
+      final elapsed = DateTime.now()
+          .difference(_lastFollowMove)
+          .inMilliseconds;
+
+      if (elapsed >= _followCooldownMs) {
+        _lastFollowMove = DateTime.now();
+        unawaited(_flushFollowCamera());
+      }
+    }
   }
+
 
   // Kept for one-off, EXPLICIT camera transitions only (recenter tap,
   // initial camera placement) — those benefit from a real animated
@@ -430,10 +486,24 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     return Icons.straight_rounded;
   }
 
+  void _refreshHeavyMapOverlaysIfNeeded(LatLng? pos) {
+    final now = DateTime.now();
+
+    if (_cachedVisualPolylines.isEmpty ||
+        now.difference(_lastHeavyMapOverlayUpdate).inMilliseconds >=
+            _heavyMapOverlayCooldownMs) {
+      _lastHeavyMapOverlayUpdate = now;
+      _cachedVisualPolylines = _buildPolylines(pos);
+      _cachedVisualCircles = _buildCircles(pos);
+    }
+  }
+
   Widget _buildPersistentMapLayer() {
     return ValueListenableBuilder<LatLng?>(
       valueListenable: _nav.positionNotifier,
       builder: (context, pos, _) {
+        _refreshHeavyMapOverlaysIfNeeded(pos);
+
         final mq = MediaQuery.of(context);
         final nextStep = _nav.nextStep;
 
@@ -460,8 +530,8 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
             bearing: _nav.cameraBearing,
           ),
           markers: _buildMarkers(pos),
-          polylines: _buildPolylines(pos),
-          circles: _buildCircles(pos),
+          polylines: _cachedVisualPolylines,
+          circles: _cachedVisualCircles,
           myLocationEnabled: false,
           myLocationButtonEnabled: false,
           zoomControlsEnabled: false,

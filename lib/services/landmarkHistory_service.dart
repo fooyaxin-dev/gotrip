@@ -71,33 +71,72 @@ class LandmarkHistoryService {
 
   // ── Save a new scan ──────────────────────────────────────────
   static Future<void> save({
-    required String name,
-    String? imageBase64Thumbnail,
-    double? lat,
-    double? lng,
-    String? wikiUrl,
-    String? address,
-    double? rating,
-    String? photoUrl,
-    required String detectionMethod,
-  }) async {
-    if (_uid == null) return;
+  required String name,
+  String? imageBase64Thumbnail,
+  double? lat,
+  double? lng,
+  String? wikiUrl,
+  String? address,
+  double? rating,
+  String? photoUrl,
+  required String detectionMethod,
+}) async {
+  final uid = _uid;
 
-    final docId = _makeDocId(name, lat, lng);
-
-    await _col.doc(docId).set({
-      'name':            name,
-      'imageBase64':     imageBase64Thumbnail,
-      'lat':             lat,
-      'lng':             lng,
-      'wikiUrl':         wikiUrl,
-      'address':         address,
-      'rating':          rating,
-      'photoUrl':        photoUrl,
-      'scannedAt':       FieldValue.serverTimestamp(), // 每次覆盖，更新为最近一次时间
-      'detectionMethod': detectionMethod,
-    }, SetOptions(merge: true));
+  if (uid == null) {
+    return;
   }
+
+  final collection = _db
+      .collection('users')
+      .doc(uid)
+      .collection('landmark_history');
+
+  final docId = _makeDocId(
+    name,
+    lat,
+    lng,
+  );
+
+  try {
+    if (_uid != uid) {
+      return;
+    }
+
+    await collection.doc(docId).set(
+      {
+        'name': name,
+        'imageBase64': imageBase64Thumbnail,
+        'lat': lat,
+        'lng': lng,
+        'wikiUrl': wikiUrl,
+        'address': address,
+        'rating': rating,
+        'photoUrl': photoUrl,
+        'scannedAt':
+            FieldValue.serverTimestamp(),
+        'detectionMethod': detectionMethod,
+      },
+      SetOptions(
+        merge: true,
+      ),
+    );
+
+    if (_uid != uid) {
+      debugPrint(
+        '⚠️ Landmark history save finished '
+        'after account switch.',
+      );
+    }
+  } catch (e) {
+    debugPrint(
+      '⚠️ LandmarkHistoryService.save error: $e',
+    );
+
+    rethrow;
+  }
+}
+
 
   static String _makeDocId(String name, double? lat, double? lng) {
     final normalized = name.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '_');
@@ -111,36 +150,125 @@ class LandmarkHistoryService {
   }
 
   // ── Fetch history (latest first) ────────────────────────────
-  static Future<List<LandmarkHistoryEntry>> fetch({int limit = 20}) async {
-    if (_uid == null) return [];
-    try {
-      final snap = await _col
-          .orderBy('scannedAt', descending: true)
-          .limit(limit)
-          .get();
-      return snap.docs
-          .map((d) => LandmarkHistoryEntry.fromFirestore(d.id, d.data()))
-          .toList();
-    } catch (e) {
-      debugPrint('⚠️ LandmarkHistoryService.fetch error: $e');
-      return [];
-    }
+  static Future<List<LandmarkHistoryEntry>> fetch({
+  int limit = 20,
+}) async {
+  final uid = _uid;
+
+  if (uid == null) {
+    return [];
   }
 
-  // ── Delete one entry ─────────────────────────────────────────
-  static Future<void> delete(String entryId) async {
-    if (_uid == null) return;
-    await _col.doc(entryId).delete();
+  final collection = _db
+      .collection('users')
+      .doc(uid)
+      .collection('landmark_history');
+
+  try {
+    final snap = await collection
+        .orderBy(
+          'scannedAt',
+          descending: true,
+        )
+        .limit(limit)
+        .get();
+
+    // Don't return A's history into B's screen
+    // if the account changed while loading.
+    if (_uid != uid) {
+      return [];
+    }
+
+    return snap.docs
+        .map(
+          (d) =>
+              LandmarkHistoryEntry.fromFirestore(
+            d.id,
+            d.data(),
+          ),
+        )
+        .toList();
+  } catch (e) {
+    debugPrint(
+      '⚠️ LandmarkHistoryService.fetch error: $e',
+    );
+
+    return [];
   }
+}
+
+  // ── Delete one entry ─────────────────────────────────────────
+  static Future<void> delete(
+  String entryId,
+) async {
+  final uid = _uid;
+
+  if (uid == null) {
+    return;
+  }
+
+  final collection = _db
+      .collection('users')
+      .doc(uid)
+      .collection('landmark_history');
+
+  if (_uid != uid) {
+    return;
+  }
+
+  await collection
+      .doc(entryId)
+      .delete();
+}
 
   // ── Clear all history ────────────────────────────────────────
   static Future<void> clearAll() async {
-    if (_uid == null) return;
-    final snap = await _col.get();
-    final batch = _db.batch();
-    for (final doc in snap.docs) {
-      batch.delete(doc.reference);
-    }
-    await batch.commit();
+  final uid = _uid;
+
+  if (uid == null) {
+    return;
   }
+
+  final collection = _db
+      .collection('users')
+      .doc(uid)
+      .collection('landmark_history');
+
+  try {
+    final snap =
+        await collection.get();
+
+    // User may have changed while Firestore
+    // was loading the history documents.
+    if (_uid != uid) {
+      return;
+    }
+
+    if (snap.docs.isEmpty) {
+      return;
+    }
+
+    final batch = _db.batch();
+
+    for (final doc in snap.docs) {
+      batch.delete(
+        doc.reference,
+      );
+    }
+
+    // Final safety check before destructive write.
+    if (_uid != uid) {
+      return;
+    }
+
+    await batch.commit();
+  } catch (e) {
+    debugPrint(
+      '⚠️ LandmarkHistoryService.clearAll error: $e',
+    );
+
+    rethrow;
+  }
+}
+
 }

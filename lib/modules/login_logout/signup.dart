@@ -67,8 +67,75 @@ class _SignupPageState extends State<SignupPage> {
     final query = await FirebaseFirestore.instance
         .collection('users')
         .where('username', isEqualTo: username)
+        .limit(1)
         .get();
     return query.docs.isNotEmpty;
+  }
+
+  /// Best-effort rollback for an account that was created in Firebase Auth but
+  /// could not finish its Firestore profile / verification setup.
+  ///
+  /// Firebase Auth and Firestore cannot be committed in one transaction, so
+  /// both resources are removed explicitly. The user was just created, meaning
+  /// `delete()` still satisfies Firebase's recent-login requirement.
+  Future<bool> _rollbackNewRegistration(User user) async {
+    bool profileRemoved = true;
+    bool authUserRemoved = true;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .delete();
+    } catch (error) {
+      profileRemoved = false;
+      debugPrint('Signup rollback: profile deletion failed: $error');
+    }
+
+    try {
+      await user.delete();
+    } catch (error) {
+      authUserRemoved = false;
+      debugPrint('Signup rollback: Auth user deletion failed: $error');
+    }
+
+    // Ensure an unverified or partially-created account is not left as the
+    // active app session, even if one of the cleanup steps failed.
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (error) {
+      debugPrint('Signup rollback: sign-out failed: $error');
+    }
+
+    return profileRemoved && authUserRemoved;
+  }
+
+  Future<void> _showSuccessfulSignup() async {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.mark_email_unread_outlined, color: Colors.white),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'A verification email has been sent. '
+                'Please verify before logging in.',
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: Color(0xFF7C4DFF),
+        duration: Duration(seconds: 4),
+      ),
+    );
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginPage()),
+    );
   }
 
   // ── signup logic ──────────────────────────────────────────────────────────
@@ -79,77 +146,102 @@ class _SignupPageState extends State<SignupPage> {
       return;
     }
 
-      // 🆕 注册前先确认有网，没网直接提示，不让转圈卡住
-  final online = await ConnectivityService.instance.ensureConnected(
-    context,
-    onRetry: createUserWithEmailAndPassword,
-  );
-  if (!online) return;
-  
+    final online = await ConnectivityService.instance.ensureConnected(
+      context,
+      onRetry: createUserWithEmailAndPassword,
+    );
+    if (!online || !mounted) return;
 
     final username = usernameController.text.trim();
-    final email    = emailController.text.trim();
+    final email = emailController.text.trim();
     final password = pwdController.text.trim();
 
     setState(() => isLoading = true);
 
-    if (await isUsernameTaken(username)) {
-      _showError('Username already taken');
-      setState(() => isLoading = false);
-      return;
-    }
+    User? createdUser;
 
     try {
+      // Keep this inside try/finally. Previously a failed username query left
+      // the page loading forever because it happened before the try block.
+      if (await isUsernameTaken(username)) {
+        _showError('Username already taken');
+        return;
+      }
+
       final userCredential = await FirebaseAuth.instance
           .createUserWithEmailAndPassword(email: email, password: password);
 
-      final uid = userCredential.user!.uid;
-
-      await FirebaseFirestore.instance.collection('users').doc(uid).set({
-        'email':              email,
-        'username':           username,
-        'bio':                'Hello! I\'m new here 👋',
-        'profileImageUrl':    '',
-        'backgroundImageUrl': '',
-        'postCount':          0,
-        'favouriteCount':     0,
-        'routeCount':         0,
-        'onboardingDone':     false,
-        'preferences': {
-          'categories': [],
-          'cuisines':   [],
-          'travelMode': 'walk',
-        },
-      });
-
-      // Send email verification
-      await userCredential.user!.sendEmailVerification();
-
-      if (mounted) {
-        // Show verification notice before navigating
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.mark_email_unread_outlined, color: Colors.white),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'A verification email has been sent. Please verify before logging in.',
-                  ),
-                ),
-              ],
-            ),
-            backgroundColor: Color(0xFF7C4DFF),
-            duration: Duration(seconds: 4),
-          ),
-        );
-
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const LoginPage()),
+      createdUser = userCredential.user;
+      if (createdUser == null) {
+        throw FirebaseAuthException(
+          code: 'missing-user',
+          message: 'Firebase did not return the newly-created user.',
         );
       }
+
+      try {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(createdUser.uid)
+            .set({
+          'email': email,
+          'username': username,
+          'bio': 'Hello! I\'m new here 👋',
+          'profileImageUrl': '',
+          'backgroundImageUrl': '',
+          'postCount': 0,
+          'favouriteCount': 0,
+          'routeCount': 0,
+          'onboardingDone': false,
+          'preferences': {
+            'categories': [],
+            'cuisines': [],
+            'travelMode': 'walk',
+          },
+        });
+      } catch (error) {
+        final rolledBack = await _rollbackNewRegistration(createdUser);
+
+        if (!mounted) return;
+        _showError(
+          rolledBack
+              ? 'Account setup could not be completed. '
+                  'No account was created; please try again.'
+              : 'Account setup was interrupted and automatic cleanup '
+                  'could not finish. Please try logging in before registering again.',
+        );
+        return;
+      }
+
+      try {
+        await createdUser.sendEmailVerification();
+      } catch (error) {
+        // Without a resend-verification flow on LoginPage, keeping this account
+        // would lock the user out. Roll it back so the same email can register
+        // again cleanly after the network problem is resolved.
+        final rolledBack = await _rollbackNewRegistration(createdUser);
+
+        if (!mounted) return;
+        _showError(
+          rolledBack
+              ? 'The verification email could not be sent. '
+                  'Registration was cancelled; please try again.'
+              : 'Your account was created, but the verification email and '
+                  'automatic cleanup both failed. Please try logging in later.',
+        );
+        return;
+      }
+
+      // createUserWithEmailAndPassword signs the new user in automatically.
+      // Sign out explicitly so navigation to LoginPage cannot leave an
+      // unverified session active behind the screen.
+      try {
+        await FirebaseAuth.instance.signOut();
+      } catch (error) {
+        debugPrint('Signup completed, but sign-out failed: $error');
+      }
+
+      await _showSuccessfulSignup();
     } on FirebaseAuthException catch (e) {
       String message;
       switch (e.code) {
@@ -165,12 +257,28 @@ class _SignupPageState extends State<SignupPage> {
         case 'network-request-failed':
           message = 'Network error. Please try again';
           break;
+        case 'too-many-requests':
+          message = 'Too many attempts. Please wait and try again';
+          break;
         default:
           message = 'Signup failed. Please try again';
       }
-      _showError(message);
-    } catch (_) {
-      _showError('Something went wrong');
+
+      // Normally FirebaseAuthException happens before user creation. This
+      // guard also handles any unexpected Auth failure after creation.
+      if (createdUser != null) {
+        await _rollbackNewRegistration(createdUser);
+      }
+
+      if (mounted) _showError(message);
+    } catch (error) {
+      if (createdUser != null) {
+        await _rollbackNewRegistration(createdUser);
+      }
+
+      if (mounted) {
+        _showError('Something went wrong. Please try again');
+      }
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
@@ -397,35 +505,55 @@ class _SignupPageState extends State<SignupPage> {
           const SizedBox(height: 6),
           _checkRow(_hasUppercase, 'At least one upper case character'),
           const SizedBox(height: 6),
-          _checkRow(_hasSpecial,   'At least one special character (i.e: ! \$ # % ...)'),
+          _checkRow(
+            _hasSpecial,
+            'At least one special character (! @ # \$ %)',
+          ),
         ],
       ),
     );
   }
 
-  Widget _checkRow(bool passed, String label) {
-    return Row(
-      children: [
-        AnimatedSwitcher(
+Widget _checkRow(bool passed, String label) {
+  return Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Padding(
+        padding: const EdgeInsets.only(top: 1),
+        child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 200),
           child: Icon(
-            passed ? Icons.check_circle : Icons.radio_button_unchecked,
+            passed
+                ? Icons.check_circle
+                : Icons.radio_button_unchecked,
             key: ValueKey(passed),
             size: 18,
-            color: passed ? const Color(0xFF4CAF50) : Colors.grey.shade500,
+            color: passed
+                ? const Color(0xFF4CAF50)
+                : Colors.grey.shade500,
           ),
         ),
-        const SizedBox(width: 10),
-        Text(
+      ),
+
+      const SizedBox(width: 10),
+
+      // Expanded 让文字使用剩余空间，并在空间不足时自动换行
+      Expanded(
+        child: Text(
           label,
+          softWrap: true,
           style: TextStyle(
             fontSize: 13,
-            color: passed ? const Color(0xFF4CAF50) : Colors.grey.shade400,
+            height: 1.25,
+            color: passed
+                ? const Color(0xFF4CAF50)
+                : Colors.grey.shade400,
           ),
         ),
-      ],
-    );
-  }
+      ),
+    ],
+  );
+}
 
   // ── reusable input field ──────────────────────────────────────────────────
   Widget _inputField({

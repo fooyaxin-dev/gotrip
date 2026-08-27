@@ -56,26 +56,53 @@ class LocationService extends ChangeNotifier {
   final Set<String> _alreadyArrived = {};
   List<_WatchedPlace> _watchedPlaces = [];
 
-  void watchItinerary(ItineraryModel itinerary) {
+  /// Rebuilds the proximity watch list and returns whether continuous GPS is
+  /// actually needed for today's itinerary day.
+  bool watchItinerary(ItineraryModel itinerary) {
     _watchedPlaces = [];
     _alreadyArrived.clear();
 
-    for (int d = 0; d < itinerary.days.length; d++) {
-      final day = itinerary.days[d];
-      for (int p = 0; p < day.places.length; p++) {
-        final place = day.places[p];
-        if (!place.isVisited && place.lat != null && place.lng != null) {
-          _watchedPlaces.add(_WatchedPlace(
-            placeId: place.placeId,
-            placeName: place.name,
-            lat: place.lat!,
-            lng: place.lng!,
-            dayIndex: d,
-            placeIndex: p,
-          ));
-        }
+    // Only today's scheduled day may trigger proximity arrivals. Watching all
+    // itinerary days allowed a Day 2/Day 3 place to trigger while travelling
+    // on Day 1. Future and already-finished itineraries therefore watch none.
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+
+    final activeDayIndex = itinerary.days.indexWhere((day) {
+      final parsed = DateTime.tryParse(day.date);
+      if (parsed == null) return false;
+      final scheduledDate = DateTime(parsed.year, parsed.month, parsed.day);
+      return scheduledDate == today;
+    });
+
+    if (activeDayIndex == -1) {
+      debugPrint(
+        '📍 Arrival watch inactive: itinerary has no day scheduled for today.',
+      );
+      return false;
+    }
+
+    final activeDay = itinerary.days[activeDayIndex];
+    for (int p = 0; p < activeDay.places.length; p++) {
+      final place = activeDay.places[p];
+      if (!place.isVisited && place.lat != null && place.lng != null) {
+        _watchedPlaces.add(_WatchedPlace(
+          placeId: place.placeId,
+          placeName: place.name,
+          lat: place.lat!,
+          lng: place.lng!,
+          dayIndex: activeDayIndex,
+          placeIndex: p,
+        ));
       }
     }
+
+    debugPrint(
+      '📍 Arrival watch active for Day ${activeDay.dayNumber}: '
+      '${_watchedPlaces.length} unvisited place(s).',
+    );
+
+    return _watchedPlaces.isNotEmpty;
   }
 
   void pauseItineraryProximity() {
@@ -243,3 +270,4 @@ class _WatchedPlace {
     required this.placeIndex,
   });
 }
+

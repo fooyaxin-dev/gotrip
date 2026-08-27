@@ -47,6 +47,7 @@ class _LocalVideoPlayerState extends State<LocalVideoPlayer> {
   @override
   void initState() {
     super.initState();
+    debugPrint('🎬 LocalVideoPlayer initState: ${widget.path}');   // 👈 加这一行
     _controller = widget.path.startsWith('http')
       ? VideoPlayerController.networkUrl(Uri.parse(widget.path))
       : VideoPlayerController.file(File(widget.path));
@@ -230,6 +231,9 @@ class _PostWidgetState extends State<_PostWidget> {
   final PostService _postService = PostService();
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  final Set<String> _locallyDeletedPostIds = <String>{};
+
+
   @override
   Widget build(BuildContext context) {
     final String? currentUserId = _auth.currentUser?.uid;
@@ -262,35 +266,105 @@ class _PostWidgetState extends State<_PostWidget> {
           );
         }
 
-        final allPosts = snapshot.data!;
-        final mediaPosts = allPosts.where((p) => p.images.isNotEmpty || p.videoPaths.isNotEmpty).toList();
-        final textPosts = allPosts.where((p) => p.images.isEmpty && p.videoPaths.isEmpty).toList();
+        final allPosts = snapshot.data!
+    .where(
+      (post) =>
+          post.id == null ||
+          !_locallyDeletedPostIds.contains(post.id),
+    )
+    .toList();
+
+// 如果删除的是最后一个 post，立即显示 empty state
+if (allPosts.isEmpty) {
+  return Center(
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          Icons.post_add,
+          size: 60,
+          color: Colors.grey[400],
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'No posts yet!',
+          style: TextStyle(
+            color: Colors.grey[600],
+            fontSize: 14,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+final mediaPosts = allPosts
+    .where(
+      (post) =>
+          post.images.isNotEmpty ||
+          post.videoPaths.isNotEmpty,
+    )
+    .toList();
+
+final textPosts = allPosts
+    .where(
+      (post) =>
+          post.images.isEmpty &&
+          post.videoPaths.isEmpty,
+    )
+    .toList();
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (mediaPosts.isNotEmpty) ...[
               _buildSectionHeader(icon: Icons.photo_library_outlined, label: 'Photos & Videos', count: mediaPosts.length),
-              GridView.builder(
+              GridView.custom(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 2, crossAxisSpacing: 8, mainAxisSpacing: 8,
                 ),
-                itemCount: mediaPosts.length,
-                itemBuilder: (context, index) => _buildMediaCard(mediaPosts[index]),
+                childrenDelegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final post = mediaPosts[index];
+                    return _buildMediaCard(post, key: ValueKey(post.id ?? post.hashCode));
+                  },
+                  childCount: mediaPosts.length,
+                  findChildIndexCallback: (Key key) {
+                    final valueKey = key as ValueKey;
+                    final index = mediaPosts.indexWhere(
+                      (p) => (p.id ?? p.hashCode) == valueKey.value,
+                    );
+                    return index == -1 ? null : index;
+                  },
+                ),
               ),
             ],
             if (textPosts.isNotEmpty) ...[
               _buildSectionHeader(icon: Icons.text_fields, label: 'Text Posts', count: textPosts.length),
-              ListView.separated(
+              ListView.custom(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 padding: const EdgeInsets.symmetric(horizontal: 8),
-                itemCount: textPosts.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
-                itemBuilder: (context, index) => _buildTextCard(textPosts[index]),
+                childrenDelegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final post = textPosts[index];
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _buildTextCard(post, key: ValueKey(post.id ?? post.hashCode)),
+                    );
+                  },
+                  childCount: textPosts.length,
+                  findChildIndexCallback: (Key key) {
+                    final valueKey = key as ValueKey;
+                    final index = textPosts.indexWhere(
+                      (p) => (p.id ?? p.hashCode) == valueKey.value,
+                    );
+                    return index == -1 ? null : index;
+                  },
+                ),
               ),
             ],
             const SizedBox(height: 32),
@@ -320,12 +394,13 @@ class _PostWidgetState extends State<_PostWidget> {
     );
   }
 
-  Widget _buildMediaCard(Post post) {
+  Widget _buildMediaCard(Post post, {Key? key}) {
     final bool hasImage = post.images.isNotEmpty;
     final bool hasVideo = post.videoPaths.isNotEmpty;
     final int totalMedia = post.images.length + post.videoPaths.length;
 
     return GestureDetector(
+      key: key,
       onTap: () => _showPostDetail(post),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
@@ -355,8 +430,6 @@ class _PostWidgetState extends State<_PostWidget> {
                   Text('${post.likes}', style: const TextStyle(color: Colors.white, fontSize: 10)),
                   const SizedBox(width: 10),
                   const Icon(Icons.comment, color: Colors.white, size: 11),
-                  const SizedBox(width: 3),
-                  Text('${post.comments}', style: const TextStyle(color: Colors.white, fontSize: 10)),
                 ]),
               ]),
             ),
@@ -395,8 +468,9 @@ class _PostWidgetState extends State<_PostWidget> {
     );
   }
 
-  Widget _buildTextCard(Post post) {
+  Widget _buildTextCard(Post post, {Key? key}) {
     return GestureDetector(
+      key: key,
       onTap: () => _showPostDetail(post),
       child: Container(
         padding: const EdgeInsets.all(14),
@@ -440,8 +514,6 @@ class _PostWidgetState extends State<_PostWidget> {
             Text('${post.likes}', style: TextStyle(fontSize: 11, color: Colors.grey[500])),
             const SizedBox(width: 10),
             Icon(Icons.chat_bubble_outline, size: 13, color: Colors.grey[500]),
-            const SizedBox(width: 3),
-            Text('${post.comments}', style: TextStyle(fontSize: 11, color: Colors.grey[500])),
             const Spacer(),
             Text(_formatDate(post.createdAt), style: TextStyle(fontSize: 11, color: Colors.grey[400])),
           ]),
@@ -548,8 +620,7 @@ class _PostWidgetState extends State<_PostWidget> {
                 Row(children: [
                   _buildStatItem(Icons.favorite, '${post.likes}', 'Likes'),
                   const SizedBox(width: 24),
-                  _buildStatItem(Icons.comment, '${post.comments}', 'Comments'),
-                  const SizedBox(width: 24),
+
                 ]),
               ]),
             ),
@@ -603,38 +674,94 @@ class _PostWidgetState extends State<_PostWidget> {
     ]);
   }
 
-  void _confirmDelete(BuildContext context, Post post) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
+Future<void> _confirmDelete(
+  BuildContext sheetContext,
+  Post post,
+) async {
+  final shouldDelete = await showDialog<bool>(
+    context: sheetContext,
+    builder: (dialogContext) {
+      return AlertDialog(
         title: const Text('Delete Post'),
-        content: const Text('Are you sure you want to delete this post?'),
+        content: const Text(
+          'Are you sure you want to delete this post?',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           TextButton(
-            onPressed: () async {
-              try {
-                await _postService.deletePost(post.id!);
-                Navigator.pop(context);
-                Navigator.pop(context);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Post deleted successfully'), backgroundColor: Colors.green),
-                  );
-                }
-              } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
-                }
-              }
+            onPressed: () {
+              Navigator.of(dialogContext).pop(false);
             },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop(true);
+            },
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: Colors.red),
+            ),
           ),
         ],
+      );
+    },
+  );
+
+  if (shouldDelete != true) return;
+  if (!mounted) return;
+
+  final postId = post.id;
+
+  if (postId == null || postId.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Unable to delete this post'),
+        backgroundColor: Colors.red,
+      ),
+    );
+    return;
+  }
+
+  Navigator.of(context).pop();
+
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!mounted) return;
+    setState(() {
+      _locallyDeletedPostIds.add(postId);
+    });
+
+    // 🆕 跟 UI 消失同时弹出提示，不等后台请求结果
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Post deleted successfully'),
+        backgroundColor: Colors.green,
+      ),
+    );
+  });
+
+  try {
+    await _postService.deletePost(postId);
+    // 🆕 成功了就不用再弹一次提示了，上面已经弹过
+  } catch (e) {
+    if (!mounted) return;
+
+    // 删除失败，把 post 恢复显示，并用另一条提示告知失败
+    setState(() {
+      _locallyDeletedPostIds.remove(postId);
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Failed to delete post: $e'),
+        backgroundColor: Colors.red,
       ),
     );
   }
 }
+
+
+}   // 关闭 _PostWidgetState class
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HISTORY WIDGET

@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../models/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
-import '../../services/history_service.dart';
 import '../../services/location_service.dart';
 import '../place/placeDetailPage.dart';
 import '../place/routePreviewPage.dart';
@@ -35,6 +34,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   StreamSubscription<PlaceArrivalEvent>? _arrivalSub;
   final Set<String> _checkInProgress = {};
   bool _isArrivalDialogOpen = false;
+  bool _didStartLocationTracking = false;
 
   @override
   void initState() {
@@ -44,17 +44,38 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       length: _itinerary.days.length,
       vsync: this,
     );
-    LocationService.instance.watchItinerary(_itinerary);
-    LocationService.instance.startTracking();
-    _arrivalSub = LocationService.instance.arrivalStream.listen(_onArrival);
+    _refreshItineraryTracking();
   }
 
   @override
   void dispose() {
     _arrivalSub?.cancel();
-    LocationService.instance.stopTracking(); 
+    if (_didStartLocationTracking) {
+      LocationService.instance.stopTracking();
+      _didStartLocationTracking = false;
+    }
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _refreshItineraryTracking() {
+    final shouldTrack =
+        LocationService.instance.watchItinerary(_itinerary);
+
+    if (shouldTrack && !_didStartLocationTracking) {
+      LocationService.instance.startTracking();
+      _didStartLocationTracking = true;
+      _arrivalSub ??=
+          LocationService.instance.arrivalStream.listen(_onArrival);
+      return;
+    }
+
+    if (!shouldTrack && _didStartLocationTracking) {
+      LocationService.instance.stopTracking();
+      _didStartLocationTracking = false;
+      _arrivalSub?.cancel();
+      _arrivalSub = null;
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -275,15 +296,18 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     );
 
     // ─────────────────────────────────────────────
-    // Step 3: Persist itinerary FIRST
+    // Step 3: Persist itinerary + history ATOMICALLY
+    //
+    // Firestore commits both writes together. The place can never become
+    // visited without its corresponding history entry, and a failed batch
+    // leaves both documents unchanged.
     // ─────────────────────────────────────────────
 
     try {
-      if (updatedItinerary.id.isNotEmpty) {
-        await ItineraryService.instance.update(
-          updatedItinerary,
-        );
-      }
+      await ItineraryService.instance.commitCheckIn(
+        itinerary: updatedItinerary,
+        visitedPlace: visited,
+      );
     } catch (e) {
       if (!mounted) return;
 
@@ -313,49 +337,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       visited.placeId,
     );
 
-    LocationService.instance.watchItinerary(
-      _itinerary,
-    );
-
-    // ─────────────────────────────────────────────
-    // Step 5: Save visit history
-    // ─────────────────────────────────────────────
-
-    try {
-      await HistoryService.instance.addEntry(
-        placeName: visited.name,
-        address: visited.address,
-        photoUrl: visited.photoUrl,
-        visitedAt: visited.visitedAt!,
-        itineraryId: _itinerary.id,
-        itineraryTitle: _itinerary.title,
-        placeId: visited.placeId,
-        primaryType: visited.primaryType,
-        lat: visited.lat,
-        lng: visited.lng,
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              e
-                  .toString()
-                  .replaceFirst(
-                    'Exception: ',
-                    '',
-                  ),
-            ),
-            backgroundColor:
-                Colors.orange[700],
-            behavior:
-                SnackBarBehavior.floating,
-            duration:
-                const Duration(seconds: 4),
-          ),
-        );
-      }
-    }
+    _refreshItineraryTracking();
 
     if (!mounted) return;
 
@@ -373,7 +355,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     );
 
     // ─────────────────────────────────────────────
-    // Step 6: Refresh achievements
+    // Step 5: Refresh achievements
     // ─────────────────────────────────────────────
 
     await Future.delayed(
@@ -1095,7 +1077,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       _tabController = TabController(length: _itinerary.days.length, vsync: this);
     }
 
-    LocationService.instance.watchItinerary(_itinerary);
+    _refreshItineraryTracking();
     _cardKeys.removeWhere((key, _) =>
         !_itinerary.days.any((d) => d.places.any((p) => p.placeId == key)));
   }
@@ -1281,9 +1263,7 @@ Future<void> _navigate(
 
   // Restore itinerary proximity detection after
   // navigation ends or the user backs out.
-  LocationService.instance.watchItinerary(
-    _itinerary,
-  );
+  _refreshItineraryTracking();
 
   if (arrived != true) {
     return;
