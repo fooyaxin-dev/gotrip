@@ -84,6 +84,7 @@ class NavigationController extends ChangeNotifier {
   double _debugGpsAccuracy = 0;
   double _debugHandleMs = 0;
   int _debugRouteVersion = 0;
+  double _debugPredictionLeadMeters = 0;
 
   String get debugTrackingState => _debugTrackingState;
   double get debugRecoverySeconds => _debugRecoverySeconds;
@@ -119,6 +120,7 @@ class NavigationController extends ChangeNotifier {
 
   int get debugRouteVersion => _debugRouteVersion;
   int get debugRoutePointCount => polylinePoints.length;
+  double get debugPredictionLeadMeters => _debugPredictionLeadMeters;
   double get debugHandleMs => _debugHandleMs;
   double get debugCameraBearing => cameraBearing;
   int get debugNearestSegment => nearestIdx;
@@ -300,11 +302,48 @@ class NavigationController extends ChangeNotifier {
     final routeEnd = _cumDist.last;
     final speed = _debugSpeedMps.clamp(0.0, 45.0);
 
-    // Small prediction lead prevents the arrow from always trailing the last
-    // accepted GPS fix, but is capped so visual state never runs far ahead.
-    final predictionLead = speed > 1.0
-        ? (speed * 0.55).clamp(0.0, 10.0)
+    // Route-constrained dead reckoning.
+    //
+    // The diagnostic overlay proved that the Android location stream can go
+    // several seconds without delivering a new Position even while the car is
+    // moving. The old renderer only predicted ~10 m ahead, so at ~40 km/h it
+    // moved smoothly for roughly one second, reached that 10 m ceiling, then
+    // froze until the next GPS burst. That is exactly the observed
+    // "smooth section -> pause -> smooth section" pattern.
+    //
+    // Keep rendering forward along the already-known route using the last
+    // trusted speed while GPS is temporarily silent. This does NOT change map
+    // matching or route progress; _matchedDistAlongRoute remains GPS-driven.
+    final gpsAgeSeconds = _lastGpsStreamEventAt == null
+        ? 0.0
+        : DateTime.now()
+                .difference(_lastGpsStreamEventAt!)
+                .inMilliseconds /
+            1000.0;
+
+    final canDeadReckon =
+        speed > 1.0 &&
+        _debugGpsAccuracy.isFinite &&
+        _debugGpsAccuracy <= 35.0 &&
+        (_debugTrackingState == 'MATCH' ||
+            _debugTrackingState == 'MATCH~');
+
+    // Up to ~4 seconds of route-constrained prediction. If Android delivers
+    // ~1 Hz fixes (the target after forcing LocationManager), this usually
+    // stays well below one second. The cap protects against running far ahead
+    // during a genuine GPS outage.
+    final predictionSeconds = canDeadReckon
+        ? gpsAgeSeconds.clamp(0.0, 4.0)
         : 0.0;
+
+    // Small latency compensation plus time-based dead reckoning.
+    final latencyLead = canDeadReckon ? speed * 0.30 : 0.0;
+    final deadReckonLead = speed * predictionSeconds;
+
+    final predictionLead =
+        (latencyLead + deadReckonLead).clamp(0.0, 50.0);
+
+    _debugPredictionLeadMeters = predictionLead;
 
     final desiredDist =
         (_matchedDistAlongRoute + predictionLead)
@@ -763,7 +802,15 @@ class NavigationController extends ChangeNotifier {
       locationSettings: AndroidSettings(
         accuracy:         LocationAccuracy.bestForNavigation,
         distanceFilter:   0,
-        intervalDuration: const Duration(milliseconds: 200),
+
+        // The diagnostic video shows the fused stream arriving in multi-second
+        // bursts (GPS age repeatedly climbs to ~4-9 s, then resets). For a
+        // foreground navigation session prefer Android LocationManager and a
+        // realistic high-rate request. GPS hardware is normally ~1 Hz; the
+        // visual renderer fills the interval between fixes.
+        forceLocationManager: true,
+        intervalDuration: const Duration(milliseconds: 500),
+
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationText:  'Navigation is active',
           notificationTitle: 'Turn-by-turn Navigation',

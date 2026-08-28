@@ -145,6 +145,9 @@ class _NavigationDebugOverlayState extends State<NavigationDebugOverlay> {
                 'Lag       ${nav.debugVisualLagMeters.toStringAsFixed(1)} m',
               ),
               Text(
+                'Predict   ${nav.debugPredictionLeadMeters.toStringAsFixed(1)} m',
+              ),
+              Text(
                 'Route gap ${_fmtDistance(nav.debugRawDistanceToRoute)}',
               ),
               Text(
