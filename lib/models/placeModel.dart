@@ -5,6 +5,7 @@ class PlaceModel {
   final double? lat;
   final double? lng;
   final double? rating;
+  final int? userRatingCount;
   final String? photoUrl;
   final String source;
   final String? primaryType;
@@ -23,6 +24,7 @@ class PlaceModel {
     this.lat,
     this.lng,
     this.rating,
+    this.userRatingCount,
     this.photoUrl,
     required this.source,
     this.primaryType,
@@ -73,6 +75,7 @@ class PlaceModel {
       lat:              (g['location']?['latitude']  as num?)?.toDouble(),
       lng:              (g['location']?['longitude'] as num?)?.toDouble(),
       rating:           (g['rating'] as num?)?.toDouble(),
+      userRatingCount:  (g['userRatingCount'] as num?)?.toInt(),
       photoUrl:         g['photos'] != null && (g['photos'] as List).isNotEmpty
                             ? g['photos'][0]['photoUri']
                             : null,
@@ -96,6 +99,7 @@ class PlaceModel {
       lat:             lat,
       lng:             lng,
       rating:          rating,
+      userRatingCount: userRatingCount,
       photoUrl:        photoUrl,
       source:          source,
       primaryType:     primaryType,
@@ -110,3 +114,5 @@ class PlaceModel {
   }
   
 }
+
+

@@ -821,16 +821,19 @@ Future<List<PlaceModel>> fetchForItinerary({
 
   print('🎯 [fetchForItinerary] entered with radius=${radius}m (lat=$lat, lng=$lng)');
 
-  final key = _locKey(lat, lng);
-  final cacheSubKey = '$key|${categories.join(",")}';
-  final cachedRadius = _itineraryRawCacheRadius[key];
+  final locationKey = _locKey(lat, lng);
+  final normalizedCategories = categories.toSet().toList()..sort();
+  final cacheKey = '$locationKey|${normalizedCategories.join(",")}'
+      '|POPULARITY';
+  final cachedRadius = _itineraryRawCacheRadius[cacheKey];
 
-  if (_itineraryRawCache.containsKey(key) &&
+  if (_itineraryRawCache.containsKey(cacheKey) &&
       cachedRadius != null &&
-      cachedRadius >= radius) {
-    print('🆓 Itinerary raw cache HIT for $key '
+      cachedRadius == radius) {
+    _itineraryLru.touch(cacheKey);
+    print('🆓 Itinerary raw cache HIT for $cacheKey '
         '(cached at ${cachedRadius}m, need ${radius}m) — no API call');
-    return _itineraryRawCache[key]!
+    return _itineraryRawCache[cacheKey]!
         .where((p) =>
             p.lat != null &&
             p.lng != null &&
@@ -839,31 +842,54 @@ Future<List<PlaceModel>> fetchForItinerary({
   }
 
   final relevantEntries = _itineraryCategoryTypes.entries
-      .where((e) => categories.contains(e.key))
+      .where((e) => normalizedCategories.contains(e.key))
       .toList();
 
-  print('🗺️ Itinerary raw cache MISS for $key — firing 5 independent '
-      'Google searchNearby calls (radius: ${radius}m)...');
+  print('🗺️ Itinerary cache MISS — preference categories are fetched '
+      'independently with POPULARITY ranking (radius: ${radius}m)...');
 
   final entries = await Future.wait(
     relevantEntries.map((entry) async {
       final primary = entry.key;
-      final types   = entry.value;
+      // Keep CategoryMapper as the source of truth, but do not send its
+      // legacy app alias `malay_restaurant` to Google. Nearby Search accepts
+      // only official Table A request types (`malaysian_restaurant` is the
+      // supported Google type).
+      final types = entry.value
+          .where((type) => type != 'malay_restaurant')
+          .toList();
       try {
         final raw = await PlacesApiService.searchNearby(
           lat: lat, lng: lng,
           types: types,
           maxResultCount: 20,
           radius: radius,
+          rankPreference: 'POPULARITY',
         );
-        final places = raw
-            .map((p) {
-              final place = PlaceModel.fromGoogle(p, primary: primary);
-              return (place.lat != null && place.lng != null) ? place : null;
-            })
-            .whereType<PlaceModel>()
-            .toList();
-        print('  ✅ $primary: ${places.length} fetched (独立 20 名额)');
+        final seen = <String>{};
+        final places = <PlaceModel>[];
+
+        void addRawPlaces(List<Map<String, dynamic>> rawPlaces) {
+          for (final item in rawPlaces) {
+            final place = PlaceModel.fromGoogle(item, primary: primary);
+            if (place.id.isEmpty ||
+                place.lat == null ||
+                place.lng == null ||
+                CategoryMapper.resolvePrimaryType(
+                      place.primaryType,
+                      place.allTypes,
+                    ) !=
+                    primary ||
+                !seen.add(place.id)) {
+              continue;
+            }
+            places.add(place);
+          }
+        }
+
+        addRawPlaces(raw);
+
+        print('  ✅ $primary: ${places.length} popularity-ranked candidates');
         return places;
       } catch (e) {
         print('  ⚠️ $primary failed: $e');
@@ -882,22 +908,108 @@ Future<List<PlaceModel>> fetchForItinerary({
     }
   }
 
-  _itineraryRawCache[key] = places;
-  _itineraryRawCacheRadius[key] = radius;
+  _itineraryRawCache[cacheKey] = places;
+  _itineraryRawCacheRadius[cacheKey] = radius;
+  _itineraryLru.touch(cacheKey);
 
-  print('✅ Itinerary raw cache STORED for $key: ${places.length} places @ ${radius}m');
+  print('✅ Itinerary raw cache STORED for $cacheKey: '
+      '${places.length} places @ ${radius}m');
   return places;
 }
 
+Future<List<PlaceModel>> fetchAdditionalForItinerary({
+  required double lat,
+  required double lng,
+  required int radius,
+  required Map<String, int> additionalNeededByCategory,
+  required Set<String> existingPlaceIds,
+}) async {
+  final requestedEntries = _itineraryCategoryTypes.entries
+      .where((entry) =>
+          (additionalNeededByCategory[entry.key] ?? 0) > 0)
+      .toList();
+
+  if (requestedEntries.isEmpty) return [];
+
+  const typeBatchSize = 4;
+  final fetchedByCategory = await Future.wait(
+    requestedEntries.map((entry) async {
+      final category = entry.key;
+      final needed = additionalNeededByCategory[category] ?? 0;
+      final queryTypes = entry.value
+          .where((type) => type != 'malay_restaurant')
+          .toList();
+      final localSeen = <String>{...existingPlaceIds};
+      final additional = <PlaceModel>[];
+
+      for (int start = 0;
+          start < queryTypes.length && additional.length < needed;
+          start += typeBatchSize) {
+        final end = min(start + typeBatchSize, queryTypes.length);
+        try {
+          final raw = await PlacesApiService.searchNearby(
+            lat: lat,
+            lng: lng,
+            types: queryTypes.sublist(start, end),
+            maxResultCount: 20,
+            radius: radius,
+            rankPreference: 'POPULARITY',
+          );
+
+          for (final item in raw) {
+            final place = PlaceModel.fromGoogle(item, primary: category);
+            if (place.id.isEmpty ||
+                place.lat == null ||
+                place.lng == null ||
+                CategoryMapper.resolvePrimaryType(
+                      place.primaryType,
+                      place.allTypes,
+                    ) !=
+                    category ||
+                !localSeen.add(place.id)) {
+              continue;
+            }
+            additional.add(place);
+            if (additional.length >= needed) break;
+          }
+        } catch (e) {
+          print('  ⚠️ Additional $category batch failed: $e');
+        }
+      }
+
+      print('  ➕ $category: ${additional.length}/$needed extra candidates');
+      return additional;
+    }),
+  );
+
+  final merged = <PlaceModel>[];
+  final mergedIds = <String>{...existingPlaceIds};
+  for (final list in fetchedByCategory) {
+    for (final place in list) {
+      if (mergedIds.add(place.id)) merged.add(place);
+    }
+  }
+  return merged;
+}
+
+
 void clearItineraryRawCache([double? lat, double? lng]) {
   if (lat != null && lng != null) {
-    final key = _locKey(lat, lng);
-    _itineraryRawCache.remove(key);
-    _itineraryRawCacheRadius.remove(key);
+    final prefix = '${_locKey(lat, lng)}|';
+    final keys = _itineraryRawCache.keys
+        .where((key) => key.startsWith(prefix))
+        .toList();
+    for (final key in keys) {
+      _itineraryRawCache.remove(key);
+      _itineraryRawCacheRadius.remove(key);
+      _itineraryLru.remove(key);
+    }
   } else {
     _itineraryRawCache.clear();
     _itineraryRawCacheRadius.clear();
+    _itineraryLru.clear();
   }
 }
 
 }
+

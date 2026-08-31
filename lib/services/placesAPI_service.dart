@@ -205,7 +205,7 @@ class PlacesApiService {
     final response = await http.post(
       Uri.parse('$_baseUrl/places:searchNearby'),
       headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
+        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
       ),
       body: jsonEncode(bodyMap),
     );
@@ -250,7 +250,7 @@ class PlacesApiService {
     final response = await http.post(
       url,
       headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
+        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
       ),
       body: body,
     );
@@ -490,6 +490,7 @@ class PlacesApiService {
       },
       'types':      (p['types'] as List?) ?? [],
       'rating':     (p['rating'] as num?)?.toDouble(),
+      'userRatingCount': (p['userRatingCount'] as num?)?.toInt(),
       'photos':     photoList,
       'priceLevel': p['priceLevel'],
       'isOpenNow':  p['regularOpeningHours']?['openNow'] as bool?, 
@@ -497,3 +498,5 @@ class PlacesApiService {
     };
   }
 }
+
+

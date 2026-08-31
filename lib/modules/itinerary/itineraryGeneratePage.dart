@@ -69,7 +69,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     {'key': 'park',               'label': 'Nature',        'icon': '🌿'},
     {'key': 'tourist_attraction', 'label': 'Historical',    'icon': '🏛️'},
     {'key': 'shopping_mall',      'label': 'Shopping',      'icon': '🛍️'},
-    {'key': 'amusement_park',     'label': 'Entertainment', 'icon': '🎭'},
+    {'key': 'entertainment',      'label': 'Entertainment', 'icon': '🎭'},
   ];
 
   static const _allCuisines = [
@@ -1085,6 +1085,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       'park':               '🌿 Nature',
       'tourist_attraction': '🏛️ Historical',
       'shopping_mall':      '🛍️ Shopping',
+      'entertainment':      '🎭 Entertainment',
       'amusement_park':     '🎭 Entertainment',
     };
     const cuiLabels = {

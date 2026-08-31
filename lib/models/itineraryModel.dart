@@ -243,3 +243,6 @@ class ItineraryModel {
   bool get isCompleted => totalPlaces > 0 && totalVisited == totalPlaces;
   bool get isStarted   => totalVisited > 0;
 }
+
+
+

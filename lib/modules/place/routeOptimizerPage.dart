@@ -18,6 +18,7 @@ import '../../models/placeModel.dart';
 import '../../services/placesAPI_service.dart';
 import 'placeDetailPage.dart';   // 跟 RealTimeDetectPage 用的是同一个相对路径，如果不在同一文件夹，按实际路径调整
 import '../../services/connectivity_service.dart';
+import '../../services/category_mapper.dart';
 
 
 class RouteOptimizerPage extends StatefulWidget {
@@ -97,6 +98,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
   // Days currently fetching a real route matrix for Re-optimize
   final Set<int> _reOptimizingDays = {};
+  bool _isReOptimizingAll = false;
 
   String _computeLegsSignature(int dayIndex) {
     final places = _itinerary.days[dayIndex].places;
@@ -146,9 +148,10 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   double get _minSheetSize {
     final screenHeight = MediaQuery.of(context).size.height;
     final bottomInset  = MediaQuery.of(context).padding.bottom;
-    // 手柄 + 行程标题栏 + 日期tab + 分割线 + 底部按钮栏 的大致固定高度
-    const fixedChromeHeight = 24.0 + 58.0 + 54.0 + 1.0 + 66.0;
-    return ((fixedChromeHeight + bottomInset) / screenHeight).clamp(0.18, 0.40);
+    // Handle + trip header + day tabs + spacing/divider + bottom action bar.
+    // Keep all fixed controls inside the sheet even on shorter Android screens.
+    const fixedChromeHeight = 24.0 + 66.0 + 62.0 + 9.0 + 1.0 + 76.0;
+    return ((fixedChromeHeight + bottomInset) / screenHeight).clamp(0.30, 0.48);
   }
 
   bool _isDayLocked(int dayIndex) {
@@ -159,9 +162,30 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     final day = _itinerary.days[dayIndex];
 
-    return widget.isEditingExisting &&
-        day.totalCount > 0 &&
-        day.isCompleted;
+    return _itinerary.isCompleted ||
+        (day.totalCount > 0 && day.isCompleted);
+  }
+
+  bool _isDayStarted(int dayIndex) {
+    if (dayIndex < 0 || dayIndex >= _itinerary.days.length) return false;
+    return _itinerary.days[dayIndex].places.any((place) => place.isVisited);
+  }
+
+  bool _isPlaceLocked(int dayIndex, int placeIndex) {
+    if (_isDayLocked(dayIndex)) return true;
+    final places = _itinerary.days[dayIndex].places;
+    return placeIndex < 0 ||
+        placeIndex >= places.length ||
+        places[placeIndex].isVisited ||
+        placeIndex <= _lastVisitedIndex(dayIndex);
+  }
+
+  int _lastVisitedIndex(int dayIndex) {
+    final places = _itinerary.days[dayIndex].places;
+    for (int i = places.length - 1; i >= 0; i--) {
+      if (places[i].isVisited) return i;
+    }
+    return -1;
   }
 
 
@@ -193,11 +217,123 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     }
 
   Future<void> _autoOptimizeAllDays() async {
+    _improveCrossDayAssignments();
     for (int d = 0; d < _itinerary.days.length; d++) {
       if (!mounted) return;
       if (_itinerary.days[d].places.length >= 2) {
         await _reOptimizeDay(d);
       }
+    }
+  }
+
+  double _dayCompactnessCost(List<ItineraryPlace> places) {
+    if (places.length < 2) return 0;
+    var total = 0.0;
+    var pairs = 0;
+    for (int i = 0; i < places.length - 1; i++) {
+      final a = places[i];
+      if (a.lat == null || a.lng == null) continue;
+      for (int j = i + 1; j < places.length; j++) {
+        final b = places[j];
+        if (b.lat == null || b.lng == null) continue;
+        total += Geolocator.distanceBetween(a.lat!, a.lng!, b.lat!, b.lng!);
+        pairs++;
+      }
+    }
+    return pairs == 0 ? 0 : total / pairs;
+  }
+
+  bool _improveCrossDayAssignments() {
+    if (_itinerary.days.length < 2) return false;
+    final days = _itinerary.days
+        .map((day) => List<ItineraryPlace>.from(day.places))
+        .toList();
+    var changed = false;
+
+    bool isRestaurant(ItineraryPlace place) => CategoryMapper.isRestaurant(
+          place.primaryType,
+          const <String>[],
+        );
+
+    for (int pass = 0; pass < 60; pass++) {
+      double bestSaving = 0;
+      int? bestDayA;
+      int? bestIndexA;
+      int? bestDayB;
+      int? bestIndexB;
+
+      for (int dayA = 0; dayA < days.length - 1; dayA++) {
+        if (_isDayLocked(dayA) || _isDayStarted(dayA)) continue;
+        for (int dayB = dayA + 1; dayB < days.length; dayB++) {
+          if (_isDayLocked(dayB) || _isDayStarted(dayB)) continue;
+          final before =
+              _dayCompactnessCost(days[dayA]) + _dayCompactnessCost(days[dayB]);
+
+          for (int indexA = 0; indexA < days[dayA].length; indexA++) {
+            for (int indexB = 0; indexB < days[dayB].length; indexB++) {
+              if (isRestaurant(days[dayA][indexA]) !=
+                  isRestaurant(days[dayB][indexB])) {
+                continue;
+              }
+              final placeA = days[dayA][indexA];
+              final placeB = days[dayB][indexB];
+              days[dayA][indexA] = placeB;
+              days[dayB][indexB] = placeA;
+              final after = _dayCompactnessCost(days[dayA]) +
+                  _dayCompactnessCost(days[dayB]);
+              days[dayA][indexA] = placeA;
+              days[dayB][indexB] = placeB;
+
+              final saving = before - after;
+              if (saving > bestSaving + 1.0) {
+                bestSaving = saving;
+                bestDayA = dayA;
+                bestIndexA = indexA;
+                bestDayB = dayB;
+                bestIndexB = indexB;
+              }
+            }
+          }
+        }
+      }
+
+      if (bestDayA == null || bestDayB == null) break;
+      final indexA = bestIndexA!;
+      final indexB = bestIndexB!;
+      final placeA = days[bestDayA][indexA];
+      days[bestDayA][indexA] = days[bestDayB][indexB];
+      days[bestDayB][indexB] = placeA;
+      changed = true;
+    }
+
+    if (!changed) return false;
+    final updatedDays = List<ItineraryDay>.generate(
+      _itinerary.days.length,
+      (i) => _itinerary.days[i].copyWith(
+        places: days[i],
+        clearLegs: true,
+      ),
+    );
+    _itinerary = _itinerary.copyWith(days: updatedDays);
+    for (int i = 0; i < updatedDays.length; i++) {
+      _invalidateLegs(i);
+    }
+    _updateMapOverlays();
+    return true;
+  }
+
+  Future<void> _reOptimizeAllDays() async {
+    if (_isReOptimizingAll) return;
+    setState(() => _isReOptimizingAll = true);
+    try {
+      _improveCrossDayAssignments();
+      if (mounted) setState(() {});
+      for (int day = 0; day < _itinerary.days.length; day++) {
+        if (!mounted) return;
+        await _reOptimizeDay(day);
+      }
+    } finally {
+      if (mounted) setState(() => _isReOptimizingAll = false);
     }
   }
 
@@ -714,9 +850,19 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       return;
     }
 
+    final currentPlaces = _itinerary.days[dayIndex].places;
+    if (oldIndex < 0 ||
+        oldIndex >= currentPlaces.length ||
+        currentPlaces[oldIndex].isVisited) {
+      return;
+    }
+
     if (newIndex > oldIndex) {
       newIndex--;
     }
+
+    // Future stops may be reordered, but never across the visited history.
+    if (newIndex <= _lastVisitedIndex(dayIndex)) return;
 
     final days =
         List<ItineraryDay>.from(
@@ -754,7 +900,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
   void _removePlace(int dayIndex, int placeIndex) {
 
-    if (_isDayLocked(dayIndex)) {
+    if (_isPlaceLocked(dayIndex, placeIndex)) {
       return;
     }
 
@@ -848,7 +994,10 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
   Future<void> _reOptimizeDay(int dayIndex) async {
 
-    if (_isDayLocked(dayIndex)) {
+    // Historical/visited stops are immutable. Re-optimizing a partially
+    // travelled day could change their order, so only untouched days enter
+    // the automatic solver; future stops remain manually editable.
+    if (_isDayLocked(dayIndex) || _isDayStarted(dayIndex)) {
       return;
     }
 
@@ -903,50 +1052,99 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         );
       }
 
-      // Nearest-neighbor walk over the real (or straight-line fallback)
-      // distances, starting from point 0 — the known start for day 0, or
-      // simply the first place for day > 0.
-      final remaining = List<int>.generate(points.length, (i) => i)..removeAt(0);
-      final order = <int>[];
-
-      // 🔧 FIX: 当这天没有真实起点时（dayIndex > 0），index 0 本身就是
-      // 这天的第一个真实地点，不是占位符——必须先加进 order，否则它会
-      // 被当成"起跑点"用来计算距离，却永远进不了最终结果，直接消失。
-      if (!hasStart) {
-        order.add(0);
-      }
-
-      int current = 0;
-      while (remaining.isNotEmpty) {
-        int? nearest;
-        double minDist = double.infinity;
-        for (final idx in remaining) {
-          final d = distBetween(current, idx);
-          if (d < minDist) { minDist = d; nearest = idx; }
-        }
-        nearest ??= remaining.first;
-        order.add(nearest);
-        remaining.remove(nearest);
-        current = nearest;
-      }
-
+      // Route optimization has two levels:
+      //   1. preserve sensible meal slots;
+      //   2. choose the nearest candidate that matches the current slot.
+      //
+      // A completely unconstrained nearest-neighbour pass can put two nearby
+      // restaurants next to each other and destroy the itinerary's meal
+      // pattern. Food-only days remain all-Food naturally.
       final placeOffset = hasStart ? 1 : 0;
-      final reordered = order
-          .where((idx) => idx >= placeOffset)
+      final remaining = List<int>.generate(
+        geoPlaces.length,
+        (i) => i + placeOffset,
+      );
+      final order = <int>[];
+      final restaurantCount = geoPlaces.where((place) {
+        return CategoryMapper.isRestaurant(
+          place.primaryType,
+          const <String>[],
+        );
+      }).length;
+      final mealPattern = _buildMealSlotPattern(
+        geoPlaces.length,
+        restaurantCount,
+      );
+
+      bool isRestaurantPoint(int pointIndex) {
+        final place = geoPlaces[pointIndex - placeOffset];
+        return CategoryMapper.isRestaurant(
+          place.primaryType,
+          const <String>[],
+        );
+      }
+
+      int? currentPoint = hasStart ? 0 : null;
+      for (int slot = 0; slot < mealPattern.length; slot++) {
+        final desiredRestaurant = mealPattern[slot];
+        var eligible = remaining
+            .where((idx) => isRestaurantPoint(idx) == desiredRestaurant)
+            .toList();
+
+        // Defensive fallback for incomplete/misclassified place data.
+        if (eligible.isEmpty) eligible = List<int>.from(remaining);
+
+        int selected;
+        if (currentPoint != null) {
+          selected = eligible.reduce((best, candidate) {
+            return distBetween(currentPoint!, candidate) <
+                    distBetween(currentPoint!, best)
+                ? candidate
+                : best;
+          });
+        } else {
+          // Later days have no user origin. Start at the most central candidate
+          // of the required type instead of arbitrarily fixing list index 0.
+          selected = eligible.reduce((best, candidate) {
+            final candidateTotal = remaining
+                .where((idx) => idx != candidate)
+                .fold<double>(0, (sum, idx) => sum + distBetween(candidate, idx));
+            final bestTotal = remaining
+                .where((idx) => idx != best)
+                .fold<double>(0, (sum, idx) => sum + distBetween(best, idx));
+            return candidateTotal < bestTotal ? candidate : best;
+          });
+        }
+
+        order.add(selected);
+        remaining.remove(selected);
+        currentPoint = selected;
+      }
+
+      final slotMinutes = geoPlaces
+          .map((p) => _parseTimeToMinutes(p.suggestedTime))
+          .toList()
+        ..sort();
+      final optimizedOrder = _improveRouteOrder(
+        order,
+        distance: distBetween,
+        isRestaurantPoint: isRestaurantPoint,
+        slotMinutes: slotMinutes,
+        startPoint: hasStart ? 0 : null,
+      );
+
+      final reordered = optimizedOrder
           .map((idx) => geoPlaces[idx - placeOffset])
           .toList();
 
-      // 改之后 —— 复用同一套 _assignSequentialTimes，不传 legsMinutes，
-      // 保持跟之前完全一样的行为（纯时长累加，不含交通时间）
-      final startMinutes = places.isEmpty
-          ? 9 * 60
-          : places
-              .map((p) => _parseTimeToMinutes(p.suggestedTime))
-              .reduce((a, b) => a < b ? a : b);
-
-      final retimed = _assignSequentialTimes(
-        reordered,
-        startCursorMinutes: startMinutes,
+      // Preserve the day's existing chronological slots. Sequentially adding
+      // only visit duration used to collapse lunch/dinner gaps after a route
+      // reorder, which is another way restaurants became grouped together.
+      final retimed = List<ItineraryPlace>.generate(
+        reordered.length,
+        (i) => reordered[i].copyWith(
+          suggestedTime: _minutesToTimeString(slotMinutes[i]),
+        ),
       );
 
       if (!mounted) return;
@@ -962,6 +1160,164 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     }
   }
 
+  List<int> _improveRouteOrder(
+    List<int> initial, {
+    required double Function(int, int) distance,
+    required bool Function(int) isRestaurantPoint,
+    required List<int> slotMinutes,
+    int? startPoint,
+  }) {
+    if (initial.length < 2) return List<int>.from(initial);
+    final restaurantCount = initial.where(isRestaurantPoint).length;
+    final allRestaurants = restaurantCount == initial.length;
+
+    int minutesOutsideMealWindows(int minute) {
+      const windows = <(int, int)>[
+        (11 * 60, 14 * 60),
+        (17 * 60 + 30, 20 * 60 + 30),
+      ];
+      var nearest = 24 * 60;
+      for (final window in windows) {
+        if (minute >= window.$1 && minute <= window.$2) return 0;
+        final delta = minute < window.$1
+            ? window.$1 - minute
+            : minute - window.$2;
+        if (delta < nearest) nearest = delta;
+      }
+      return nearest;
+    }
+
+    double objective(List<int> route) {
+      var cost = 0.0;
+      if (startPoint != null) cost += distance(startPoint, route.first);
+      for (int i = 1; i < route.length; i++) {
+        cost += distance(route[i - 1], route[i]);
+      }
+
+      if (!allRestaurants) {
+        for (int i = 0; i < route.length && i < slotMinutes.length; i++) {
+          if (isRestaurantPoint(route[i])) {
+            // Soft time-window cost: distance can override it when necessary,
+            // but lunch/dinner placement is normally preferred.
+            cost += minutesOutsideMealWindows(slotMinutes[i]) * 35.0;
+            if (i > 0 && isRestaurantPoint(route[i - 1])) cost += 4000.0;
+          }
+        }
+      }
+      return cost;
+    }
+
+    var best = List<int>.from(initial);
+    var bestCost = objective(best);
+
+    // Swap, relocate and 2-opt neighbourhoods. This evaluates the
+    // whole route cost rather than greedily selecting only the next stop.
+    for (int pass = 0; pass < 80; pass++) {
+      List<int>? bestCandidate;
+      var candidateCost = bestCost;
+
+      for (int i = 0; i < best.length - 1; i++) {
+        for (int j = i + 1; j < best.length; j++) {
+          final swapped = List<int>.from(best);
+          final temp = swapped[i];
+          swapped[i] = swapped[j];
+          swapped[j] = temp;
+          final swapCost = objective(swapped);
+          if (swapCost + 1.0 < candidateCost) {
+            candidateCost = swapCost;
+            bestCandidate = swapped;
+          }
+
+          final relocated = List<int>.from(best);
+          final moved = relocated.removeAt(i);
+          relocated.insert(j, moved);
+          final relocateCost = objective(relocated);
+          if (relocateCost + 1.0 < candidateCost) {
+            candidateCost = relocateCost;
+            bestCandidate = relocated;
+          }
+
+          final relocatedBack = List<int>.from(best);
+          final movedBack = relocatedBack.removeAt(j);
+          relocatedBack.insert(i, movedBack);
+          final relocateBackCost = objective(relocatedBack);
+          if (relocateBackCost + 1.0 < candidateCost) {
+            candidateCost = relocateBackCost;
+            bestCandidate = relocatedBack;
+          }
+
+          final reversed = <int>[
+            ...best.take(i),
+            ...best.sublist(i, j + 1).reversed,
+            ...best.skip(j + 1),
+          ];
+          final reverseCost = objective(reversed);
+          if (reverseCost + 1.0 < candidateCost) {
+            candidateCost = reverseCost;
+            bestCandidate = reversed;
+          }
+        }
+      }
+
+      if (bestCandidate == null) break;
+      best = bestCandidate;
+      bestCost = candidateCost;
+    }
+
+    return best;
+  }
+
+  List<bool> _buildMealSlotPattern(int totalStops, int restaurantCount) {
+    if (totalStops <= 0 || restaurantCount <= 0) {
+      return List<bool>.filled(totalStops, false);
+    }
+    if (restaurantCount >= totalStops) {
+      return List<bool>.filled(totalStops, true);
+    }
+
+    final preferredRestaurantSlots = switch (totalStops) {
+      1 => <int>[],
+      2 => <int>[1],
+      3 => <int>[1],
+      4 => <int>[1, 3],
+      5 => <int>[1, 3],
+      _ => <int>[2, 4],
+    };
+
+    final selectedSlots = <int>{};
+    for (final slot in preferredRestaurantSlots) {
+      if (selectedSlots.length >= restaurantCount) break;
+      if (slot < totalStops) selectedSlots.add(slot);
+    }
+
+    // Normally mixed itineraries need at most two restaurant slots. This
+    // fallback still preserves every restaurant if older saved data contains
+    // more, while spreading the extra Food stops as evenly as possible.
+    while (selectedSlots.length < restaurantCount) {
+      int? bestSlot;
+      double bestSeparation = -1;
+      for (int slot = 0; slot < totalStops; slot++) {
+        if (selectedSlots.contains(slot)) continue;
+        final separation = selectedSlots.isEmpty
+            ? totalStops.toDouble()
+            : selectedSlots
+                .map((used) => (slot - used).abs().toDouble())
+                .reduce((a, b) => a < b ? a : b);
+        if (separation > bestSeparation) {
+          bestSeparation = separation;
+          bestSlot = slot;
+        }
+      }
+      if (bestSlot == null) break;
+      selectedSlots.add(bestSlot);
+    }
+
+    return List<bool>.generate(
+      totalStops,
+      selectedSlots.contains,
+    );
+  }
+
   // 晚上 22:00 之后才结束/开始，视为需要提醒用户"太晚了"
   static const int _lateNightThresholdMinutes = 22 * 60;
 
@@ -975,14 +1331,12 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     return '$hh:$mm';
   }
 
-  /// 共用的游标累加逻辑 —— _reOptimizeDay（整天重排）和 _cascadeTimes
-  /// （单点改动后顺延）都调用这一个方法，避免两边各写一套、以后改一处
-  /// 忘了改另一处。
+  /// 单点改动后的共用游标累加逻辑。整天 route optimization 会保留
+  /// 原有 meal slots，所以不使用这个 sequential retiming helper。
   ///
   /// [legsMinutes]（若提供）：legsMinutes[i] = 上一站到 places[i] 的通勤
   /// 分钟数，跟 _legsFor(dayIndex) 返回的 legs.minutes 对齐。
-  /// [skipFirstLegTravel]：true = 传入列表的第一项不加交通时间（用于
-  /// "整天重排"，第一站的时间本来就是这天的起点，不需要额外交通时间）；
+  /// [skipFirstLegTravel]：true = 传入列表的第一项不加交通时间；
   /// false = 第一项也要加（用于"级联顺延"，因为这个"第一项"其实是被改
   /// 动地点后面的下一站，中间确实有一段真实交通时间要算进去）。
   List<ItineraryPlace> _assignSequentialTimes(
@@ -1086,6 +1440,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     ItineraryPlace updated, {
     required bool checkArrivalFeasibility,
   }) async {
+    if (_isPlaceLocked(dayIndex, placeIndex)) return;
     final days   = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
 
@@ -1185,6 +1540,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       return;
     }
 
+    if (targetIndex <= _lastVisitedIndex(targetDayIndex)) return;
+
     if (payload.isFromPool) {
       _addPoolPlaceToPosition(
         payload.poolPlace!,
@@ -1205,6 +1562,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     if (_isDayLocked(sourceDayIndex)) {
       return;
     }
+
+    if (_isPlaceLocked(sourceDayIndex, sourcePlaceIndex)) return;
 
     if (sourceDayIndex ==
             targetDayIndex &&
@@ -1264,6 +1623,7 @@ void _addPoolPlaceToPosition(
       if (_isDayLocked(targetDayIndex)) {
         return;
       }
+      if (targetIndex <= _lastVisitedIndex(targetDayIndex)) return;
 
   final days = List<ItineraryDay>.from(_itinerary.days);
   final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
@@ -1327,6 +1687,7 @@ void _addPoolPlaceToPosition(
 
   Future<void> _pickTime(
       int dayIndex, int placeIndex, ItineraryPlace place) async {
+      if (_isPlaceLocked(dayIndex, placeIndex)) return;
       final picked = await showTimePicker(
         context: context,
         initialTime: _parseTime(place.suggestedTime),
@@ -1353,6 +1714,7 @@ void _addPoolPlaceToPosition(
 
   Future<void> _pickDuration(
       int dayIndex, int placeIndex, ItineraryPlace place) async {
+    if (_isPlaceLocked(dayIndex, placeIndex)) return;
     const presets = [15, 30, 45, 60, 90, 120, 150, 180, 240];
     int selected  = place.durationMinutes;
 
@@ -1844,12 +2206,21 @@ Future<void> _saveAndContinue() async {
               ],
             ),
           ),
-          if (_selectedIndex != 0 && _selectedIndex != _poolTabIndex)
+          if (_selectedIndex != _poolTabIndex &&
+              !_itinerary.isCompleted &&
+              (_selectedIndex == 0 || !_isDayStarted(_selectedIndex - 1)))
             Builder(builder: (context) {
               final dayIndex = _selectedIndex - 1;
-              final isBusy = _reOptimizingDays.contains(dayIndex);
+              final isOverview = _selectedIndex == 0;
+              final isBusy = isOverview
+                  ? _isReOptimizingAll
+                  : _reOptimizingDays.contains(dayIndex);
               return GestureDetector(
-                onTap: isBusy ? null : () => _reOptimizeDay(dayIndex),
+                onTap: isBusy
+                    ? null
+                    : isOverview
+                        ? _reOptimizeAllDays
+                        : () => _reOptimizeDay(dayIndex),
                 child: Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 10, vertical: 6),
@@ -1868,7 +2239,12 @@ Future<void> _saveAndContinue() async {
                       const Icon(Icons.auto_fix_high_rounded,
                           size: 13, color: Color(0xFF7C4DFF)),
                     const SizedBox(width: 4),
-                    Text(isBusy ? 'Optimizing...' : 'Re-optimize',
+                    Text(
+                        isBusy
+                            ? 'Optimizing...'
+                            : isOverview
+                                ? 'Optimize All'
+                                : 'Re-optimize',
                         style: const TextStyle(
                             fontSize: 11,
                             color: Color(0xFF7C4DFF),
@@ -2129,6 +2505,7 @@ Future<void> _saveAndContinue() async {
 
   Widget _buildDraggableChip(
       int dayIndex, int placeIndex, ItineraryPlace place, Color color) {
+    final locked = _isPlaceLocked(dayIndex, placeIndex);
     final chip = GestureDetector(   // 🆕 包一层，点击看详情
     onTap: () => _openPlaceDetailFromItinerary(place),
     child: Container(
@@ -2144,7 +2521,11 @@ Future<void> _saveAndContinue() async {
             offset: const Offset(0, 2))],
       ),
       child: Row(children: [
-        Icon(Icons.drag_indicator_rounded, size: 16, color: Colors.grey[350]),
+        Icon(
+          locked ? Icons.lock_outline_rounded : Icons.drag_indicator_rounded,
+          size: 16,
+          color: Colors.grey[350],
+        ),
         const SizedBox(width: 6),
         Container(
           width: 22, height: 22,
@@ -2189,6 +2570,8 @@ Future<void> _saveAndContinue() async {
       ]),
     )
     );
+
+    if (locked) return chip;
 
     return LongPressDraggable<_DragPayload>(
       data: _DragPayload.fromDay(
@@ -2310,7 +2693,7 @@ Future<void> _saveAndContinue() async {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            SizedBox(width: 28, height: 28, child: TravelLoadingIndicator()),
+            SizedBox(width: 180, height: 180, child: TravelLoadingIndicator()),
             SizedBox(height: 12),
           ],
         ),
@@ -2382,6 +2765,7 @@ String _typeLabel(String type) {
     'bakery':             '🥐 Bakery',
     'tourist_attraction': '🏛️ Historical',
     'shopping_mall':      '🛍️ Shopping',
+    'entertainment':      '🎭 Entertainment',
     'amusement_park':     '🎭 Entertainment',
     'park':               '🌿 Nature',
     'hospital':           '🏥 Medical',
@@ -2553,7 +2937,7 @@ Widget _buildPoolChip(PlaceModel place) {
     dayColor,
   );
 
-  final locked = _isDayLocked(dayIndex);
+  final locked = _isPlaceLocked(dayIndex, index);
 
   final card = Container(
     decoration: BoxDecoration(
@@ -3145,7 +3529,7 @@ Widget _buildPoolChip(PlaceModel place) {
   // 被替换下来的原地点会重新放回候补池，避免用户换来换去丢失选项。
   void _swapPlace(int dayIndex, int placeIndex, PlaceModel replacement) {
 
-    if (_isDayLocked(dayIndex)) {
+    if (_isPlaceLocked(dayIndex, placeIndex)) {
       return;
     }
 
@@ -3197,20 +3581,47 @@ Widget _buildPoolChip(PlaceModel place) {
     );
   }
 
-  // 🆕 弹出候补名单——只显示跟当前地点同类型的候选，按离当前地点的距离排序
-  void _showSwapSheet(int dayIndex, int placeIndex, ItineraryPlace current) {
+  // The leftover pool was built from the categories selected during Generate.
+  // Swap may use any of those selected categories, rather than being locked to
+  // the current place's category. No additional nearby-search API call is made.
+    // The leftover pool was built from the categories selected during Generate.
+  // Swap may use any of those selected categories, rather than being locked to
+  // the current place's category. No additional nearby-search API call is made.
+  void _showSwapSheet(
+    int dayIndex,
+    int placeIndex,
+    ItineraryPlace current,
+  ) {
+    if (_isPlaceLocked(dayIndex, placeIndex)) return;
+
+    final scheduledIds = _itinerary.days
+        .expand((day) => day.places)
+        .map((place) => place.placeId)
+        .toSet();
+
     final candidates = _leftovers
-        .where((p) => p.primaryType == current.primaryType)
+        .where((place) {
+          final category = CategoryMapper.resolvePrimaryType(
+            place.primaryType,
+            place.allTypes,
+          );
+          return !scheduledIds.contains(place.id) &&
+              CategoryMapper.isLearnableCategory(category);
+        })
         .toList()
       ..sort((a, b) {
-        if (current.lat == null || current.lng == null) return 0;
+        if (current.lat == null || current.lng == null) {
+          return (b.rating ?? 0).compareTo(a.rating ?? 0);
+        }
         final da = (a.lat != null && a.lng != null)
             ? _distSqStatic(a.lat!, a.lng!, current.lat!, current.lng!)
             : double.infinity;
         final db = (b.lat != null && b.lng != null)
             ? _distSqStatic(b.lat!, b.lng!, current.lat!, current.lng!)
             : double.infinity;
-        return da.compareTo(db);
+        final distanceOrder = da.compareTo(db);
+        if (distanceOrder != 0) return distanceOrder;
+        return (b.rating ?? 0).compareTo(a.rating ?? 0);
       });
 
     showModalBottomSheet(
@@ -3250,55 +3661,93 @@ Widget _buildPoolChip(PlaceModel place) {
             Expanded(
               child: candidates.isEmpty
                   ? Center(
-                      child: Text('No alternatives found for this category',
+                      child: Text('No alternatives found nearby',
                           style: TextStyle(color: Colors.grey[400])),
                     )
-                  : ListView.builder(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      itemCount: candidates.length,
-                      itemBuilder: (_, i) {
-                        final c = candidates[i];
-                        return ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: c.photoUrl != null
-                                ? CachedNetworkImage(
-                                    imageUrl: c.photoUrl!,
-                                    width: 52, height: 52, fit: BoxFit.cover,
-                                    errorWidget: (_, __, ___) => _photoPlaceholder(),
-                                  )
-                                : _photoPlaceholder(),
-                          ),
-                          title: Text(c.name,
-                              maxLines: 1, overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                          subtitle: Row(children: [
-                            if (c.rating != null) ...[
-                              const Icon(Icons.star_rounded, size: 13, color: Colors.orange),
-                              const SizedBox(width: 2),
-                              Text('${c.rating}',
-                                  style: const TextStyle(fontSize: 12, color: Colors.orange)),
-                            ],
-                          ]),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.info_outline_rounded, size: 20),
-                            onPressed: () => _openPlaceDetail(c),
-                          ),
-                          onTap: () {
-                            Navigator.pop(ctx);
-                            _swapPlace(dayIndex, placeIndex, c);
-                          },
+                  : Builder(builder: (_) {
+                      // Group while preserving the existing distance/rating
+                      // order — candidates is already sorted, and Map
+                      // insertion order keeps that ordering within each
+                      // category bucket. Grouped by the canonical category
+                      // (not the display string) so it lines up with
+                      // _typeLabel's key set.
+                      final grouped = <String, List<PlaceModel>>{};
+                      for (final c in candidates) {
+                        final category = CategoryMapper.resolvePrimaryType(
+                          c.primaryType,
+                          c.allTypes,
                         );
-                      },
-                    ),
+                        grouped.putIfAbsent(category, () => []).add(c);
+                      }
+
+                      return ListView(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        children: [
+                          for (final entry in grouped.entries) ...[
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 10, top: 8),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF7C4DFF).withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  _typeLabel(entry.key),
+                                  style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF1A1A2E)),
+                                ),
+                              ),
+                            ),
+                            ...entry.value.map((c) => ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: ClipRRect(
+                                    borderRadius: BorderRadius.circular(10),
+                                    child: c.photoUrl != null
+                                        ? CachedNetworkImage(
+                                            imageUrl: c.photoUrl!,
+                                            width: 52, height: 52, fit: BoxFit.cover,
+                                            errorWidget: (_, __, ___) => _photoPlaceholder(),
+                                          )
+                                        : _photoPlaceholder(),
+                                  ),
+                                  title: Text(c.name,
+                                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w600, fontSize: 14)),
+                                  subtitle: c.rating != null
+                                      ? Row(children: [
+                                          const Icon(Icons.star_rounded,
+                                              size: 13, color: Colors.orange),
+                                          const SizedBox(width: 2),
+                                          Text('${c.rating}',
+                                              style: const TextStyle(
+                                                  fontSize: 12, color: Colors.orange)),
+                                        ])
+                                      : null,
+                                  trailing: IconButton(
+                                    icon: const Icon(Icons.info_outline_rounded, size: 20),
+                                    onPressed: () => _openPlaceDetail(c),
+                                  ),
+                                  onTap: () {
+                                    Navigator.pop(ctx);
+                                    _swapPlace(dayIndex, placeIndex, c);
+                                  },
+                                )),
+                            const SizedBox(height: 6),
+                          ],
+                        ],
+                      );
+                    }),
             ),
           ],
         ),
       ),
     );
   }
-
 
   Color _stopColor(int index, int total, Color base) {
     if (total <= 1) return base;

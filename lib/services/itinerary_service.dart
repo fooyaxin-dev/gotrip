@@ -98,9 +98,8 @@ class ItineraryService {
   bool _isSuitableForTravel(PlaceModel p) {
     if (_isBlocked(p)) return false;
     final r = p.rating;
-    // A 5.0 rating can be legitimate. PlaceModel currently does not retain
-    // userRatingCount for nearby candidates, so rejecting all ratings above
-    // 4.95 would also remove genuine highly-rated places.
+    // A 5.0 rating can be legitimate. Review volume is used by itinerary
+    // popularity scoring instead of treating a high rating as suspicious.
     if (r != null && r < 3.5)  return false;
     return true;
   }
@@ -110,6 +109,8 @@ class ItineraryService {
     required double originLat,
     required double originLng,
     required String travelMode,
+    List<String> requestedCategories = const [],
+    List<String> requestedCuisines = const [],
   }) {
     final prefs = UserPreferenceService.instance;
 
@@ -124,7 +125,7 @@ class ItineraryService {
       );
     }
 
-    return prefs.recommendationScore(
+    final recommendation = prefs.recommendationScore(
       primaryType: p.primaryType,
       allTypes: p.allTypes,
       rating: p.rating,
@@ -137,7 +138,110 @@ class ItineraryService {
       weather: null,
       travelMode: travelMode,
       useCurrentTime: false,
-    ).total;
+    );
+
+    final canonicalCategory = CategoryMapper.resolvePrimaryType(
+      p.primaryType,
+      p.allTypes,
+    );
+    final normalizedCategories = requestedCategories
+        .map(_normalizeItineraryCategory)
+        .toSet();
+
+    // Explicit choices made on Generate Itinerary must outweigh preferences
+    // previously saved in the profile.  The old implementation only read the
+    // saved preference service, so temporary choices made on this page could
+    // be ignored during ranking.
+    double explicitPreference;
+    if (normalizedCategories.isEmpty) {
+      explicitPreference = recommendation.interestMatch;
+    } else if (normalizedCategories.contains(canonicalCategory)) {
+      explicitPreference = 1.0;
+    } else if (canonicalCategory == 'restaurant') {
+      // Restaurants can still be reserved as meal stops even when Food was
+      // not selected, but they must not outrank the requested attractions.
+      explicitPreference = 0.55;
+    } else {
+      explicitPreference = 0.0;
+    }
+
+    if (canonicalCategory == 'restaurant' && requestedCuisines.isNotEmpty) {
+      final cuisineMatch = _matchesCuisine(p, requestedCuisines);
+      explicitPreference = cuisineMatch
+          ? math.max(explicitPreference, 1.0)
+          : explicitPreference * 0.75;
+    }
+
+    final ratingScore = p.rating == null
+        ? 0.5
+        : ((p.rating! - 2.0) / 3.0).clamp(0.0, 1.0);
+    final reviewVolumeScore = p.userRatingCount == null
+        ? 0.5
+        : (math.log(p.userRatingCount! + 1) / math.log(10001))
+            .clamp(0.0, 1.0);
+    final popularityScore =
+        0.65 * ratingScore + 0.35 * reviewVolumeScore;
+
+    // Itinerary ranking is deliberately preference/popularity first.
+    // Distance remains a small feasibility term; daily assignment below is
+    // responsible for geographical compactness.
+    return (
+      0.35 * explicitPreference +
+      0.15 * recommendation.interestMatch +
+      0.30 * popularityScore +
+      0.10 * recommendation.budgetSuitability +
+      0.10 * recommendation.distanceScore
+    ).clamp(0.0, 1.0);
+  }
+
+  String _normalizeItineraryCategory(String category) {
+    // Backward compatibility for itineraries/preferences saved before the UI
+    // adopted CategoryMapper's canonical bucket name.
+    return category == 'amusement_park' ? 'entertainment' : category;
+  }
+
+  bool _matchesCuisine(PlaceModel place, List<String> cuisines) {
+    if (cuisines.isEmpty) return true;
+    final name = place.name.toLowerCase();
+    final types = place.allTypes.map((t) => t.toLowerCase()).toList();
+    return cuisines.any((rawCuisine) {
+      final cuisine = rawCuisine.toLowerCase().trim();
+      if (cuisine.isEmpty) return false;
+      return name.contains(cuisine) ||
+          types.any((type) => type.contains(cuisine));
+    });
+  }
+
+  String _normalizedPlaceName(String name) {
+    return name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[\s\-_.(),&/]+'), '')
+        .trim();
+  }
+
+  bool _isSemanticDuplicate(PlaceModel a, PlaceModel b) {
+    final aName = _normalizedPlaceName(a.name);
+    final bName = _normalizedPlaceName(b.name);
+    if (aName.isEmpty || bName.isEmpty) return false;
+    if (aName == bName) return true;
+    if (a.lat == null || a.lng == null || b.lat == null || b.lng == null) {
+      return false;
+    }
+
+    final sameCategory = CategoryMapper.resolvePrimaryType(
+          a.primaryType,
+          a.allTypes,
+        ) ==
+        CategoryMapper.resolvePrimaryType(
+          b.primaryType,
+          b.allTypes,
+        );
+    final relatedName = aName.length >= 5 &&
+        bName.length >= 5 &&
+        (aName.contains(bName) || bName.contains(aName));
+    if (!sameCategory || !relatedName) return false;
+
+    return _haversineMeters(a.lat!, a.lng!, b.lat!, b.lng!) <= 500;
   }
 
   double _haversineMeters(
@@ -480,12 +584,23 @@ class ItineraryService {
     required List<String> categories,
     required bool isCurrentLocation,
     required int radius,
+    required bool includeRestaurants,
   }) async {
 
     print('🎯 [_fetchPlacesForItinerary] received radius=${radius}m');
 
-    final types = categories.isNotEmpty
-        ? {...categories, 'restaurant'}.toList()
+    final normalizedCategories = categories
+        .map(_normalizeItineraryCategory)
+        .where(CategoryMapper.isLearnableCategory)
+        .toSet()
+        .toList();
+    final includeRestaurant =
+        normalizedCategories.contains('restaurant') || includeRestaurants;
+    final types = normalizedCategories.isNotEmpty
+        ? {
+            ...normalizedCategories,
+            if (includeRestaurant) 'restaurant',
+          }.toList()
         : _defaultCategories;
 
     print('🗺️ Fetching itinerary candidates — dedicated 5-category fetch '
@@ -495,7 +610,10 @@ class ItineraryService {
     print('🎯 [_fetchPlacesForItinerary] about to call fetchForItinerary with radius=${radius}m');
 
     final allPlaces = await NearbyPlacesService.instance.fetchForItinerary(
-      lat: lat, lng: lng, categories: types, radius: radius,
+      lat: lat,
+      lng: lng,
+      categories: types,
+      radius: radius,
     );
 
     stopwatch.stop();
@@ -540,36 +658,165 @@ class ItineraryService {
     required double lat,
     required double lng,
     required List<String> categories,
+    required List<String> cuisines,
     required bool isCurrentLocation,
     required int radius,
     required String travelMode,
   }) async {
     print('🎯 [_buildBalancedPlaces] received radius=${radius}m');
 
+    final normalizedCategories = categories
+        .map(_normalizeItineraryCategory)
+        .where(CategoryMapper.isLearnableCategory)
+        .toSet()
+        .toList();
+    final onlyFoodRequested = normalizedCategories.length == 1 &&
+        normalizedCategories.single == 'restaurant';
+    final requestedTotal = totalDays * placesPerDay;
     final minRestaurantsPerDay =
         _requiredRestaurantsPerDay(placesPerDay);
-    final targetAttractionsPerDay = placesPerDay - minRestaurantsPerDay;
+    final targetAttractionsPerDay = onlyFoodRequested
+        ? 0
+        : placesPerDay - minRestaurantsPerDay;
     final totalAttractionsNeeded = totalDays * targetAttractionsPerDay;
-    final perCategory = totalAttractionsNeeded.clamp(4, 20);
+    // Do not cap this at Google's single-request limit (20). The itinerary
+    // fetcher can now deepen a category with additional type batches.
+    final perCategory = totalAttractionsNeeded == 0
+        ? 0
+        : math.max(4, totalAttractionsNeeded);
 
-    final totalRestaurantsNeeded = totalDays * minRestaurantsPerDay;
+    final totalRestaurantsNeeded = onlyFoodRequested
+        ? requestedTotal
+        : totalDays * minRestaurantsPerDay;
     final restaurantCount = totalRestaurantsNeeded == 0
         ? 0
-        : totalRestaurantsNeeded.clamp(4, 30);
+        : math.max(4, totalRestaurantsNeeded);
 
     final byType = await _fetchPlacesForItinerary(
-      lat: lat, lng: lng, categories: categories,
-      isCurrentLocation: isCurrentLocation, radius: radius, 
+      lat: lat, lng: lng, categories: normalizedCategories,
+      isCurrentLocation: isCurrentLocation,
+      radius: radius,
+      includeRestaurants: totalRestaurantsNeeded > 0,
     );
+
+    // Stage 2 is conditional. First evaluate the filtered, deduplicated
+    // results from the single broad request made for each category. Only a
+    // category that contributes to a real itinerary shortfall is deepened
+    // with subtype requests.
+    int eligibleUniqueCount(Iterable<PlaceModel> source) {
+      return source
+          .where(_isSuitableForTravel)
+          .map((place) => place.id)
+          .toSet()
+          .length;
+    }
+
+    final effectiveCategories = normalizedCategories.isEmpty
+        ? List<String>.from(_defaultCategories)
+        : normalizedCategories;
+    final nonFoodCategories = effectiveCategories
+        .where((category) => category != 'restaurant')
+        .toList();
+    final additionalNeeded = <String, int>{};
+
+    if (totalRestaurantsNeeded > 0) {
+      final availableRestaurants =
+          eligibleUniqueCount(byType['restaurant'] ?? const <PlaceModel>[]);
+      final shortage = totalRestaurantsNeeded - availableRestaurants;
+      if (shortage > 0) additionalNeeded['restaurant'] = shortage;
+    }
+
+    final nonFoodIds = <String>{};
+    for (final category in nonFoodCategories) {
+      for (final place in byType[category] ?? const <PlaceModel>[]) {
+        if (_isSuitableForTravel(place)) nonFoodIds.add(place.id);
+      }
+    }
+    var remainingNonFoodShortage =
+        math.max(0, totalAttractionsNeeded - nonFoodIds.length);
+
+    if (remainingNonFoodShortage > 0 && nonFoodCategories.isNotEmpty) {
+      final baseTarget = totalAttractionsNeeded ~/ nonFoodCategories.length;
+      final extraSlots = totalAttractionsNeeded % nonFoodCategories.length;
+      final indexedCategories = nonFoodCategories.asMap().entries.toList()
+        ..sort((a, b) {
+          final aCount = eligibleUniqueCount(
+            byType[a.value] ?? const <PlaceModel>[],
+          );
+          final bCount = eligibleUniqueCount(
+            byType[b.value] ?? const <PlaceModel>[],
+          );
+          return aCount.compareTo(bCount);
+        });
+
+      for (final entry in indexedCategories) {
+        if (remainingNonFoodShortage == 0) break;
+        final category = entry.value;
+        final fairTarget = baseTarget + (entry.key < extraSlots ? 1 : 0);
+        final available = eligibleUniqueCount(
+          byType[category] ?? const <PlaceModel>[],
+        );
+        final categoryDeficit = math.max(0, fairTarget - available);
+        if (categoryDeficit == 0) continue;
+        final requestCount = math.min(
+          remainingNonFoodShortage,
+          categoryDeficit,
+        );
+        additionalNeeded[category] = requestCount;
+        remainingNonFoodShortage -= requestCount;
+      }
+
+      // If duplicates across buckets caused a remaining global shortage,
+      // deepen the currently smallest selected bucket only.
+      if (remainingNonFoodShortage > 0) {
+        final smallestCategory = indexedCategories.first.value;
+        additionalNeeded[smallestCategory] =
+            (additionalNeeded[smallestCategory] ?? 0) +
+                remainingNonFoodShortage;
+      }
+    }
+
+    if (additionalNeeded.isNotEmpty) {
+      print('🔁 Candidate shortfall detected: $additionalNeeded');
+      final existingIds = <String>{
+        for (final list in byType.values)
+          for (final place in list) place.id,
+      };
+      final additional = await NearbyPlacesService.instance
+          .fetchAdditionalForItinerary(
+        lat: lat,
+        lng: lng,
+        radius: radius,
+        additionalNeededByCategory: additionalNeeded,
+        existingPlaceIds: existingIds,
+      );
+
+      for (final place in additional) {
+        if (!_isSuitableForTravel(place)) continue;
+        final category = CategoryMapper.resolvePrimaryType(
+          place.primaryType,
+          place.allTypes,
+        );
+        final bucket = byType.putIfAbsent(category, () => <PlaceModel>[]);
+        if (!bucket.any((existing) => existing.id == place.id)) {
+          bucket.add(place);
+        }
+      }
+    } else {
+      print('✅ Initial popularity fetch is sufficient — no subtype API calls');
+    }
 
     double score(PlaceModel p) => _score(
       p,
       originLat: lat,
       originLng: lng,
       travelMode: travelMode,
+      requestedCategories: normalizedCategories,
+      requestedCuisines: cuisines,
     );
 
-    bool wants(String type) => categories.isEmpty || categories.contains(type);
+    bool wants(String type) => normalizedCategories.isEmpty ||
+        normalizedCategories.contains(type);
 
     final leftoverPool = <PlaceModel>[];
 
@@ -697,6 +944,7 @@ class ItineraryService {
         lat: lat,
         lng: lng,
         categories: categories,
+        cuisines: cuisines,
         isCurrentLocation: isCurrentLocation,
         radius: radius,
         travelMode: travelMode,
@@ -725,6 +973,7 @@ class ItineraryService {
         totalDays:    totalDays,
         placesPerDay: placesPerDay,
         startDates:   dayDates,
+        categories:   categories,
         cuisines:     cuisines,
         userLat:      lat,
         userLng:      lng,
@@ -843,6 +1092,7 @@ class ItineraryService {
   required int totalDays,
   required int placesPerDay,
   required List<String> startDates,
+  required List<String> categories,
   required List<String> cuisines,
   required double userLat,
   required double userLng,
@@ -869,272 +1119,130 @@ class ItineraryService {
     );
   }
 
-  final restaurants =
-      places.where(isRestaurant).toList();
-
-  final others =
-      places.where((p) => !isRestaurant(p)).toList();
-
-  // 1 place/day  → no forced food stop
-  // 2–3/day      → 1 food stop
-  // 4+ places/day → 2 food stops
-  final minRestaurantsPerDay =
-      _requiredRestaurantsPerDay(placesPerDay);
-
-  final targetAttractionsPerDay =
-      placesPerDay - minRestaurantsPerDay;
-
-  // ─────────────────────────────────────────────
-  // Geographic clustering uses non-food places
-  // ─────────────────────────────────────────────
-
-  final clusters = _geoClusters(
-    others,
-    totalDays,
-    userLat: userLat,
-    userLng: userLng,
-  );
-
-  final dayCenters = List.generate(
-    totalDays,
-    (i) {
-      final seed =
-          clusters[i].isNotEmpty
-              ? clusters[i]
-              : others;
-
-      return _centroid(seed);
-    },
-  );
-
-  final usedIds = <String>{};
-
-  final List<List<PlaceModel>> dayPlaces =
-      List.generate(
-    totalDays,
-    (_) => <PlaceModel>[],
-  );
-
-  // ─────────────────────────────────────────────
-  // Balanced daily assignment
-  // ─────────────────────────────────────────────
-
-  for (int round = 0;
-      round < placesPerDay;
-      round++) {
-    for (int day = 0;
-        day < totalDays;
-        day++) {
-      if (dayPlaces[day].length >=
-          placesPerDay) {
-        continue;
-      }
-
-      final currentRestaurantCount =
-          dayPlaces[day]
-              .where(isRestaurant)
-              .length;
-
-      final currentOthersCount =
-          dayPlaces[day].length -
-              currentRestaurantCount;
-
-      final needsRestaurant =
-          currentRestaurantCount <
-              minRestaurantsPerDay;
-
-      final needsAttraction =
-          currentOthersCount <
-              targetAttractionsPerDay;
-
-      PlaceModel? picked;
-
-      // Food gets priority while the day's required
-      // food slots have not yet been satisfied.
-      if (needsRestaurant) {
-        picked = _pickClosestUnused(
-          restaurants,
-          dayCenters[day],
-          usedIds,
-          cuisines,
-        );
-      }
-
-      // Then fill the non-food requirement.
-      if (needsAttraction) {
-        picked ??=
-            _pickClosestUnused(
-              clusters[day],
-              dayCenters[day],
-              usedIds,
-              null,
-            ) ??
-            _pickClosestUnused(
-              others,
-              dayCenters[day],
-              usedIds,
-              null,
-            );
-      }
-
-      // Final fallback:
-      // use any remaining suitable place so the
-      // itinerary does not become unnecessarily short.
-      picked ??=
-          _pickClosestUnused(
-            restaurants,
-            dayCenters[day],
-            usedIds,
-            cuisines,
-          ) ??
-          _pickClosestUnused(
-            clusters[day],
-            dayCenters[day],
-            usedIds,
-            null,
-          ) ??
-          _pickClosestUnused(
-            others,
-            dayCenters[day],
-            usedIds,
-            null,
-          );
-
-      if (picked != null) {
-        usedIds.add(
-          picked.id,
-        );
-
-        dayPlaces[day].add(
-          picked,
-        );
-      }
+  final candidateById = <String, PlaceModel>{};
+  final semanticCandidates = <PlaceModel>[];
+  for (final place in [...places, ...?leftoverPool]) {
+    if (place.id.isEmpty || place.lat == null || place.lng == null) continue;
+    if (candidateById.containsKey(place.id)) continue;
+    if (semanticCandidates.any(
+      (existing) => _isSemanticDuplicate(existing, place),
+    )) {
+      print('🧹 Semantic duplicate removed: ${place.name}');
+      continue;
     }
+    candidateById[place.id] = place;
+    semanticCandidates.add(place);
   }
+  final candidates = candidateById.values.toList();
+  final restaurants = candidates.where(isRestaurant).toList();
+  final others = candidates.where((p) => !isRestaurant(p)).toList();
 
-  // ─────────────────────────────────────────────
-  // Quality improvement using leftover candidates
-  // ─────────────────────────────────────────────
+  final normalizedCategories = categories
+      .map(_normalizeItineraryCategory)
+      .where(CategoryMapper.isLearnableCategory)
+      .toSet()
+      .toList();
+  final onlyFoodRequested = normalizedCategories.length == 1 &&
+      normalizedCategories.single == 'restaurant';
 
-  if (leftoverPool != null &&
-      leftoverPool.isNotEmpty) {
-    for (int day = 0;
-        day < totalDays;
-        day++) {
-      final dayList =
-          dayPlaces[day];
+  // Food-only means every requested stop may be Food.  Otherwise the meal
+  // rule reserves only the minimum number of restaurant slots.
+  final minRestaurantsPerDay = onlyFoodRequested
+      ? placesPerDay
+      : _requiredRestaurantsPerDay(placesPerDay);
+  final targetAttractionsPerDay = placesPerDay - minRestaurantsPerDay;
 
-      for (int i = 0;
-          i < dayList.length;
-          i++) {
-        final current =
-            dayList[i];
-
-        // Do not replace meal stops during the
-        // quality-swap phase.
-        if (isRestaurant(current)) {
-          continue;
-        }
-
-        final currentScore = _score(
-          current,
+  final scoreCache = <String, double>{};
+  double quality(PlaceModel place) => scoreCache.putIfAbsent(
+        place.id,
+        () => _score(
+          place,
           originLat: userLat,
           originLng: userLng,
           travelMode: travelMode,
-        );
+          requestedCategories: normalizedCategories,
+          requestedCuisines: cuisines,
+        ),
+      );
 
-        final currentDist =
-            (current.lat != null &&
-                    current.lng != null)
-                ? _distSq(
-                    current.lat!,
-                    current.lng!,
-                    dayCenters[day].lat,
-                    dayCenters[day].lng,
-                  )
-                : double.infinity;
+  // Deterministic high-quality geographical seeds replace random K-means.
+  // Capacity is enforced directly while filling each day, so no cluster can
+  // grow beyond placesPerDay while another day is left short.
+  final seedPool = others.isNotEmpty ? others : restaurants;
+  final dayCenters = _seedDayCenters(
+    seedPool,
+    totalDays,
+    userLat: userLat,
+    userLng: userLng,
+    quality: quality,
+  );
+  final usedIds = <String>{};
+  final dayPlaces = List.generate(totalDays, (_) => <PlaceModel>[]);
 
-        PlaceModel? better;
-        double bestScore =
-            currentScore;
+  void addToDay(int day, PlaceModel place) {
+    usedIds.add(place.id);
+    dayPlaces[day].add(place);
+    dayCenters[day] = _centroid(dayPlaces[day]);
+  }
 
-        for (final candidate
-            in leftoverPool) {
-          if (usedIds.contains(
-            candidate.id,
-          )) {
-            continue;
-          }
-
-          if (candidate.lat == null ||
-              candidate.lng == null) {
-            continue;
-          }
-
-          final candScore = _score(
-            candidate,
-            originLat: userLat,
-            originLng: userLng,
-            travelMode: travelMode,
-          );
-
-          if (candScore <=
-              bestScore + 0.05) {
-            continue;
-          }
-
-          final candDist =
-              _distSq(
-            candidate.lat!,
-            candidate.lng!,
-            dayCenters[day].lat,
-            dayCenters[day].lng,
-          );
-
-          if (candDist >
-              currentDist * 2.5) {
-            continue;
-          }
-
-          bestScore =
-              candScore;
-
-          better =
-              candidate;
-        }
-
-        if (better != null) {
-          usedIds.remove(
-            current.id,
-          );
-
-          usedIds.add(
-            better.id,
-          );
-
-          dayList[i] =
-              better;
-
-          print(
-            '🔄 Quality swap Day ${day + 1}: '
-            '${current.name}'
-            '(${currentScore.toStringAsFixed(2)}) '
-            '→ ${better.name}'
-            '(${bestScore.toStringAsFixed(2)})',
-          );
-        }
-      }
+  // Fill attraction capacity in rounds so every day receives one place
+  // before any day receives its next one.
+  for (int round = 0; round < targetAttractionsPerDay; round++) {
+    for (int day = 0; day < totalDays; day++) {
+      final picked = _pickBestForDay(
+        others,
+        dayCenters[day],
+        usedIds,
+        quality: quality,
+        travelMode: travelMode,
+      );
+      if (picked != null) addToDay(day, picked);
     }
   }
+
+  // Restaurants are chosen around each day's already-selected attraction
+  // area. Cuisine choices are a preference boost, not a brittle hard filter.
+  for (int round = 0; round < minRestaurantsPerDay; round++) {
+    for (int day = 0; day < totalDays; day++) {
+      final picked = _pickBestForDay(
+        restaurants,
+        dayCenters[day],
+        usedIds,
+        quality: quality,
+        travelMode: travelMode,
+        cuisines: cuisines,
+      );
+      if (picked != null) addToDay(day, picked);
+    }
+  }
+
+  // If one bucket is scarce, fill remaining capacity from any requested,
+  // suitable candidate instead of returning an avoidably short itinerary.
+  for (int round = 0; round < placesPerDay; round++) {
+    for (int day = 0; day < totalDays; day++) {
+      if (dayPlaces[day].length >= placesPerDay) continue;
+      final picked = _pickBestForDay(
+        candidates,
+        dayCenters[day],
+        usedIds,
+        quality: quality,
+        travelMode: travelMode,
+        cuisines: cuisines,
+      );
+      if (picked != null) addToDay(day, picked);
+    }
+  }
+
+  // Improve the complete multi-day solution after every capacity has been
+  // filled. Same-type swaps preserve meal feasibility while reducing the
+  // combined within-day travel spread.
+  _improveCrossDayAssignments(dayPlaces);
 
   // ─────────────────────────────────────────────
   // Unused candidates
   // ─────────────────────────────────────────────
 
-  final allCandidates = [
-    ...restaurants,
-    ...others,
-  ];
+  final allCandidates = candidates;
 
   final unused =
       allCandidates
@@ -1192,186 +1300,219 @@ class ItineraryService {
 
 
 
-PlaceModel? _pickClosestUnused(
+double _dayCompactnessCost(List<PlaceModel> places) {
+  if (places.length < 2) return 0;
+  var total = 0.0;
+  var pairs = 0;
+  for (int i = 0; i < places.length - 1; i++) {
+    final a = places[i];
+    if (a.lat == null || a.lng == null) continue;
+    for (int j = i + 1; j < places.length; j++) {
+      final b = places[j];
+      if (b.lat == null || b.lng == null) continue;
+      total += _haversineMeters(a.lat!, a.lng!, b.lat!, b.lng!);
+      pairs++;
+    }
+  }
+  return pairs == 0 ? 0 : total / pairs;
+}
+
+void _improveCrossDayAssignments(List<List<PlaceModel>> days) {
+  if (days.length < 2) return;
+
+  bool isRestaurant(PlaceModel place) => CategoryMapper.isRestaurant(
+        place.primaryType,
+        place.allTypes,
+      );
+
+  // Bounded best-improvement local search. Each accepted swap strictly lowers
+  // the global compactness cost while keeping every day's capacity unchanged.
+  for (int pass = 0; pass < 60; pass++) {
+    double bestSaving = 0;
+    int? bestDayA;
+    int? bestIndexA;
+    int? bestDayB;
+    int? bestIndexB;
+
+    for (int dayA = 0; dayA < days.length - 1; dayA++) {
+      for (int dayB = dayA + 1; dayB < days.length; dayB++) {
+        final before =
+            _dayCompactnessCost(days[dayA]) + _dayCompactnessCost(days[dayB]);
+
+        for (int indexA = 0; indexA < days[dayA].length; indexA++) {
+          for (int indexB = 0; indexB < days[dayB].length; indexB++) {
+            // Preserve each day's Food count and meal feasibility.
+            if (isRestaurant(days[dayA][indexA]) !=
+                isRestaurant(days[dayB][indexB])) {
+              continue;
+            }
+
+            final placeA = days[dayA][indexA];
+            final placeB = days[dayB][indexB];
+            days[dayA][indexA] = placeB;
+            days[dayB][indexB] = placeA;
+            final after = _dayCompactnessCost(days[dayA]) +
+                _dayCompactnessCost(days[dayB]);
+            days[dayA][indexA] = placeA;
+            days[dayB][indexB] = placeB;
+
+            final saving = before - after;
+            if (saving > bestSaving + 1.0) {
+              bestSaving = saving;
+              bestDayA = dayA;
+              bestIndexA = indexA;
+              bestDayB = dayB;
+              bestIndexB = indexB;
+            }
+          }
+        }
+      }
+    }
+
+    if (bestDayA == null || bestDayB == null) break;
+    final indexA = bestIndexA!;
+    final indexB = bestIndexB!;
+    final placeA = days[bestDayA][indexA];
+    days[bestDayA][indexA] = days[bestDayB][indexB];
+    days[bestDayB][indexB] = placeA;
+  }
+}
+
+List<({double lat, double lng})> _seedDayCenters(
+  List<PlaceModel> pool,
+  int dayCount, {
+  required double userLat,
+  required double userLng,
+  required double Function(PlaceModel) quality,
+}) {
+  final located = pool
+      .where((p) => p.lat != null && p.lng != null)
+      .toList();
+  if (located.isEmpty) {
+    return List.generate(
+      dayCount,
+      (_) => (lat: userLat, lng: userLng),
+    );
+  }
+
+  // The first day starts from the strongest candidate, with a small origin
+  // proximity term. Later seeds favour both quality and separation, creating
+  // distinct compact areas without random initialization or empty clusters.
+  PlaceModel first = located.first;
+  double firstValue = double.negativeInfinity;
+  for (final candidate in located) {
+    final originDistance = _haversineMeters(
+      userLat,
+      userLng,
+      candidate.lat!,
+      candidate.lng!,
+    );
+    final originProximity =
+        (1.0 - originDistance / 20000.0).clamp(0.0, 1.0);
+    final value = 0.85 * quality(candidate) + 0.15 * originProximity;
+    if (value > firstValue) {
+      first = candidate;
+      firstValue = value;
+    }
+  }
+
+  final seeds = <PlaceModel>[first];
+  while (seeds.length < dayCount && seeds.length < located.length) {
+    PlaceModel? best;
+    double bestValue = double.negativeInfinity;
+    for (final candidate in located) {
+      if (seeds.any((seed) => seed.id == candidate.id)) continue;
+      var nearestSeedDistance = double.infinity;
+      for (final seed in seeds) {
+        final distance = _haversineMeters(
+          candidate.lat!,
+          candidate.lng!,
+          seed.lat!,
+          seed.lng!,
+        );
+        if (distance < nearestSeedDistance) nearestSeedDistance = distance;
+      }
+      final separation =
+          (nearestSeedDistance / 20000.0).clamp(0.0, 1.0);
+      final value = 0.35 * quality(candidate) + 0.65 * separation;
+      if (value > bestValue) {
+        best = candidate;
+        bestValue = value;
+      }
+    }
+    if (best == null) break;
+    seeds.add(best);
+  }
+
+  return List.generate(dayCount, (index) {
+    if (index < seeds.length) {
+      return (lat: seeds[index].lat!, lng: seeds[index].lng!);
+    }
+    return (lat: userLat, lng: userLng);
+  });
+}
+
+PlaceModel? _pickBestForDay(
   List<PlaceModel> pool,
   ({double lat, double lng}) center,
-  Set<String> used,
-  List<String>? cuisines,
-) {
-  final available = pool
-      .where((p) => !used.contains(p.id) && p.lat != null && p.lng != null)
-      .toList();
-
-  if (available.isEmpty) return null;
-
-  if (cuisines != null && cuisines.isNotEmpty) {
-    available.sort((a, b) {
-      final aMatch = cuisines.any((c) =>
-          a.name.toLowerCase().contains(c) || a.allTypes.any((t) => t.contains(c)));
-      final bMatch = cuisines.any((c) =>
-          b.name.toLowerCase().contains(c) || b.allTypes.any((t) => t.contains(c)));
-      if (aMatch != bMatch) return aMatch ? -1 : 1;
-      return _distSq(a.lat!, a.lng!, center.lat, center.lng)
-          .compareTo(_distSq(b.lat!, b.lng!, center.lat, center.lng));
-    });
-  } else {
-    available.sort((a, b) =>
-        _distSq(a.lat!, a.lng!, center.lat, center.lng)
-            .compareTo(_distSq(b.lat!, b.lng!, center.lat, center.lng)));
+  Set<String> used, {
+  required double Function(PlaceModel) quality,
+  required String travelMode,
+  List<String> cuisines = const [],
+}) {
+  PlaceModel? best;
+  double bestValue = double.negativeInfinity;
+  final double distanceBaseline;
+  switch (travelMode) {
+    case 'walk':
+      distanceBaseline = 2500.0;
+      break;
+    case 'drive':
+    case 'both':
+      distanceBaseline = 9000.0;
+      break;
+    case 'motor':
+    default:
+      distanceBaseline = 6000.0;
+      break;
   }
 
-  return available.first;
+  for (final candidate in pool) {
+    if (used.contains(candidate.id) ||
+        candidate.lat == null ||
+        candidate.lng == null) {
+      continue;
+    }
+    final distance = _haversineMeters(
+      center.lat,
+      center.lng,
+      candidate.lat!,
+      candidate.lng!,
+    );
+    final proximity = math.exp(-distance / distanceBaseline);
+    final cuisineBoost = cuisines.isNotEmpty &&
+            CategoryMapper.isRestaurant(
+              candidate.primaryType,
+              candidate.allTypes,
+            ) &&
+            _matchesCuisine(candidate, cuisines)
+        ? 0.05
+        : 0.0;
+    final value = 0.25 * quality(candidate) +
+        0.75 * proximity +
+        cuisineBoost;
+
+    final shouldReplace = value > bestValue ||
+        (value == bestValue &&
+            (candidate.rating ?? 0) > (best?.rating ?? 0));
+    if (shouldReplace) {
+      best = candidate;
+      bestValue = value;
+    }
+  }
+  return best;
 }
-  
-  // ─────────────────────────────────────────────
-  // Geo clustering
-  // ─────────────────────────────────────────────
 
-  List<List<PlaceModel>> _geoClusters(
-    List<PlaceModel> places,
-    int k, {
-    required double userLat,
-    required double userLng,
-  }) {
-    if (places.isEmpty) return List.generate(k, (_) => []);
-
-    final located = places.where((p) => p.lat != null && p.lng != null).toList();
-    if (located.isEmpty) return List.generate(k, (_) => []);
-
-    final seedCount = k.clamp(1, located.length);
-    final rand = math.Random();
-
-    PlaceModel firstSeed = located.first;
-    double bestDist = double.infinity;
-    for (final p in located) {
-      final d = _distSq(p.lat!, p.lng!, userLat, userLng);
-      if (d < bestDist) { bestDist = d; firstSeed = p; }
-    }
-    final seeds = <PlaceModel>[firstSeed];
-
-    while (seeds.length < seedCount) {
-      final weights = <double>[];
-      double totalWeight = 0;
-
-      for (final p in located) {
-        if (seeds.contains(p)) {
-          weights.add(0);
-          continue;
-        }
-        double minDistToSeeds = double.infinity;
-        for (final s in seeds) {
-          final d = _distSq(p.lat!, p.lng!, s.lat!, s.lng!);
-          if (d < minDistToSeeds) minDistToSeeds = d;
-        }
-        weights.add(minDistToSeeds);
-        totalWeight += minDistToSeeds;
-      }
-
-      if (totalWeight <= 0) break;
-
-      final threshold = rand.nextDouble() * totalWeight;
-      double cumulative = 0;
-      PlaceModel? picked;
-      for (int i = 0; i < located.length; i++) {
-        cumulative += weights[i];
-        if (cumulative >= threshold) {
-          picked = located[i];
-          break;
-        }
-      }
-
-      picked ??= located.firstWhere((p) => !seeds.contains(p));
-      seeds.add(picked);
-    }
-
-    List<({double lat, double lng})> centers =
-        seeds.map((s) => (lat: s.lat!, lng: s.lng!)).toList();
-
-    List<List<PlaceModel>> assign(List<({double lat, double lng})> centers) {
-      final clusters = List.generate(centers.length, (_) => <PlaceModel>[]);
-      for (final p in located) {
-        int    bestIdx  = 0;
-        double bestDist = double.infinity;
-        for (int i = 0; i < centers.length; i++) {
-          final d = _distSq(p.lat!, p.lng!, centers[i].lat, centers[i].lng);
-          if (d < bestDist) { bestDist = d; bestIdx = i; }
-        }
-        clusters[bestIdx].add(p);
-      }
-      return clusters;
-    }
-
-    var clusters = assign(centers);
-
-    const maxPasses = 8;
-    const convergenceThresholdMeters = 20.0;
-    final thresholdSq =
-        math.pow(convergenceThresholdMeters / 111000, 2).toDouble();
-
-    for (int pass = 0; pass < maxPasses; pass++) {
-      final newCenters = <({double lat, double lng})>[];
-      for (int i = 0; i < clusters.length; i++) {
-        if (clusters[i].isEmpty) {
-          newCenters.add(centers[i]);
-        } else {
-          newCenters.add(_centroid(clusters[i]));
-        }
-      }
-
-      double maxShift = 0;
-      for (int i = 0; i < centers.length; i++) {
-        final shift = _distSq(
-            centers[i].lat, centers[i].lng, newCenters[i].lat, newCenters[i].lng);
-        if (shift > maxShift) maxShift = shift;
-      }
-
-      centers  = newCenters;
-      clusters = assign(centers);
-
-      if (maxShift < thresholdSq) break;
-    }
-
-    final targetSize = (located.length / k).ceil();
-    const maxBalancePasses = 20;
-    for (int pass = 0; pass < maxBalancePasses; pass++) {
-      int largestIdx = 0;
-      for (int i = 1; i < clusters.length; i++) {
-        if (clusters[i].length > clusters[largestIdx].length) largestIdx = i;
-      }
-      int smallestIdx = 0;
-      for (int i = 1; i < clusters.length; i++) {
-        if (clusters[i].length < clusters[smallestIdx].length) smallestIdx = i;
-      }
-
-      final sizeDiff = clusters[largestIdx].length - clusters[smallestIdx].length;
-      if (sizeDiff <= 1 || clusters[largestIdx].length <= targetSize) break;
-
-      PlaceModel? candidate;
-      double bestDelta = double.infinity;
-      for (final p in clusters[largestIdx]) {
-        final distOwn   = _distSq(p.lat!, p.lng!, centers[largestIdx].lat, centers[largestIdx].lng);
-        final distOther = _distSq(p.lat!, p.lng!, centers[smallestIdx].lat, centers[smallestIdx].lng);
-        final delta = distOther - distOwn;
-        if (delta < bestDelta) { bestDelta = delta; candidate = p; }
-      }
-      if (candidate == null) break;
-
-      clusters[largestIdx].remove(candidate);
-      clusters[smallestIdx].add(candidate);
-    }
-
-    while (clusters.length < k) {
-      clusters.add(<PlaceModel>[]);
-    }
-
-    for (final c in clusters) {
-      c.sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
-    }
-
-    return clusters;
-  }
-
-  // ─────────────────────────────────────────────
   // Assign time slots
   // ─────────────────────────────────────────────
 
@@ -1444,7 +1585,13 @@ PlaceModel? _pickClosestUnused(
         photoUrl:        place.photoUrl,
         lat:             place.lat,
         lng:             place.lng,
-        primaryType:     place.primaryType,
+        // Store the canonical type because ItineraryPlace intentionally does
+        // not carry Google allTypes. Route optimization can then still
+        // recognize cafes/bakeries/etc. as Food reliably.
+        primaryType:     CategoryMapper.resolvePrimaryType(
+          place.primaryType,
+          place.allTypes,
+        ),
         suggestedTime:   timeStr,
         durationMinutes: duration,
         notes:           _generateNote(place),
@@ -1525,3 +1672,4 @@ class ItineraryGenerationResult {
     required this.leftoverCandidates,
   }) : isShortfall = actualTotal < requestedTotal;
 }
+
