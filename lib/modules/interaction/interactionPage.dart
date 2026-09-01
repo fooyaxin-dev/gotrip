@@ -3,7 +3,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'dart:io';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:async';
@@ -19,6 +18,7 @@ import '../../modules/place/detectPlacePage.dart';
 import 'editPost.dart';
 import 'postDetailPage.dart';
 import '../../services/apps_Loading.dart';
+import '../../services/error_handler.dart';
 import 'postMedia.dart';
 
 
@@ -39,6 +39,7 @@ class _InteractionPageState extends State<InteractionPage> {
 
   final Map<String, bool> _optimisticLiked = {};
   final Map<String, int> _optimisticLikeCount = {};
+  final Set<String> _likeRequestsInFlight = {};
 
 
   // ── Committed search（按下搜索/回车后，主列表被替换成的结果）──
@@ -109,6 +110,10 @@ class _InteractionPageState extends State<InteractionPage> {
 
   Future<Map<String, dynamic>> _getUserInfo(String userId) async {
     if (_userCache.containsKey(userId)) return _userCache[userId]!;
+    // FIFO eviction: keep the cache from growing unboundedly in long sessions.
+    if (_userCache.length >= 200) {
+      _userCache.remove(_userCache.keys.first);
+    }
     try {
       final doc = await _firestore.collection('users').doc(userId).get();
       if (doc.exists) {
@@ -127,8 +132,9 @@ class _InteractionPageState extends State<InteractionPage> {
     if (_feedLoadingMore || !_feedHasMore) return;
 
     final pos = _feedScrollController.position;
-    // 滑到还剩 300px 到底部时就提前加载下一页，体验更顺滑
-    if (pos.pixels >= pos.maxScrollExtent - 300) {
+    // Trigger when 85% scrolled — avoids never-triggering on small screens
+    // where a hard 300px threshold exceeds the entire scroll range.
+    if (pos.pixels >= pos.maxScrollExtent * 0.85) {
       _loadMoreFeedPosts();
     }
   }
@@ -164,6 +170,7 @@ class _InteractionPageState extends State<InteractionPage> {
       _feedPosts = page.posts;
       _feedLastDoc = page.lastDocument;
       _feedHasMore = page.hasMore;
+      _feedInitialLoading = false;
     });
   } catch (e) {
     debugPrint(
@@ -177,6 +184,10 @@ class _InteractionPageState extends State<InteractionPage> {
       return;
     }
 
+    setState(() {
+      _feedInitialLoading = false;
+    });
+
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text(
@@ -185,15 +196,6 @@ class _InteractionPageState extends State<InteractionPage> {
         behavior: SnackBarBehavior.floating,
       ),
     );
-  } finally {
-    // Only the latest request may change the
-    // current loading state.
-    if (mounted &&
-        requestId == _feedRequestId) {
-      setState(() {
-        _feedInitialLoading = false;
-      });
-    }
   }
 }
 
@@ -292,11 +294,24 @@ Future<void> _loadMoreFeedPosts() async {
     _loadFeedFirstPage();
   }
 
+  static List<String>? _cachedAvailableCities;
+
   Future<void> _loadAvailableCities() async {
+    if (_cachedAvailableCities != null && _cachedAvailableCities!.isNotEmpty) {
+      if (mounted) {
+        setState(() {
+          _availableCities = _cachedAvailableCities!;
+          _citiesLoading = false;
+        });
+      }
+      return;
+    }
+
     try {
       final snapshot = await _firestore
           .collection('posts')
-          .where('visibility', isEqualTo: 'public')   // ✅ 对应 postModel 的 visibility 字段
+          .where('visibility', isEqualTo: 'public')
+          .limit(60) // Bounded read — avoids downloading thousands of posts
           .get();
 
       final Map<String, int> cityCount = {};
@@ -308,6 +323,8 @@ Future<void> _loadMoreFeedPosts() async {
       }
       final sorted = cityCount.keys.toList()
         ..sort((a, b) => cityCount[b]!.compareTo(cityCount[a]!));
+
+      _cachedAvailableCities = sorted;
 
       if (!mounted) return;
       setState(() {
@@ -737,7 +754,7 @@ Future<void> _loadMoreFeedPosts() async {
               child: Center(
                 child: SizedBox(
                   width: 28, height: 28,
-                  child: TravelLoadingIndicator(),
+                  child: TravelLoadingIndicator(size: 28, color: Color(0xFF7C4DFF)),
                 ),
               ),
             );
@@ -998,10 +1015,16 @@ Future<void> _loadMoreFeedPosts() async {
   
   Widget _buildPostCard(Post post) {
     return GestureDetector(
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => PostDetailPage(post: post)),
-      ),
+      onTap: () async {
+        final changed = await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(builder: (_) => PostDetailPage(post: post)),
+        );
+        if (changed == true && mounted) {
+          _userCache.clear();
+          _loadFeedFirstPage();
+        }
+      },
       child: Card(
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         elevation: 0.5,
@@ -1221,15 +1244,7 @@ Future<void> _handleEdit(Post post) async {
               );
             } catch (e) {
               if (!mounted) return;
-
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Failed to delete: $e',
-                  ),
-                  backgroundColor: Colors.red,
-                ),
-              );
+              ErrorHandler.showError(context, error: e, message: 'Failed to delete post. Please try again.');
             }
           },
           child: const Text(
@@ -1390,15 +1405,17 @@ Future<void> _handleEdit(Post post) async {
     }
 
 Widget _buildLikeButton(Post post, bool isLikedFromStream) {
+  final postId = post.id!;
+  final bool inFlight = _likeRequestsInFlight.contains(postId);
   return StreamBuilder<int>(
-    stream: _likeService.likeCountStream(post.id!),
+    stream: _likeService.likeCountStream(postId),
     initialData: post.likes,
     builder: (context, snapshot) {
-      final bool isLiked = _optimisticLiked[post.id!] ?? isLikedFromStream;
-      final int likeCount = _optimisticLikeCount[post.id!] ?? (snapshot.data ?? post.likes);
+      final bool isLiked = _optimisticLiked[postId] ?? isLikedFromStream;
+      final int likeCount = _optimisticLikeCount[postId] ?? (snapshot.data ?? post.likes);
 
       return InkWell(
-        onTap: () => _handleLike(post, isLiked, likeCount),
+        onTap: inFlight ? null : () => _handleLike(post, isLiked, likeCount),
         borderRadius: BorderRadius.circular(20),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1431,8 +1448,12 @@ Widget _buildLikeButton(Post post, bool isLikedFromStream) {
 
  void _handleLike(Post post, bool currentlyLiked, int currentCount) async {
   final postId = post.id!;
+  if (_likeRequestsInFlight.contains(postId)) return;
+
+  _likeRequestsInFlight.add(postId);
+
   final newLiked = !currentlyLiked;
-  final newCount = currentlyLiked ? currentCount - 1 : currentCount + 1;
+  final newCount = (currentlyLiked ? currentCount - 1 : currentCount + 1).clamp(0, 999999);
 
   // 立即本地翻转,不等服务器
   setState(() {
@@ -1473,9 +1494,12 @@ Widget _buildLikeButton(Post post, bool isLikedFromStream) {
       _optimisticLiked[postId] = currentlyLiked;
       _optimisticLikeCount[postId] = currentCount;
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Operation failed: $e')),
-    );
+    ErrorHandler.showError(context, error: e, message: 'Could not update like. Please try again.');
+  } finally {
+    _likeRequestsInFlight.remove(postId);
+    if (mounted) {
+      setState(() {});
+    }
   }
 }
 

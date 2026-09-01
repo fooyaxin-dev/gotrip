@@ -3,7 +3,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'login.dart';
 import '../../services/apps_Loading.dart';
-import '../../services/connectivity_service.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -20,16 +19,16 @@ class _SignupPageState extends State<SignupPage> {
   final TextEditingController pwdController      = TextEditingController();
   final TextEditingController repwdController    = TextEditingController();
 
-  bool isLoading     = false;
+  bool isLoading    = false;
   bool _pwdVisible   = false;
   bool _repwdVisible = false;
 
   // ── password rule states ──────────────────────────────────────────────────
-  bool _hasMinLength  = false;
-  bool _hasUppercase  = false;
-  bool _hasLowercase  = false;
-  bool _hasDigit      = false;
-  bool _hasSpecial    = false;
+  bool _hasMinLength = false;
+  bool _hasUppercase = false;
+  bool _hasLowercase = false;
+  bool _hasDigit     = false;
+  bool _hasSpecial   = false;
   bool _showChecklist = false; // only show once user starts typing
 
   @override
@@ -107,7 +106,7 @@ class _SignupPageState extends State<SignupPage> {
       debugPrint('Signup rollback: sign-out failed: $error');
     }
 
-    return profileRemoved && authUserRemoved;
+    return profileRemoved && authUserRemoved; 
   }
 
   Future<void> _showSuccessfulSignup() async {
@@ -146,11 +145,6 @@ class _SignupPageState extends State<SignupPage> {
       return;
     }
 
-    final online = await ConnectivityService.instance.ensureConnected(
-      context,
-      onRetry: createUserWithEmailAndPassword,
-    );
-    if (!online || !mounted) return;
 
     final username = usernameController.text.trim();
     final email = emailController.text.trim();
@@ -161,13 +155,6 @@ class _SignupPageState extends State<SignupPage> {
     User? createdUser;
 
     try {
-      // Keep this inside try/finally. Previously a failed username query left
-      // the page loading forever because it happened before the try block.
-      if (await isUsernameTaken(username)) {
-        _showError('Username already taken');
-        return;
-      }
-
       final userCredential = await FirebaseAuth.instance
           .createUserWithEmailAndPassword(email: email, password: password);
 
@@ -177,6 +164,28 @@ class _SignupPageState extends State<SignupPage> {
           code: 'missing-user',
           message: 'Firebase did not return the newly-created user.',
         );
+      }
+
+      try {
+        if (await isUsernameTaken(username)) {
+          final rolledBack = await _rollbackNewRegistration(createdUser);
+          if (!mounted) return;
+          _showError(
+            rolledBack
+                ? 'Username already taken'
+                : 'Username already taken, but automatic cleanup could not finish. Please try logging in before registering again.',
+          );
+          return;
+        }
+      } catch (error) {
+        final rolledBack = await _rollbackNewRegistration(createdUser);
+        if (!mounted) return;
+        _showError(
+          rolledBack
+              ? 'Account setup could not be completed. Please try again.'
+              : 'Account setup was interrupted and automatic cleanup could not finish. Please try logging in before registering again.',
+        );
+        return;
       }
 
       try {
@@ -255,7 +264,7 @@ class _SignupPageState extends State<SignupPage> {
           message = 'Password is too weak';
           break;
         case 'network-request-failed':
-          message = 'Network error. Please try again';
+          message = 'Network error. Please check your connection';
           break;
         case 'too-many-requests':
           message = 'Too many attempts. Please wait and try again';
@@ -277,7 +286,7 @@ class _SignupPageState extends State<SignupPage> {
       }
 
       if (mounted) {
-        _showError('Something went wrong. Please try again');
+        _showError('An unexpected error occurred. Please try again.');
       }
     } finally {
       if (mounted) setState(() => isLoading = false);

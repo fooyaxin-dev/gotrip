@@ -357,8 +357,11 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
   Future<void> _precacheDisplayImages() async {
     if (displayImages.isNotEmpty) {
+      // Precache only the first 2 images (hero + 1 preview) so the page
+      // renders immediately without waiting for all 10-20 photos.
+      final immediateImages = displayImages.take(2).toList();
       await Future.wait(
-        displayImages.map((u) =>
+        immediateImages.map((u) =>
             precacheImage(CachedNetworkImageProvider(u), context)
                 .catchError((_) {})),
       );
@@ -535,7 +538,7 @@ Widget build(BuildContext context) {
                         child: canFavourite
                             ? FavouriteButton(
                                 placeId:
-                                    resolvedGooglePlaceId!,
+                                    resolvedGooglePlaceId ?? '',
                                 name: _name,
                                 address: _placeAddress,
                                 rating: _placeRating,
@@ -561,7 +564,7 @@ Widget build(BuildContext context) {
                     : canFavourite
                         ? FavouriteButton(
                             placeId:
-                                resolvedGooglePlaceId!,
+                                resolvedGooglePlaceId ?? '',
                             name: _name,
                             address: _placeAddress,
                             rating: _placeRating,

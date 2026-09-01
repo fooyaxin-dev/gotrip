@@ -9,6 +9,7 @@ import 'favouriteButton.dart';
 import 'routePreviewPage.dart';
 import '../../services/categoryImage_Helper.dart';
 import '../../services/apps_Loading.dart';
+import '../../services/error_handler.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/userPreference_service.dart';
 
@@ -233,7 +234,7 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
 
     } catch (e) {
       setState(() {
-        error   = e.toString();
+        error   = ErrorHandler.userFriendlyMessage(e, defaultMessage: 'Unable to load place details. Please check your connection and try again.');
         loading = false;
       });
     }
@@ -303,28 +304,14 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   }
 
   Widget _buildErrorState() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.location_off_rounded, size: 56, color: Colors.grey[400]),
-            const SizedBox(height: 16),
-            Text(
-              error!,
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey[600], fontSize: 15),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _fetchPlaceDetails,
-              icon: const Icon(Icons.refresh_rounded),
-              label: const Text('Try Again'),
-            ),
-          ],
-        ),
-      ),
+    return AppErrorStateView(
+      icon: Icons.location_off_rounded,
+      title: 'Place Details Unavailable',
+      message: error ?? 'Unable to load details for this place.',
+      onRetry: _fetchPlaceDetails,
+      retryLabel: 'Try Again',
+      onSecondary: () => Navigator.pop(context),
+      secondaryLabel: 'Go Back',
     );
   }
 
@@ -423,25 +410,79 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
 
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 15),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildActionButton(Icons.phone, "Call", phone != null,
-                          onTap: phone != null ? () => _launchPhone(phone) : null),
-                      _buildActionButton(Icons.public, "Website", website != null,
-                          onTap: website != null ? () => _launchWebsite(website) : null),
-                      _buildActionButton(
-                        Icons.directions, "Directions",
-                        widget.lat != null && widget.lng != null,
-                        onTap: () => _navigateToGuide(name),
-                      ),
-                      _buildActionButton(Icons.share, "Share", true,
-                          onTap: () => _sharePlace(name, address, website)),
-                    ],
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final textScale = MediaQuery.textScalerOf(context).scale(1.0);
+                      final useSingleRow = constraints.maxWidth >= 300 && textScale <= 1.3;
+
+                      final actionButtons = [
+                        _buildActionButton(
+                          Icons.phone,
+                          "Call",
+                          phone != null,
+                          semanticLabel: "Call place",
+                          disabledSemanticLabel: "Call unavailable",
+                          tooltip: "Call",
+                          onTap: phone != null ? () => _launchPhone(phone) : null,
+                        ),
+                        _buildActionButton(
+                          Icons.public,
+                          "Website",
+                          website != null,
+                          semanticLabel: "Open place website",
+                          disabledSemanticLabel: "Website unavailable",
+                          tooltip: "Website",
+                          onTap: website != null ? () => _launchWebsite(website) : null,
+                        ),
+                        _buildActionButton(
+                          Icons.directions,
+                          "Directions",
+                          widget.lat != null && widget.lng != null,
+                          semanticLabel: "Get directions",
+                          disabledSemanticLabel: "Directions unavailable",
+                          tooltip: "Directions",
+                          onTap: () => _navigateToGuide(name),
+                        ),
+                        _buildActionButton(
+                          Icons.share,
+                          "Share",
+                          true,
+                          semanticLabel: "Share place",
+                          tooltip: "Share",
+                          onTap: () => _sharePlace(name, address, website),
+                        ),
+                      ];
+
+                      if (useSingleRow) {
+                        return Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: actionButtons.map((btn) => Expanded(child: btn)).toList(),
+                        );
+                      }
+
+                      return Wrap(
+                        spacing: 8,
+                        runSpacing: 12,
+                        alignment: WrapAlignment.spaceAround,
+                        children: actionButtons
+                            .map((btn) => SizedBox(
+                                  width: (constraints.maxWidth - 24) / 2,
+                                  child: btn,
+                                ))
+                            .toList(),
+                      );
+                    },
                   ),
                 ),
                 const Divider(),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
+
+                _buildWhyRecommendedSection(
+                  primaryType: primaryType,
+                  types: types,
+                  rating: rating,
+                  priceLevel: placeDetail?['priceLevel'] as int?,
+                ),
 
                 _buildInfoSection(Icons.location_on, "Address", address),
 
@@ -613,21 +654,146 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     ));
   }
 
-  Widget _buildActionButton(IconData icon, String label, bool isAvailable,
-      {VoidCallback? onTap}) {
-    return Opacity(
-      opacity: isAvailable ? 1.0 : 0.3,
-      child: InkWell(
-        onTap: isAvailable ? onTap : null,
-        borderRadius: BorderRadius.circular(30),
-        child: Column(children: [
-          CircleAvatar(
-            backgroundColor: Colors.blue[50],
-            child: Icon(icon, color: Colors.blue[600]),
+  Widget _buildWhyRecommendedSection({
+    required String? primaryType,
+    required List<String> types,
+    required double? rating,
+    required int? priceLevel,
+  }) {
+    double? distMeters;
+    if (widget.lat != null && widget.lng != null && widget.userLat != null && widget.userLng != null) {
+      distMeters = Geolocator.distanceBetween(
+        widget.userLat!,
+        widget.userLng!,
+        widget.lat!,
+        widget.lng!,
+      );
+    }
+
+    final recScore = UserPreferenceService.instance.recommendationScore(
+      primaryType:    primaryType,
+      allTypes:       types,
+      rating:         rating,
+      distanceMeters: distMeters,
+      priceLevel:     priceLevel,
+      originType:     RecommendationOriginType.gps,
+    );
+
+    final expl = recScore.explanation;
+    if (expl == null || expl.explanationReasons.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF7C4DFF).withOpacity(0.06),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF7C4DFF).withOpacity(0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.auto_awesome_rounded, color: Color(0xFF7C4DFF), size: 18),
+              const SizedBox(width: 8),
+              const Text(
+                'Why this was recommended',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF7C4DFF),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  expl.matchTier,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-        ]),
+          const SizedBox(height: 10),
+          ...expl.explanationReasons.map((reason) => Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('• ', style: TextStyle(color: Color(0xFF7C4DFF), fontWeight: FontWeight.bold)),
+                    Expanded(
+                      child: Text(
+                        reason,
+                        style: const TextStyle(fontSize: 12.5, color: Color(0xFF334155), height: 1.3),
+                      ),
+                    ),
+                  ],
+                ),
+              )),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButton(
+    IconData icon,
+    String label,
+    bool isAvailable, {
+    VoidCallback? onTap,
+    String? semanticLabel,
+    String? disabledSemanticLabel,
+    String? tooltip,
+  }) {
+    final effectiveLabel = isAvailable
+        ? (semanticLabel ?? label)
+        : (disabledSemanticLabel ?? '$label unavailable');
+    final effectiveTooltip = tooltip ?? label;
+
+    return Semantics(
+      button: true,
+      enabled: isAvailable,
+      label: effectiveLabel,
+      excludeSemantics: true,
+      child: Tooltip(
+        message: effectiveTooltip,
+        child: Opacity(
+          opacity: isAvailable ? 1.0 : 0.3,
+          child: InkWell(
+            onTap: isAvailable ? onTap : null,
+            borderRadius: BorderRadius.circular(16),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircleAvatar(
+                      backgroundColor: Colors.blue[50],
+                      child: Icon(icon, color: Colors.blue[600]),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      label,
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

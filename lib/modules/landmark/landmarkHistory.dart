@@ -18,6 +18,8 @@ class LandmarkHistoryPage extends StatefulWidget {
 class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
   List<LandmarkHistoryEntry> _entries = [];
   bool _loading = true;
+  final Set<String> _deletingIds = {};
+  bool _isClearing = false;
 
   @override
   void initState() {
@@ -34,6 +36,9 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
   Future<void> _delete( 
     LandmarkHistoryEntry entry,
   ) async {
+    if (_deletingIds.contains(entry.id) || _isClearing) return;
+    _deletingIds.add(entry.id);
+
     try {
       await LandmarkHistoryService.delete(entry.id);
 
@@ -59,6 +64,8 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
         message:
             'Failed to remove item. Please try again.',
       );
+    } finally {
+      _deletingIds.remove(entry.id);
     }
   }
 
@@ -124,16 +131,20 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
         ],
       ),
     );
-   if (confirm == true) {
-    try {
-      await LandmarkHistoryService.clearAll();
-      if (mounted) setState(() => _entries = []);
-    } catch (e) {
-      if (mounted) {
-        ErrorHandler.showError(context, message: 'Failed to clear history. Please try again.');
+    if (confirm == true) {
+      if (_isClearing) return;
+      setState(() => _isClearing = true);
+      try {
+        await LandmarkHistoryService.clearAll();
+        if (mounted) setState(() => _entries = []);
+      } catch (e) {
+        if (mounted) {
+          ErrorHandler.showError(context, message: 'Failed to clear history. Please try again.');
+        }
+      } finally {
+        if (mounted) setState(() => _isClearing = false);
       }
     }
-  }
   }
 
   @override
@@ -149,9 +160,13 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
         actions: [
           if (_entries.isNotEmpty)
             TextButton(
-              onPressed: _clearAll,
-              child: const Text('Clear All',
-                  style: TextStyle(color: Colors.redAccent)),
+              onPressed: _isClearing ? null : _clearAll,
+              child: Text(
+                _isClearing ? 'Clearing...' : 'Clear All',
+                style: TextStyle(
+                  color: _isClearing ? Colors.grey : Colors.redAccent,
+                ),
+              ),
             ),
         ],
       ),

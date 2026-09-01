@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geolocator/geolocator.dart';
 import '../../services/route_service.dart';
+import '../../services/dialog_helper.dart';
 import 'guidePage.dart';
 import '../../services/apps_Loading.dart';
 
@@ -57,6 +59,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   final Set<Marker>    _markers   = {};
 
   TravelMode _selectedMode = TravelMode.drive;
+  bool _isStartingNav = false;
 
   final Map<TravelMode, _ModeSummary> _summaries = {
     TravelMode.drive: _ModeSummary(mode: TravelMode.drive),
@@ -224,6 +227,58 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
     _renderPolyline(mode);
   }
 
+  Future<bool> _checkPreciseLocation() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      if (mounted) AppDialogs.showLocationServiceDisabled(context);
+      return false;
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) return false;
+    }
+    if (permission == LocationPermission.deniedForever) {
+      if (mounted) AppDialogs.showLocationUnavailable(context);
+      return false;
+    }
+
+    try {
+      final accuracy = await Geolocator.getLocationAccuracy();
+      if (accuracy == LocationAccuracyStatus.reduced) {
+        if (!mounted) return false;
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Precise Location Required'),
+            content: const Text(
+              'Turn-by-turn navigation, rerouting, and arrival check-in require precise location accuracy. Please enable precise location in App Settings.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Not Now'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Geolocator.openAppSettings();
+                },
+                child: const Text('Open Settings'),
+              ),
+            ],
+          ),
+        );
+        return false;
+      }
+    } catch (_) {
+      // If getLocationAccuracy is unsupported on specific platform, continue safely
+    }
+
+    return true;
+  }
+
   // ─────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────
@@ -378,7 +433,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                       if (selected.loading)
                         const SizedBox(
                           width: 20, height: 20,
-                          child: TravelLoadingIndicator(),
+                          child: TravelLoadingIndicator(size: 20, color: Color(0xFF1A73E8)),
                         )
                       else if (selected.error != null)
                         const Text('Route unavailable',
@@ -443,30 +498,40 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                   child: SizedBox(
                     width: double.infinity,
                   child: ElevatedButton.icon(
-                  onPressed: selected.loading || selected.error != null
+                  onPressed: selected.loading || selected.error != null || _isStartingNav
                     ? null
                     : () async {
-                        final arrived = await Navigator.push<bool>(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => GuidePage(
-                              startLat:        widget.startLat,
-                              startLng:        widget.startLng,
-                              endLat:          widget.endLat,
-                              endLng:          widget.endLng,
-                              destinationName: widget.destinationName,
-                              travelMode:      _selectedMode,
-                              initialRoute: _isRealFetch[_selectedMode] == true
-                                  ? _routeData[_selectedMode]
-                                  : null,
+                        final canProceed = await _checkPreciseLocation();
+                        if (!canProceed || !mounted) return;
+
+                        setState(() => _isStartingNav = true);
+                        try {
+                          final arrived = await Navigator.push<bool>(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => GuidePage(
+                                startLat:        widget.startLat,
+                                startLng:        widget.startLng,
+                                endLat:          widget.endLat,
+                                endLng:          widget.endLng,
+                                destinationName: widget.destinationName,
+                                travelMode:      _selectedMode,
+                                initialRoute: _isRealFetch[_selectedMode] == true
+                                    ? _routeData[_selectedMode]
+                                    : null,
+                              ),
                             ),
-                          ),
-                        );
+                          );
 
-                        if (!mounted) return;
+                          if (!mounted) return;
 
-                        if (arrived == true) {
-                          Navigator.pop(context, true);
+                          if (arrived == true) {
+                            Navigator.pop(context, true);
+                          }
+                        } finally {
+                          if (mounted) {
+                            setState(() => _isStartingNav = false);
+                          }
                         }
                       },
                       icon:  const Icon(Icons.navigation_rounded, size: 18),

@@ -5,6 +5,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
+import 'package:geolocator/geolocator.dart';
 import '../../services/apps_Loading.dart';
 
 import '../../services/vision_service.dart';
@@ -29,6 +30,15 @@ Uint8List _fixOrientationAndEncode(Uint8List rawBytes) {
 // push it off the UI isolate too.
 String _encodeBase64(Uint8List bytes) => base64Encode(bytes);
 
+enum LandmarkCameraState {
+  initializing,
+  ready,
+  permissionDenied,
+  permissionPermanentlyDenied,
+  noCamera,
+  initializationFailed,
+}
+
 class LandmarkFAB extends StatefulWidget {
   const LandmarkFAB({super.key});
 
@@ -45,7 +55,9 @@ class _LandmarkFABState extends State<LandmarkFAB>
 
   CameraController? _cameraController;
   bool _isCameraReady = false;
+  LandmarkCameraState _cameraState = LandmarkCameraState.initializing;
   bool _cameraError = false;
+  bool _waitingForCameraSettingsReturn = false;
   Uint8List? _previewBytes;
 
   // Staged status text shown under the scan frame while _loading is true.
@@ -71,10 +83,17 @@ class _LandmarkFABState extends State<LandmarkFAB>
   }
 
   Future<void> _initCamera() async {
+    if (!mounted) return;
+    setState(() => _cameraState = LandmarkCameraState.initializing);
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        throw CameraException('no_camera', 'No camera available on this device');
+        if (!mounted) return;
+        setState(() {
+          _cameraState = LandmarkCameraState.noCamera;
+          _isCameraReady = false;
+        });
+        return;
       }
 
       final controller = CameraController(
@@ -93,16 +112,29 @@ class _LandmarkFABState extends State<LandmarkFAB>
       _cameraController = controller;
       setState(() {
         _isCameraReady = true;
+        _cameraState = LandmarkCameraState.ready;
         _cameraError = false;
       });
     } catch (e) {
       debugPrint('⚠️ Camera init failed: $e');
-      if (mounted) {
-        setState(() {
-          _cameraError = true;
-          _isCameraReady = false;
-        });
+      if (!mounted) return;
+
+      LandmarkCameraState mappedState = LandmarkCameraState.initializationFailed;
+      if (e is CameraException) {
+        if (e.code == 'CameraAccessDenied') {
+          mappedState = LandmarkCameraState.permissionDenied;
+        } else if (e.code == 'CameraAccessDeniedWithoutPrompt' || e.code == 'CameraAccessRestricted') {
+          mappedState = LandmarkCameraState.permissionPermanentlyDenied;
+        } else if (e.code == 'no_camera') {
+          mappedState = LandmarkCameraState.noCamera;
+        }
       }
+
+      setState(() {
+        _cameraState = mappedState;
+        _cameraError = true;
+        _isCameraReady = false;
+      });
     }
   }
 
@@ -110,17 +142,20 @@ class _LandmarkFABState extends State<LandmarkFAB>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) return;
-
-    if (
-        state == AppLifecycleState.paused) {
+    if (state == AppLifecycleState.paused) {
       _isFlashOn = false;
-      controller.dispose();
+      controller?.dispose();
       _cameraController = null;
       if (mounted) setState(() => _isCameraReady = false);
-   } else if (state == AppLifecycleState.resumed) {
-  if (_cameraController == null) _initCamera();
-}
+    } else if (state == AppLifecycleState.resumed) {
+      if (!mounted) return;
+      if (_waitingForCameraSettingsReturn) {
+        _waitingForCameraSettingsReturn = false;
+        _initCamera();
+      } else if (_cameraState == LandmarkCameraState.ready && _cameraController == null) {
+        _initCamera();
+      }
+    }
   }
 
   @override
@@ -302,25 +337,186 @@ await _processImage(bytes, myRequestId);
   }
 
   Widget _buildPreview() {
-    if (_cameraError) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            '无法访问相机，请检查权限设置后重试',
-            style: TextStyle(color: Colors.white70),
-            textAlign: TextAlign.center,
-          ),
-        ),
-      );
-    }
-    if (_isCameraReady && _cameraController != null) {
+    if (_cameraState == LandmarkCameraState.ready && _cameraController != null) {
       return _previewBytes != null
           // cacheWidth avoids decoding the full-resolution image just to
           // display it in a small preview frame — big memory/CPU win.
           ? Image.memory(_previewBytes!, fit: BoxFit.cover, cacheWidth: 800)
           : CameraPreview(_cameraController!);
     }
+
+    if (_cameraState == LandmarkCameraState.noCamera) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64, height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.no_photography_outlined, color: Colors.white70, size: 32),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'No Camera Available',
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'No camera sensor was detected on this device. You can recognise landmarks by choosing an image from your gallery.',
+                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: () => _pickImage(ImageSource.gallery),
+                icon: const Icon(Icons.photo_library, size: 16, color: Colors.white),
+                label: const Text('Choose from Gallery', style: TextStyle(color: Colors.white)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF7C4DFF),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_cameraState == LandmarkCameraState.permissionPermanentlyDenied) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64, height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.camera_alt_outlined, color: Colors.white70, size: 32),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'Camera Permission Denied',
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Camera permission is permanently denied. Please enable camera access in App Settings, or select a photo from your gallery.',
+                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () => _pickImage(ImageSource.gallery),
+                    icon: const Icon(Icons.photo_library, size: 16, color: Colors.white),
+                    label: const Text('Gallery', style: TextStyle(color: Colors.white)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white38),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      _waitingForCameraSettingsReturn = true;
+                      await Geolocator.openAppSettings();
+                    },
+                    icon: const Icon(Icons.settings, size: 16, color: Colors.white),
+                    label: const Text('Open Settings', style: TextStyle(color: Colors.white)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF7C4DFF),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_cameraState == LandmarkCameraState.permissionDenied ||
+        _cameraState == LandmarkCameraState.initializationFailed) {
+      final isDenied = _cameraState == LandmarkCameraState.permissionDenied;
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64, height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  isDenied ? Icons.camera_alt_outlined : Icons.error_outline_rounded,
+                  color: Colors.white70,
+                  size: 32,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                isDenied ? 'Camera Access Required' : 'Camera Unavailable',
+                style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                isDenied
+                    ? 'Camera access is needed to photograph landmarks. You can try again or choose from your gallery.'
+                    : 'The camera could not be started. Please try again or select a photo from your gallery.',
+                style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () => _pickImage(ImageSource.gallery),
+                    icon: const Icon(Icons.photo_library, size: 16, color: Colors.white),
+                    label: const Text('Gallery', style: TextStyle(color: Colors.white)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white38),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      _initCamera();
+                    },
+                    icon: const Icon(Icons.refresh_rounded, size: 16, color: Colors.white),
+                    label: const Text('Try Again', style: TextStyle(color: Colors.white)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF7C4DFF),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return const Center(child: TravelLoadingIndicator());
   }
 

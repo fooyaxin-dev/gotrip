@@ -26,7 +26,7 @@ import 'package:lottie/lottie.dart';
 class TravelLoadingIndicator extends StatelessWidget {
   final double? size;
   final Color? color; 
-  static const String _animationPath = 'assets/loading_cat.json';
+  static const String _animationPath = 'assets/travelLoading.json';
 
   // 🆕 低于这个尺寸，Lottie 插画会被压得看不清，改用简洁的圆圈转圈
   static const double _smallSizeThreshold = 40;
@@ -59,12 +59,10 @@ class TravelLoadingIndicator extends StatelessWidget {
       errorBuilder: (context, error, stackTrace) => SizedBox(
         width: displaySize,
         height: displaySize,
-        child: Lottie.asset(
-          'assets/travelLoading.json',
-          width: size,
-          height: size,
-          fit: BoxFit.contain,
-          repeat: true,
+        child: const Center(
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+          ),
         ),
       ),
     );

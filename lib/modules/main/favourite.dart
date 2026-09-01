@@ -3,6 +3,7 @@ import '../../services/favourite_service.dart';
 import '../place/favouriteButton.dart';
 import '../place/placeDetailPage.dart';
 import '../../services/apps_Loading.dart';
+import '../../services/error_handler.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 // ─────────────────────────────────────────────
@@ -115,13 +116,33 @@ class _FavouritePageState extends State<FavouritePage> with TickerProviderStateM
     return ordered;
   }
 
+  int _retryKey = 0;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFF),
       body: StreamBuilder<List<Map<String, dynamic>>>(
+        key: ValueKey(_retryKey),
         stream: FavouriteService.getFavouritesStream(),
         builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
+            return const Center(child: TravelLoadingIndicator());
+          }
+
+          if (snapshot.hasError) {
+            return Center(
+              child: AppErrorStateView(
+                title: 'Unable to Load Favourites',
+                message: ErrorHandler.userFriendlyMessage(
+                  snapshot.error,
+                  defaultMessage: 'Please check your network connection and try again.',
+                ),
+                onRetry: () => setState(() => _retryKey++),
+              ),
+            );
+          }
+
           final allFavourites = snapshot.data ?? [];
 
           // ✅ 每次 stream 更新都重新算 tabs，无需 TabController
@@ -209,14 +230,8 @@ class _FavouritePageState extends State<FavouritePage> with TickerProviderStateM
                 ),
               ),
 
-              // 加载中
-              if (snapshot.connectionState == ConnectionState.waiting)
-                const SliverFillRemaining(
-                  child: Center(child: TravelLoadingIndicator()),
-                )
-
               // 空状态
-              else if (filtered.isEmpty)
+              if (filtered.isEmpty)
                 SliverFillRemaining(
                   child: Center(
                     child: Column(

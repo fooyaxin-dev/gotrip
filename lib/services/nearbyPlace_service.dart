@@ -622,43 +622,48 @@ Future<List<PlaceModel>> loadNearbyPlacesOnce(
 
     final stopwatch = Stopwatch()..start();
 
-    final googlePlaces = await _fetchAndStore(
-      lat:        searchLat,
-      lng:        searchLng,
-      targetList: _allPlacesCache,
-      targetByType: _placesByTypeCache,
-      radius:     radius,
-      generation: myGeneration,
-      isCurrentGeneration: isCurrentGeneration,
-      onGeoapifyBatchAdd: (batch) {
-        onGeoapifyBatchAdd?.call(batch);
-        if (onGeoapifyAdd != null) {
-          for (final place in batch) {
-            onGeoapifyAdd(place);
+    try {
+      final googlePlaces = await _fetchAndStore(
+        lat:        searchLat,
+        lng:        searchLng,
+        targetList: _allPlacesCache,
+        targetByType: _placesByTypeCache,
+        radius:     radius,
+        generation: myGeneration,
+        isCurrentGeneration: isCurrentGeneration,
+        onGeoapifyBatchAdd: (batch) {
+          onGeoapifyBatchAdd?.call(batch);
+          if (onGeoapifyAdd != null) {
+            for (final place in batch) {
+              onGeoapifyAdd(place);
+            }
           }
-        }
-      },
-      onGeoapifyDone: () {
-        print('🏁 Geoapify merge finished (background)');
-        _isBackgroundLoading = false;
-        onGeoapifyDone?.call();
-      },
-    );
+        },
+        onGeoapifyDone: () {
+          print('🏁 Geoapify merge finished (background)');
+          _isBackgroundLoading = false;
+          onGeoapifyDone?.call();
+        },
+      );
 
-    stopwatch.stop();
+      stopwatch.stop();
 
-    if (isCurrentGeneration()) {
-      _hasLoadedOnce = true;
-      _cachedRadius  = radius;
-      _cachedLat     = searchLat;
-      _cachedLng     = searchLng;
-      _isLoading = false;
+      if (isCurrentGeneration()) {
+        _hasLoadedOnce = true;
+        _cachedRadius  = radius;
+        _cachedLat     = searchLat;
+        _cachedLng     = searchLng;
+      }
+
+      print('🏁 Phase 1 returned: ${googlePlaces.length} Google places in '
+          '${stopwatch.elapsedMilliseconds}ms (radius: ${radius}m)');
+
+      return _allPlacesCache;
+    } finally {
+      if (isCurrentGeneration()) {
+        _isLoading = false;
+      }
     }
-
-    print('🏁 Phase 1 returned: ${googlePlaces.length} Google places in '
-        '${stopwatch.elapsedMilliseconds}ms (radius: ${radius}m)');
-
-    return _allPlacesCache;
   }
 
   Future<List<PlaceModel>> loadNearbyPlacesAt({

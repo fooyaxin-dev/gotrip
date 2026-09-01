@@ -9,17 +9,16 @@ import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
-
 import '../../models/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
 import '../itinerary/itineraryDetail.dart';
 import '../../services/route_service.dart';
 import '../../models/placeModel.dart';
 import '../../services/placesAPI_service.dart';
-import 'placeDetailPage.dart';   // 跟 RealTimeDetectPage 用的是同一个相对路径，如果不在同一文件夹，按实际路径调整
+import 'placeDetailPage.dart'; // 跟 RealTimeDetectPage 用的是同一个相对路径，如果不在同一文件夹，按实际路径调整
 import '../../services/connectivity_service.dart';
 import '../../services/category_mapper.dart';
-
+import '../../services/error_handler.dart';
 
 class RouteOptimizerPage extends StatefulWidget {
   final ItineraryModel itinerary;
@@ -32,7 +31,7 @@ class RouteOptimizerPage extends StatefulWidget {
   // (pop back with the updated itinerary instead of pushReplacement-ing
   // a brand new ItineraryDetailPage on top of the one that's already there).
   final bool isEditingExisting;
-  final List<PlaceModel> leftoverCandidates;  
+  final List<PlaceModel> leftoverCandidates;
   final List<String> leftoverPlaceIds;
 
   const RouteOptimizerPage({
@@ -54,9 +53,9 @@ class RouteOptimizerPage extends StatefulWidget {
 class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   late ItineraryModel _itinerary;
   late List<PlaceModel> _leftovers;
-  List<String> _pendingLeftoverIds = [];   // 🆕 还没 hydrate 的 id
-  bool _isHydratingPool = false;           // 🆕
-  bool _poolHydrated = false;      
+  List<String> _pendingLeftoverIds = []; // 🆕 还没 hydrate 的 id
+  bool _isHydratingPool = false; // 🆕
+  bool _poolHydrated = false;
 
   // 0 = Overview, index i+1 = Day i
   int _selectedIndex = 0;
@@ -123,31 +122,40 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
   double get _speedMps {
     switch (widget.travelMode) {
-      case TravelMode.walk:  return 1.4;
-      case TravelMode.motor: return 6.0;
-      case TravelMode.drive: return 12.0;
+      case TravelMode.walk:
+        return 1.4;
+      case TravelMode.motor:
+        return 6.0;
+      case TravelMode.drive:
+        return 12.0;
     }
   }
 
   IconData get _travelIcon {
     switch (widget.travelMode) {
-      case TravelMode.walk:  return Icons.directions_walk_rounded;
-      case TravelMode.motor: return Icons.motorcycle_rounded;
-      case TravelMode.drive: return Icons.directions_car_rounded;
+      case TravelMode.walk:
+        return Icons.directions_walk_rounded;
+      case TravelMode.motor:
+        return Icons.motorcycle_rounded;
+      case TravelMode.drive:
+        return Icons.directions_car_rounded;
     }
   }
 
   String get _travelLabel {
     switch (widget.travelMode) {
-      case TravelMode.walk:  return 'walk';
-      case TravelMode.motor: return 'ride';
-      case TravelMode.drive: return 'drive';
+      case TravelMode.walk:
+        return 'walk';
+      case TravelMode.motor:
+        return 'ride';
+      case TravelMode.drive:
+        return 'drive';
     }
   }
 
   double get _minSheetSize {
     final screenHeight = MediaQuery.of(context).size.height;
-    final bottomInset  = MediaQuery.of(context).padding.bottom;
+    final bottomInset = MediaQuery.of(context).padding.bottom;
     // Handle + trip header + day tabs + spacing/divider + bottom action bar.
     // Keep all fixed controls inside the sheet even on shorter Android screens.
     const fixedChromeHeight = 24.0 + 66.0 + 62.0 + 9.0 + 1.0 + 76.0;
@@ -155,15 +163,13 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   }
 
   bool _isDayLocked(int dayIndex) {
-    if (dayIndex < 0 ||
-        dayIndex >= _itinerary.days.length) {
+    if (dayIndex < 0 || dayIndex >= _itinerary.days.length) {
       return true;
     }
 
     final day = _itinerary.days[dayIndex];
 
-    return _itinerary.isCompleted ||
-        (day.totalCount > 0 && day.isCompleted);
+    return _itinerary.isCompleted || (day.totalCount > 0 && day.isCompleted);
   }
 
   bool _isDayStarted(int dayIndex) {
@@ -188,33 +194,33 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     return -1;
   }
 
-
   // ─────────────────────────────────────────────
   // Lifecycle
   // ─────────────────────────────────────────────
 
   @override
-    void initState() {
-      super.initState();
-      _itinerary = widget.itinerary;
-      _leftovers = List.from(widget.leftoverCandidates);
+  void initState() {
+    super.initState();
+    _itinerary = widget.itinerary;
+    _leftovers = List.from(widget.leftoverCandidates);
 
-      // 🆕 Generate 流程直接带完整 PlaceModel，不需要 hydrate；
-      // Edit 已存档行程时只有 id，标记成"待 hydrate"，等用户真的点开
-      // More Places tab 才去补全，而不是一进页面就打一堆 API
-      if (widget.leftoverCandidates.isEmpty && widget.leftoverPlaceIds.isNotEmpty) {
-        _pendingLeftoverIds = List.from(widget.leftoverPlaceIds);
-        _poolHydrated = false;
-      } else {
-        _poolHydrated = true;
-      }
-
-      _updateMapOverlays();
-
-      if (!widget.isEditingExisting && _itinerary.id.isEmpty) {
-        _autoOptimizeAllDays();
-      }
+    // 🆕 Generate 流程直接带完整 PlaceModel，不需要 hydrate；
+    // Edit 已存档行程时只有 id，标记成"待 hydrate"，等用户真的点开
+    // More Places tab 才去补全，而不是一进页面就打一堆 API
+    if (widget.leftoverCandidates.isEmpty &&
+        widget.leftoverPlaceIds.isNotEmpty) {
+      _pendingLeftoverIds = List.from(widget.leftoverPlaceIds);
+      _poolHydrated = false;
+    } else {
+      _poolHydrated = true;
     }
+
+    _updateMapOverlays();
+
+    if (!widget.isEditingExisting && _itinerary.id.isEmpty) {
+      _autoOptimizeAllDays();
+    }
+  }
 
   Future<void> _autoOptimizeAllDays() async {
     _improveCrossDayAssignments();
@@ -342,14 +348,14 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     _mapController?.dispose();
     _sheetController.dispose();
     _sheetExtentNotifier.dispose();
-    _mapOverlayNotifier.dispose();   
+    _mapOverlayNotifier.dispose();
     for (final notifier in _legsNotifiers.values) {
       notifier.dispose();
     }
     _paddingDebounce?.cancel();
     for (final t in _legsFetchDebounce.values) {
       t.cancel();
-    } 
+    }
     super.dispose();
   }
 
@@ -397,13 +403,13 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     final fallback = _computeStraightLegsForDay(dayIndex);
     notifier.value = fallback;
-    _scheduleFetchRealLegs(dayIndex); 
+    _scheduleFetchRealLegs(dayIndex);
     return fallback;
   }
 
   _DayLegs _computeStraightLegsForDay(int dayIndex) {
     final places = _itinerary.days[dayIndex].places;
-    final legs    = <double>[];
+    final legs = <double>[];
     final legMins = <int>[];
     double totalM = 0;
 
@@ -438,11 +444,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     return _DayLegs(
       distances: legs,
-      minutes:   legMins,
-      segments:  const [],
-      totalKm:   totalM / 1000,
-      totalMin:  legMins.fold(0, (a, b) => a + b),
-      isReal:    false,
+      minutes: legMins,
+      segments: const [],
+      totalKm: totalM / 1000,
+      totalMin: legMins.fold(0, (a, b) => a + b),
+      isReal: false,
     );
   }
 
@@ -456,12 +462,10 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     // Build the (from → to) pairs for every leg of this day first, so
     // all the Routes API calls can fire in parallel instead of one by one.
     final pairs = <_LegPair>[];
-    double prevLat = dayIndex == 0
-        ? widget.startLat
-        : (places.first.lat ?? widget.startLat);
-    double prevLng = dayIndex == 0
-        ? widget.startLng
-        : (places.first.lng ?? widget.startLng);
+    double prevLat =
+        dayIndex == 0 ? widget.startLat : (places.first.lat ?? widget.startLat);
+    double prevLng =
+        dayIndex == 0 ? widget.startLng : (places.first.lng ?? widget.startLng);
 
     for (int i = 0; i < places.length; i++) {
       final lat = places[i].lat ?? prevLat;
@@ -469,8 +473,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       // Day > 0 has no known real-world starting point for its first leg.
       final skip = dayIndex > 0 && i == 0;
       pairs.add(_LegPair(
-          fromLat: prevLat, fromLng: prevLng,
-          toLat: lat, toLng: lng, skip: skip));
+          fromLat: prevLat,
+          fromLng: prevLng,
+          toLat: lat,
+          toLng: lng,
+          skip: skip));
       prevLat = lat;
       prevLng = lng;
     }
@@ -479,23 +486,25 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       if (p.skip) return const _LegResult(distance: 0, minutes: 0, points: []);
       try {
         final summary = await RouteService.instance.fetchRouteSummary(
-          fromLat: p.fromLat, fromLng: p.fromLng,
-          toLat:   p.toLat,   toLng:   p.toLng,
-          mode:    widget.travelMode,
+          fromLat: p.fromLat,
+          fromLng: p.fromLng,
+          toLat: p.toLat,
+          toLng: p.toLng,
+          mode: widget.travelMode,
         );
         return _LegResult(
           distance: summary.distanceMeters,
-          minutes:  (summary.durationSeconds / 60).round(),
-          points:   summary.polylinePoints,
+          minutes: (summary.durationSeconds / 60).round(),
+          points: summary.polylinePoints,
         );
       } catch (_) {
         // Per-leg fallback — one failed leg shouldn't blank out the rest.
-        final straight = Geolocator.distanceBetween(
-            p.fromLat, p.fromLng, p.toLat, p.toLng);
+        final straight =
+            Geolocator.distanceBetween(p.fromLat, p.fromLng, p.toLat, p.toLng);
         return _LegResult(
           distance: straight,
-          minutes:  (straight / _speedMps / 60).round(),
-          points:   [LatLng(p.fromLat, p.fromLng), LatLng(p.toLat, p.toLng)],
+          minutes: (straight / _speedMps / 60).round(),
+          points: [LatLng(p.fromLat, p.fromLng), LatLng(p.toLat, p.toLng)],
         );
       }
     }));
@@ -503,17 +512,17 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     if (!mounted || _legsFetchGen[dayIndex] != myGen) return; // superseded
 
     final distances = results.map((r) => r.distance).toList();
-    final minutes   = results.map((r) => r.minutes).toList();
-    final segments  = results.map((r) => r.points).toList();
-    final totalM    = distances.fold<double>(0, (a, b) => a + b);
+    final minutes = results.map((r) => r.minutes).toList();
+    final segments = results.map((r) => r.points).toList();
+    final totalM = distances.fold<double>(0, (a, b) => a + b);
 
     final newLegs = _DayLegs(
       distances: distances,
-      minutes:   minutes,
-      segments:  segments,
-      totalKm:   totalM / 1000,
-      totalMin:  minutes.fold(0, (a, b) => a + b),
-      isReal:    true,
+      minutes: minutes,
+      segments: segments,
+      totalKm: totalM / 1000,
+      totalMin: minutes.fold(0, (a, b) => a + b),
+      isReal: true,
     );
 
     // 🔧 CHANGED: 不再用 setState —— 只更新这一天的 legs notifier，
@@ -541,7 +550,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     days[dayIndex] = days[dayIndex].copyWith(clearLegs: true);
     _itinerary = _itinerary.copyWith(days: days);
   }
-  
+
   // ─────────────────────────────────────────────
   // Map overlays
   // ─────────────────────────────────────────────
@@ -556,9 +565,9 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   }
 
   Future<void> _updateOverviewOverlays() async {
-    final newMarkers   = <Marker>{};
+    final newMarkers = <Marker>{};
     final newPolylines = <Polyline>{};
-    final allPoints    = <LatLng>[LatLng(widget.startLat, widget.startLng)];
+    final allPoints = <LatLng>[LatLng(widget.startLat, widget.startLng)];
 
     newMarkers.add(Marker(
       markerId: const MarkerId('__start__'),
@@ -614,14 +623,14 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     if (!mounted) return;
     _mapOverlayNotifier.value =
         _MapOverlayData(markers: newMarkers, polylines: newPolylines);
-    _fitCamera(allPoints);   // _updateDayOverlays 里保持 _fitCamera(points)
+    _fitCamera(allPoints); // _updateDayOverlays 里保持 _fitCamera(points)
   }
 
   Future<void> _updateDayOverlays(int dayIndex) async {
-    final newMarkers   = <Marker>{};
+    final newMarkers = <Marker>{};
     final newPolylines = <Polyline>{};
     final places = _itinerary.days[dayIndex].places;
-    final color  = _dayColors[dayIndex % _dayColors.length];
+    final color = _dayColors[dayIndex % _dayColors.length];
     final points = <LatLng>[];
 
     if (dayIndex == 0) {
@@ -638,8 +647,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     for (int i = 0; i < places.length; i++) {
       final p = places[i];
       if (p.lat == null || p.lng == null) continue;
-      final icon = await _buildNumberedPin(
-          i + 1, _stopColor(i, places.length, color));
+      final icon =
+          await _buildNumberedPin(i + 1, _stopColor(i, places.length, color));
       newMarkers.add(Marker(
         markerId: MarkerId('stop_$i'),
         position: LatLng(p.lat!, p.lng!),
@@ -665,29 +674,28 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         points: routePoints,
         color: color,
         width: 3,
-        patterns: legs.isReal
-            ? const []
-            : [PatternItem.dash(16), PatternItem.gap(8)],
+        patterns:
+            legs.isReal ? const [] : [PatternItem.dash(16), PatternItem.gap(8)],
       ));
     }
 
-      if (!mounted) return;                                    // 🔧 加回来
-      _mapOverlayNotifier.value =                               // 🔧 加回来
-          _MapOverlayData(markers: newMarkers, polylines: newPolylines);
-      _fitCamera(points);  
-      }
+    if (!mounted) return; // 🔧 加回来
+    _mapOverlayNotifier.value = // 🔧 加回来
+        _MapOverlayData(markers: newMarkers, polylines: newPolylines);
+    _fitCamera(points);
+  }
 
   void _fitCamera(List<LatLng> points) {
     if (_mapController == null || points.isEmpty) return;
     if (points.length == 1) {
-      _mapController!.animateCamera(
-          CameraUpdate.newLatLngZoom(points.first, 15));
+      _mapController!
+          .animateCamera(CameraUpdate.newLatLngZoom(points.first, 15));
       return;
     }
     double minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
     for (final p in points) {
-      if (p.latitude  < minLat) minLat = p.latitude;
-      if (p.latitude  > maxLat) maxLat = p.latitude;
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
       if (p.longitude < minLng) minLng = p.longitude;
       if (p.longitude > maxLng) maxLng = p.longitude;
     }
@@ -695,14 +703,15 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       LatLngBounds(
         southwest: LatLng(minLat, minLng),
         northeast: LatLng(maxLat, maxLng),
-      ), 60,
+      ),
+      60,
     ));
   }
 
   Future<BitmapDescriptor> _buildNumberedPin(int number, Color color) async {
     const size = 48.0;
     final recorder = ui.PictureRecorder();
-    final canvas   = Canvas(recorder);
+    final canvas = Canvas(recorder);
     canvas.drawCircle(
       const Offset(size / 2 + 1, size / 2 + 2),
       size / 2 - 4,
@@ -710,10 +719,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         ..color = Colors.black.withOpacity(0.25)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
     );
-    canvas.drawCircle(const Offset(size / 2, size / 2), size / 2 - 4,
-        Paint()..color = color);
     canvas.drawCircle(
-      const Offset(size / 2, size / 2), size / 2 - 4,
+        const Offset(size / 2, size / 2), size / 2 - 4, Paint()..color = color);
+    canvas.drawCircle(
+      const Offset(size / 2, size / 2),
+      size / 2 - 4,
       Paint()
         ..color = Colors.white
         ..style = PaintingStyle.stroke
@@ -728,8 +738,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       textDirection: ui.TextDirection.ltr,
     )..layout();
     tp.paint(canvas, Offset((size - tp.width) / 2, (size - tp.height) / 2));
-    final img  = await recorder.endRecording()
-        .toImage(size.toInt(), size.toInt());
+    final img =
+        await recorder.endRecording().toImage(size.toInt(), size.toInt());
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
     return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
   }
@@ -749,9 +759,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     _updateMapOverlays();
 
-    if (index == _poolTabIndex &&
-        !_poolHydrated &&
-        !_isHydratingPool) {
+    if (index == _poolTabIndex && !_poolHydrated && !_isHydratingPool) {
       _hydrateLeftoverPool();
     }
   }
@@ -777,8 +785,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     // Work from a snapshot so the source list cannot
     // change while the async requests are running.
-    final idsToHydrate =
-        List<String>.from(_pendingLeftoverIds);
+    final idsToHydrate = List<String>.from(_pendingLeftoverIds);
 
     final successfulPlaces = <PlaceModel>[];
     final failedIds = <String>[];
@@ -786,8 +793,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     await Future.wait(
       idsToHydrate.map((id) async {
         try {
-          final place =
-              await PlacesApiService.getPlaceModelDetails(
+          final place = await PlacesApiService.getPlaceModelDetails(
             id,
           );
 
@@ -810,8 +816,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     setState(() {
       // Add successful candidates without duplicates.
-      final existingIds =
-          _leftovers.map((p) => p.id).toSet();
+      final existingIds = _leftovers.map((p) => p.id).toSet();
 
       for (final place in successfulPlaces) {
         if (existingIds.add(place.id)) {
@@ -864,32 +869,27 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     // Future stops may be reordered, but never across the visited history.
     if (newIndex <= _lastVisitedIndex(dayIndex)) return;
 
-    final days =
-        List<ItineraryDay>.from(
+    final days = List<ItineraryDay>.from(
       _itinerary.days,
     );
 
-    final places =
-        List<ItineraryPlace>.from(
+    final places = List<ItineraryPlace>.from(
       days[dayIndex].places,
     );
 
-    final item =
-        places.removeAt(oldIndex);
+    final item = places.removeAt(oldIndex);
 
     places.insert(
       newIndex,
       item,
     );
 
-    days[dayIndex] =
-        days[dayIndex].copyWith(
+    days[dayIndex] = days[dayIndex].copyWith(
       places: places,
     );
 
     setState(() {
-      _itinerary =
-          _itinerary.copyWith(
+      _itinerary = _itinerary.copyWith(
         days: days,
       );
     });
@@ -899,25 +899,25 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   }
 
   void _removePlace(int dayIndex, int placeIndex) {
-
     if (_isPlaceLocked(dayIndex, placeIndex)) {
       return;
     }
 
-    final days   = List<ItineraryDay>.from(_itinerary.days);
+    final days = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
     final removed = places[placeIndex];
     places.removeAt(placeIndex);
     days[dayIndex] = days[dayIndex].copyWith(places: places);
 
     setState(() {
-      _lastDeletedPlace      = removed;
-      _lastDeletedDayIndex   = dayIndex;
+      _lastDeletedPlace = removed;
+      _lastDeletedDayIndex = dayIndex;
       _lastDeletedPlaceIndex = placeIndex;
       _itinerary = _itinerary.copyWith(days: days);
 
       // 🆕 删除后放回候补池,跟 swap 的逻辑保持一致
-      if (removed.lat != null && removed.lng != null &&
+      if (removed.lat != null &&
+          removed.lng != null &&
           !_leftovers.any((p) => p.id == removed.placeId)) {
         _leftovers.add(PlaceModel(
           id: removed.placeId,
@@ -928,7 +928,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           photoUrl: removed.photoUrl,
           source: 'google',
           primaryType: removed.primaryType,
-          allTypes: removed.primaryType != null ? [removed.primaryType!] : const [],
+          allTypes:
+              removed.primaryType != null ? [removed.primaryType!] : const [],
         ));
       }
     });
@@ -948,12 +949,13 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
               onTap: () => ScaffoldMessenger.of(context).hideCurrentSnackBar(),
               child: const Padding(
                 padding: EdgeInsets.only(left: 8),
-                child: Icon(Icons.close_rounded, size: 16, color: Colors.white70),
+                child:
+                    Icon(Icons.close_rounded, size: 16, color: Colors.white70),
               ),
             ),
           ],
         ),
-        duration: const Duration(seconds: 5),   // 🔧 3 → 5
+        duration: const Duration(seconds: 5), // 🔧 3 → 5
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -972,11 +974,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         _lastDeletedDayIndex == null ||
         _lastDeletedPlaceIndex == null) return;
 
-    final dayIndex   = _lastDeletedDayIndex!;
+    final dayIndex = _lastDeletedDayIndex!;
     final placeIndex = _lastDeletedPlaceIndex!;
-    final place      = _lastDeletedPlace!;
+    final place = _lastDeletedPlace!;
 
-    final days   = List<ItineraryDay>.from(_itinerary.days);
+    final days = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
     places.insert(placeIndex.clamp(0, places.length), place);
     days[dayIndex] = days[dayIndex].copyWith(places: places);
@@ -984,8 +986,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     setState(() {
       _itinerary = _itinerary.copyWith(days: days);
       _leftovers.removeWhere((p) => p.id == place.placeId);
-      _lastDeletedPlace      = null;
-      _lastDeletedDayIndex   = null;
+      _lastDeletedPlace = null;
+      _lastDeletedDayIndex = null;
       _lastDeletedPlaceIndex = null;
     });
     _invalidateLegs(dayIndex);
@@ -993,7 +995,6 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   }
 
   Future<void> _reOptimizeDay(int dayIndex) async {
-
     // Historical/visited stops are immutable. Re-optimizing a partially
     // travelled day could change their order, so only untouched days enter
     // the automatic solver; future stops remain manually editable.
@@ -1007,8 +1008,10 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     setState(() => _reOptimizingDays.add(dayIndex));
 
     try {
-      final geoPlaces    = places.where((p) => p.lat != null && p.lng != null).toList();
-      final nonGeoPlaces = places.where((p) => p.lat == null || p.lng == null).toList();
+      final geoPlaces =
+          places.where((p) => p.lat != null && p.lng != null).toList();
+      final nonGeoPlaces =
+          places.where((p) => p.lat == null || p.lng == null).toList();
       if (geoPlaces.length < 2) return;
 
       // Day 0 has a known real starting point (widget.startLat/Lng) — include
@@ -1047,8 +1050,10 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         final fromMatrix = matrix?[i][j];
         if (fromMatrix != null && fromMatrix.isFinite) return fromMatrix;
         return Geolocator.distanceBetween(
-          points[i].latitude, points[i].longitude,
-          points[j].latitude, points[j].longitude,
+          points[i].latitude,
+          points[i].longitude,
+          points[j].latitude,
+          points[j].longitude,
         );
       }
 
@@ -1096,9 +1101,9 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
         int selected;
         if (currentPoint != null) {
+          final current = currentPoint; // promote to non-null
           selected = eligible.reduce((best, candidate) {
-            return distBetween(currentPoint!, candidate) <
-                    distBetween(currentPoint!, best)
+            return distBetween(current, candidate) < distBetween(current, best)
                 ? candidate
                 : best;
           });
@@ -1108,7 +1113,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           selected = eligible.reduce((best, candidate) {
             final candidateTotal = remaining
                 .where((idx) => idx != candidate)
-                .fold<double>(0, (sum, idx) => sum + distBetween(candidate, idx));
+                .fold<double>(
+                    0, (sum, idx) => sum + distBetween(candidate, idx));
             final bestTotal = remaining
                 .where((idx) => idx != best)
                 .fold<double>(0, (sum, idx) => sum + distBetween(best, idx));
@@ -1133,9 +1139,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         startPoint: hasStart ? 0 : null,
       );
 
-      final reordered = optimizedOrder
-          .map((idx) => geoPlaces[idx - placeOffset])
-          .toList();
+      final reordered =
+          optimizedOrder.map((idx) => geoPlaces[idx - placeOffset]).toList();
 
       // Preserve the day's existing chronological slots. Sequentially adding
       // only visit duration used to collapse lunch/dinner gaps after a route
@@ -1179,9 +1184,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       var nearest = 24 * 60;
       for (final window in windows) {
         if (minute >= window.$1 && minute <= window.$2) return 0;
-        final delta = minute < window.$1
-            ? window.$1 - minute
-            : minute - window.$2;
+        final delta =
+            minute < window.$1 ? window.$1 - minute : minute - window.$2;
         if (delta < nearest) nearest = delta;
       }
       return nearest;
@@ -1354,7 +1358,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           (i > 0 || !skipFirstLegTravel);
       final travel = applyTravel ? legsMinutes[i] : 0;
       final start = cursor + travel;
-      result.add(places[i].copyWith(suggestedTime: _minutesToTimeString(start)));
+      result
+          .add(places[i].copyWith(suggestedTime: _minutesToTimeString(start)));
       cursor = start + places[i].durationMinutes;
     }
     return result;
@@ -1382,8 +1387,9 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     }
 
     final tail = places.sublist(tailStart);
-    final tailLegsMinutes =
-        tailStart < legs.minutes.length ? legs.minutes.sublist(tailStart) : null;
+    final tailLegsMinutes = tailStart < legs.minutes.length
+        ? legs.minutes.sublist(tailStart)
+        : null;
 
     final retimedTail = _assignSequentialTimes(
       tail,
@@ -1441,7 +1447,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     required bool checkArrivalFeasibility,
   }) async {
     if (_isPlaceLocked(dayIndex, placeIndex)) return;
-    final days   = List<ItineraryDay>.from(_itinerary.days);
+    final days = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
 
     if (checkArrivalFeasibility) {
@@ -1506,15 +1512,16 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF7C4DFF),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
-            child: const Text('Continue', style: TextStyle(color: Colors.white)),
+            child:
+                const Text('Continue', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
     );
   }
-
 
   int _parseTimeToMinutes(String t) {
     try {
@@ -1551,11 +1558,9 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       return;
     }
 
-    final sourceDayIndex =
-        payload.dayIndex!;
+    final sourceDayIndex = payload.dayIndex!;
 
-    final sourcePlaceIndex =
-        payload.placeIndex!;
+    final sourcePlaceIndex = payload.placeIndex!;
 
     // Cannot remove/reorder anything from a
     // completed historical day either.
@@ -1565,42 +1570,105 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     if (_isPlaceLocked(sourceDayIndex, sourcePlaceIndex)) return;
 
-    if (sourceDayIndex ==
-            targetDayIndex &&
-        (sourcePlaceIndex ==
-                targetIndex ||
-            sourcePlaceIndex ==
-                targetIndex - 1)) {
+    if (sourceDayIndex == targetDayIndex &&
+        (sourcePlaceIndex == targetIndex ||
+            sourcePlaceIndex == targetIndex - 1)) {
       return;
     }
 
-  final days = List<ItineraryDay>.from(_itinerary.days);
+    final days = List<ItineraryDay>.from(_itinerary.days);
 
-  final sourcePlaces = List<ItineraryPlace>.from(days[sourceDayIndex].places);
-  if (sourcePlaceIndex >= sourcePlaces.length) return;
-  final moved = sourcePlaces.removeAt(sourcePlaceIndex);
-  days[sourceDayIndex] = days[sourceDayIndex].copyWith(places: sourcePlaces);
+    final sourcePlaces = List<ItineraryPlace>.from(days[sourceDayIndex].places);
+    if (sourcePlaceIndex >= sourcePlaces.length) return;
+    final moved = sourcePlaces.removeAt(sourcePlaceIndex);
+    days[sourceDayIndex] = days[sourceDayIndex].copyWith(places: sourcePlaces);
 
-  var insertAt = targetIndex;
-  if (sourceDayIndex == targetDayIndex && sourcePlaceIndex < targetIndex) {
-    insertAt -= 1;
+    var insertAt = targetIndex;
+    if (sourceDayIndex == targetDayIndex && sourcePlaceIndex < targetIndex) {
+      insertAt -= 1;
+    }
+
+    final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
+    insertAt = insertAt.clamp(0, targetPlaces.length);
+    targetPlaces.insert(insertAt, moved);
+    days[targetDayIndex] = days[targetDayIndex].copyWith(places: targetPlaces);
+
+    setState(() => _itinerary = _itinerary.copyWith(days: days));
+    _invalidateLegs(sourceDayIndex);
+    _invalidateLegs(targetDayIndex);
+    _updateMapOverlays();
+
+    if (sourceDayIndex != targetDayIndex) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${moved.name} moved to Day ${targetDayIndex + 1}',
+              style: const TextStyle(fontSize: 13)),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          backgroundColor: const Color(0xFF1A1A2E),
+        ),
+      );
+    }
   }
 
-  final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
-  insertAt = insertAt.clamp(0, targetPlaces.length);
-  targetPlaces.insert(insertAt, moved);
-  days[targetDayIndex] = days[targetDayIndex].copyWith(places: targetPlaces);
+// Adds a place dragged in from the leftover pool as a brand-new stop at
+// [targetIndex] within [targetDayIndex]. This INCREASES that day's stop
+// count — it never overwrites an existing stop (that's what the swap
+// sheet on each place card is for). Removed from the pool once added so
+// it can't be dropped in twice.
+  void _addPoolPlaceToPosition(
+      PlaceModel poolPlace, int targetDayIndex, int targetIndex) {
+    if (_isDayLocked(targetDayIndex)) {
+      return;
+    }
+    if (targetIndex <= _lastVisitedIndex(targetDayIndex)) return;
 
-  setState(() => _itinerary = _itinerary.copyWith(days: days));
-  _invalidateLegs(sourceDayIndex);
-  _invalidateLegs(targetDayIndex);
-  _updateMapOverlays();
+    final days = List<ItineraryDay>.from(_itinerary.days);
+    final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
+    final insertAt = targetIndex.clamp(0, targetPlaces.length);
 
-  if (sourceDayIndex != targetDayIndex) {
+    // Anchor the new stop's suggested time near whatever's already
+    // scheduled at this position, instead of a hardcoded default.
+    int anchorMinutes;
+    if (targetPlaces.isEmpty) {
+      anchorMinutes = 9 * 60;
+    } else if (insertAt > 0) {
+      final prev = targetPlaces[insertAt - 1];
+      anchorMinutes =
+          _parseTimeToMinutes(prev.suggestedTime) + prev.durationMinutes;
+    } else {
+      anchorMinutes = _parseTimeToMinutes(targetPlaces.first.suggestedTime);
+    }
+    final hh = (anchorMinutes ~/ 60) % 24;
+    final mm = anchorMinutes % 60;
+
+    final newPlace = _placeModelToItineraryPlace(
+      poolPlace,
+      suggestedTime:
+          '${hh.toString().padLeft(2, '0')}:${mm.toString().padLeft(2, '0')}',
+      durationMinutes: 60,
+    );
+
+    targetPlaces.insert(insertAt, newPlace);
+    days[targetDayIndex] = days[targetDayIndex].copyWith(places: targetPlaces);
+
+    setState(() {
+      _itinerary = _itinerary.copyWith(days: days);
+      _leftovers.removeWhere((p) => p.id == poolPlace.id);
+      _pendingLeftoverIds.remove(poolPlace.id); // 🔧 用掉了，不该再当候补写回去
+    });
+
+    _invalidateLegs(targetDayIndex);
+    _updateMapOverlays();
+
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('${moved.name} moved to Day ${targetDayIndex + 1}',
+        content: Text('${poolPlace.name} added to Day ${targetDayIndex + 1}',
             style: const TextStyle(fontSize: 13)),
         duration: const Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
@@ -1610,72 +1678,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       ),
     );
   }
-}
 
-// Adds a place dragged in from the leftover pool as a brand-new stop at
-// [targetIndex] within [targetDayIndex]. This INCREASES that day's stop
-// count — it never overwrites an existing stop (that's what the swap
-// sheet on each place card is for). Removed from the pool once added so
-// it can't be dropped in twice.
-void _addPoolPlaceToPosition(
-    PlaceModel poolPlace, int targetDayIndex, int targetIndex) {
-
-      if (_isDayLocked(targetDayIndex)) {
-        return;
-      }
-      if (targetIndex <= _lastVisitedIndex(targetDayIndex)) return;
-
-  final days = List<ItineraryDay>.from(_itinerary.days);
-  final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
-  final insertAt = targetIndex.clamp(0, targetPlaces.length);
-
-  // Anchor the new stop's suggested time near whatever's already
-  // scheduled at this position, instead of a hardcoded default.
-  int anchorMinutes;
-  if (targetPlaces.isEmpty) {
-    anchorMinutes = 9 * 60;
-  } else if (insertAt > 0) {
-    final prev = targetPlaces[insertAt - 1];
-    anchorMinutes = _parseTimeToMinutes(prev.suggestedTime) + prev.durationMinutes;
-  } else {
-    anchorMinutes = _parseTimeToMinutes(targetPlaces.first.suggestedTime);
-  }
-  final hh = (anchorMinutes ~/ 60) % 24;
-  final mm = anchorMinutes % 60;
-
-  final newPlace = _placeModelToItineraryPlace(
-    poolPlace,
-    suggestedTime: '${hh.toString().padLeft(2, '0')}:${mm.toString().padLeft(2, '0')}',
-    durationMinutes: 60,
-  );
-
-  targetPlaces.insert(insertAt, newPlace);
-  days[targetDayIndex] = days[targetDayIndex].copyWith(places: targetPlaces);
-
-    setState(() {
-      _itinerary = _itinerary.copyWith(days: days);
-      _leftovers.removeWhere((p) => p.id == poolPlace.id);
-      _pendingLeftoverIds.remove(poolPlace.id); // 🔧 用掉了，不该再当候补写回去
-    });
-
-  _invalidateLegs(targetDayIndex);
-  _updateMapOverlays();
-
-  ScaffoldMessenger.of(context).clearSnackBars();
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text('${poolPlace.name} added to Day ${targetDayIndex + 1}',
-          style: const TextStyle(fontSize: 13)),
-      duration: const Duration(seconds: 2),
-      behavior: SnackBarBehavior.floating,
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      backgroundColor: const Color(0xFF1A1A2E),
-    ),
-  );
-}
-
-  
   TimeOfDay _parseTime(String t) {
     try {
       final parts = t.split(':');
@@ -1687,36 +1690,36 @@ void _addPoolPlaceToPosition(
 
   Future<void> _pickTime(
       int dayIndex, int placeIndex, ItineraryPlace place) async {
-      if (_isPlaceLocked(dayIndex, placeIndex)) return;
-      final picked = await showTimePicker(
-        context: context,
-        initialTime: _parseTime(place.suggestedTime),
-        builder: (context, child) => Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.light(
-              primary: Color(0xFF7C4DFF),
-              onPrimary: Colors.white,
-            ),
+    if (_isPlaceLocked(dayIndex, placeIndex)) return;
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _parseTime(place.suggestedTime),
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: const ColorScheme.light(
+            primary: Color(0xFF7C4DFF),
+            onPrimary: Colors.white,
           ),
-          child: child!,
         ),
+        child: child!,
+      ),
+    );
+    if (picked != null && mounted) {
+      final hh = picked.hour.toString().padLeft(2, '0');
+      final mm = picked.minute.toString().padLeft(2, '0');
+      await _applyTimeChange(
+        dayIndex, placeIndex,
+        place.copyWith(suggestedTime: '$hh:$mm'),
+        checkArrivalFeasibility: true, // 改了开始时间 → 要查交通时间够不够
       );
-      if (picked != null && mounted) {
-        final hh = picked.hour.toString().padLeft(2, '0');
-        final mm = picked.minute.toString().padLeft(2, '0');
-        await _applyTimeChange(
-          dayIndex, placeIndex,
-          place.copyWith(suggestedTime: '$hh:$mm'),
-          checkArrivalFeasibility: true, // 改了开始时间 → 要查交通时间够不够
-        );
-      }
+    }
   }
 
   Future<void> _pickDuration(
       int dayIndex, int placeIndex, ItineraryPlace place) async {
     if (_isPlaceLocked(dayIndex, placeIndex)) return;
     const presets = [15, 30, 45, 60, 90, 120, 150, 180, 240];
-    int selected  = place.durationMinutes;
+    int selected = place.durationMinutes;
 
     await showModalBottomSheet(
       context: context,
@@ -1731,7 +1734,8 @@ void _addPoolPlaceToPosition(
             children: [
               Center(
                 child: Container(
-                  width: 40, height: 4,
+                  width: 40,
+                  height: 4,
                   decoration: BoxDecoration(
                     color: Colors.grey[300],
                     borderRadius: BorderRadius.circular(2),
@@ -1740,14 +1744,14 @@ void _addPoolPlaceToPosition(
               ),
               const SizedBox(height: 16),
               const Text('Visit Duration',
-                  style: TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold)),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(height: 4),
               Text('Select how long you plan to stay',
                   style: TextStyle(fontSize: 12, color: Colors.grey[500])),
               const SizedBox(height: 16),
               Wrap(
-                spacing: 8, runSpacing: 8,
+                spacing: 8,
+                runSpacing: 8,
                 children: presets.map((mins) {
                   final isSelected = selected == mins;
                   final label = mins < 60
@@ -1762,9 +1766,8 @@ void _addPoolPlaceToPosition(
                     selectedColor: const Color(0xFF7C4DFF),
                     labelStyle: TextStyle(
                       color: isSelected ? Colors.white : Colors.black87,
-                      fontWeight: isSelected
-                          ? FontWeight.bold
-                          : FontWeight.normal,
+                      fontWeight:
+                          isSelected ? FontWeight.bold : FontWeight.normal,
                     ),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10)),
@@ -1805,157 +1808,141 @@ void _addPoolPlaceToPosition(
   // Save
   // ─────────────────────────────────────────────
 
-Future<void> _saveAndContinue() async {
-  final hasAnyPlace =
-      _itinerary.days.any((d) => d.places.isNotEmpty);
+  Future<void> _saveAndContinue() async {
+    final hasAnyPlace = _itinerary.days.any((d) => d.places.isNotEmpty);
 
-  // No place to save / already saving.
-  if (!hasAnyPlace || _isSaving) {
-    return;
-  }
-
-  setState(() => _isSaving = true);
-
-  try {
-    // ─────────────────────────────────────────────
-    // Step 1: Check connectivity
-    // ─────────────────────────────────────────────
-    final online =
-        await ConnectivityService.instance.ensureConnected(
-      context,
-      onRetry: _saveAndContinue,
-    );
-
-    if (!online) {
+    // No place to save / already saving.
+    if (!hasAnyPlace || _isSaving) {
       return;
     }
 
-    if (!mounted) return;
+    setState(() => _isSaving = true);
 
-    // ─────────────────────────────────────────────
-    // Step 2: Preserve the COMPLETE leftover pool
-    // ─────────────────────────────────────────────
-    //
-    // _leftovers:
-    //   leftover candidates already resolved as PlaceModel
-    //
-    // _pendingLeftoverIds:
-    //   leftover IDs that have not yet been resolved/loaded
-    //
-    // Combine both and remove duplicates.
-    final leftoverIds = <String>{
-      ..._leftovers.map((p) => p.id),
-      ..._pendingLeftoverIds,
-    }.toList();
+    try {
+      // ─────────────────────────────────────────────
+      // Step 1: Preserve the COMPLETE leftover pool
+      // ─────────────────────────────────────────────
+      //
+      // _leftovers:
+      //   leftover candidates already resolved as PlaceModel
+      //
+      // _pendingLeftoverIds:
+      //   leftover IDs that have not yet been resolved/loaded
+      //
+      // Combine both and remove duplicates.
+      final leftoverIds = <String>{
+        ..._leftovers.map((p) => p.id),
+        ..._pendingLeftoverIds,
+      }.toList();
 
-    _itinerary = _itinerary.copyWith(
-      leftoverPlaceIds: leftoverIds,
-    );
-
-    // ─────────────────────────────────────────────
-    // Step 3: Save / update itinerary
-    // ─────────────────────────────────────────────
-    String? savedId;
-
-    if (_itinerary.id.isEmpty) {
-      savedId =
-          await ItineraryService.instance.save(
-        _itinerary,
-      );
-    } else {
-      await ItineraryService.instance.update(
-        _itinerary,
+      _itinerary = _itinerary.copyWith(
+        leftoverPlaceIds: leftoverIds,
       );
 
-      savedId = _itinerary.id;
-    }
+      // ─────────────────────────────────────────────
+      // Step 3: Save / update itinerary
+      // ─────────────────────────────────────────────
+      String? savedId;
 
-    if (!mounted) return;
+      if (_itinerary.id.isEmpty) {
+        savedId = await ItineraryService.instance.save(
+          _itinerary,
+        );
+      } else {
+        await ItineraryService.instance.update(
+          _itinerary,
+        );
 
-    // save() may return null, e.g. user not logged in
-    // or Firestore save could not be completed.
-    if (savedId == null) {
-      final isLoggedIn =
-          FirebaseAuth.instance.currentUser != null;
+        savedId = _itinerary.id;
+      }
+
+      if (!mounted) return;
+
+      // save() may return null, e.g. user not logged in
+      // or Firestore save could not be completed.
+      if (savedId == null) {
+        final isLoggedIn = FirebaseAuth.instance.currentUser != null;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              isLoggedIn
+                  ? 'Failed to save itinerary. Please try again.'
+                  : 'Please log in to save itinerary.',
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+
+        return;
+      }
+
+      // Rebuild the model using the actual saved document ID.
+      final saved = ItineraryModel.fromMap(
+        savedId,
+        _itinerary.toMap(),
+      );
+
+      // ─────────────────────────────────────────────
+      // Step 4: Return / navigate
+      // ─────────────────────────────────────────────
+
+      if (widget.isEditingExisting) {
+        // Existing ItineraryDetailPage is already below
+        // RouteOptimizerPage in the navigation stack.
+        //
+        // Return the updated model instead of opening
+        // another duplicate detail page.
+        Navigator.pop(
+          context,
+          saved,
+        );
+        return;
+      }
+
+      // New itinerary:
+      // replace RouteOptimizer with its detail page.
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ItineraryDetailPage(
+            itinerary: saved,
+          ),
+        ),
+        result: true,
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      debugPrint(
+        '❌ RouteOptimizer save failed: $e',
+      );
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            isLoggedIn
-                ? 'Failed to save itinerary. Please try again.'
-                : 'Please log in to save itinerary.',
+            ErrorHandler.userFriendlyMessage(
+              e,
+              defaultMessage:
+                  'Unable to save this itinerary. Please try again.',
+            ),
           ),
           backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
         ),
       );
-
-      return;
-    }
-
-    // Rebuild the model using the actual saved document ID.
-    final saved = ItineraryModel.fromMap(
-      savedId,
-      _itinerary.toMap(),
-    );
-
-    // ─────────────────────────────────────────────
-    // Step 4: Return / navigate
-    // ─────────────────────────────────────────────
-
-    if (widget.isEditingExisting) {
-      // Existing ItineraryDetailPage is already below
-      // RouteOptimizerPage in the navigation stack.
-      //
-      // Return the updated model instead of opening
-      // another duplicate detail page.
-      Navigator.pop(
-        context,
-        saved,
-      );
-      return;
-    }
-
-    // New itinerary:
-    // replace RouteOptimizer with its detail page.
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ItineraryDetailPage(
-          itinerary: saved,
-        ),
-      ),
-      result: true,
-    );
-  } catch (e) {
-    if (!mounted) return;
-
-    debugPrint(
-      '❌ RouteOptimizer save failed: $e',
-    );
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Unable to save this itinerary. '
-          'Please check your connection and try again.',
-        ),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  } finally {
-    // Always restore the Save button state,
-    // whether save succeeds, fails, goes offline,
-    // or returns early.
-    if (mounted) {
-      setState(() {
-        _isSaving = false;
-      });
+    } finally {
+      // Always restore the Save button state,
+      // whether save succeeds, fails, goes offline,
+      // or returns early.
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
     }
   }
-}
-  
-  
+
   // ─────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────
@@ -1968,7 +1955,6 @@ Future<void> _saveAndContinue() async {
       backgroundColor: const Color(0xFFF8F6FF),
       body: Stack(
         children: [
-
           // ── Map behind everything ──
           Column(children: [
             _buildHeader(),
@@ -1986,7 +1972,7 @@ Future<void> _saveAndContinue() async {
                           target: LatLng(widget.startLat, widget.startLng),
                           zoom: 13,
                         ),
-                        markers:   overlay.markers,
+                        markers: overlay.markers,
                         polylines: overlay.polylines,
                         myLocationEnabled: false,
                         myLocationButtonEnabled: false,
@@ -2015,22 +2001,24 @@ Future<void> _saveAndContinue() async {
               return false;
             },
             child: DraggableScrollableSheet(
-              controller:       _sheetController,
+              controller: _sheetController,
               initialChildSize: 0.5,
-              minChildSize:     _minSheetSize,
-              maxChildSize:     0.88,
-              snap:             false,
+              minChildSize: _minSheetSize,
+              maxChildSize: 0.88,
+              snap: false,
               builder: (context, scrollController) {
                 return Container(
                   decoration: BoxDecoration(
                     color: Colors.white,
-                    borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(24)),
-                    boxShadow: [BoxShadow(
-                      color: Colors.black.withOpacity(0.12),
-                      blurRadius: 16,
-                      offset: const Offset(0, -4),
-                    )],
+                    borderRadius:
+                        const BorderRadius.vertical(top: Radius.circular(24)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.12),
+                        blurRadius: 16,
+                        offset: const Offset(0, -4),
+                      )
+                    ],
                   ),
                   child: _buildSheetContent(scrollController),
                 );
@@ -2087,14 +2075,14 @@ Future<void> _saveAndContinue() async {
                   const SizedBox(width: 5),
                   Flexible(
                     child: Text(
-                     // _buildHeader 提示文字：
+                      // _buildHeader 提示文字：
                       _selectedIndex == 0
                           ? 'Drag a place onto another day to move it'
                           : _selectedIndex == _poolTabIndex
                               ? 'Drag a place onto a day tab to add it as a new stop'
                               : 'Drag stops to reorder • Tap × to remove',
-                      style: const TextStyle(
-                          color: Colors.white60, fontSize: 12),
+                      style:
+                          const TextStyle(color: Colors.white60, fontSize: 12),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -2120,7 +2108,7 @@ Future<void> _saveAndContinue() async {
         _buildDayTabs(),
         const SizedBox(height: 8),
         const Divider(height: 1, thickness: 0.5),
-       Expanded(
+        Expanded(
           child: _selectedIndex == 0
               ? _buildOverviewContent(scrollController)
               : _selectedIndex == _poolTabIndex
@@ -2150,7 +2138,8 @@ Future<void> _saveAndContinue() async {
       onVerticalDragUpdate: (details) {
         final screenHeight = MediaQuery.of(context).size.height;
         final delta = -details.delta.dy / screenHeight;
-        final newSize = (_sheetController.size + delta).clamp(_minSheetSize, 0.88);
+        final newSize =
+            (_sheetController.size + delta).clamp(_minSheetSize, 0.88);
         _sheetController.jumpTo(newSize);
       },
       behavior: HitTestBehavior.translucent,
@@ -2159,7 +2148,8 @@ Future<void> _saveAndContinue() async {
         padding: const EdgeInsets.only(top: 12, bottom: 8),
         child: Center(
           child: Container(
-            width: 44, height: 4,
+            width: 44,
+            height: 4,
             decoration: BoxDecoration(
               color: Colors.grey[300],
               borderRadius: BorderRadius.circular(2),
@@ -2177,119 +2167,124 @@ Future<void> _saveAndContinue() async {
       onVerticalDragUpdate: (details) {
         final screenHeight = MediaQuery.of(context).size.height;
         final delta = -details.delta.dy / screenHeight;
-        final newSize = (_sheetController.size + delta).clamp(_minSheetSize, 0.88);
+        final newSize =
+            (_sheetController.size + delta).clamp(_minSheetSize, 0.88);
         _sheetController.jumpTo(newSize);
       },
       child: Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(_itinerary.title,
-                    style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF1A1A2E)),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-                const SizedBox(height: 3),
-                Text(
-                  '${_itinerary.totalDays} '
-                  '${_itinerary.totalDays == 1 ? "day" : "days"} · '
-                  '$totalPlaces stops · Starting ${_itinerary.startDate}',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-                ),
-              ],
-            ),
-          ),
-          if (_selectedIndex != _poolTabIndex &&
-              !_itinerary.isCompleted &&
-              (_selectedIndex == 0 || !_isDayStarted(_selectedIndex - 1)))
-            Builder(builder: (context) {
-              final dayIndex = _selectedIndex - 1;
-              final isOverview = _selectedIndex == 0;
-              final isBusy = isOverview
-                  ? _isReOptimizingAll
-                  : _reOptimizingDays.contains(dayIndex);
-              return GestureDetector(
-                onTap: isBusy
-                    ? null
-                    : isOverview
-                        ? _reOptimizeAllDays
-                        : () => _reOptimizeDay(dayIndex),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20),
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_itinerary.title,
+                      style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1A1A2E)),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${_itinerary.totalDays} '
+                    '${_itinerary.totalDays == 1 ? "day" : "days"} · '
+                    '$totalPlaces stops · Starting ${_itinerary.startDate}',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
                   ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    if (isBusy)
-                      const SizedBox(
-                        width: 13, height: 13,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 1.5, color: Color(0xFF7C4DFF)),
-                      )
-                    else
-                      const Icon(Icons.auto_fix_high_rounded,
-                          size: 13, color: Color(0xFF7C4DFF)),
-                    const SizedBox(width: 4),
-                    Text(
-                        isBusy
-                            ? 'Optimizing...'
-                            : isOverview
-                                ? 'Optimize All'
-                                : 'Re-optimize',
-                        style: const TextStyle(
-                            fontSize: 11,
-                            color: Color(0xFF7C4DFF),
-                            fontWeight: FontWeight.w600)),
-                  ]),
-                ),
-              );
-            }),
-        ],
-      ),
+                ],
+              ),
+            ),
+            if (_selectedIndex != _poolTabIndex &&
+                !_itinerary.isCompleted &&
+                (_selectedIndex == 0 || !_isDayStarted(_selectedIndex - 1)))
+              Builder(builder: (context) {
+                final dayIndex = _selectedIndex - 1;
+                final isOverview = _selectedIndex == 0;
+                final isBusy = isOverview
+                    ? _isReOptimizingAll
+                    : _reOptimizingDays.contains(dayIndex);
+                return GestureDetector(
+                  onTap: isBusy
+                      ? null
+                      : isOverview
+                          ? _reOptimizeAllDays
+                          : () => _reOptimizeDay(dayIndex),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      if (isBusy)
+                        const SizedBox(
+                          width: 13,
+                          height: 13,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 1.5, color: Color(0xFF7C4DFF)),
+                        )
+                      else
+                        const Icon(Icons.auto_fix_high_rounded,
+                            size: 13, color: Color(0xFF7C4DFF)),
+                      const SizedBox(width: 4),
+                      Text(
+                          isBusy
+                              ? 'Optimizing...'
+                              : isOverview
+                                  ? 'Optimize All'
+                                  : 'Re-optimize',
+                          style: const TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF7C4DFF),
+                              fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                );
+              }),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildDayTabs() {
-  return SizedBox(
-    height: 54,
-    child: ListView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      children: [
-        _dayTabChip(index: 0, label: 'Overview',
-            color: const Color(0xFF1A1A2E), icon: Icons.map_rounded),
-        for (int d = 0; d < _itinerary.days.length; d++)
+    return SizedBox(
+      height: 54,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: [
           _dayTabChip(
-            index: d + 1,
-            label: 'Day ${d + 1}',
-            subLabel: _formatDayDate(_itinerary.days[d].date),
-            color: _dayColors[d % _dayColors.length],
-            isComplete: _itinerary.days[d].isCompleted &&
-                _itinerary.days[d].totalCount > 0,
-            dropDayIndex: d,
+              index: 0,
+              label: 'Overview',
+              color: const Color(0xFF1A1A2E),
+              icon: Icons.map_rounded),
+          for (int d = 0; d < _itinerary.days.length; d++)
+            _dayTabChip(
+              index: d + 1,
+              label: 'Day ${d + 1}',
+              subLabel: _formatDayDate(_itinerary.days[d].date),
+              color: _dayColors[d % _dayColors.length],
+              isComplete: _itinerary.days[d].isCompleted &&
+                  _itinerary.days[d].totalCount > 0,
+              dropDayIndex: d,
+            ),
+          _dayTabChip(
+            index: _poolTabIndex,
+            label: 'More Places',
+            subLabel: _leftovers.isEmpty ? null : '${_leftovers.length} found',
+            color: const Color(0xFF00BFA5),
+            icon: Icons.add_location_alt_rounded,
           ),
-        _dayTabChip(
-          index: _poolTabIndex,
-          label: 'More Places',
-          subLabel: _leftovers.isEmpty ? null : '${_leftovers.length} found',
-          color: const Color(0xFF00BFA5),
-          icon: Icons.add_location_alt_rounded,
-        ),
-      ],
-    ),
-  );
-}
-  
+        ],
+      ),
+    );
+  }
+
   String _formatDayDate(String date) {
     try {
       return DateFormat('MMM dd').format(DateTime.parse(date));
@@ -2299,82 +2294,87 @@ Future<void> _saveAndContinue() async {
   }
 
   Widget _dayTabChip({
-  required int index,
-  required String label,
-  String? subLabel,
-  required Color color,
-  IconData? icon,
-  bool isComplete = false,
-  int? dropDayIndex, // set only for real "Day N" chips — lets a place be
-                      // dropped straight onto the tab to append it there
-                      // without switching tabs first (used by the pool).
-}) {
-  final isSelected = _selectedIndex == index;
+    required int index,
+    required String label,
+    String? subLabel,
+    required Color color,
+    IconData? icon,
+    bool isComplete = false,
+    int? dropDayIndex, // set only for real "Day N" chips — lets a place be
+    // dropped straight onto the tab to append it there
+    // without switching tabs first (used by the pool).
+  }) {
+    final isSelected = _selectedIndex == index;
 
-  Widget chipBody({bool isHovering = false}) => Container(
-    margin: const EdgeInsets.only(right: 8),
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-    decoration: BoxDecoration(
-      color: isSelected ? color : color.withOpacity(isHovering ? 0.18 : 0.08),
-      borderRadius: BorderRadius.circular(14),
-      border: isHovering ? Border.all(color: color, width: 1.5) : null,
-    ),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        if (icon != null) ...[
-          Icon(icon, size: 13, color: isSelected ? Colors.white : color),
-          const SizedBox(width: 5),
-        ] else
-          Container(
-            width: 8, height: 8,
-            decoration: BoxDecoration(
-              color: isSelected ? Colors.white : color,
-              shape: BoxShape.circle,
-            ),
+    Widget chipBody({bool isHovering = false}) => Container(
+          margin: const EdgeInsets.only(right: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? color
+                : color.withOpacity(isHovering ? 0.18 : 0.08),
+            borderRadius: BorderRadius.circular(14),
+            border: isHovering ? Border.all(color: color, width: 1.5) : null,
           ),
-        const SizedBox(width: 5),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(label,
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: isSelected ? Colors.white : color)),
-            if (subLabel != null && subLabel.isNotEmpty)
-              Text(subLabel,
-                  style: TextStyle(
-                      fontSize: 9,
-                      color: isSelected ? Colors.white70 : color.withOpacity(0.7))),
-          ],
-        ),
-        if (isComplete) ...[
-          const SizedBox(width: 4),
-          Icon(Icons.check_circle_rounded,
-              size: 12, color: isSelected ? Colors.white : color),
-        ],
-      ],
-    ),
-  );
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              if (icon != null) ...[
+                Icon(icon, size: 13, color: isSelected ? Colors.white : color),
+                const SizedBox(width: 5),
+              ] else
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: isSelected ? Colors.white : color,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              const SizedBox(width: 5),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label,
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: isSelected ? Colors.white : color)),
+                  if (subLabel != null && subLabel.isNotEmpty)
+                    Text(subLabel,
+                        style: TextStyle(
+                            fontSize: 9,
+                            color: isSelected
+                                ? Colors.white70
+                                : color.withOpacity(0.7))),
+                ],
+              ),
+              if (isComplete) ...[
+                const SizedBox(width: 4),
+                Icon(Icons.check_circle_rounded,
+                    size: 12, color: isSelected ? Colors.white : color),
+              ],
+            ],
+          ),
+        );
 
-  if (dropDayIndex == null) {
-    return GestureDetector(onTap: () => _switchTab(index), child: chipBody());
+    if (dropDayIndex == null) {
+      return GestureDetector(onTap: () => _switchTab(index), child: chipBody());
+    }
+
+    return DragTarget<_DragPayload>(
+      onWillAccept: (payload) => payload != null,
+      onAccept: (payload) => _movePlaceToPosition(
+          payload, dropDayIndex, _itinerary.days[dropDayIndex].places.length),
+      builder: (context, candidateData, rejectedData) => GestureDetector(
+        onTap: () => _switchTab(index),
+        child: chipBody(isHovering: candidateData.isNotEmpty),
+      ),
+    );
   }
 
-  return DragTarget<_DragPayload>(
-    onWillAccept: (payload) => payload != null,
-    onAccept: (payload) => _movePlaceToPosition(
-        payload, dropDayIndex, _itinerary.days[dropDayIndex].places.length),
-    builder: (context, candidateData, rejectedData) => GestureDetector(
-      onTap: () => _switchTab(index),
-      child: chipBody(isHovering: candidateData.isNotEmpty),
-    ),
-  );
-}
-  
   // ─────────────────────────────────────────────
   // Overview content (all days, cross-day drag)
   // ─────────────────────────────────────────────
@@ -2391,7 +2391,7 @@ Future<void> _saveAndContinue() async {
   }
 
   Widget _buildOverviewDaySection(int dayIndex) {
-    final day   = _itinerary.days[dayIndex];
+    final day = _itinerary.days[dayIndex];
     final color = _dayColors[dayIndex % _dayColors.length];
 
     _legsFor(dayIndex); // 触发一次(需要时)带 debounce 的真实路线请求
@@ -2412,7 +2412,8 @@ Future<void> _saveAndContinue() async {
                 border: Border.all(
                     color: isHovering ? color : Colors.transparent, width: 2),
                 borderRadius: BorderRadius.circular(20),
-                color: isHovering ? color.withOpacity(0.05) : Colors.transparent,
+                color:
+                    isHovering ? color.withOpacity(0.05) : Colors.transparent,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2420,31 +2421,43 @@ Future<void> _saveAndContinue() async {
                   GestureDetector(
                     onTap: () => _switchTab(dayIndex + 1),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 6),
                       child: Row(children: [
                         Container(
-                            width: 10, height: 10,
-                            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(
+                                color: color, shape: BoxShape.circle)),
                         const SizedBox(width: 8),
-                        Text('Day ${dayIndex + 1} · ${_formatDayDate(day.date)}',
+                        Text(
+                            'Day ${dayIndex + 1} · ${_formatDayDate(day.date)}',
                             style: TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.bold, color: color)),
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: color)),
                         const SizedBox(width: 6),
                         if (day.isCompleted && day.totalCount > 0)
-                          const Icon(Icons.check_circle_rounded, size: 14, color: Colors.green),
+                          const Icon(Icons.check_circle_rounded,
+                              size: 14, color: Colors.green),
                         const Spacer(),
                         if (_reOptimizingDays.contains(dayIndex))
                           const Padding(
                             padding: EdgeInsets.only(right: 6),
                             child: SizedBox(
-                              width: 10, height: 10,
-                              child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.grey),
+                              width: 10,
+                              height: 10,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 1.5, color: Colors.grey),
                             ),
                           ),
-                        Text('${day.places.length} stops · ${legs.totalKm.toStringAsFixed(1)} km',
-                            style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+                        Text(
+                            '${day.places.length} stops · ${legs.totalKm.toStringAsFixed(1)} km',
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.grey[500])),
                         const SizedBox(width: 4),
-                        Icon(Icons.chevron_right_rounded, size: 16, color: Colors.grey[400]),
+                        Icon(Icons.chevron_right_rounded,
+                            size: 16, color: Colors.grey[400]),
                       ]),
                     ),
                   ),
@@ -2460,12 +2473,14 @@ Future<void> _saveAndContinue() async {
                       ),
                       child: Center(
                         child: Text('No places · drag one here',
-                            style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[400])),
                       ),
                     )
                   else
                     ...day.places.asMap().entries.map((entry) =>
-                        _buildDropZoneChip(dayIndex, entry.key, entry.value, color)),
+                        _buildDropZoneChip(
+                            dayIndex, entry.key, entry.value, color)),
                 ],
               ),
             );
@@ -2474,8 +2489,7 @@ Future<void> _saveAndContinue() async {
       },
     );
   }
-  
-  
+
   // A drop target wrapping a single chip: dropping any place here — from
   // this same day or any other day — inserts it right at this position.
   Widget _buildDropZoneChip(
@@ -2506,80 +2520,86 @@ Future<void> _saveAndContinue() async {
   Widget _buildDraggableChip(
       int dayIndex, int placeIndex, ItineraryPlace place, Color color) {
     final locked = _isPlaceLocked(dayIndex, placeIndex);
-    final chip = GestureDetector(   // 🆕 包一层，点击看详情
-    onTap: () => _openPlaceDetailFromItinerary(place),
-    child: Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[100]!),
-        boxShadow: [BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 6,
-            offset: const Offset(0, 2))],
-      ),
-      child: Row(children: [
-        Icon(
-          locked ? Icons.lock_outline_rounded : Icons.drag_indicator_rounded,
-          size: 16,
-          color: Colors.grey[350],
-        ),
-        const SizedBox(width: 6),
-        Container(
-          width: 22, height: 22,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          child: Center(
-            child: Text('${placeIndex + 1}',
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold)),
-          ),
-        ),
-        const SizedBox(width: 8),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: place.photoUrl != null
-                        ? CachedNetworkImage(
-            imageUrl: place.photoUrl!,
-            width: 36, height: 36, fit: BoxFit.cover,
-            errorWidget: (_, __, ___) => _photoPlaceholder(size: 36),
-          )
-          : _photoPlaceholder(size: 36),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(place.name,
-                  style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF1A1A2E)),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis),
-              Text(place.suggestedTime,
-                  style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+    final chip = GestureDetector(
+        // 🆕 包一层，点击看详情
+        onTap: () => _openPlaceDetailFromItinerary(place),
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey[100]!),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2))
             ],
           ),
-        ),
-      ]),
-    )
-    );
+          child: Row(children: [
+            Icon(
+              locked
+                  ? Icons.lock_outline_rounded
+                  : Icons.drag_indicator_rounded,
+              size: 16,
+              color: Colors.grey[350],
+            ),
+            const SizedBox(width: 6),
+            Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              child: Center(
+                child: Text('${placeIndex + 1}',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: place.photoUrl != null
+                  ? CachedNetworkImage(
+                      imageUrl: place.photoUrl!,
+                      width: 36,
+                      height: 36,
+                      fit: BoxFit.cover,
+                      errorWidget: (_, __, ___) => _photoPlaceholder(size: 36),
+                    )
+                  : _photoPlaceholder(size: 36),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(place.name,
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1A1A2E)),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                  Text(place.suggestedTime,
+                      style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+                ],
+              ),
+            ),
+          ]),
+        ));
 
     if (locked) return chip;
 
     return LongPressDraggable<_DragPayload>(
       data: _DragPayload.fromDay(
-      dayIndex: dayIndex, placeIndex: placeIndex, place: place),
+          dayIndex: dayIndex, placeIndex: placeIndex, place: place),
       feedback: Material(
         color: Colors.transparent,
-        child: SizedBox(
-            width: 260, child: Opacity(opacity: 0.9, child: chip)),
+        child: SizedBox(width: 260, child: Opacity(opacity: 0.9, child: chip)),
       ),
       childWhenDragging: Opacity(opacity: 0.3, child: chip),
       child: chip,
@@ -2608,77 +2628,62 @@ Future<void> _saveAndContinue() async {
             SliverToBoxAdapter(child: _buildDaySummaryBar(dayIndex, legs)),
             const SliverToBoxAdapter(child: Divider(height: 1, thickness: 0.5)),
             if (day.places.isEmpty)
-            SliverToBoxAdapter(
-              child: _emptyDayPlaceholder(
-                dayIndex,
-              ),
-            )
-          else if (_isDayLocked(dayIndex))
-            SliverPadding(
-              padding:
-                  const EdgeInsets.fromLTRB(
-                20,
-                12,
-                20,
-                8,
-              ),
-              sliver: SliverList(
-                delegate:
-                    SliverChildBuilderDelegate(
-                  (context, i) =>
-                      _buildPlaceCard(
+              SliverToBoxAdapter(
+                child: _emptyDayPlaceholder(
+                  dayIndex,
+                ),
+              )
+            else if (_isDayLocked(dayIndex))
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(
+                  20,
+                  12,
+                  20,
+                  8,
+                ),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, i) => _buildPlaceCard(
+                      dayIndex,
+                      i,
+                      day.places[i],
+                      legs,
+                      isLast: i == day.places.length - 1,
+                      key: ValueKey(
+                        '${dayIndex}_${day.places[i].placeId}',
+                      ),
+                    ),
+                    childCount: day.places.length,
+                  ),
+                ),
+              )
+            else
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(
+                  20,
+                  12,
+                  20,
+                  8,
+                ),
+                sliver: SliverReorderableList(
+                  itemCount: day.places.length,
+                  onReorder: (o, n) => _reorderWithinDay(
+                    dayIndex,
+                    o,
+                    n,
+                  ),
+                  itemBuilder: (context, i) => _buildPlaceCard(
                     dayIndex,
                     i,
                     day.places[i],
                     legs,
-                    isLast:
-                        i ==
-                            day.places.length -
-                                1,
+                    isLast: i == day.places.length - 1,
                     key: ValueKey(
                       '${dayIndex}_${day.places[i].placeId}',
                     ),
                   ),
-                  childCount:
-                      day.places.length,
                 ),
               ),
-            )
-          else
-            SliverPadding(
-              padding:
-                  const EdgeInsets.fromLTRB(
-                20,
-                12,
-                20,
-                8,
-              ),
-              sliver: SliverReorderableList(
-                itemCount:
-                    day.places.length,
-                onReorder: (o, n) =>
-                    _reorderWithinDay(
-                  dayIndex,
-                  o,
-                  n,
-                ),
-                itemBuilder:
-                    (context, i) =>
-                        _buildPlaceCard(
-                  dayIndex,
-                  i,
-                  day.places[i],
-                  legs,
-                  isLast:
-                      i ==
-                          day.places.length -
-                              1,
-                  key: ValueKey(
-                    '${dayIndex}_${day.places[i].placeId}',
-                  ),
-                ),
-              ),
-            ),
             const SliverToBoxAdapter(child: SizedBox(height: 24)),
           ],
         );
@@ -2687,7 +2692,6 @@ Future<void> _saveAndContinue() async {
   }
 
   Widget _buildPoolContent(ScrollController scrollController) {
-
     if (_isHydratingPool) {
       return const Center(
         child: Column(
@@ -2699,153 +2703,175 @@ Future<void> _saveAndContinue() async {
         ),
       );
     }
-    
-  if (_leftovers.isEmpty) {
-    return ListView(controller: scrollController, physics: const ClampingScrollPhysics(),
-      children: [
-        SizedBox(
-          height: 260,
-          child: Center(
-            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Icon(Icons.explore_off_rounded, size: 56, color: Colors.grey[300]),
-              const SizedBox(height: 12),
-              Text('No extra places found nearby',
-                  style: TextStyle(fontSize: 15, color: Colors.grey[400])),
-              const SizedBox(height: 6),
-              Text('Every candidate we found made it into your trip',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[400]),
-                  textAlign: TextAlign.center),
-            ]),
+
+    if (_leftovers.isEmpty) {
+      return ListView(
+        controller: scrollController,
+        physics: const ClampingScrollPhysics(),
+        children: [
+          SizedBox(
+            height: 260,
+            child: Center(
+              child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.explore_off_rounded,
+                        size: 56, color: Colors.grey[300]),
+                    const SizedBox(height: 12),
+                    Text('No extra places found nearby',
+                        style:
+                            TextStyle(fontSize: 15, color: Colors.grey[400])),
+                    const SizedBox(height: 6),
+                    Text('Every candidate we found made it into your trip',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                        textAlign: TextAlign.center),
+                  ]),
+            ),
           ),
-        ),
+        ],
+      );
+    }
+
+    final byType = <String, List<PlaceModel>>{};
+    for (final p in _leftovers) {
+      final label = _typeLabel(p.primaryType ?? 'other'); // 🔧 先转成显示文字
+      byType.putIfAbsent(label, () => []).add(p); // 🔧 再用这个文字当 key 分组
+    }
+
+    return ListView(
+      key: const ValueKey('pool_scroll'),
+      controller: scrollController,
+      physics: const ClampingScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+      children: [
+        Row(children: [
+          Icon(Icons.info_outline_rounded, size: 13, color: Colors.grey[400]),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              "Places we found but didn't schedule. Long-press and drag one onto a Day tab to add it.",
+              style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 14),
+        for (final entry in byType.entries) ...[
+          Text(entry.key, // 🔧 直接用 entry.key,不要再套 _typeLabel
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1A1A2E))),
+          const SizedBox(height: 8),
+          ...entry.value.map(_buildPoolChip),
+          const SizedBox(height: 12),
+        ],
       ],
     );
   }
 
-  final byType = <String, List<PlaceModel>>{};
-  for (final p in _leftovers) {
-    final label = _typeLabel(p.primaryType ?? 'other');   // 🔧 先转成显示文字
-    byType.putIfAbsent(label, () => []).add(p);           // 🔧 再用这个文字当 key 分组
+  String _typeLabel(String type) {
+    const labels = {
+      'restaurant': '🍜 Food',
+      'meal_takeaway': '🍜 Food',
+      'cafe': '☕ Cafe',
+      'bakery': '🥐 Bakery',
+      'tourist_attraction': '🏛️ Historical',
+      'shopping_mall': '🛍️ Shopping',
+      'entertainment': '🎭 Entertainment',
+      'amusement_park': '🎭 Entertainment',
+      'park': '🌿 Nature',
+      'hospital': '🏥 Medical',
+      'university': '🎓 Education',
+      'florist': '💐 Florist',
+    };
+    return labels[type] ?? '📍 Other';
   }
 
-  return ListView(
-    key: const ValueKey('pool_scroll'),
-    controller: scrollController,
-    physics: const ClampingScrollPhysics(),
-    padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-    children: [
-      Row(children: [
-        Icon(Icons.info_outline_rounded, size: 13, color: Colors.grey[400]),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            "Places we found but didn't schedule. Long-press and drag one onto a Day tab to add it.",
-            style: TextStyle(fontSize: 11, color: Colors.grey[400]),
-          ),
+  Widget _buildPoolChip(PlaceModel place) {
+    final chip = GestureDetector(
+      onTap: () => _openPlaceDetail(place),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey[100]!),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 6,
+                offset: const Offset(0, 2))
+          ],
         ),
-      ]),
-      const SizedBox(height: 14),
-      for (final entry in byType.entries) ...[
-        Text(entry.key,    // 🔧 直接用 entry.key,不要再套 _typeLabel
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold,
-                color: Color(0xFF1A1A2E))),
-        const SizedBox(height: 8),
-        ...entry.value.map(_buildPoolChip),
-        const SizedBox(height: 12),
-      ],
-    ],
-  );
-}
-
-String _typeLabel(String type) {
-  const labels = {
-    'restaurant':         '🍜 Food',
-    'meal_takeaway':      '🍜 Food',
-    'cafe':               '☕ Cafe',
-    'bakery':             '🥐 Bakery',
-    'tourist_attraction': '🏛️ Historical',
-    'shopping_mall':      '🛍️ Shopping',
-    'entertainment':      '🎭 Entertainment',
-    'amusement_park':     '🎭 Entertainment',
-    'park':               '🌿 Nature',
-    'hospital':           '🏥 Medical',
-    'university':         '🎓 Education',
-    'florist':            '💐 Florist',
-  };
-  return labels[type] ?? '📍 Other';
-}
-
-Widget _buildPoolChip(PlaceModel place) {
-  final chip = GestureDetector(
-    onTap: () => _openPlaceDetail(place),
-    child: Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[100]!),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
-            blurRadius: 6, offset: const Offset(0, 2))],
+        child: Row(children: [
+          Icon(Icons.drag_indicator_rounded, size: 16, color: Colors.grey[350]),
+          const SizedBox(width: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: place.photoUrl != null
+                ? CachedNetworkImage(
+                    imageUrl: place.photoUrl!,
+                    width: 40,
+                    height: 40,
+                    fit: BoxFit.cover,
+                    errorWidget: (_, __, ___) => _photoPlaceholder(size: 40),
+                  )
+                : _photoPlaceholder(size: 40),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(place.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF1A1A2E))),
+                Row(children: [
+                  if (place.rating != null) ...[
+                    const Icon(Icons.star_rounded,
+                        size: 11, color: Colors.orange),
+                    const SizedBox(width: 2),
+                    Text('${place.rating}',
+                        style: const TextStyle(
+                            fontSize: 10, color: Colors.orange)),
+                    const SizedBox(width: 6),
+                  ],
+                  Expanded(
+                    child: Text(place.address ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            TextStyle(fontSize: 10, color: Colors.grey[500])),
+                  ),
+                ]),
+              ],
+            ),
+          ),
+          Icon(Icons.info_outline_rounded, size: 15, color: Colors.grey[350]),
+        ]),
       ),
-      child: Row(children: [
-        Icon(Icons.drag_indicator_rounded, size: 16, color: Colors.grey[350]),
-        const SizedBox(width: 6),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: place.photoUrl != null
-              ? CachedNetworkImage(
-              imageUrl: place.photoUrl!,
-              width: 40, height: 40, fit: BoxFit.cover,
-              errorWidget: (_, __, ___) => _photoPlaceholder(size: 40),
-            )
-              : _photoPlaceholder(size: 40),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(place.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
-                      color: Color(0xFF1A1A2E))),
-              Row(children: [
-                if (place.rating != null) ...[
-                  const Icon(Icons.star_rounded, size: 11, color: Colors.orange),
-                  const SizedBox(width: 2),
-                  Text('${place.rating}', style: const TextStyle(fontSize: 10, color: Colors.orange)),
-                  const SizedBox(width: 6),
-                ],
-                Expanded(
-                  child: Text(place.address ?? '', maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 10, color: Colors.grey[500])),
-                ),
-              ]),
-            ],
-          ),
-        ),
-        Icon(Icons.info_outline_rounded, size: 15, color: Colors.grey[350]),
-      ]),
-    ),
-  );
+    );
 
-  return LongPressDraggable<_DragPayload>(
-    data: _DragPayload.fromPool(place),
-    feedback: Material(color: Colors.transparent,
-        child: SizedBox(width: 260, child: Opacity(opacity: 0.9, child: chip))),
-    childWhenDragging: Opacity(opacity: 0.3, child: chip),
-    child: chip,
-  );
-}
-
-
-
+    return LongPressDraggable<_DragPayload>(
+      data: _DragPayload.fromPool(place),
+      feedback: Material(
+          color: Colors.transparent,
+          child:
+              SizedBox(width: 260, child: Opacity(opacity: 0.9, child: chip))),
+      childWhenDragging: Opacity(opacity: 0.3, child: chip),
+      child: chip,
+    );
+  }
 
   Widget _buildDaySummaryBar(int dayIndex, _DayLegs legs) {
     final day = _itinerary.days[dayIndex];
-    final visitMin =
-        day.places.fold<int>(0, (s, p) => s + p.durationMinutes);
+    final visitMin = day.places.fold<int>(0, (s, p) => s + p.durationMinutes);
     final color = _dayColors[dayIndex % _dayColors.length];
 
     return Padding(
@@ -2868,7 +2894,8 @@ Widget _buildPoolChip(PlaceModel place) {
           if (!legs.isReal && day.places.isNotEmpty) ...[
             const SizedBox(width: 10),
             const SizedBox(
-              width: 10, height: 10,
+              width: 10,
+              height: 10,
               child: CircularProgressIndicator(
                   strokeWidth: 1.5, color: Colors.grey),
             ),
@@ -2892,449 +2919,383 @@ Widget _buildPoolChip(PlaceModel place) {
   }
 
   Widget _emptyDayPlaceholder(int dayIndex) {
-  return DragTarget<_DragPayload>(
-    onWillAccept: (payload) => payload != null,
-    onAccept: (payload) => _movePlaceToPosition(payload, dayIndex, 0),
-    builder: (context, candidateData, rejectedData) {
-      final isHovering = candidateData.isNotEmpty;
-      final color = _dayColors[dayIndex % _dayColors.length];
-      return SizedBox(
-        height: 260,
-        child: Center(
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(Icons.playlist_remove_rounded, size: 56,
-                color: isHovering ? color : Colors.grey[300]),
-            const SizedBox(height: 12),
-            Text('No stops on Day ${dayIndex + 1} yet',
-                style: TextStyle(fontSize: 15, color: Colors.grey[400])),
-            const SizedBox(height: 6),
-            Text('Drag a place here from Overview or More Places to add it',
-                style: TextStyle(fontSize: 12, color: Colors.grey[400]),
-                textAlign: TextAlign.center),
-          ]),
-        ),
-      );
-    },
-  );
-}
+    return DragTarget<_DragPayload>(
+      onWillAccept: (payload) => payload != null,
+      onAccept: (payload) => _movePlaceToPosition(payload, dayIndex, 0),
+      builder: (context, candidateData, rejectedData) {
+        final isHovering = candidateData.isNotEmpty;
+        final color = _dayColors[dayIndex % _dayColors.length];
+        return SizedBox(
+          height: 260,
+          child: Center(
+            child:
+                Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.playlist_remove_rounded,
+                  size: 56, color: isHovering ? color : Colors.grey[300]),
+              const SizedBox(height: 12),
+              Text('No stops on Day ${dayIndex + 1} yet',
+                  style: TextStyle(fontSize: 15, color: Colors.grey[400])),
+              const SizedBox(height: 6),
+              Text('Drag a place here from Overview or More Places to add it',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                  textAlign: TextAlign.center),
+            ]),
+          ),
+        );
+      },
+    );
+  }
 
   // ── Place card ─────────────────────────────
 
   Widget _buildPlaceCard(
-  int dayIndex,
-  int index,
-  ItineraryPlace place,
-  _DayLegs legs, {
-  required bool isLast,
-  required Key key,
-}) {
-  final dayColor =
-      _dayColors[dayIndex % _dayColors.length];
+    int dayIndex,
+    int index,
+    ItineraryPlace place,
+    _DayLegs legs, {
+    required bool isLast,
+    required Key key,
+  }) {
+    final dayColor = _dayColors[dayIndex % _dayColors.length];
 
-  final numColor = _stopColor(
-    index,
-    _itinerary.days[dayIndex].places.length,
-    dayColor,
-  );
+    final numColor = _stopColor(
+      index,
+      _itinerary.days[dayIndex].places.length,
+      dayColor,
+    );
 
-  final locked = _isPlaceLocked(dayIndex, index);
+    final locked = _isPlaceLocked(dayIndex, index);
 
-  final card = Container(
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(
-        color: Colors.grey[100]!,
+    final card = Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: Colors.grey[100]!,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
       ),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withOpacity(0.05),
-          blurRadius: 8,
-          offset: const Offset(0, 3),
-        ),
-      ],
-    ),
-    child: Row(
-      crossAxisAlignment:
-          CrossAxisAlignment.center,
-      children: [
-        // ─────────────────────────────────────────
-        // Drag / Lock indicator
-        // ─────────────────────────────────────────
-        Container(
-          width: 40,
-          height: 76,
-          color: Colors.transparent,
-          child: Column(
-            mainAxisAlignment:
-                MainAxisAlignment.center,
-            children: [
-              Icon(
-                locked
-                    ? Icons.lock_outline_rounded
-                    : Icons.drag_indicator_rounded,
-                color: Colors.grey[400],
-                size: 20,
-              ),
-            ],
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // ─────────────────────────────────────────
+          // Drag / Lock indicator
+          // ─────────────────────────────────────────
+          Container(
+            width: 40,
+            height: 76,
+            color: Colors.transparent,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  locked
+                      ? Icons.lock_outline_rounded
+                      : Icons.drag_indicator_rounded,
+                  color: Colors.grey[400],
+                  size: 20,
+                ),
+              ],
+            ),
           ),
-        ),
 
-        // ─────────────────────────────────────────
-        // Stop number
-        // ─────────────────────────────────────────
-        Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            color: numColor,
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: Text(
-              '${index + 1}',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
+          // ─────────────────────────────────────────
+          // Stop number
+          // ─────────────────────────────────────────
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: numColor,
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Text(
+                '${index + 1}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ),
-        ),
 
-        const SizedBox(width: 10),
+          const SizedBox(width: 10),
 
-        // ─────────────────────────────────────────
-        // Image
-        // ─────────────────────────────────────────
-        ClipRRect(
-          borderRadius:
-              BorderRadius.circular(10),
-          child: place.photoUrl != null
-              ? CachedNetworkImage(
-                  imageUrl: place.photoUrl!,
-                  width: 52,
-                  height: 52,
-                  fit: BoxFit.cover,
-                  errorWidget:
-                      (_, __, ___) =>
-                          _photoPlaceholder(),
-                )
-              : _photoPlaceholder(),
-        ),
+          // ─────────────────────────────────────────
+          // Image
+          // ─────────────────────────────────────────
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: place.photoUrl != null
+                ? CachedNetworkImage(
+                    imageUrl: place.photoUrl!,
+                    width: 52,
+                    height: 52,
+                    fit: BoxFit.cover,
+                    errorWidget: (_, __, ___) => _photoPlaceholder(),
+                  )
+                : _photoPlaceholder(),
+          ),
 
-        const SizedBox(width: 10),
+          const SizedBox(width: 10),
 
-        // ─────────────────────────────────────────
-        // Place info
-        // ─────────────────────────────────────────
-        Expanded(
-          child: GestureDetector(
-            // Even locked days can still open
-            // the place detail page.
-            onTap: () =>
-                _openPlaceDetailFromItinerary(
-              place,
-            ),
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                vertical: 12,
+          // ─────────────────────────────────────────
+          // Place info
+          // ─────────────────────────────────────────
+          Expanded(
+            child: GestureDetector(
+              // Even locked days can still open
+              // the place detail page.
+              onTap: () => _openPlaceDetailFromItinerary(
+                place,
               ),
-              child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    place.name,
-                    style:
-                        const TextStyle(
-                      fontSize: 14,
-                      fontWeight:
-                          FontWeight.bold,
-                      color:
-                          Color(0xFF1A1A2E),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 12,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      place.name,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1A1A2E),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: 1,
-                    overflow:
-                        TextOverflow.ellipsis,
-                  ),
-
-                  const SizedBox(height: 3),
-
-                  Text(
-                    place.address,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey[500],
+                    const SizedBox(height: 3),
+                    Text(
+                      place.address,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey[500],
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: 1,
-                    overflow:
-                        TextOverflow.ellipsis,
-                  ),
-
-                  const SizedBox(height: 4),
-
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 4,
-                    children: [
-                      // ─────────────────────────────
-                      // Suggested time
-                      // ─────────────────────────────
-                      GestureDetector(
-                        onTap: locked
-                            ? null
-                            : () =>
-                                _pickTime(
-                                  dayIndex,
-                                  index,
-                                  place,
-                                ),
-                        child: Container(
-                          padding:
-                              const EdgeInsets
-                                  .symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration:
-                              BoxDecoration(
-                            color: locked
-                                ? Colors
-                                    .grey[100]
-                                : const Color(
-                                        0xFF7C4DFF)
-                                    .withOpacity(
-                                        0.08),
-                            borderRadius:
-                                BorderRadius
-                                    .circular(8),
-                          ),
-                          child: Row(
-                            mainAxisSize:
-                                MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons
-                                    .access_time_rounded,
-                                size: 11,
-                                color: locked
-                                    ? Colors
-                                        .grey[500]
-                                    : const Color(
-                                        0xFF7C4DFF),
-                              ),
-                              const SizedBox(
-                                  width: 3),
-                              Text(
-                                place
-                                    .suggestedTime,
-                                style:
-                                    TextStyle(
-                                  fontSize: 10,
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        // ─────────────────────────────
+                        // Suggested time
+                        // ─────────────────────────────
+                        GestureDetector(
+                          onTap: locked
+                              ? null
+                              : () => _pickTime(
+                                    dayIndex,
+                                    index,
+                                    place,
+                                  ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: locked
+                                  ? Colors.grey[100]
+                                  : const Color(0xFF7C4DFF).withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.access_time_rounded,
+                                  size: 11,
                                   color: locked
-                                      ? Colors
-                                          .grey[600]
-                                      : const Color(
-                                          0xFF7C4DFF),
-                                  fontWeight:
-                                      FontWeight
-                                          .w600,
+                                      ? Colors.grey[500]
+                                      : const Color(0xFF7C4DFF),
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 3),
+                                Text(
+                                  place.suggestedTime,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: locked
+                                        ? Colors.grey[600]
+                                        : const Color(0xFF7C4DFF),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
 
-                      // ─────────────────────────────
-                      // Duration
-                      // ─────────────────────────────
-                      GestureDetector(
-                        onTap: locked
-                            ? null
-                            : () =>
-                                _pickDuration(
-                                  dayIndex,
-                                  index,
-                                  place,
-                                ),
-                        child: Container(
-                          padding:
-                              const EdgeInsets
-                                  .symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration:
-                              BoxDecoration(
-                            color: locked
-                                ? Colors
-                                    .grey[100]
-                                : Colors.orange
-                                    .withOpacity(
-                                        0.08),
-                            borderRadius:
-                                BorderRadius
-                                    .circular(8),
-                          ),
-                          child: Row(
-                            mainAxisSize:
-                                MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons
-                                    .schedule_rounded,
-                                size: 11,
-                                color: locked
-                                    ? Colors
-                                        .grey[500]
-                                    : Colors
-                                        .orange[600],
-                              ),
-                              const SizedBox(
-                                  width: 3),
-                              Text(
-                                _formatDuration(
-                                  place
-                                      .durationMinutes,
-                                ),
-                                style:
-                                    TextStyle(
-                                  fontSize: 10,
+                        // ─────────────────────────────
+                        // Duration
+                        // ─────────────────────────────
+                        GestureDetector(
+                          onTap: locked
+                              ? null
+                              : () => _pickDuration(
+                                    dayIndex,
+                                    index,
+                                    place,
+                                  ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: locked
+                                  ? Colors.grey[100]
+                                  : Colors.orange.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.schedule_rounded,
+                                  size: 11,
                                   color: locked
-                                      ? Colors
-                                          .grey[600]
-                                      : Colors
-                                          .orange[700],
-                                  fontWeight:
-                                      FontWeight
-                                          .w600,
+                                      ? Colors.grey[500]
+                                      : Colors.orange[600],
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 3),
+                                Text(
+                                  _formatDuration(
+                                    place.durationMinutes,
+                                  ),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: locked
+                                        ? Colors.grey[600]
+                                        : Colors.orange[700],
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // ─────────────────────────────────────────
+          // Swap button
+          // Only editable days can swap.
+          // ─────────────────────────────────────────
+          if (!locked)
+            GestureDetector(
+              onTap: () => _showSwapSheet(
+                dayIndex,
+                index,
+                place,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 6,
+                ),
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    shape: BoxShape.circle,
                   ),
-                ],
-              ),
-            ),
-          ),
-        ),
-
-        // ─────────────────────────────────────────
-        // Swap button
-        // Only editable days can swap.
-        // ─────────────────────────────────────────
-        if (!locked)
-          GestureDetector(
-            onTap: () =>
-                _showSwapSheet(
-              dayIndex,
-              index,
-              place,
-            ),
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 6,
-              ),
-              child: Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: Colors.blue[50],
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.swap_horiz_rounded,
-                  size: 16,
-                  color: Colors.blue[400],
+                  child: Icon(
+                    Icons.swap_horiz_rounded,
+                    size: 16,
+                    color: Colors.blue[400],
+                  ),
                 ),
               ),
             ),
-          ),
 
-        // ─────────────────────────────────────────
-        // Remove button
-        // Only editable days can remove.
-        // ─────────────────────────────────────────
-        if (!locked)
-          GestureDetector(
-            onTap: () =>
-                _removePlace(
-              dayIndex,
-              index,
-            ),
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 12,
+          // ─────────────────────────────────────────
+          // Remove button
+          // Only editable days can remove.
+          // ─────────────────────────────────────────
+          if (!locked)
+            GestureDetector(
+              onTap: () => _removePlace(
+                dayIndex,
+                index,
               ),
-              child: Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: Colors.red[50],
-                  shape: BoxShape.circle,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
                 ),
-                child: Icon(
-                  Icons.close_rounded,
-                  size: 16,
-                  color: Colors.red[400],
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: Colors.red[50],
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.close_rounded,
+                    size: 16,
+                    color: Colors.red[400],
+                  ),
                 ),
               ),
             ),
-          ),
 
-        // Keep some right spacing on locked cards,
-        // because swap/delete are hidden.
-        if (locked)
-          const SizedBox(width: 12),
-      ],
-    ),
-  );
+          // Keep some right spacing on locked cards,
+          // because swap/delete are hidden.
+          if (locked) const SizedBox(width: 12),
+        ],
+      ),
+    );
 
-  // ─────────────────────────────────────────────
-  // Editable day:
-  // wrap card with reorder listener.
-  //
-  // Completed day:
-  // plain card only, no drag behavior.
-  // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    // Editable day:
+    // wrap card with reorder listener.
+    //
+    // Completed day:
+    // plain card only, no drag behavior.
+    // ─────────────────────────────────────────────
 
-  final cardContent = locked
-      ? card
-      : ReorderableDelayedDragStartListener(
-          index: index,
-          child: card,
-        );
+    final cardContent = locked
+        ? card
+        : ReorderableDelayedDragStartListener(
+            index: index,
+            child: card,
+          );
 
-  return Container(
-    key: key,
-    margin:
-        const EdgeInsets.only(
-      bottom: 14,
-    ),
-    child: Column(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
-      children: [
-        cardContent,
+    return Container(
+      key: key,
+      margin: const EdgeInsets.only(
+        bottom: 14,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          cardContent,
+          if (!isLast)
+            _buildLegConnector(
+              legs,
+              index + 1,
+            ),
+        ],
+      ),
+    );
+  }
 
-        if (!isLast)
-          _buildLegConnector(
-            legs,
-            index + 1,
-          ),
-      ],
-    ),
-  );
-}
-  
   String _formatDuration(int mins) {
     if (mins < 60) return '$mins min';
     final h = mins ~/ 60;
@@ -3344,20 +3305,24 @@ Widget _buildPoolChip(PlaceModel place) {
 
   Widget _buildLegConnector(_DayLegs legs, int toIndex) {
     if (toIndex >= legs.distances.length) return const SizedBox.shrink();
-    final km  = (legs.distances[toIndex] / 1000).toStringAsFixed(1);
+    final km = (legs.distances[toIndex] / 1000).toStringAsFixed(1);
     final min = legs.minutes[toIndex];
 
     return Padding(
       padding: const EdgeInsets.only(left: 28, top: 6),
       child: Row(children: [
-        Column(children: List.generate(4, (_) => Container(
-          width: 2, height: 5,
-          margin: const EdgeInsets.symmetric(vertical: 2),
-          decoration: BoxDecoration(
-            color: Colors.blue[200],
-            borderRadius: BorderRadius.circular(1),
-          ),
-        ))),
+        Column(
+            children: List.generate(
+                4,
+                (_) => Container(
+                      width: 2,
+                      height: 5,
+                      margin: const EdgeInsets.symmetric(vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.blue[200],
+                        borderRadius: BorderRadius.circular(1),
+                      ),
+                    ))),
         const SizedBox(width: 10),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -3391,10 +3356,12 @@ Widget _buildPoolChip(PlaceModel place) {
           16, 10, 16, 10 + MediaQuery.of(context).padding.bottom),
       decoration: BoxDecoration(
         color: Colors.white,
-        boxShadow: [BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 8,
-            offset: const Offset(0, -3))],
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 8,
+              offset: const Offset(0, -3))
+        ],
       ),
       child: Row(children: [
         Container(
@@ -3402,8 +3369,7 @@ Widget _buildPoolChip(PlaceModel place) {
           decoration: BoxDecoration(
             color: const Color(0xFF7C4DFF).withOpacity(0.1),
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-                color: const Color(0xFF7C4DFF).withOpacity(0.2)),
+            border: Border.all(color: const Color(0xFF7C4DFF).withOpacity(0.2)),
           ),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Text('$totalPlaces',
@@ -3420,9 +3386,8 @@ Widget _buildPoolChip(PlaceModel place) {
           child: SizedBox(
             height: 50,
             child: ElevatedButton(
-              onPressed: (totalPlaces == 0 || _isSaving)
-                  ? null
-                  : _saveAndContinue,
+              onPressed:
+                  (totalPlaces == 0 || _isSaving) ? null : _saveAndContinue,
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF7C4DFF),
                 disabledBackgroundColor: Colors.grey[300],
@@ -3432,7 +3397,8 @@ Widget _buildPoolChip(PlaceModel place) {
               ),
               child: _isSaving
                   ? const SizedBox(
-                      width: 20, height: 20,
+                      width: 20,
+                      height: 20,
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.white))
                   : Row(
@@ -3477,32 +3443,36 @@ Widget _buildPoolChip(PlaceModel place) {
 
   // 🆕 用 ItineraryPlace 打开详情页（行程里已经排好的地点）
   void _openPlaceDetailFromItinerary(ItineraryPlace place) {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => PlaceDetailPage(
-        placeId:   place.placeId,
-        placeName: place.name,
-        lat:       place.lat,
-        lng:       place.lng,
-        userLat:   widget.startLat,
-        userLng:   widget.startLng,
-        source:    'google',
-      ),
-    ));
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PlaceDetailPage(
+            placeId: place.placeId,
+            placeName: place.name,
+            lat: place.lat,
+            lng: place.lng,
+            userLat: widget.startLat,
+            userLng: widget.startLng,
+            source: 'google',
+          ),
+        ));
   }
 
   // 🆕 用候补池的 PlaceModel 打开详情页
   void _openPlaceDetail(PlaceModel place) {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => PlaceDetailPage(
-        placeId:   place.id,
-        placeName: place.name,
-        lat:       place.lat,
-        lng:       place.lng,
-        userLat:   widget.startLat,
-        userLng:   widget.startLng,
-        source:    'google',
-      ),
-    ));
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PlaceDetailPage(
+            placeId: place.id,
+            placeName: place.name,
+            lat: place.lat,
+            lng: place.lng,
+            userLat: widget.startLat,
+            userLng: widget.startLng,
+            source: 'google',
+          ),
+        ));
   }
 
   // 🆕 把候补池里的 PlaceModel，换装成能放进行程的 ItineraryPlace，
@@ -3513,14 +3483,14 @@ Widget _buildPoolChip(PlaceModel place) {
     required int durationMinutes,
   }) {
     return ItineraryPlace(
-      placeId:         p.id,
-      name:            p.name,
-      address:         p.address ?? '',
-      photoUrl:        p.photoUrl,
-      lat:             p.lat,
-      lng:             p.lng,
-      primaryType:     p.primaryType,
-      suggestedTime:   suggestedTime,
+      placeId: p.id,
+      name: p.name,
+      address: p.address ?? '',
+      photoUrl: p.photoUrl,
+      lat: p.lat,
+      lng: p.lng,
+      primaryType: p.primaryType,
+      suggestedTime: suggestedTime,
       durationMinutes: durationMinutes,
     );
   }
@@ -3528,18 +3498,17 @@ Widget _buildPoolChip(PlaceModel place) {
   // 🆕 用候补池里的某个地点，替换某天某个位置原本的地点。
   // 被替换下来的原地点会重新放回候补池，避免用户换来换去丢失选项。
   void _swapPlace(int dayIndex, int placeIndex, PlaceModel replacement) {
-
     if (_isPlaceLocked(dayIndex, placeIndex)) {
       return;
     }
 
-    final days   = List<ItineraryDay>.from(_itinerary.days);
+    final days = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
-    final old    = places[placeIndex];
+    final old = places[placeIndex];
 
     places[placeIndex] = _placeModelToItineraryPlace(
       replacement,
-      suggestedTime:   old.suggestedTime,
+      suggestedTime: old.suggestedTime,
       durationMinutes: old.durationMinutes,
     );
     days[dayIndex] = days[dayIndex].copyWith(places: places);
@@ -3547,8 +3516,9 @@ Widget _buildPoolChip(PlaceModel place) {
     setState(() {
       _itinerary = _itinerary.copyWith(days: days);
       _leftovers.removeWhere((p) => p.id == replacement.id);
-      _pendingLeftoverIds.remove(replacement.id); 
-      if (old.lat != null && old.lng != null &&
+      _pendingLeftoverIds.remove(replacement.id);
+      if (old.lat != null &&
+          old.lng != null &&
           !_leftovers.any((p) => p.id == old.placeId)) {
         _leftovers.add(PlaceModel(
           id: old.placeId,
@@ -3584,7 +3554,7 @@ Widget _buildPoolChip(PlaceModel place) {
   // The leftover pool was built from the categories selected during Generate.
   // Swap may use any of those selected categories, rather than being locked to
   // the current place's category. No additional nearby-search API call is made.
-    // The leftover pool was built from the categories selected during Generate.
+  // The leftover pool was built from the categories selected during Generate.
   // Swap may use any of those selected categories, rather than being locked to
   // the current place's category. No additional nearby-search API call is made.
   void _showSwapSheet(
@@ -3599,16 +3569,14 @@ Widget _buildPoolChip(PlaceModel place) {
         .map((place) => place.placeId)
         .toSet();
 
-    final candidates = _leftovers
-        .where((place) {
-          final category = CategoryMapper.resolvePrimaryType(
-            place.primaryType,
-            place.allTypes,
-          );
-          return !scheduledIds.contains(place.id) &&
-              CategoryMapper.isLearnableCategory(category);
-        })
-        .toList()
+    final candidates = _leftovers.where((place) {
+      final category = CategoryMapper.resolvePrimaryType(
+        place.primaryType,
+        place.allTypes,
+      );
+      return !scheduledIds.contains(place.id) &&
+          CategoryMapper.isLearnableCategory(category);
+    }).toList()
       ..sort((a, b) {
         if (current.lat == null || current.lng == null) {
           return (b.rating ?? 0).compareTo(a.rating ?? 0);
@@ -3638,7 +3606,8 @@ Widget _buildPoolChip(PlaceModel place) {
           children: [
             const SizedBox(height: 12),
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               decoration: BoxDecoration(
                 color: Colors.grey[300],
                 borderRadius: BorderRadius.circular(2),
@@ -3651,7 +3620,8 @@ Widget _buildPoolChip(PlaceModel place) {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text('Swap this place',
-                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                      style:
+                          TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
                   Text('${candidates.length} options',
                       style: TextStyle(fontSize: 12, color: Colors.grey[500])),
                 ],
@@ -3685,12 +3655,14 @@ Widget _buildPoolChip(PlaceModel place) {
                         children: [
                           for (final entry in grouped.entries) ...[
                             Padding(
-                              padding: const EdgeInsets.only(bottom: 10, top: 8),
+                              padding:
+                                  const EdgeInsets.only(bottom: 10, top: 8),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 10, vertical: 5),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFF7C4DFF).withOpacity(0.08),
+                                  color:
+                                      const Color(0xFF7C4DFF).withOpacity(0.08),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Text(
@@ -3709,15 +3681,20 @@ Widget _buildPoolChip(PlaceModel place) {
                                     child: c.photoUrl != null
                                         ? CachedNetworkImage(
                                             imageUrl: c.photoUrl!,
-                                            width: 52, height: 52, fit: BoxFit.cover,
-                                            errorWidget: (_, __, ___) => _photoPlaceholder(),
+                                            width: 52,
+                                            height: 52,
+                                            fit: BoxFit.cover,
+                                            errorWidget: (_, __, ___) =>
+                                                _photoPlaceholder(),
                                           )
                                         : _photoPlaceholder(),
                                   ),
                                   title: Text(c.name,
-                                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                       style: const TextStyle(
-                                          fontWeight: FontWeight.w600, fontSize: 14)),
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 14)),
                                   subtitle: c.rating != null
                                       ? Row(children: [
                                           const Icon(Icons.star_rounded,
@@ -3725,11 +3702,13 @@ Widget _buildPoolChip(PlaceModel place) {
                                           const SizedBox(width: 2),
                                           Text('${c.rating}',
                                               style: const TextStyle(
-                                                  fontSize: 12, color: Colors.orange)),
+                                                  fontSize: 12,
+                                                  color: Colors.orange)),
                                         ])
                                       : null,
                                   trailing: IconButton(
-                                    icon: const Icon(Icons.info_outline_rounded, size: 20),
+                                    icon: const Icon(Icons.info_outline_rounded,
+                                        size: 20),
                                     onPressed: () => _openPlaceDetail(c),
                                   ),
                                   onTap: () {
@@ -3757,11 +3736,12 @@ Widget _buildPoolChip(PlaceModel place) {
   }
 
   Widget _photoPlaceholder({double size = 52}) => Container(
-    width: size, height: size,
-    color: Colors.grey[100],
-    child: Icon(Icons.location_on_rounded,
-        color: Colors.grey[300], size: size * 0.46),
-  );
+        width: size,
+        height: size,
+        color: Colors.grey[100],
+        child: Icon(Icons.location_on_rounded,
+            color: Colors.grey[300], size: size * 0.46),
+      );
 }
 
 // ─────────────────────────────────────────────
@@ -3786,26 +3766,32 @@ class _DayLegs {
   });
 
   static const empty = _DayLegs(
-    distances: [], minutes: [], segments: [],
-    totalKm: 0, totalMin: 0, isReal: false,
+    distances: [],
+    minutes: [],
+    segments: [],
+    totalKm: 0,
+    totalMin: 0,
+    isReal: false,
   );
 
   // 🆕 转成能存进 Firestore 的纯 JSON 结构
   List<Map<String, dynamic>> toStoredData() {
-    return List.generate(distances.length, (i) => {
-      'distance': distances[i],
-      'minutes':  minutes[i],
-      'points': (i < segments.length ? segments[i] : <LatLng>[])
-          .map((p) => {'lat': p.latitude, 'lng': p.longitude})
-          .toList(),
-    });
+    return List.generate(
+        distances.length,
+        (i) => {
+              'distance': distances[i],
+              'minutes': minutes[i],
+              'points': (i < segments.length ? segments[i] : <LatLng>[])
+                  .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+                  .toList(),
+            });
   }
 
   // 🆕 从存储结构还原
   static _DayLegs fromStoredData(List<Map<String, dynamic>> data) {
     final distances = <double>[];
-    final minutes   = <int>[];
-    final segments  = <List<LatLng>>[];
+    final minutes = <int>[];
+    final segments = <List<LatLng>>[];
     double totalM = 0;
 
     for (final leg in data) {
@@ -3823,11 +3809,11 @@ class _DayLegs {
 
     return _DayLegs(
       distances: distances,
-      minutes:   minutes,
-      segments:  segments,
-      totalKm:   totalM / 1000,
-      totalMin:  minutes.fold(0, (a, b) => a + b),
-      isReal:    true, // 存下来的必然是当初已经算好的真实数据
+      minutes: minutes,
+      segments: segments,
+      totalKm: totalM / 1000,
+      totalMin: minutes.fold(0, (a, b) => a + b),
+      isReal: true, // 存下来的必然是当初已经算好的真实数据
     );
   }
 }

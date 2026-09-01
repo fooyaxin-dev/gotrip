@@ -35,14 +35,19 @@ Widget buildPostImage(
     );
   }
 
-    if (isNetwork) {
-    // 🔧 改动：Image.network → CachedNetworkImage，加一层磁盘缓存，
-    // 同一个 URL 只下载一次，之后从本地缓存文件读取
+  if (isNetwork) {
+    // CachedNetworkImage with memory cache bounding to prevent decoding
+    // multi-megabyte images at full resolution for thumbnails.
+    final int? targetMemWidth = width != null ? (width * 2.5).toInt() : (height != null ? (height * 2.5).toInt() : 800);
+    final int? targetMemHeight = height != null ? (height * 2.5).toInt() : null;
+
     return CachedNetworkImage(
       imageUrl: source,
       width: width,
       height: height,
       fit: fit,
+      memCacheWidth: targetMemWidth,
+      memCacheHeight: targetMemHeight,
       fadeInDuration: const Duration(milliseconds: 200),
       placeholder: (context, _) => Container(
         width: width,

@@ -144,12 +144,12 @@ class _ItineraryPageState extends State<ItineraryPage>
             onPressed: _load,
           ),
         ],
-        bottom: _loading
-            ? null
-            : PreferredSize(
-                preferredSize: const Size.fromHeight(48),
-                child: _buildOuterTabBar(ongoing.length + planned.length, completed.length),
-              ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(48),
+          child: _loading
+              ? const SizedBox(height: 48)
+              : _buildOuterTabBar(ongoing.length + planned.length, completed.length),
+        ),
       ),
       body: _loading
           ? const Center(child: TravelLoadingIndicator())

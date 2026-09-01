@@ -194,6 +194,7 @@ class _DashboardPageState extends State<DashboardPage> {
   _AllTimeCache? _allTimeCache;                 // 新增
   final Map<int, _DashboardData> _filteredCache = {}; // 新增
   bool _isLoading = true;
+  bool _isRefreshing = false;
   String? _errorMsg;
 
   int _selectedMonths = 6;
@@ -216,7 +217,11 @@ class _DashboardPageState extends State<DashboardPage> {
     if (!mounted) return;
 
     setState(() {
-      _isLoading = true;
+      if (_rawData == null) {
+        _isLoading = true;
+      } else {
+        _isRefreshing = true;
+      }
       _errorMsg = null;
     });
 
@@ -227,6 +232,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
       setState(() {
         _isLoading = false;
+        _isRefreshing = false;
         _rawData = null;
         _allTimeCache = null;
         _filteredCache.clear();
@@ -337,12 +343,15 @@ class _DashboardPageState extends State<DashboardPage> {
           if (!mounted) return;
 
     // Final session check immediately before committing UI state.
-if (FirebaseAuth.instance.currentUser?.uid != uid) {
-  if (mounted) {
-    setState(() => _isLoading = false);
-  }
-  return;
-}
+    if (FirebaseAuth.instance.currentUser?.uid != uid) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isRefreshing = false;
+        });
+      }
+      return;
+    }
 
     setState(() {
       _rawData = _RawData(
@@ -357,20 +366,25 @@ if (FirebaseAuth.instance.currentUser?.uid != uid) {
       _prewarmFilteredCache();
 
       _isLoading = false;
+      _isRefreshing = false;
     });
   } catch (e) {
     if (!mounted) return;
 
     // Don't show an error from an operation belonging to an old account.
-if (FirebaseAuth.instance.currentUser?.uid != uid) {
-  if (mounted) {
-    setState(() => _isLoading = false);
-  }
-  return;
-}
+    if (FirebaseAuth.instance.currentUser?.uid != uid) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isRefreshing = false;
+        });
+      }
+      return;
+    }
 
     setState(() {
       _isLoading = false;
+      _isRefreshing = false;
       _errorMsg = e.toString();
     });
   }
@@ -591,16 +605,25 @@ if (FirebaseAuth.instance.currentUser?.uid != uid) {
             style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_rounded, color: Colors.black54),
-            onPressed: () => _loadRawData(forceRefresh: true),
+            icon: _isRefreshing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Color(0xFF6366F1),
+                    ),
+                  )
+                : const Icon(Icons.refresh_rounded, color: Colors.black54),
+            onPressed: _isRefreshing ? null : () => _loadRawData(forceRefresh: true),
           ),
         ],
       ),
-      body: _isLoading
-      ? const Center(child: TravelLoadingIndicator())
-      : _errorMsg != null || _rawData == null
-          ? _buildError()
-          : _buildBody(),
+      body: (_isLoading && _rawData == null)
+          ? const Center(child: TravelLoadingIndicator())
+          : _errorMsg != null && _rawData == null
+              ? _buildError()
+              : _buildBody(),
     );
   }
 

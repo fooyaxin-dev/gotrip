@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:path_provider/path_provider.dart';
@@ -9,20 +10,18 @@ import '../services/sentiment_service.dart';
 import '../services/userPreference_service.dart';
 import 'storage_service.dart';
 
-
 extension _SafeStream<T> on Stream<T> {
   Stream<T> withFallback(T fallback, {String label = ''}) {
     return transform(
       StreamTransformer<T, T>.fromHandlers(
         handleError: (error, stackTrace, sink) {
-          print('⚠️ [$label] stream 查询失败，已用兜底值代替: $error');
+          debugPrint('⚠️ [$label] stream error, using fallback: $error');
           sink.add(fallback);
         },
       ),
     );
   }
 }
-
 
 /// 分页查询结果——带上"最后一条文档"作为下一页的游标(cursor),
 /// 以及 hasMore 判断是否还有下一页
@@ -42,7 +41,6 @@ class PostService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
-
   Future<void> incrementPostCount() async {
     String? userId = _auth.currentUser?.uid;
     if (userId == null) return;
@@ -51,7 +49,7 @@ class PostService {
         'postCount': FieldValue.increment(1),
       });
     } catch (e) {
-      print('Update post count failed: $e');
+      debugPrint('Update post count failed: $e');
     }
   }
 
@@ -61,27 +59,27 @@ class PostService {
       final batch = _firestore.batch();
       for (final tag in tags) {
         final ref = _firestore.collection('tags').doc(tag);
-        batch.set(ref, {'count': FieldValue.increment(1)}, SetOptions(merge: true));
+        batch.set(
+            ref, {'count': FieldValue.increment(1)}, SetOptions(merge: true));
       }
       await batch.commit();
     } catch (e) {
-      print('Update tag counts failed: $e');
+      debugPrint('Update tag counts failed: $e');
     }
   }
-
 
   Future<void> decrementPostCount() async {
     String? userId = _auth.currentUser?.uid;
     if (userId == null) return;
     try {
-      final doc = await _firestore.collection('users').doc(userId).get();
-      final current = (doc.data() as Map<String, dynamic>?)?['postCount'] ?? 0;
-      if (current <= 0) return;
+      // Use atomic increment(-1) to avoid a TOCTOU race where two concurrent
+      // decrements both read count=1 and both write 0 rather than decrementing
+      // correctly. Firestore security rules should enforce the non-negative floor.
       await _firestore.collection('users').doc(userId).update({
         'postCount': FieldValue.increment(-1),
       });
     } catch (e) {
-      print('Update post count failed: $e');
+      debugPrint('Update post count failed: $e');
     }
   }
 
@@ -93,7 +91,7 @@ class PostService {
         'favouriteCount': FieldValue.increment(1),
       });
     } catch (e) {
-      print('Update favourite count failed: $e');
+      debugPrint('Update favourite count failed: $e');
     }
   }
 
@@ -105,7 +103,7 @@ class PostService {
         'favouriteCount': FieldValue.increment(-1),
       });
     } catch (e) {
-      print('Update favourite count failed: $e');
+      debugPrint('Update favourite count failed: $e');
     }
   }
 
@@ -161,23 +159,25 @@ class PostService {
     }
   }
 
- Stream<List<Post>> getUserPosts(String userId) {
-  return _firestore
-      .collection('posts')
-      .where('userId', isEqualTo: userId)
-      .snapshots()
-      .map((snapshot) {
-        List<Post> posts =
-            snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
-        posts.sort((a, b) {
-          if (a.createdAt == null) return 1;
-          if (b.createdAt == null) return -1;
-          return b.createdAt!.compareTo(a.createdAt!);
-        });
-        return posts;
-      })
-      .withFallback(<Post>[], label: 'getUserPosts');
-}
+  Stream<List<Post>> getUserPosts(String userId) {
+    return _firestore
+        .collection('posts')
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .map((snapshot) {
+      final posts =
+          snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
+      posts.sort((a, b) {
+        final aTime = a.createdAt;
+        final bTime = b.createdAt;
+        if (aTime == null && bTime == null) return 0;
+        if (aTime == null) return 1;
+        if (bTime == null) return -1;
+        return bTime.compareTo(aTime);
+      });
+      return posts;
+    });
+  }
 
   Stream<List<Post>> getPostsByTag(String tag) {
     return _firestore
@@ -211,7 +211,6 @@ class PostService {
             snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList())
         .withFallback(<Post>[], label: 'getPostsByLocation');
   }
-
 
   Stream<List<Post>> getPostsByCity(String city) {
     return _firestore
@@ -279,7 +278,8 @@ class PostService {
       }
 
       final snapshot = await query.get();
-      final posts = snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
+      final posts =
+          snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
 
       return PostPage(
         posts: posts,
@@ -289,7 +289,7 @@ class PostService {
         hasMore: snapshot.docs.length == limit,
       );
     } catch (e) {
-      print('❌ getPublicPostsPaginated: $e');
+      debugPrint('❌ getPublicPostsPaginated: $e');
       return const PostPage(posts: [], lastDocument: null, hasMore: false);
     }
   }
@@ -312,7 +312,8 @@ class PostService {
       }
 
       final snapshot = await query.get();
-      final posts = snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
+      final posts =
+          snapshot.docs.map((doc) => Post.fromFirestore(doc)).toList();
 
       return PostPage(
         posts: posts,
@@ -320,11 +321,10 @@ class PostService {
         hasMore: snapshot.docs.length == limit,
       );
     } catch (e) {
-      print('❌ getPostsByCityPaginated: $e');
+      debugPrint('❌ getPostsByCityPaginated: $e');
       return const PostPage(posts: [], lastDocument: null, hasMore: false);
     }
   }
-  
 
   // ===== 更新帖子 =====
 
@@ -339,11 +339,11 @@ class PostService {
   Future<void> toggleLike(
     String postId,
     bool isLiked, {
-    required List<String>   placeTypes,   // 🆕 补上
-    required List<String>   postTags,
-    String?                 postTopic,
+    required List<String> placeTypes, // 🆕 补上
+    required List<String> postTags,
+    String? postTopic,
     required SentimentLabel sentimentLabel,
-    required int             sentimentMatchedTokens,
+    required int sentimentMatchedTokens,
   }) async {
     try {
       await _firestore.collection('posts').doc(postId).update({
@@ -351,11 +351,11 @@ class PostService {
       });
 
       await UserPreferenceService.instance.updateFromLike(
-        placeTypes:             placeTypes,
-        postTags:               postTags,
-        postTopic:              postTopic,
-        isLiking:               isLiked,
-        sentimentLabel:         sentimentLabel,
+        placeTypes: placeTypes,
+        postTags: postTags,
+        postTopic: postTopic,
+        isLiking: isLiked,
+        sentimentLabel: sentimentLabel,
         sentimentMatchedTokens: sentimentMatchedTokens,
       );
     } catch (e) {
@@ -417,8 +417,7 @@ class PostService {
       await _firestore.runTransaction((transaction) async {
         final userSnapshot = await transaction.get(userRef);
         final userData = userSnapshot.data() as Map<String, dynamic>?;
-        final currentCount =
-            (userData?['postCount'] as num?)?.toInt() ?? 0;
+        final currentCount = (userData?['postCount'] as num?)?.toInt() ?? 0;
 
         transaction.delete(postRef);
 
@@ -451,28 +450,26 @@ class PostService {
     try {
       await _deletePostLikeDocuments(postId);
     } catch (e) {
-      print('⚠️ Post $postId deleted, but likes cleanup failed: $e');
+      debugPrint('⚠️ Post $postId deleted, but likes cleanup failed: $e');
     }
 
     try {
       await StorageService.deletePostMedia(mediaUrls);
     } catch (e) {
-      print('⚠️ Post $postId deleted, but media cleanup failed: $e');
+      debugPrint('⚠️ Post $postId deleted, but media cleanup failed: $e');
     }
 
     try {
       await AlgoliaService.deletePost(postId);
     } catch (e) {
-      print('⚠️ Post $postId deleted, but search cleanup failed: $e');
+      debugPrint('⚠️ Post $postId deleted, but search cleanup failed: $e');
     }
   }
 
   Future<void> _deletePostLikeDocuments(String postId) async {
     const batchSize = 400;
-    final likesCollection = _firestore
-        .collection('posts')
-        .doc(postId)
-        .collection('likes');
+    final likesCollection =
+        _firestore.collection('posts').doc(postId).collection('likes');
 
     while (true) {
       final snapshot = await likesCollection.limit(batchSize).get();
@@ -529,7 +526,7 @@ class PostService {
       await for (var entity in postsDir.list()) {
         if (entity is File && !usedImages.contains(entity.path)) {
           await entity.delete();
-          print('Failed to delete local image: ${entity.path}');
+          debugPrint('Failed to delete local image: ${entity.path}');
         }
       }
     } catch (e) {
@@ -550,7 +547,7 @@ class PostService {
         .withFallback(<Post>[], label: 'getPopularPosts');
   }
 
-/// 同时搜索 标题 + 标签，合并去重，只返回 public 帖子
+  /// 同时搜索 标题 + 标签，合并去重，只返回 public 帖子
   Future<List<Post>> searchPosts(String keyword) async {
     if (keyword.trim().isEmpty) return [];
 
@@ -722,7 +719,7 @@ class PostService {
             File imageFile = File(imagePath);
             if (await imageFile.exists()) await imageFile.delete();
           } catch (e) {
-            print('Failed to delete local image: $e');
+            debugPrint('Failed to delete local image: $e');
           }
         }
         batch.delete(doc.reference);
@@ -755,4 +752,3 @@ class PostService {
     }
   }
 }
-

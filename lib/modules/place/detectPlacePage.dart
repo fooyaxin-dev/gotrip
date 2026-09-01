@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'placeDetailPage.dart';
 import '../../services/route_service.dart';
 import '../../services/location_service.dart';
@@ -279,7 +278,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // ─────────────────────────────────────────────
 
   Future<void> _bootstrap() async {
-    if (!await _checkConnectivity()) return;
     setState(() => _isLoading = true);
 
     if (widget.landmarkLat != null && widget.landmarkLng != null) {
@@ -367,24 +365,34 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   // Search
   // ─────────────────────────────────────────────
 
+  int _autocompleteRequestId = 0;
+
   void _onSearchChanged(String value) {
     _debounce?.cancel();
-    if (value.trim().isEmpty) {
+    final query = value.trim();
+
+    if (query.isEmpty) {
+      _autocompleteRequestId++;
       setState(() => _autocompleteSuggestions = []);
       return;
     }
-    _debounce = Timer(const Duration(milliseconds: 400), () async {
+
+    final reqId = ++_autocompleteRequestId;
+
+    _debounce = Timer(const Duration(milliseconds: 350), () async {
       final suggestions = await PlacesApiService.autocomplete(
-        input: value,
+        input: query,
         lat: _currentPosition?.latitude,
         lng: _currentPosition?.longitude,
       );
-      if (mounted) setState(() => _autocompleteSuggestions = suggestions);
+
+      if (mounted && reqId == _autocompleteRequestId) {
+        setState(() => _autocompleteSuggestions = suggestions);
+      }
     });
   }
 
   Future<void> _onSuggestionSelected(Map<String, dynamic> suggestion) async {
-    if (!await _checkConnectivity()) return;
     _searchFocus.unfocus();
     setState(() {
       _isSearchMode        = false;
@@ -605,7 +613,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   }
 
   Future<void> _onRefresh() async {
-    if (!await _checkConnectivity()) return;
     if (_searchLocationName != null) { _clearSearch(); return; }
 
     final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
@@ -892,33 +899,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     ),
   );
 }
-
-  // ─────────────────────────────────────────────
-  // Connectivity
-  // ─────────────────────────────────────────────
-
-  Future<bool> _checkConnectivity() async {
-    final result = await Connectivity().checkConnectivity();
-    if (result == ConnectivityResult.none) {
-      if (mounted) {
-        // 先清掉可能已经在排队/显示中的旧提示，保证同一时间只有一条
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: const Row(children: [
-            Icon(Icons.wifi_off_rounded, color: Colors.white, size: 18),
-            SizedBox(width: 8),
-            Text('No internet connection'),
-          ]),
-          backgroundColor: Colors.red[700],
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 2), // 加个明确时长，别让它无限排队
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ));
-      }
-      return false;
-    }
-    return true;
-  }
 
   // ─────────────────────────────────────────────
   // UI Helpers
@@ -1980,6 +1960,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         ? UserPreferenceService.instance.getRecommendReason(
             primaryType: place.primaryType,
             allTypes:    place.allTypes,
+            distanceMeters: routeInfo?.distanceMeters,
+            rating: place.rating,
+            priceLevel: place.priceLevel,
+            originType: RecommendationOriginType.gps,
           )
         : null;
     final showForYouBadge = isForYouMode; // 能进列表就已经是 match 了

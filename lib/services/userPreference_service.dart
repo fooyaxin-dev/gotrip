@@ -8,6 +8,7 @@ import 'route_service.dart';
 import 'sentiment_service.dart';
 import 'weather_service.dart';
 import 'category_mapper.dart';
+import 'connectivity_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Budget tier  (set during onboarding)
@@ -43,6 +44,48 @@ extension BudgetTierX on BudgetTier {
   }
 }
 
+enum RecommendationOriginType {
+  gps,
+  searched,
+  landmark,
+  unknown,
+}
+
+class RecommendationExplanation {
+  final double totalScore;
+  final Map<String, double> factorScores;
+  final Map<String, double> factorWeights;
+  final Map<String, double> weightedContributions;
+  final List<String> matchedSelectedPreferences;
+  final List<String> matchedLearnedPreferences;
+  final List<String> explanationReasons;
+  final String? primaryReason;
+  final RecommendationOriginType originType;
+  final String? originName;
+
+  const RecommendationExplanation({
+    required this.totalScore,
+    required this.factorScores,
+    required this.factorWeights,
+    required this.weightedContributions,
+    required this.matchedSelectedPreferences,
+    required this.matchedLearnedPreferences,
+    required this.explanationReasons,
+    this.primaryReason,
+    this.originType = RecommendationOriginType.gps,
+    this.originName,
+  });
+
+  String get matchTier {
+    if (totalScore >= 0.80) return 'Excellent match';
+    if (totalScore >= 0.65) return 'Strong match';
+    if (totalScore >= 0.50) return 'Good match';
+    return 'Match';
+  }
+
+  int get matchPercentage => (totalScore * 100).round().clamp(0, 100);
+}
+
 // ─────────────────────────────────────────────
 // For You — 唯一判定入口（MainPage / RealTimeDetectPage 共用）
 // ─────────────────────────────────────────────
@@ -50,7 +93,9 @@ extension BudgetTierX on BudgetTier {
 class ForYouResult {
   final List<PlaceModel> places;
   final Map<String, double> scores;
-  ForYouResult(this.places, this.scores);
+  final Map<String, RecommendationExplanation> explanations;
+
+  ForYouResult(this.places, this.scores, [this.explanations = const {}]);
 }
 
 
@@ -135,6 +180,7 @@ class RecommendationScore {
   final double timeSuitability;
   final double budgetSuitability;
   final double weatherScore; 
+  final RecommendationExplanation? explanation;
 
   const RecommendationScore({
     required this.total,
@@ -144,6 +190,7 @@ class RecommendationScore {
     required this.timeSuitability,
     required this.budgetSuitability,
     required this.weatherScore,
+    this.explanation,
   });
 
   String get percentage => '${(total * 100).toStringAsFixed(1)}%';
@@ -192,7 +239,7 @@ class UserPreferenceService {
         // a logout/login between queueing and execution write it to another
         // user's preference document.
         if (FirebaseAuth.instance.currentUser?.uid != requestedUid) {
-          print('⚠️ Preference signal skipped: account changed while queued');
+          debugPrint('⚠️ Preference signal skipped: account changed while queued');
           completer.complete();
           return;
         }
@@ -298,7 +345,7 @@ class UserPreferenceService {
 
       return _prefs;
     } catch (e) {
-      print('❌ UserPreferenceService.load: $e');
+      debugPrint('❌ UserPreferenceService.load: $e');
       return UserPreferences.empty();
     }
   }
@@ -308,11 +355,24 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> save(UserPreferences prefs) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
     _prefs = prefs;
-    await FirebaseFirestore.instance
-        .collection('users').doc(uid).update(prefs.toMap());
+    final userDoc = FirebaseFirestore.instance.collection('users').doc(user.uid);
+    final snapshot = await userDoc.get();
+    if (!snapshot.exists) {
+      // Missing-profile recovery: reconstruct base user profile doc + preferences
+      final baseData = <String, dynamic>{
+        'username': user.displayName ?? user.email?.split('@').first ?? 'Traveler',
+        'email': user.email ?? '',
+        'profileImageUrl': user.photoURL ?? '',
+        'createdAt': FieldValue.serverTimestamp(),
+      };
+      baseData.addAll(prefs.toMap());
+      await userDoc.set(baseData, SetOptions(merge: true));
+    } else {
+      await userDoc.set(prefs.toMap(), SetOptions(merge: true));
+    }
     preferencesChanged.value++;
   }
 
@@ -337,6 +397,16 @@ class UserPreferenceService {
       'passiveSignalCount':    {},   // 🔧 取代 'searchScoreBuffer': {}
       'timeAffinity':          {},
     });
+    preferencesChanged.value++;
+  }
+
+  /// Clears local user state in memory and resets pending retries upon logout.
+  void clearLocalSession() {
+    _prefs = UserPreferences.empty();
+    _favouriteCount.clear();
+    _passiveCount.clear();
+    _timeAffinity.clear();
+    ConnectivityService.instance.clearPendingRetry();
     preferencesChanged.value++;
   }
 
@@ -475,7 +545,7 @@ class UserPreferenceService {
 
     if (hasRating) {
       if (!ratingPos && !ratingNeg) {
-        print('🧠 updateFromPost: skipped (rating=3, neutral)');
+        debugPrint('🧠 updateFromPost: skipped (rating=3, neutral)');
         return;
       }
       isPositive = ratingPos;
@@ -484,7 +554,7 @@ class UserPreferenceService {
       weight = agrees ? 2 : 1;
     } else {
       if (!sentimentPos && !sentimentNeg) {
-        print('🧠 updateFromPost: skipped (no rating, sentiment weak)');
+        debugPrint('🧠 updateFromPost: skipped (no rating, sentiment weak)');
         return;
       }
       isPositive = sentimentPos;
@@ -521,7 +591,7 @@ class UserPreferenceService {
     }
 
     if (strongKeys.isEmpty && weakKeys.isEmpty) {
-      print('🧠 updateFromPost: skipped (no recognized signal)');
+      debugPrint('🧠 updateFromPost: skipped (no recognized signal)');
       return;
     }
 
@@ -552,7 +622,7 @@ class UserPreferenceService {
 
     await _saveTimeAffinity(uid);
 
-    print('🧠 updateFromPost: strong=$strongKeys weak=$weakKeys '
+    debugPrint('🧠 updateFromPost: strong=$strongKeys weak=$weakKeys '
         'categories=$updatedCategories cuisines=$updatedCuisines');
   }
   
@@ -593,11 +663,11 @@ class UserPreferenceService {
     if (placeTypes.isEmpty && postTags.isEmpty && postTopic == null) return;
 
     if (sentimentLabel != SentimentLabel.positive) {
-      print('🧠 updateFromLike: skipped (sentiment not positive)');
+      debugPrint('🧠 updateFromLike: skipped (sentiment not positive)');
       return;
     }
     if (sentimentMatchedTokens < 2) {
-      print('🧠 updateFromLike: skipped (low confidence)');
+      debugPrint('🧠 updateFromLike: skipped (low confidence)');
       return;
     }
 
@@ -640,7 +710,7 @@ class UserPreferenceService {
     await _savePassiveCount(uid);
     await _saveTimeAffinity(uid);
 
-    print('✅ updateFromLike: location=$locationKeys tags=$tagKeys isLiking=$isLiking');
+    debugPrint('✅ updateFromLike: location=$locationKeys tags=$tagKeys isLiking=$isLiking');
   }
 
 // ─────────────────────────────────────────────
@@ -703,7 +773,7 @@ class UserPreferenceService {
     await _savePassiveCount(uid);
     await _saveTimeAffinity(uid);
 
-    print('✅ updateFromSearch: location=$locationKeys tags=$tagKeys');
+    debugPrint('✅ updateFromSearch: location=$locationKeys tags=$tagKeys');
   }
 
 
@@ -742,18 +812,18 @@ class UserPreferenceService {
       ...allTypes,
     ];
     if (allRawTypes.isEmpty) {
-      print('👁️ updateFromPlaceView: skipped (no types)');
+      debugPrint('👁️ updateFromPlaceView: skipped (no types)');
       return;
     }
 
     final resolvedCategory = CategoryMapper.toPrimaryType(allRawTypes);
 
     if (!CategoryMapper.isLearnableCategory(resolvedCategory)) {
-      print('👁️ updateFromPlaceView: skipped ($primaryType → $resolvedCategory, not learnable)');
+      debugPrint('👁️ updateFromPlaceView: skipped ($primaryType → $resolvedCategory, not learnable)');
       return;
     }
 
-    print('👁️ updateFromPlaceView: recording $resolvedCategory (raw: $primaryType)');
+    debugPrint('👁️ updateFromPlaceView: recording $resolvedCategory (raw: $primaryType)');
     _recordTimeAffinity(resolvedCategory, weight: 0.3);
     await _saveTimeAffinity(uid);
   }
@@ -815,7 +885,7 @@ class UserPreferenceService {
     final period = _currentPeriod();
     final key = 'timeAffinity_${category}_$period';
     _timeAffinity[key] = (_timeAffinity[key] ?? 0.0) + weight;
-    print('⏰ _recordTimeAffinity: $key += $weight → now ${_timeAffinity[key]!.toStringAsFixed(2)} '
+    debugPrint('⏰ _recordTimeAffinity: $key += $weight → now ${_timeAffinity[key]!.toStringAsFixed(2)} '
         '(need $_minCountToLearnTime to unlock personal score)');
   }
 
@@ -840,6 +910,148 @@ class UserPreferenceService {
   // list entirely, not merely down-weighted).
   // ═══════════════════════════════════════════════════════════════════
 
+  RecommendationExplanation _buildExplanation({
+    required double total,
+    required Map<String, double> factorScores,
+    required Map<String, double> factorWeights,
+    required String? primaryType,
+    required List<String> allTypes,
+    required double? distanceMeters,
+    required double? rating,
+    required int? priceLevel,
+    required WeatherCondition? weather,
+    required RecommendationOriginType originType,
+    required String? originName,
+    required String? travelMode,
+  }) {
+    const categoryToLabel = {
+      'restaurant': 'Food & Dining',
+      'park': 'Nature & Parks',
+      'tourist_attraction': 'Attractions',
+      'shopping_mall': 'Shopping',
+      'entertainment': 'Entertainment',
+    };
+
+    final matchedSelected = <String>[];
+    final matchedLearned = <String>[];
+
+    if (primaryType != null && CategoryMapper.isLearnableCategory(primaryType)) {
+      if (_prefs.categories.contains(primaryType)) {
+        matchedSelected.add(categoryToLabel[primaryType] ?? primaryType);
+      } else if ((_favouriteCount['cat_$primaryType'] ?? 0) >= _minCountToLearn) {
+        matchedLearned.add(categoryToLabel[primaryType] ?? primaryType);
+      }
+    }
+
+    for (final t in allTypes) {
+      final cuisine = _typeToCuisine[t];
+      if (cuisine != null) {
+        if (_prefs.cuisines.contains(cuisine)) {
+          matchedSelected.add('$cuisine cuisine');
+        } else if ((_favouriteCount['cui_$cuisine'] ?? 0) >= _minCountToLearn) {
+          matchedLearned.add('$cuisine cuisine');
+        }
+      }
+    }
+
+    final weighted = <String, double>{
+      for (final k in factorScores.keys)
+        k: (factorScores[k] ?? 0.0) * (factorWeights[k] ?? 0.0),
+    };
+
+    // Candidate reasons paired with their contribution weight
+    final candidateReasons = <MapEntry<String, double>>[];
+
+    // 1. Interest
+    if (matchedSelected.isNotEmpty) {
+      candidateReasons.add(MapEntry(
+        'Matches your interest in ${matchedSelected.first}',
+        weighted['interest'] ?? 0.0,
+      ));
+    } else if (matchedLearned.isNotEmpty) {
+      candidateReasons.add(MapEntry(
+        'Based on places you often save or visit',
+        weighted['interest'] ?? 0.0,
+      ));
+    }
+
+    // 2. Distance (only if distanceMeters is valid and distanceScore is reasonably strong)
+    if (distanceMeters != null && (factorScores['distance'] ?? 0.0) >= 0.5) {
+      String distText;
+      switch (originType) {
+        case RecommendationOriginType.gps:
+          distText = 'Close to your current location';
+          break;
+        case RecommendationOriginType.searched:
+          distText = originName != null && originName.isNotEmpty
+              ? 'Near $originName'
+              : 'Near searched location';
+          break;
+        case RecommendationOriginType.landmark:
+          distText = originName != null && originName.isNotEmpty
+              ? 'Near $originName'
+              : 'Near this landmark';
+          break;
+        case RecommendationOriginType.unknown:
+          distText = 'Convenient distance for travel';
+          break;
+      }
+      candidateReasons.add(MapEntry(distText, weighted['distance'] ?? 0.0));
+    }
+
+    // 3. Rating (only if rating is actually present and >= 4.2)
+    if (rating != null && rating >= 4.2 && (factorScores['rating'] ?? 0.0) >= 0.6) {
+      candidateReasons.add(MapEntry(
+        'Highly rated by visitors (${rating.toStringAsFixed(1)}★)',
+        weighted['rating'] ?? 0.0,
+      ));
+    }
+
+    // 4. Weather (only if weather is known and score >= 0.8)
+    if (weather != null && (factorScores['weather'] ?? 0.0) >= 0.8) {
+      candidateReasons.add(MapEntry(
+        'Suitable for the current weather',
+        weighted['weather'] ?? 0.0,
+      ));
+    }
+
+    // 5. Time suitability (if time score >= 0.7)
+    if ((factorScores['time'] ?? 0.0) >= 0.7) {
+      final period = _currentPeriod();
+      candidateReasons.add(MapEntry(
+        'Great for $period activities',
+        weighted['time'] ?? 0.0,
+      ));
+    }
+
+    // 6. Budget (only if priceLevel is known and budgetScore >= 0.8)
+    if (priceLevel != null && (factorScores['budget'] ?? 0.0) >= 0.8) {
+      candidateReasons.add(MapEntry(
+        'Fits your ${_prefs.budgetTier.label.toLowerCase()} budget',
+        weighted['budget'] ?? 0.0,
+      ));
+    }
+
+    // Sort reasons by weighted contribution descending
+    candidateReasons.sort((a, b) => b.value.compareTo(a.value));
+
+    final reasons = candidateReasons.map((e) => e.key).take(3).toList();
+    final primary = reasons.isNotEmpty ? reasons.first : 'Recommended for your trip';
+
+    return RecommendationExplanation(
+      totalScore: total,
+      factorScores: factorScores,
+      factorWeights: factorWeights,
+      weightedContributions: weighted,
+      matchedSelectedPreferences: matchedSelected,
+      matchedLearnedPreferences: matchedLearned,
+      explanationReasons: reasons,
+      primaryReason: primary,
+      originType: originType,
+      originName: originName,
+    );
+  }
+
   RecommendationScore recommendationScore({
     required String?      primaryType,
     required List<String> allTypes,
@@ -849,6 +1061,8 @@ class UserPreferenceService {
     WeatherCondition?     weather,
     String?               travelMode,
     bool                  useCurrentTime = true,
+    RecommendationOriginType originType = RecommendationOriginType.gps,
+    String?               originName,
   }) {
     final interest = _interestMatchScore(primaryType, allTypes);
     final distance = _distanceScore(
@@ -862,16 +1076,49 @@ class UserPreferenceService {
     final budget   = _budgetSuitabilityScore(priceLevel);
     final weatherS = _weatherScore(weather, primaryType, allTypes);
 
-    final w = _resolveWeights(); // 🆕
+    final w = _resolveWeights();
+
+    final factorScores = <String, double>{
+      'interest': interest,
+      'distance': distance,
+      'weather':  weatherS,
+      'rating':   ratingS,
+      'time':     time,
+      'budget':   budget,
+    };
+
+    final factorWeights = <String, double>{
+      'interest': w['interest'] ?? 0.30,
+      'distance': w['distance'] ?? 0.20,
+      'weather':  0.15,
+      'rating':   w['rating']   ?? 0.15,
+      'time':     0.10,
+      'budget':   w['budget']   ?? 0.10,
+    };
 
     final total = (
-        (w['interest'] ?? 0.30) * interest
-      + (w['distance'] ?? 0.20) * distance
-      + 0.15 * weatherS   // weather 固定，不受用户排序影响
-      + (w['rating']   ?? 0.15) * ratingS
-      + 0.10 * time       // time 固定，不受用户排序影响
-      + (w['budget']   ?? 0.10) * budget
+        (factorWeights['interest']!) * interest
+      + (factorWeights['distance']!) * distance
+      + (factorWeights['weather']!)  * weatherS
+      + (factorWeights['rating']!)   * ratingS
+      + (factorWeights['time']!)     * time
+      + (factorWeights['budget']!)   * budget
     ).clamp(0.0, 1.0);
+
+    final expl = _buildExplanation(
+      total: total,
+      factorScores: factorScores,
+      factorWeights: factorWeights,
+      primaryType: primaryType,
+      allTypes: allTypes,
+      distanceMeters: distanceMeters,
+      rating: rating,
+      priceLevel: priceLevel,
+      weather: weather,
+      originType: originType,
+      originName: originName,
+      travelMode: travelMode,
+    );
 
     return RecommendationScore(
       total:             total,
@@ -881,6 +1128,7 @@ class UserPreferenceService {
       timeSuitability:   time,
       budgetSuitability: budget,
       weatherScore:      weatherS,
+      explanation:       expl,
     );
   }
 
@@ -964,7 +1212,7 @@ class UserPreferenceService {
     final baseline = _distanceBaselineForMode(resolvedTravelMode);
     final score = (1.0 - distanceMeters / baseline).clamp(0.0, 1.0);
 
-    print('📏 _distanceScore: mode=$resolvedTravelMode, baseline=${baseline}m, '
+    debugPrint('📏 _distanceScore: mode=$resolvedTravelMode, baseline=${baseline}m, '
         'dist=${distanceMeters.toStringAsFixed(0)}m → score=${score.toStringAsFixed(2)}');
     return score;
   }
@@ -998,7 +1246,7 @@ class UserPreferenceService {
 
     final personal = _personalTimeScore(primaryType, allTypes, period);
     if (personal != null) {
-      print('🎯 PERSONAL time score [$primaryType/$period] = ${personal.toStringAsFixed(2)}');
+      debugPrint('🎯 PERSONAL time score [$primaryType/$period] = ${personal.toStringAsFixed(2)}');
       return personal;
     }
 
@@ -1023,10 +1271,10 @@ class UserPreferenceService {
         final clamped = score.clamp(_minCountToLearnTime, maxScore);
         final result = 0.6 + 0.4 * (clamped - _minCountToLearnTime) /
             (maxScore - _minCountToLearnTime);
-        print('   ✓ found unlocked key "$key" = ${score.toStringAsFixed(2)} → score ${result.toStringAsFixed(2)}');
+        debugPrint('   ✓ found unlocked key "$key" = ${score.toStringAsFixed(2)} → score ${result.toStringAsFixed(2)}');
         return result;
       } else if (score > 0) {
-        print('   … key "$key" = ${score.toStringAsFixed(2)} '
+        debugPrint('   … key "$key" = ${score.toStringAsFixed(2)} '
             '(need ${(_minCountToLearnTime - score).toStringAsFixed(2)} more to unlock)');
       }
     }
@@ -1140,9 +1388,12 @@ class UserPreferenceService {
       double?                       distanceLimitMeters,
       WeatherCondition?             weather,
       bool                          requirePhoto = false,
+      RecommendationOriginType      originType = RecommendationOriginType.gps,
+      String?                       originName,
     }) {
       final matched = <PlaceModel>[];
       final scores  = <String, double>{};
+      final explanations = <String, RecommendationExplanation>{};
 
       for (final p in candidates) {
         final dist = routeResults?[p.id]?.distanceMeters;
@@ -1153,71 +1404,52 @@ class UserPreferenceService {
         if (requirePhoto && (p.photoUrl == null || p.photoUrl!.isEmpty)) continue;
         if (!matchesPreference(primaryType: p.primaryType, allTypes: p.allTypes)) continue;
 
-        matched.add(p);
-        scores[p.id] = scorePlaceModel(
+        final recScore = recommendationScore(
           primaryType:    p.primaryType,
           allTypes:       p.allTypes,
           distanceMeters: dist,
           rating:         p.rating,
           priceLevel:     p.priceLevel,
           weather:        weather,
+          originType:     originType,
+          originName:     originName,
         );
+
+        matched.add(p);
+        scores[p.id] = recScore.total;
+        if (recScore.explanation != null) {
+          explanations[p.id] = recScore.explanation!;
+        }
       }
 
       matched.sort((a, b) => scores[b.id]!.compareTo(scores[a.id]!));
-      return ForYouResult(matched, scores);
+      return ForYouResult(matched, scores, explanations);
     }
 
-  // 🔧 CHANGED: typeToCategory/categoryToLabel 里的 'amusement_park' →
-  // 'entertainment'，night 时段判断也跟着改。
   String? getRecommendReason({
     required String?      primaryType,
     required List<String> allTypes,
+    double?               distanceMeters,
+    double?               rating,
+    int?                  priceLevel,
+    WeatherCondition?     weather,
+    String?               travelMode,
+    RecommendationOriginType originType = RecommendationOriginType.gps,
+    String?               originName,
   }) {
-    const categoryToLabel = {
-      'restaurant': 'Food', 'park': 'Nature',
-      'tourist_attraction': 'Historical places',
-      'shopping_mall': 'Shopping', 'entertainment': 'Entertainment',
-    };
-
-    final hour = DateTime.now().hour;
-    if (hour >= 6 && hour < 11 &&
-        (primaryType == 'cafe' ||
-         allTypes.any((t) => t == 'cafe' || t == 'coffee_shop'))) {
-      return 'Good morning ☕ Start your day here';
-    }
-    if (hour >= 11 && hour < 14 && primaryType == 'restaurant') {
-      return 'Lunch time 🍽️ Try this place';
-    }
-    if (hour >= 17 && hour < 20 && primaryType == 'restaurant') {
-      return 'Dinner time 🌆 Great for tonight';
-    }
-    if ((hour >= 20 || hour < 2) && primaryType == 'entertainment') {
-      return 'Night out 🌙 Fun nearby';
-    }
-
-    for (final t in allTypes) {
-      final cuisine = _typeToCuisine[t];
-      if (cuisine != null && _prefs.cuisines.contains(cuisine.toLowerCase())) {
-        return 'Because you like $cuisine food';
-      }
-    }
-    if (primaryType != null && _prefs.categories.contains(primaryType)) {
-      return 'Because you like ${categoryToLabel[primaryType] ?? primaryType}';
-    }
-    return null;
+    final score = recommendationScore(
+      primaryType:    primaryType,
+      allTypes:       allTypes,
+      distanceMeters: distanceMeters,
+      rating:         rating,
+      priceLevel:     priceLevel,
+      weather:        weather,
+      travelMode:     travelMode,
+      originType:     originType,
+      originName:     originName,
+    );
+    return score.explanation?.primaryReason;
   }
-
-  void clearLocalSession() {
-    _prefs = UserPreferences.empty();
-
-    _favouriteCount.clear();
-    _passiveCount.clear();
-    _timeAffinity.clear();
-
-    preferencesChanged.value++;
-  }
-
 }
 
 

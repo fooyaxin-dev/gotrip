@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
@@ -8,8 +9,6 @@ import 'userActivity_service.dart';
 class FavouriteService {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
-
- 
 
   static const String _apiKey = ApiKeys.googlePlacesNew;
   static const String _baseUrl = 'https://places.googleapis.com/v1';
@@ -31,12 +30,10 @@ class FavouriteService {
 
   static Future<List<String>> _fetchTypesFromApi(String placeId) async {
     if (placeId.startsWith('geo_')) return [];
-    
+
     try {
-      final cached = await _firestore
-          .collection('place_details')
-          .doc(placeId)
-          .get();
+      final cached =
+          await _firestore.collection('place_details').doc(placeId).get();
 
       if (cached.exists) {
         final types = (cached.data()!['types'] as List?)
@@ -55,25 +52,26 @@ class FavouriteService {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final types = (data['types'] as List?)
-                ?.map((e) => e.toString())
-                .toList() ??
-            [];
+        final types =
+            (data['types'] as List?)?.map((e) => e.toString()).toList() ?? [];
 
-        if (types.isNotEmpty && cached.exists) {
+        if (types.isNotEmpty) {
+          // Use set(merge:true) so the doc is created if it doesn't
+          // yet exist — fixes the case where types were fetched but
+          // never persisted because the previous code used update()
+          // (which silently no-ops on a missing document).
           await _firestore
               .collection('place_details')
               .doc(placeId)
-              .update({'types': types});
+              .set({'types': types}, SetOptions(merge: true));
         }
         return types;
       }
     } catch (e) {
-      print('⚠️ Failed to fetch types: $e');
+      debugPrint('⚠️ Failed to fetch types: $e');
     }
     return [];
   }
-
 
   static Future<void> addFavourite({
     required String placeId,
@@ -93,19 +91,15 @@ class FavouriteService {
       );
     }
 
-    final collection = _firestore
-        .collection('users')
-        .doc(uid)
-        .collection('favourites');
+    final collection =
+        _firestore.collection('users').doc(uid).collection('favourites');
 
-    final userDoc =
-        _firestore.collection('users').doc(uid);
+    final userDoc = _firestore.collection('users').doc(uid);
 
     try {
-      final finalTypes =
-          (types != null && types.isNotEmpty)
-              ? types
-              : await _fetchTypesFromApi(placeId);
+      final finalTypes = (types != null && types.isNotEmpty)
+          ? types
+          : await _fetchTypesFromApi(placeId);
 
       // Account may have changed while place types were loading.
       if (_userId != uid) {
@@ -114,8 +108,7 @@ class FavouriteService {
         );
       }
 
-      final favouriteDoc =
-          collection.doc(placeId);
+      final favouriteDoc = collection.doc(placeId);
 
       await _firestore.runTransaction(
         (transaction) async {
@@ -126,16 +119,14 @@ class FavouriteService {
             );
           }
 
-          final favouriteSnapshot =
-              await transaction.get(favouriteDoc);
+          final favouriteSnapshot = await transaction.get(favouriteDoc);
 
           // Already saved → don't double increment count.
           if (favouriteSnapshot.exists) {
             return;
           }
 
-          final userSnapshot =
-              await transaction.get(userDoc);
+          final userSnapshot = await transaction.get(userDoc);
 
           if (!userSnapshot.exists) {
             throw Exception(
@@ -161,16 +152,14 @@ class FavouriteService {
               'lat': lat,
               'lng': lng,
               'types': finalTypes,
-              'savedAt':
-                  FieldValue.serverTimestamp(),
+              'savedAt': FieldValue.serverTimestamp(),
             },
           );
 
           transaction.update(
             userDoc,
             {
-              'favouriteCount':
-                  FieldValue.increment(1),
+              'favouriteCount': FieldValue.increment(1),
             },
           );
         },
@@ -182,125 +171,112 @@ class FavouriteService {
         UserActivityDataService.instance.invalidate();
       }
 
-      print('✅ Favourite added safely');
+      debugPrint('✅ Favourite added safely');
     } catch (e) {
-      print('❌ addFavourite failed: $e');
-
-      throw Exception(
-        e.toString().contains('account changed')
-            ? 'Your account changed. Please try saving again.'
-            : 'Failed to save to favourites. Please check your connection.',
-      );
+      debugPrint('❌ addFavourite failed: $e');
+      if (e.toString().contains('account changed')) {
+        throw Exception('Your account changed. Please try saving again.');
+      }
+      rethrow;
     }
   }
-  
+
   static Future<void> removeFavourite(
-  String placeId,
-) async {
-  final uid = _userId;
+    String placeId,
+  ) async {
+    final uid = _userId;
 
-  if (uid == null) {
-    throw Exception(
-      'You need to be logged in to manage favourites',
-    );
-  }
-
-  final collection = _firestore
-      .collection('users')
-      .doc(uid)
-      .collection('favourites');
-
-  final userDoc =
-      _firestore.collection('users').doc(uid);
-
-  final favouriteDoc =
-      collection.doc(placeId);
-
-  try {
-    // Session must still belong to the user who started
-    // this remove operation.
-    if (_userId != uid) {
-      throw Exception(
-        'Your account changed while removing this favourite.',
+    if (uid == null) {
+      throw FirebaseAuthException(
+        code: 'unauthenticated',
+        message: 'You need to be logged in to manage favourites',
       );
     }
 
-    await _firestore.runTransaction(
-      (transaction) async {
-        // Firestore transactions may retry, so re-check
-        // the authenticated user inside the transaction.
-        if (_userId != uid) {
-          throw Exception(
-            'Your account changed while removing this favourite.',
-          );
-        }
+    final collection =
+        _firestore.collection('users').doc(uid).collection('favourites');
 
-        final favouriteSnapshot =
-            await transaction.get(favouriteDoc);
+    final userDoc = _firestore.collection('users').doc(uid);
 
-        // Favourite already removed → nothing to do.
-        if (!favouriteSnapshot.exists) {
-          return;
-        }
+    final favouriteDoc = collection.doc(placeId);
 
-        final userSnapshot =
-            await transaction.get(userDoc);
+    try {
+      // Session must still belong to the user who started
+      // this remove operation.
+      if (_userId != uid) {
+        throw Exception(
+          'Your account changed while removing this favourite.',
+        );
+      }
 
-        if (!userSnapshot.exists) {
-          throw Exception(
-            'User profile no longer exists.',
-          );
-        }
+      await _firestore.runTransaction(
+        (transaction) async {
+          // Firestore transactions may retry, so re-check
+          // the authenticated user inside the transaction.
+          if (_userId != uid) {
+            throw Exception(
+              'Your account changed while removing this favourite.',
+            );
+          }
 
-        // Account may have changed while reads were running.
-        if (_userId != uid) {
-          throw Exception(
-            'Your account changed while removing this favourite.',
-          );
-        }
+          final favouriteSnapshot = await transaction.get(favouriteDoc);
 
-        final userData =
-            userSnapshot.data()
-                as Map<String, dynamic>?;
+          // Favourite already removed → nothing to do.
+          if (!favouriteSnapshot.exists) {
+            return;
+          }
 
-        final currentCount =
-            (userData?['favouriteCount'] as num?)
-                    ?.toInt() ??
-                0;
+          final userSnapshot = await transaction.get(userDoc);
 
-        transaction.delete(favouriteDoc);
+          if (!userSnapshot.exists) {
+            throw Exception(
+              'User profile no longer exists.',
+            );
+          }
 
-        // Never allow the stored counter to go negative.
-        if (currentCount > 0) {
-          transaction.update(
-            userDoc,
-            {
-              'favouriteCount':
-                  FieldValue.increment(-1),
-            },
-          );
-        }
-      },
-    );
+          // Account may have changed while reads were running.
+          if (_userId != uid) {
+            throw Exception(
+              'Your account changed while removing this favourite.',
+            );
+          }
 
-    // Only invalidate activity cache if this is still
-    // the same authenticated session.
-    if (_userId == uid) {
-      UserActivityDataService.instance.invalidate();
+          final userData = userSnapshot.data() as Map<String, dynamic>?;
+
+          final currentCount =
+              (userData?['favouriteCount'] as num?)?.toInt() ?? 0;
+
+          transaction.delete(favouriteDoc);
+
+          // Never allow the stored counter to go negative.
+          if (currentCount > 0) {
+            transaction.update(
+              userDoc,
+              {
+                'favouriteCount': FieldValue.increment(-1),
+              },
+            );
+          }
+        },
+      );
+
+      // Only invalidate activity cache if this is still
+      // the same authenticated session.
+      if (_userId == uid) {
+        UserActivityDataService.instance.invalidate();
+      }
+
+      debugPrint('✅ Favourite removed safely');
+    } catch (e) {
+      debugPrint('❌ removeFavourite failed: $e');
+      if (e.toString().contains('account changed')) {
+        throw Exception(
+            'Your account changed. Please try removing the favourite again.');
+      }
+      rethrow;
     }
-
-    print('✅ Favourite removed safely');
-  } catch (e) {
-    print('❌ removeFavourite failed: $e');
-
-    throw Exception(
-      e.toString().contains('account changed')
-          ? 'Your account changed. Please try removing the favourite again.'
-          : 'Failed to remove from favourites. Please check your connection.',
-    );
   }
-}
-    
+
   static Future<bool> isFavourite(String placeId) async {
     final collection = _favouritesCollection;
     if (collection == null) return false;
@@ -308,7 +284,6 @@ class FavouriteService {
     return doc.exists;
   }
 
-  
   static Future<bool> toggleFavourite({
     required String placeId,
     required String name,
@@ -322,13 +297,13 @@ class FavouriteService {
     final uid = _userId;
 
     if (uid == null) {
-      throw Exception(
-        'You need to be logged in to manage favourites',
+      throw FirebaseAuthException(
+        code: 'unauthenticated',
+        message: 'You need to be logged in to manage favourites',
       );
     }
 
-    final isCurrentlyFavourite =
-        await isFavourite(placeId);
+    final isCurrentlyFavourite = await isFavourite(placeId);
 
     if (_userId != uid) {
       throw Exception(
@@ -358,10 +333,8 @@ class FavouriteService {
     final collection = _favouritesCollection;
     if (collection == null) return Stream.value([]);
 
-    return collection
-        .orderBy('savedAt', descending: true)
-        .snapshots()
-        .map((snapshot) => snapshot.docs
+    return collection.orderBy('savedAt', descending: true).snapshots().map(
+        (snapshot) => snapshot.docs
             .map((doc) => doc.data() as Map<String, dynamic>)
             .toList());
   }

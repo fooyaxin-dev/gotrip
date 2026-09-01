@@ -34,6 +34,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   late PageController _pageController;
   List<PlaceModel> _nearbyPlaces    = [];
   List<PlaceModel> _forYouPlaces    = [];
+  Map<String, RecommendationExplanation> _forYouExplanations = {};
   bool _loadingNearby               = true;
     List<PlaceModel> get _openNearbyPlaces =>
       _nearbyPlaces.where((p) => p.isOpenNow != false).toList();
@@ -71,12 +72,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     }
   }
 
+  bool _hasShownLocationRationale = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _pageController = PageController(viewportFraction: 0.8);
-    _initAndLoad();
+    _initAndLoad(isFirstOpen: true);
     LocationService.instance.addListener(_onLocationChanged);
     UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged); 
     WeatherService.instance.weatherChanged.addListener(_onWeatherChanged); 
@@ -107,8 +110,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     if (!mounted) return;
     NearbyPlacesService.instance.clearCache();
     
-    // telling user we're updating nearby places
-    ScaffoldMessenger.of(context).showSnackBar(
+    // Tell the user nearby places are refreshing.
+    // Use maybeOf() so this is safe even if the Scaffold is no longer present
+    // (e.g. the user navigated away while the location event was in flight).
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
       SnackBar(
         content: const Row(children: [
           Icon(Icons.location_on_rounded, color: Colors.white, size: 16),
@@ -150,98 +155,162 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _initAndLoad() async {
-  _travelModeOverride = null;
-  NearbyPlacesService.instance.clearCache();
+  Future<void> _initAndLoad({bool userTriggered = false, bool isFirstOpen = false}) async {
+    _travelModeOverride = null;
 
-  final locationReady = await _initLocation();
+    final permission = await Geolocator.checkPermission();
+    final isGranted = permission == LocationPermission.always ||
+        permission == LocationPermission.whileInUse;
 
-  if (!mounted) return;
-
-  if (!locationReady) {
-    setState(() => _loadingNearby = false);
-    return;
-  }
-
-  await UserPreferenceService.instance.load();
-
-  if (!mounted) return;
-
-  await _loadNearby();
-
-  if (!mounted) return;
-
-  _calculateRoutes();
-  _buildForYou();
-
-  final pos = LocationService.instance.currentPosition;
-
-  if (pos != null) {
-    final w = await WeatherService.instance.getCurrentCondition(
-      lat: pos.latitude,
-      lng: pos.longitude,
-    );
-
-    if (mounted) {
-      setState(() => _currentWeather = w);
+    if (!isGranted) {
+      if (isFirstOpen && !_hasShownLocationRationale) {
+        _hasShownLocationRationale = true;
+        setState(() {
+          _loadingNearby = false;
+          _currentLocationText = "Location disabled (tap to enable)";
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _showLocationRationaleDialog();
+        });
+        return;
+      } else if (!userTriggered) {
+        setState(() {
+          _loadingNearby = false;
+          _currentLocationText = "Location disabled (tap to enable)";
+        });
+        return;
+      }
     }
-  }
-}
 
-  Future<bool> _initLocation() async {
-  final status = await LocationService.instance.initLocation();
+    final locationReady = await _initLocation(promptUser: userTriggered);
 
-  switch (status) {
-    case LocationStatus.serviceDisabled:
-      _showLocationServiceDialog();
-      return false;
+    if (!mounted) return;
 
-    case LocationStatus.permissionDenied:
-      _showPermissionDialog();
-      return false;
+    if (!locationReady) {
+      setState(() => _loadingNearby = false);
+      return;
+    }
 
-    case LocationStatus.permissionDeniedForever:
-      _showPermissionForeverDialog();
-      return false;
+    setState(() => _loadingNearby = true);
 
-    case LocationStatus.success:
-      break;
-  }
+    final pos = LocationService.instance.currentPosition;
 
-  final pos = LocationService.instance.currentPosition;
+    // Parallelize independent operations: preferences, nearby places, and weather.
+    final futures = <Future<dynamic>>[
+      UserPreferenceService.instance.load(),
+      NearbyPlacesService.instance.loadNearbyPlacesOnce(
+        _categories,
+        context,
+        radius: _distanceLimitMeters.toInt(),
+      ),
+      if (pos != null)
+        WeatherService.instance.getCurrentCondition(
+          lat: pos.latitude,
+          lng: pos.longitude,
+        ),
+    ];
 
-  if (pos == null) {
-    return false;
-  }
+    try {
+      final results = await Future.wait(futures);
+      if (!mounted) return;
 
-  try {
-    final placemarks = await placemarkFromCoordinates(
-      pos.latitude,
-      pos.longitude,
-    );
+      final places = results[1] as List<PlaceModel>;
+      WeatherCondition? weather;
+      if (pos != null && results.length >= 3 && results[2] is WeatherCondition?) {
+        weather = results[2] as WeatherCondition?;
+      }
 
-    if (placemarks.isNotEmpty && mounted) {
-      final p = placemarks.first;
+      // Compute routes locally in memory before committing state
+      final calculatedRoutes = <String, RouteResult>{};
+      if (pos != null) {
+        for (final place in places) {
+          if (place.lat != null && place.lng != null) {
+            calculatedRoutes[place.id] = _calcRoute(pos.latitude, pos.longitude, place);
+          }
+        }
+      }
 
-      final city =
-          p.locality ??
-          p.subAdministrativeArea ??
-          p.administrativeArea ??
-          'Unknown';
+      // Compute For You ranking locally in memory before committing state
+      final openPlaces = places.where((p) => p.isOpenNow ?? true).toList();
+      final forYouResult = UserPreferenceService.instance.buildForYouList(
+        candidates:          openPlaces,
+        routeResults:        calculatedRoutes,
+        distanceLimitMeters: _distanceLimitMeters,
+        weather:             weather ?? WeatherService.instance.current,
+        requirePhoto:        true,
+      );
 
-      final country = p.country ?? '';
-
+      // Commit all critical and secondary data atomically in one single setState
       setState(() {
-        _currentLocationText =
-            country.isNotEmpty ? '$city, $country' : city;
+        _nearbyPlaces = places;
+        _routeResults.clear();
+        _routeResults.addAll(calculatedRoutes);
+        _forYouPlaces = forYouResult.places;
+        _forYouExplanations =
+            Map<String, RecommendationExplanation>.from(forYouResult.explanations);
+        if (weather != null) _currentWeather = weather;
+        _loadingNearby = false;
       });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadingNearby = false);
+      ErrorHandler.showError(
+        context,
+        message: 'Failed to load nearby places. Pull down to refresh.',
+      );
     }
-  } catch (e) {
-    debugPrint('Reverse geocoding failed: $e');
   }
 
-  return true;
-}
+  Future<bool> _initLocation({bool promptUser = false}) async {
+    final status = await LocationService.instance.initLocation();
+
+    switch (status) {
+      case LocationStatus.serviceDisabled:
+        if (promptUser) _showLocationServiceDialog();
+        return false;
+
+      case LocationStatus.permissionDenied:
+        if (promptUser) _showPermissionDialog();
+        return false;
+
+      case LocationStatus.permissionDeniedForever:
+        if (promptUser) _showPermissionForeverDialog();
+        return false;
+
+      case LocationStatus.success:
+        break;
+    }
+
+    final pos = LocationService.instance.currentPosition;
+
+    if (pos == null) {
+      return false;
+    }
+
+    // Fire reverse geocoding in background without blocking places fetch
+    _fetchCityNameAsync(pos);
+
+    return true;
+  }
+
+  void _fetchCityNameAsync(Position pos) {
+    placemarkFromCoordinates(pos.latitude, pos.longitude).then((placemarks) {
+      if (placemarks.isNotEmpty && mounted) {
+        final p = placemarks.first;
+        final city = p.locality ??
+            p.subAdministrativeArea ??
+            p.administrativeArea ??
+            'Unknown';
+        final country = p.country ?? '';
+        setState(() {
+          _currentLocationText =
+              country.isNotEmpty ? '$city, $country' : city;
+        });
+      }
+    }).catchError((e) {
+      debugPrint('Reverse geocoding failed: $e');
+    });
+  }
 
   double get _distanceLimitMeters =>
       radiusForTravelModeString(_effectiveTravelMode).toDouble();
@@ -289,7 +358,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     // 形成死循环，这就是你之前看到 log 无限刷屏、根本停不下来的原因。
     // 首次进页面时 _initAndLoad() 已经显式 load() 过一次，够用了。
     if (_nearbyPlaces.isEmpty) {
-      setState(() => _forYouPlaces = []);
+      setState(() {
+        _forYouPlaces = [];
+        _forYouExplanations = {};
+      });
       return;
     }
 
@@ -301,7 +373,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
       requirePhoto:         true,   // MainPage 的卡片需要图
     );
 
-    setState(() => _forYouPlaces = result.places);
+    setState(() {
+      _forYouPlaces = result.places;
+      _forYouExplanations =
+          Map<String, RecommendationExplanation>.from(result.explanations);
+    });
   }
     
   // ─────────────────────────────────────────────
@@ -467,15 +543,38 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     try {
       final places = await NearbyPlacesService.instance.loadNearbyPlacesOnce(
         _categories, context,
-        radius: _distanceLimitMeters.toInt(),   // 🆕 按新 targetMode 对应的半径去拉数据
+        radius: _distanceLimitMeters.toInt(),
       );
       if (!mounted) return;
+
+      final pos = LocationService.instance.currentPosition;
+      final calculatedRoutes = <String, RouteResult>{};
+      if (pos != null) {
+        for (final place in places) {
+          if (place.lat != null && place.lng != null) {
+            calculatedRoutes[place.id] = _calcRoute(pos.latitude, pos.longitude, place);
+          }
+        }
+      }
+
+      final openPlaces = places.where((p) => p.isOpenNow ?? true).toList();
+      final forYouResult = UserPreferenceService.instance.buildForYouList(
+        candidates:          openPlaces,
+        routeResults:        calculatedRoutes,
+        distanceLimitMeters: _distanceLimitMeters,
+        weather:             _currentWeather ?? WeatherService.instance.current,
+        requirePhoto:        true,
+      );
+
       setState(() {
-        _nearbyPlaces  = places;
+        _nearbyPlaces = places;
+        _routeResults.clear();
+        _routeResults.addAll(calculatedRoutes);
+        _forYouPlaces = forYouResult.places;
+        _forYouExplanations =
+            Map<String, RecommendationExplanation>.from(forYouResult.explanations);
         _loadingNearby = false;
       });
-      _calculateRoutes();
-      await _buildForYou();
     } catch (e) {
       if (mounted) setState(() => _loadingNearby = false);
     }
@@ -538,7 +637,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
 
               SizedBox(
                 height: 320,
-                child: _loadingNearby
+                child: (_loadingNearby && _nearbyPlaces.isEmpty)
                     ? const Center(child: TravelLoadingIndicator())
                     : _placeByCategory[_selectedCategory]?.isEmpty ?? true
                         ? Center(child: Column(
@@ -582,7 +681,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               const SizedBox(height: 20),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 25),
-                child: _loadingNearby
+                child: (_loadingNearby && _nearbyPlaces.isEmpty)
                     ? const Center(child: TravelLoadingIndicator())
                     : Column(
                         children: List.generate(_nearbyTrending.length, (i) =>
@@ -603,7 +702,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────
 
     Widget _buildForYouSection() {
-      if (_loadingNearby) {
+      if (_loadingNearby && _forYouPlaces.isEmpty) {
         return const SizedBox(
           height: 200,
           child: Center(child: TravelLoadingIndicator()),
@@ -679,10 +778,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     final route = _routeResults[place.id];
     final dist  = route != null ? (route.distanceMeters / 1000).toStringAsFixed(1) : "--";
 
-    final reason = UserPreferenceService.instance.getRecommendReason(
-      primaryType: place.primaryType,
-      allTypes:    place.allTypes,
-    );
+    final reason = _forYouExplanations[place.id]?.primaryReason;
 
     return GestureDetector(
       onTap: () => _openPlaceDetail(place),
@@ -706,6 +802,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                     ? CachedNetworkImage(
                         imageUrl: place.photoUrl!,
                         fit: BoxFit.cover,
+                        memCacheWidth: 400,
                         errorWidget: (_, __, ___) => _buildPlaceholderBg(place),
                       )
                     : _buildPlaceholderBg(place),
@@ -864,28 +961,170 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
 
   void _showLocationServiceDialog() {
     if (!mounted) return;
-      AppDialogs.showLocationServiceDisabled(context);
+    AppDialogs.showLocationServiceDisabled(context);
+  }
+
+  void _showLocationRationaleDialog() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF6366F1).withOpacity(0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.location_on_rounded, color: Color(0xFF6366F1), size: 24),
+                ),
+                const SizedBox(width: 14),
+                const Text(
+                  'Enable Location',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'GoTrip uses your location to recommend nearby places, calculate travel distance and provide personalized routes. You can also search for another location manually.',
+              style: TextStyle(fontSize: 14, color: Colors.grey[700], height: 1.45),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _initAndLoad(userTriggered: true);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6366F1),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                child: const Text('Enable Location', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => RealTimeDetectPage(
+                            autoFocusSearch: true,
+                            onBack: () => Navigator.pop(context),
+                          ),
+                        ),
+                      );
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      side: const BorderSide(color: Color(0xFF6366F1)),
+                    ),
+                    child: const Text('Search Manually', style: TextStyle(color: Color(0xFF6366F1), fontWeight: FontWeight.w600)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: Text('Not Now', style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.w600)),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showPermissionDialog() {
     showDialog(context: context, builder: (_) => AlertDialog(
       title: const Text("Permission Required"),
-      content: const Text("Location permission is required to load nearby places."),
-      actions: [TextButton(
-        onPressed: () { Navigator.pop(context); _initAndLoad(); },
-        child: const Text("Retry"),
-      )],
+      content: const Text("Location permission is required to load nearby places. You can retry or search for places manually."),
+      actions: [
+        TextButton(
+          onPressed: () {
+            Navigator.pop(context);
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => RealTimeDetectPage(
+                  autoFocusSearch: true,
+                  onBack: () => Navigator.pop(context),
+                ),
+              ),
+            );
+          },
+          child: const Text("Search Manually"),
+        ),
+        TextButton(
+          onPressed: () { Navigator.pop(context); _initAndLoad(userTriggered: true); },
+          child: const Text("Enable Location"),
+        ),
+      ],
     ));
   }
 
   void _showPermissionForeverDialog() {
     showDialog(context: context, builder: (_) => AlertDialog(
       title: const Text("Permission Permanently Denied"),
-      content: const Text("Please enable location permission in app settings."),
-      actions: [TextButton(
-        onPressed: () { Navigator.pop(context); Geolocator.openAppSettings(); },
-        child: const Text("Open App Settings"),
-      )],
+      content: const Text("Please enable location permission in app settings, or search for places manually."),
+      actions: [
+        TextButton(
+          onPressed: () {
+            Navigator.pop(context);
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => RealTimeDetectPage(
+                  autoFocusSearch: true,
+                  onBack: () => Navigator.pop(context),
+                ),
+              ),
+            );
+          },
+          child: const Text("Search Manually"),
+        ),
+        ElevatedButton(
+          onPressed: () { Navigator.pop(context); Geolocator.openAppSettings(); },
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF6366F1)),
+          child: const Text("Open App Settings", style: TextStyle(color: Colors.white)),
+        ),
+      ],
     ));
   }
 
@@ -1240,6 +1479,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
                     ? CachedNetworkImage(
                         imageUrl: place.photoUrl!,
                         fit: BoxFit.cover,
+                        memCacheWidth: 500,
                         errorWidget: (_, __, ___) => _buildPlaceholderBg(place),
                       )
                     : _buildPlaceholderBg(place),
@@ -1363,6 +1603,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
         ? CachedNetworkImage(
             imageUrl: place.photoUrl!,
             fit: BoxFit.cover,
+            memCacheWidth: 350,
             errorWidget: (_, __, ___) => _buildPlaceholderBg(place),
           )
         : _buildPlaceholderBg(place),

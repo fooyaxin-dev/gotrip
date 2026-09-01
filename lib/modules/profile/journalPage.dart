@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 
 import '../../services/history_service.dart'; // TripHistory / HistoryEntry live here
 import '../../services/journalMeta_service.dart';
+import '../../services/error_handler.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // A SINGLE HAND-DRAWN JOURNAL PAGE (one calendar day of one itinerary)
@@ -509,7 +510,7 @@ class _NotesEditSheetState extends State<_NotesEditSheet> {
       if (mounted) Navigator.of(context).pop(_controller.text.trim());
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to save: $e')));
+        ErrorHandler.showError(context, error: e, message: 'Failed to save note. Please try again.');
         setState(() => _saving = false);
       }
     }
@@ -569,6 +570,7 @@ class _PhotoEditSheet extends StatefulWidget {
 
 class _PhotoEditSheetState extends State<_PhotoEditSheet> {
   late List<String> _photos;
+  final List<String> _pendingUploads = [];
   bool _uploading = false;
   bool _saving = false;
 
@@ -579,36 +581,93 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
   }
 
   Future<void> _pickAndUpload() async {
+    if (_uploading || _saving) return;
+
     try {
       final picker = ImagePicker();
       final picked = await picker.pickMultiImage(imageQuality: 80, maxWidth: 1600, maxHeight: 1600);
       if (picked.isEmpty) return;
-      setState(() => _uploading = true);
-      for (final xfile in picked) {
-        final url = await JournalMetaService.instance.uploadPhoto(
-          widget.itineraryId,
-          widget.date,
-          File(xfile.path),
+
+      setState(() {
+        _uploading = true;
+        _pendingUploads.clear();
+        _pendingUploads.addAll(picked.map((x) => x.path));
+      });
+
+      final results = List<String?>.filled(picked.length, null);
+      int nextIdx = 0;
+      int errorCount = 0;
+
+      Future<void> worker() async {
+        while (true) {
+          int current;
+          if (nextIdx >= picked.length) return;
+          current = nextIdx++;
+
+          try {
+            final url = await JournalMetaService.instance.uploadPhoto(
+              widget.itineraryId,
+              widget.date,
+              File(picked[current].path),
+            );
+            results[current] = url;
+          } catch (e) {
+            errorCount++;
+            debugPrint('Upload failed for photo $current: $e');
+          }
+        }
+      }
+
+      final concurrency = min(2, picked.length);
+      final workers = List.generate(concurrency, (_) => worker());
+      await Future.wait(workers);
+
+      if (!mounted) return;
+
+      final successful = results.whereType<String>().toList();
+      setState(() {
+        _photos.addAll(successful);
+        _pendingUploads.clear();
+      });
+
+      if (errorCount > 0) {
+        ErrorHandler.showError(
+          context,
+          message: errorCount == picked.length
+              ? 'Upload failed. Please check your connection and try again.'
+              : '$errorCount photo(s) failed to upload. Please try again.',
         );
-        if (mounted) setState(() => _photos.add(url));
+      } else if (successful.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Photos uploaded. Tap Save to keep your changes.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Upload failed: $e')));
+        ErrorHandler.showError(context, error: e, message: 'Upload failed. Please check your connection and try again.');
       }
     } finally {
-      if (mounted) setState(() => _uploading = false);
+      if (mounted) {
+        setState(() {
+          _uploading = false;
+          _pendingUploads.clear();
+        });
+      }
     }
   }
 
   Future<void> _save() async {
+    if (_saving || _uploading) return;
     setState(() => _saving = true);
     try {
       await JournalMetaService.instance.savePhotos(widget.itineraryId, widget.date, _photos);
       if (mounted) Navigator.of(context).pop(_photos);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to save: $e')));
+        ErrorHandler.showError(context, error: e, message: 'Failed to save photos. Please try again.');
         setState(() => _saving = false);
       }
     }
@@ -616,13 +675,17 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final totalCount = _photos.length + _pendingUploads.length + 1;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Edit day photos'),
-        leading: IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.of(context).pop()),
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: _saving ? null : () => Navigator.of(context).pop(),
+        ),
         actions: [
           TextButton(
-            onPressed: _saving ? null : _save,
+            onPressed: (_saving || _uploading) ? null : _save,
             child: _saving
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                 : const Text('Save'),
@@ -635,46 +698,83 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 3, crossAxisSpacing: 8, mainAxisSpacing: 8,
           ),
-          itemCount: _photos.length + 1,
+          itemCount: totalCount,
           itemBuilder: (_, i) {
-            if (i == _photos.length) {
-              return InkWell(
-                onTap: _uploading ? null : _pickAndUpload,
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.grey.shade300),
+            // Existing uploaded remote photos
+            if (i < _photos.length) {
+              final url = _photos[i];
+              return Stack(
+                children: [
+                  ClipRRect(
                     borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Center(
-                    child: _uploading
-                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.add_photo_alternate_outlined, color: Colors.grey),
-                  ),
-                ),
-              );
-            }
-            final url = _photos[i];
-            return Stack(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: SizedBox.expand(
-                    child: CachedNetworkImage(imageUrl: url, fit: BoxFit.cover),
-                  ),
-                ),
-                Positioned(
-                  top: 4,
-                  right: 4,
-                  child: InkWell(
-                    onTap: () => setState(() => _photos.removeAt(i)),
-                    child: Container(
-                      padding: const EdgeInsets.all(3),
-                      decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
-                      child: const Icon(Icons.close, size: 14, color: Colors.white),
+                    child: SizedBox.expand(
+                      child: CachedNetworkImage(imageUrl: url, fit: BoxFit.cover),
                     ),
                   ),
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: InkWell(
+                      onTap: (_uploading || _saving)
+                          ? null
+                          : () => setState(() => _photos.removeAt(i)),
+                      child: Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                        child: const Icon(Icons.close, size: 14, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            }
+
+            // In-flight pending local photos with progress spinner
+            final pendingIndex = i - _photos.length;
+            if (pendingIndex < _pendingUploads.length) {
+              final path = _pendingUploads[pendingIndex];
+              return Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: SizedBox.expand(
+                      child: Image.file(File(path), fit: BoxFit.cover),
+                    ),
+                  ),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.black38,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Center(
+                      child: SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            }
+
+            // Add photo button
+            return InkWell(
+              onTap: (_uploading || _saving) ? null : _pickAndUpload,
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-              ],
+                child: Center(
+                  child: _uploading
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.add_photo_alternate_outlined, color: Colors.grey),
+                ),
+              ),
             );
           },
         ),

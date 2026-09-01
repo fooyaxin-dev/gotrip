@@ -68,8 +68,12 @@ class AllRecommendedPlacesPage extends StatelessWidget {
     final mins  = route != null ? (route.durationSeconds ~/ 60).toString() : null;
 
     final reason = UserPreferenceService.instance.getRecommendReason(
-      primaryType: place.primaryType,
-      allTypes:    place.allTypes,
+      primaryType:    place.primaryType,
+      allTypes:       place.allTypes,
+      distanceMeters: route?.distanceMeters,
+      rating:         place.rating,
+      priceLevel:     place.priceLevel,
+      originType:     RecommendationOriginType.gps,
     );
 
     return Padding(
@@ -118,26 +122,53 @@ class AllRecommendedPlacesPage extends StatelessWidget {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis),
                     const SizedBox(height: 6),
-                    Row(children: [
-                      if (place.rating != null) ...[
-                        const Icon(Icons.star_rounded, size: 14, color: Colors.orange),
-                        const SizedBox(width: 2),
-                        Text(place.rating!.toStringAsFixed(1),
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.orange)),
-                        const SizedBox(width: 10),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        if (place.rating != null)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.star_rounded, size: 14, color: Colors.orange),
+                              const SizedBox(width: 2),
+                              Text(
+                                place.rating!.toStringAsFixed(1),
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.orange,
+                                ),
+                              ),
+                            ],
+                          ),
+                        if (dist != null)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.near_me_rounded, size: 12, color: Colors.blue[300]),
+                              const SizedBox(width: 3),
+                              Text(
+                                '$dist km',
+                                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                              ),
+                            ],
+                          ),
+                        if (mins != null)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.access_time_rounded, size: 12, color: Colors.grey[400]),
+                              const SizedBox(width: 3),
+                              Text(
+                                '$mins min',
+                                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                              ),
+                            ],
+                          ),
                       ],
-                      if (dist != null) ...[
-                        Icon(Icons.near_me_rounded, size: 12, color: Colors.blue[300]),
-                        const SizedBox(width: 3),
-                        Text('$dist km', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                        const SizedBox(width: 10),
-                      ],
-                      if (mins != null) ...[
-                        Icon(Icons.access_time_rounded, size: 12, color: Colors.grey[400]),
-                        const SizedBox(width: 3),
-                        Text('$mins min', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                      ],
-                    ]),
+                    ),
                     if (reason != null) ...[
                       const SizedBox(height: 6),
                       Container(

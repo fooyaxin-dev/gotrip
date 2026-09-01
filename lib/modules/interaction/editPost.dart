@@ -8,6 +8,7 @@ import '../../models/postModel.dart';
 import '../../services/algolia_service.dart';
 import '../../services/apps_Loading.dart';
 import '../../services/sentiment_service.dart';
+import '../../services/error_handler.dart';
 
 class EditPostPage extends StatefulWidget {
   final Post post;
@@ -224,10 +225,7 @@ class _EditPostPageState extends State<EditPostPage> {
     Navigator.pop(context, true);
   } catch (e) {
     if (mounted) {
-      _showSnack(
-        'Failed to update: $e',
-        isError: true,
-      );
+      ErrorHandler.showError(context, error: e, message: 'Failed to update post. Please try again.');
     }
   } finally {
     if (mounted) {

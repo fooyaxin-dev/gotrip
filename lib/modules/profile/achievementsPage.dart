@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/achievement_service.dart';
+import '../../services/error_handler.dart';
 
 class AchievementsPage extends StatefulWidget {
   const AchievementsPage({super.key});
@@ -58,7 +59,8 @@ class _AchievementsPageState extends State<AchievementsPage> {
         child: FutureBuilder<List<UnlockedBadge>>(
           future: _future,
           builder: (context, snapshot) {
-            final loading = snapshot.connectionState == ConnectionState.waiting;
+            final loading = snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData;
+            final hasError = snapshot.hasError;
             final badges  = snapshot.data ?? [];
             final grouped = _groupByYearMonth(badges);
 
@@ -66,25 +68,36 @@ class _AchievementsPageState extends State<AchievementsPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _buildTopBar(context),
-                _buildHeader(badges.length),
+                _buildHeader(loading ? null : badges.length),
                 const SizedBox(height: 8),
                 Expanded(
                   child: loading
                       ? const Center(child: CircularProgressIndicator(color: _primary))
-                      : badges.isEmpty
-                          ? _buildEmptyState()
-                          : RefreshIndicator(
-                              onRefresh: _refresh,
-                              color: _primary,
-                              backgroundColor: _cardColor,
-                              child: ListView(
-                                padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
-                                children: [
-                                  for (final entry in grouped.entries)
-                                    _buildYearSection(entry.key, entry.value),
-                                ],
+                      : hasError
+                          ? Center(
+                              child: AppErrorStateView(
+                                title: 'Unable to Load Badges',
+                                message: ErrorHandler.userFriendlyMessage(
+                                  snapshot.error,
+                                  defaultMessage: 'Could not load your unlocked badges. Please try again.',
+                                ),
+                                onRetry: _refresh,
                               ),
-                            ),
+                            )
+                          : badges.isEmpty
+                              ? _buildEmptyState()
+                              : RefreshIndicator(
+                                  onRefresh: _refresh,
+                                  color: _primary,
+                                  backgroundColor: _cardColor,
+                                  child: ListView(
+                                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
+                                    children: [
+                                      for (final entry in grouped.entries)
+                                        _buildYearSection(entry.key, entry.value),
+                                    ],
+                                  ),
+                                ),
                 ),
               ],
             );
@@ -110,7 +123,7 @@ class _AchievementsPageState extends State<AchievementsPage> {
   }
 
   // ── Header: title + total count badge ──
-  Widget _buildHeader(int total) {
+  Widget _buildHeader(int? total) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
       child: Row(
@@ -135,7 +148,7 @@ class _AchievementsPageState extends State<AchievementsPage> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('$total', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF1A1A2E))),
+                  Text(total != null ? '$total' : '—', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF1A1A2E))),
                   const Text('total', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Color(0xFF1A1A2E))),
                 ],
               ),

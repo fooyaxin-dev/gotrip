@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'dart:ui'; // 用于模糊效果
 import 'login.dart'; // 假设你有一个登录页面
 import '../../services/userPreference_service.dart';
+import '../../services/nearbyPlace_service.dart';
+import '../../services/userActivity_service.dart';
 
 
 class AuthService {
@@ -78,17 +81,20 @@ class AuthService {
     );
 
     if (confirm == true) {
-  UserPreferenceService.instance.clearLocalSession();
+      UserPreferenceService.instance.clearLocalSession();
+      NearbyPlacesService.instance.clearCache();
+      NearbyPlacesService.instance.clearSearchCache();
+      UserActivityDataService.instance.invalidate();
 
-  await FirebaseAuth.instance.signOut();
+      await GoogleSignIn().signOut().catchError((_) => null);
+      await FirebaseAuth.instance.signOut();
 
-  if (!context.mounted) return;
+      if (!context.mounted) return;
 
-  Navigator.of(context).pushAndRemoveUntil(
-    MaterialPageRoute(builder: (_) => const LoginPage()),
-    (route) => false,
-  );
-}
-
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginPage()),
+        (route) => false,
+      );
+    }
   }
 }

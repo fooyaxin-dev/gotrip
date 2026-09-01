@@ -8,45 +8,41 @@ import '../../services/location_service.dart';
 import '../../services/placesAPI_service.dart';
 import '../../services/userPreference_service.dart';
 import '../../services/route_service.dart';
-import 'itineraryDetail.dart';
 import '../../services/apps_Loading.dart';
 import '../../models/placeModel.dart';
 import '../place/routeOptimizerPage.dart';
 import '../../services/connectivity_service.dart';
 
 class GenerateItineraryPage extends StatefulWidget {
-
   final VoidCallback? onItinerarySaved;
-  const GenerateItineraryPage({super.key,this.onItinerarySaved});
+  const GenerateItineraryPage({super.key, this.onItinerarySaved});
 
   @override
   State<GenerateItineraryPage> createState() => _GenerateItineraryPageState();
 }
 
 class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
-  DateTime _startDate    = DateTime.now();
-  int _totalDays         = 1;
-  int _placesPerDay      = 4;
-  bool _isGenerating     = false;
+  DateTime _startDate = DateTime.now();
+  int _totalDays = 1;
+  int _placesPerDay = 4;
+  bool _isGenerating = false;
   final _titleController = TextEditingController(text: 'My Trip');
 
-  final _titleFocus    = FocusNode();
+  final _titleFocus = FocusNode();
   final _locationFocus = FocusNode();
 
   late Set<String> _activeCategories;
   late Set<String> _activeCuisines;
   late String _activeTravelMode;
 
-  bool   _useCurrentLocation   = true;
+  bool _useCurrentLocation = true;
   String _selectedLocationName = 'Current Location';
   double? _selectedLat;
   double? _selectedLng;
-  
 
   final _locationController = TextEditingController();
   List<Map<String, dynamic>> _suggestions = [];
   bool _searchingLocation = false;
-  
 
   // ── Debounce for location autocomplete ──
   Timer? _locationDebounce;
@@ -65,28 +61,28 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   Timer? _generatingStepTimer;
 
   static const _allCategories = [
-    {'key': 'restaurant',         'label': 'Food',          'icon': '🍜'},
-    {'key': 'park',               'label': 'Nature',        'icon': '🌿'},
-    {'key': 'tourist_attraction', 'label': 'Historical',    'icon': '🏛️'},
-    {'key': 'shopping_mall',      'label': 'Shopping',      'icon': '🛍️'},
-    {'key': 'entertainment',      'label': 'Entertainment', 'icon': '🎭'},
+    {'key': 'restaurant', 'label': 'Food', 'icon': '🍜'},
+    {'key': 'park', 'label': 'Nature', 'icon': '🌿'},
+    {'key': 'tourist_attraction', 'label': 'Historical', 'icon': '🏛️'},
+    {'key': 'shopping_mall', 'label': 'Shopping', 'icon': '🛍️'},
+    {'key': 'entertainment', 'label': 'Entertainment', 'icon': '🎭'},
   ];
 
   static const _allCuisines = [
-    {'key': 'chinese',  'label': 'Chinese',  'icon': '🥢'},
-    {'key': 'malay',    'label': 'Malay',    'icon': '🍛'},
-    {'key': 'indian',   'label': 'Indian',   'icon': '🫓'},
-    {'key': 'western',  'label': 'Western',  'icon': '🍔'},
+    {'key': 'chinese', 'label': 'Chinese', 'icon': '🥢'},
+    {'key': 'malay', 'label': 'Malay', 'icon': '🍛'},
+    {'key': 'indian', 'label': 'Indian', 'icon': '🫓'},
+    {'key': 'western', 'label': 'Western', 'icon': '🍔'},
     {'key': 'japanese', 'label': 'Japanese', 'icon': '🍱'},
-    {'key': 'korean',   'label': 'Korean',   'icon': '🥩'},
-    {'key': 'dessert',  'label': 'Dessert',  'icon': '🧁'},
-    {'key': 'cafe',     'label': 'Cafe',     'icon': '☕'},
+    {'key': 'korean', 'label': 'Korean', 'icon': '🥩'},
+    {'key': 'dessert', 'label': 'Dessert', 'icon': '🧁'},
+    {'key': 'cafe', 'label': 'Cafe', 'icon': '☕'},
   ];
 
   static const _travelModes = [
-    {'key': 'walk',  'label': 'Walking',  'icon': '🚶'},
-    {'key': 'drive', 'label': 'Driving',  'icon': '🚗'},
-    {'key': 'both',  'label': 'Flexible', 'icon': '🔀'},
+    {'key': 'walk', 'label': 'Walking', 'icon': '🚶'},
+    {'key': 'drive', 'label': 'Driving', 'icon': '🚗'},
+    {'key': 'both', 'label': 'Flexible', 'icon': '🔀'},
   ];
 
   @override
@@ -94,7 +90,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     super.initState();
     final prefs = UserPreferenceService.instance.current;
     _activeCategories = Set.from(prefs.categories);
-    _activeCuisines   = Set.from(prefs.cuisines);
+    _activeCuisines = Set.from(prefs.cuisines);
     _activeTravelMode = prefs.travelMode;
   }
 
@@ -121,38 +117,47 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   // FIX: debounce so we don't fire an Autocomplete request on every
   // keystroke. Cancels any pending request and waits for a short pause
   // in typing before actually calling the API.
+  int _locationRequestId = 0;
+
   void _onLocationTyped(String query) {
     _locationDebounce?.cancel();
 
     if (query.trim().length < 2) {
+      _locationRequestId++;
       setState(() => _suggestions = []);
       return;
     }
 
+    final reqId = ++_locationRequestId;
     _locationDebounce = Timer(_locationDebounceDuration, () {
-      _fetchLocationSuggestions(query);
+      _fetchLocationSuggestions(query, reqId);
     });
   }
 
-  Future<void> _fetchLocationSuggestions(String query) async {
+  Future<void> _fetchLocationSuggestions(String query, int reqId) async {
     setState(() => _searchingLocation = true);
     try {
       final pos = LocationService.instance.currentPosition;
       final results = await PlacesApiService.autocomplete(
         input: query,
-        lat:   pos?.latitude,
-        lng:   pos?.longitude,
+        lat: pos?.latitude,
+        lng: pos?.longitude,
       );
-      if (mounted) setState(() => _suggestions = results);
+      if (mounted && reqId == _locationRequestId) {
+        setState(() => _suggestions = results);
+      }
     } finally {
-      if (mounted) setState(() => _searchingLocation = false);
+      if (mounted && reqId == _locationRequestId) {
+        setState(() => _searchingLocation = false);
+      }
     }
   }
 
   Future<void> _onSuggestionSelected(Map<String, dynamic> suggestion) async {
     final placeId = suggestion['placeId'] as String;
-    final name    = suggestion['mainText'] as String? ??
-                    suggestion['description'] as String? ?? '';
+    final name = suggestion['mainText'] as String? ??
+        suggestion['description'] as String? ??
+        '';
     _dismissKeyboard();
     _locationDebounce?.cancel();
     setState(() {
@@ -164,10 +169,10 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       final detail = await PlacesApiService.getPlaceLatLng(placeId);
       if (detail != null && mounted) {
         setState(() {
-          _selectedLat          = (detail['lat'] as num?)?.toDouble();
-          _selectedLng          = (detail['lng'] as num?)?.toDouble();
+          _selectedLat = (detail['lat'] as num?)?.toDouble();
+          _selectedLng = (detail['lng'] as num?)?.toDouble();
           _selectedLocationName = name;
-          _useCurrentLocation   = false;
+          _useCurrentLocation = false;
         });
       }
     } finally {
@@ -179,12 +184,12 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     _dismissKeyboard();
     _locationDebounce?.cancel();
     setState(() {
-      _useCurrentLocation   = true;
-      _selectedLat          = null;
-      _selectedLng          = null;
+      _useCurrentLocation = true;
+      _selectedLat = null;
+      _selectedLng = null;
       _selectedLocationName = 'Current Location';
       _locationController.clear();
-      _suggestions          = [];
+      _suggestions = [];
     });
   }
 
@@ -238,7 +243,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
   void _startGeneratingStepTimer() {
     _generatingStepIndex = 0;
     _generatingStepTimer?.cancel();
-    _generatingStepTimer = Timer.periodic(const Duration(milliseconds: 1400), (timer) {
+    _generatingStepTimer =
+        Timer.periodic(const Duration(milliseconds: 1400), (timer) {
       if (!mounted || _generatingStepIndex >= _generatingSteps.length - 1) {
         timer.cancel();
         return;
@@ -252,21 +258,21 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     _generatingStepTimer = null;
   }
 
-  Future<void> _generate({int? overrideRadius}) async {   // 🔧 CHANGED: 加可选参数，补救时用
+  Future<void> _generate({int? overrideRadius}) async {
+    // 🔧 CHANGED: 加可选参数，补救时用
     _dismissKeyboard();
-
-    final online = await ConnectivityService.instance.ensureConnected(context, onRetry: _generate);
-    if (!online) return;
 
     if (_useCurrentLocation) {
       final pos = LocationService.instance.currentPosition;
       if (pos == null) {
-        _showSnack('Unable to get your location. Please enable GPS or search a place manually.');
+        _showSnack(
+            'Unable to get your location. Please enable GPS or search a place manually.');
         return;
       }
     }
 
-    if (!_useCurrentLocation && (_selectedLat == null || _selectedLng == null)) {
+    if (!_useCurrentLocation &&
+        (_selectedLat == null || _selectedLng == null)) {
       _showSnack('Please select a valid location from the suggestions.');
       return;
     }
@@ -277,19 +283,21 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     _startGeneratingStepTimer();
 
     try {
-      final result = await ItineraryService.instance.generate(   // 🔧 CHANGED
-        startDate:          DateFormat('yyyy-MM-dd').format(_startDate),
-        totalDays:          _totalDays,
-        placesPerDay:       _placesPerDay,
-        tripTitle:          _titleController.text.trim().isEmpty
-            ? 'My Trip' : _titleController.text.trim(),
+      final result = await ItineraryService.instance.generate(
+        // 🔧 CHANGED
+        startDate: DateFormat('yyyy-MM-dd').format(_startDate),
+        totalDays: _totalDays,
+        placesPerDay: _placesPerDay,
+        tripTitle: _titleController.text.trim().isEmpty
+            ? 'My Trip'
+            : _titleController.text.trim(),
         overrideCategories: _activeCategories.toList(),
-        overrideCuisines:   _activeCuisines.toList(),
-        overrideLat:        _useCurrentLocation ? null : _selectedLat,
-        overrideLng:        _useCurrentLocation ? null : _selectedLng,
-        isCurrentLocation:  _useCurrentLocation,
+        overrideCuisines: _activeCuisines.toList(),
+        overrideLat: _useCurrentLocation ? null : _selectedLat,
+        overrideLng: _useCurrentLocation ? null : _selectedLng,
+        isCurrentLocation: _useCurrentLocation,
         overrideTravelMode: _activeTravelMode,
-        overrideRadius:     overrideRadius,
+        overrideRadius: overrideRadius,
       );
 
       if (!mounted) return;
@@ -305,14 +313,13 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
           result,
           attemptedRadius: overrideRadius,
         );
-        return;   // 让用户决定：接受当前结果 / 放宽范围重试
+        return; // 让用户决定：接受当前结果 / 放宽范围重试
       }
 
       await _proceedToRouteOptimizer(
         result.itinerary!,
-        leftoverCandidates: result.leftoverCandidates,   // 🔧 FIX
+        leftoverCandidates: result.leftoverCandidates, // 🔧 FIX
       );
-
     } finally {
       _stopGeneratingStepTimer();
       if (mounted) setState(() => _isGenerating = false);
@@ -327,36 +334,38 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     required List<PlaceModel> leftoverCandidates,
   }) async {
     final pos = LocationService.instance.currentPosition;
-    final double startLat = _useCurrentLocation ? pos!.latitude  : _selectedLat!;
-    final double startLng = _useCurrentLocation ? pos!.longitude : _selectedLng!;
-    final String  startName = _useCurrentLocation ? 'Current Location' : _selectedLocationName;
+    final double startLat = _useCurrentLocation ? pos!.latitude : _selectedLat!;
+    final double startLng =
+        _useCurrentLocation ? pos!.longitude : _selectedLng!;
+    final String startName =
+        _useCurrentLocation ? 'Current Location' : _selectedLocationName;
 
-    final resolvedTravelMode = _resolveOptimizerTravelMode();   // 🆕 已有的方法，直接复用
+    final resolvedTravelMode = _resolveOptimizerTravelMode(); // 🆕 已有的方法，直接复用
 
     final itineraryWithOrigin = itinerary.copyWith(
       isOriginCurrentLocation: _useCurrentLocation,
-      originLat:  startLat,
-      originLng:  startLng,
+      originLat: startLat,
+      originLng: startLng,
       originName: startName,
-      travelMode: travelModeToString(resolvedTravelMode),   // 🆕
+      travelMode: travelModeToString(resolvedTravelMode), // 🆕
     );
 
     final saved = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (_) => RouteOptimizerPage(
-          itinerary:          itineraryWithOrigin,
-          startLat:           startLat,
-          startLng:           startLng,
-          startLocationName:  startName,
-          travelMode:         resolvedTravelMode,   // 🔧 复用同一个值，保证一致
+          itinerary: itineraryWithOrigin,
+          startLat: startLat,
+          startLng: startLng,
+          startLocationName: startName,
+          travelMode: resolvedTravelMode, // 🔧 复用同一个值，保证一致
           leftoverCandidates: leftoverCandidates,
         ),
       ),
     );
 
     if (saved == true && mounted) {
-      widget.onItinerarySaved?.call(); 
+      widget.onItinerarySaved?.call();
       Navigator.of(context).removeRoute(ModalRoute.of(context)!);
     }
   }
@@ -372,8 +381,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     ItineraryGenerationResult result, {
     int? attemptedRadius,
   }) {
-    final currentRadius = attemptedRadius ??
-        radiusForTravelModeString(_activeTravelMode);
+    final currentRadius =
+        attemptedRadius ?? radiusForTravelModeString(_activeTravelMode);
     final nextRadius = _nextWiderRadius(currentRadius);
 
     showDialog(
@@ -384,7 +393,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
           children: [
             Icon(Icons.info_outline_rounded, color: Color(0xFF7C4DFF)),
             SizedBox(width: 8),
-            Expanded(  // ← 加这个，文字超出会自动换行而不是溢出
+            Expanded(
+              // ← 加这个，文字超出会自动换行而不是溢出
               child: Text(
                 'Fewer places found',
                 style: TextStyle(fontWeight: FontWeight.bold),
@@ -426,12 +436,13 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               Navigator.pop(ctx);
               await _proceedToRouteOptimizer(
                 result.itinerary!,
-                leftoverCandidates: result.leftoverCandidates,   // 🔧 FIX
+                leftoverCandidates: result.leftoverCandidates, // 🔧 FIX
               );
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF7C4DFF),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
             child: const Text('Use this itinerary',
                 style: TextStyle(color: Colors.white)),
@@ -440,16 +451,16 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       ),
     );
   }
-  
+
   Future<void> _pickDate() async {
     _dismissKeyboard();
     await Future.delayed(const Duration(milliseconds: 100));
     final picked = await showDatePicker(
-      context:     context,
+      context: context,
       initialDate: _startDate,
-      firstDate:   DateTime.now(),
+      firstDate: DateTime.now(),
       lastDate: DateTime(DateTime.now().year + 15, 12, 31),
-      initialEntryMode: DatePickerEntryMode.calendarOnly,  // 🆕 锁死日历模式，去掉手动输入入口
+      initialEntryMode: DatePickerEntryMode.calendarOnly, // 🆕 锁死日历模式，去掉手动输入入口
       builder: (context, child) => Theme(
         data: Theme.of(context).copyWith(
           colorScheme: const ColorScheme.light(primary: Color(0xFF7C4DFF)),
@@ -480,7 +491,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
             children: [
               Center(
                 child: Container(
-                  width: 40, height: 4,
+                  width: 40,
+                  height: 4,
                   decoration: BoxDecoration(
                       color: Colors.grey[300],
                       borderRadius: BorderRadius.circular(2)),
@@ -488,7 +500,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               ),
               const SizedBox(height: 20),
               const Text('Add to this trip',
-                  style: TextStyle(fontSize: 17,
+                  style: TextStyle(
+                      fontSize: 17,
                       fontWeight: FontWeight.bold,
                       color: Color(0xFF1A1A2E))),
               const SizedBox(height: 4),
@@ -496,20 +509,22 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                   style: TextStyle(fontSize: 13, color: Colors.grey[500])),
               const SizedBox(height: 20),
               const Text('Category',
-                  style: TextStyle(fontSize: 13,
+                  style: TextStyle(
+                      fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: Color(0xFF1A1A2E))),
               const SizedBox(height: 10),
               Wrap(
-                spacing: 8, runSpacing: 8,
+                spacing: 8,
+                runSpacing: 8,
                 children: _allCategories.map((c) {
                   final isOn = _activeCategories.contains(c['key']);
                   return GestureDetector(
                     onTap: () => setSheet(() => setState(() {
-                      isOn
-                          ? _activeCategories.remove(c['key'])
-                          : _activeCategories.add(c['key']!);
-                    })),
+                          isOn
+                              ? _activeCategories.remove(c['key'])
+                              : _activeCategories.add(c['key']!);
+                        })),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 150),
                       padding: const EdgeInsets.symmetric(
@@ -539,20 +554,22 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               ),
               const SizedBox(height: 20),
               const Text('Cuisine',
-                  style: TextStyle(fontSize: 13,
+                  style: TextStyle(
+                      fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: Color(0xFF1A1A2E))),
               const SizedBox(height: 10),
               Wrap(
-                spacing: 8, runSpacing: 8,
+                spacing: 8,
+                runSpacing: 8,
                 children: _allCuisines.map((c) {
                   final isOn = _activeCuisines.contains(c['key']);
                   return GestureDetector(
                     onTap: () => setSheet(() => setState(() {
-                      isOn
-                          ? _activeCuisines.remove(c['key'])
-                          : _activeCuisines.add(c['key']!);
-                    })),
+                          isOn
+                              ? _activeCuisines.remove(c['key'])
+                              : _activeCuisines.add(c['key']!);
+                        })),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 150),
                       padding: const EdgeInsets.symmetric(
@@ -582,7 +599,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               ),
               const SizedBox(height: 24),
               SizedBox(
-                width: double.infinity, height: 48,
+                width: double.infinity,
+                height: 48,
                 child: ElevatedButton(
                   onPressed: () => Navigator.pop(ctx),
                   style: ElevatedButton.styleFrom(
@@ -635,7 +653,6 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-
               // ── Hero Banner ──
               Container(
                 width: double.infinity,
@@ -696,8 +713,9 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               _buildSectionLabel('Number of Days'),
               const SizedBox(height: 10),
               _buildNumberSelector(
-                value:     _totalDays,
-                min:       1, max: 7,
+                value: _totalDays,
+                min: 1,
+                max: 7,
                 onChanged: (v) {
                   _dismissKeyboard();
                   setState(() => _totalDays = v);
@@ -710,8 +728,9 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               _buildSectionLabel('Places per Day'),
               const SizedBox(height: 10),
               _buildNumberSelector(
-                value:     _placesPerDay,
-                min:       2, max: 6,
+                value: _placesPerDay,
+                min: 2,
+                max: 6,
                 onChanged: (v) {
                   _dismissKeyboard();
                   setState(() => _placesPerDay = v);
@@ -723,9 +742,9 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
 
               _buildPreferencesSection(),
 
-              const SizedBox(height: 24),   // 🆕
+              const SizedBox(height: 24), // 🆕
 
-              _buildTravelModeSection(),    // 🆕
+              _buildTravelModeSection(), // 🆕
 
               const SizedBox(height: 32),
 
@@ -760,7 +779,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
 
               // ── Generate Button ──
               SizedBox(
-                width: double.infinity, height: 58,
+                width: double.infinity,
+                height: 58,
                 child: ElevatedButton(
                   onPressed: _isGenerating ? null : _generate,
                   style: ElevatedButton.styleFrom(
@@ -775,7 +795,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             const SizedBox(
-                              width: 20, height: 20,
+                              width: 20,
+                              height: 20,
                               child: TravelLoadingIndicator(size: 22),
                             ),
                             const SizedBox(width: 12),
@@ -783,8 +804,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                               child: Text(
                                 _generatingSteps[_generatingStepIndex],
                                 style: const TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.bold),
+                                    fontSize: 15, fontWeight: FontWeight.bold),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
@@ -797,8 +817,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                             SizedBox(width: 8),
                             Text('Generate Itinerary',
                                 style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold)),
+                                    fontSize: 16, fontWeight: FontWeight.bold)),
                           ],
                         ),
                 ),
@@ -838,14 +857,14 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               GestureDetector(
                 onTap: _resetToCurrentLocation,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 14),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                   decoration: BoxDecoration(
                     color: _useCurrentLocation
                         ? const Color(0xFF7C4DFF).withOpacity(0.06)
                         : Colors.transparent,
-                    borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(14)),
+                    borderRadius:
+                        const BorderRadius.vertical(top: Radius.circular(14)),
                     border: _useCurrentLocation
                         ? Border.all(
                             color: const Color(0xFF7C4DFF).withOpacity(0.3))
@@ -853,7 +872,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                   ),
                   child: Row(children: [
                     Container(
-                      width: 36, height: 36,
+                      width: 36,
+                      height: 36,
                       decoration: BoxDecoration(
                         color: _useCurrentLocation
                             ? const Color(0xFF7C4DFF).withOpacity(0.12)
@@ -890,9 +910,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                   ]),
                 ),
               ),
-
               Divider(color: Colors.grey[100], height: 1),
-
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                 child: Column(
@@ -900,7 +918,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                   children: [
                     Row(children: [
                       Container(
-                        width: 36, height: 36,
+                        width: 36,
+                        height: 36,
                         decoration: BoxDecoration(
                           color: !_useCurrentLocation
                               ? const Color(0xFF7C4DFF).withOpacity(0.12)
@@ -934,13 +953,14 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                       onChanged: _onLocationTyped,
                       decoration: InputDecoration(
                         hintText: 'e.g. Penang, Kuala Lumpur, Tokyo...',
-                        hintStyle: TextStyle(
-                            color: Colors.grey[400], fontSize: 13),
+                        hintStyle:
+                            TextStyle(color: Colors.grey[400], fontSize: 13),
                         prefixIcon: _searchingLocation
                             ? const Padding(
                                 padding: EdgeInsets.all(12),
                                 child: SizedBox(
-                                  width: 16, height: 16,
+                                  width: 16,
+                                  height: 16,
                                   child: TravelLoadingIndicator(size: 22),
                                 ),
                               )
@@ -955,16 +975,14 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                             : null,
                         border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
-                            borderSide:
-                                BorderSide(color: Colors.grey[200]!)),
+                            borderSide: BorderSide(color: Colors.grey[200]!)),
                         enabledBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
-                            borderSide:
-                                BorderSide(color: Colors.grey[200]!)),
+                            borderSide: BorderSide(color: Colors.grey[200]!)),
                         focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(
-                                color: Color(0xFF7C4DFF))),
+                            borderSide:
+                                const BorderSide(color: Color(0xFF7C4DFF))),
                         filled: true,
                         fillColor: Colors.grey[50],
                         contentPadding: const EdgeInsets.symmetric(
@@ -972,7 +990,6 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                         isDense: true,
                       ),
                     ),
-
                     if (_suggestions.isNotEmpty)
                       Container(
                         margin: const EdgeInsets.only(top: 6),
@@ -989,8 +1006,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                         ),
                         child: Column(
                           children: _suggestions.asMap().entries.map((e) {
-                            final i      = e.key;
-                            final sugg   = e.value;
+                            final i = e.key;
+                            final sugg = e.value;
                             final isLast = i == _suggestions.length - 1;
                             return GestureDetector(
                               onTap: () => _onSuggestionSelected(sugg),
@@ -1020,8 +1037,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                                               fontWeight: FontWeight.w600,
                                               color: Color(0xFF1A1A2E)),
                                         ),
-                                        if ((sugg['secondaryText']
-                                                    as String?)
+                                        if ((sugg['secondaryText'] as String?)
                                                 ?.isNotEmpty ==
                                             true)
                                           Text(
@@ -1039,32 +1055,31 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                           }).toList(),
                         ),
                       ),
-
                     if (!_useCurrentLocation &&
-                      _selectedLat != null &&
-                      _suggestions.isEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(Icons.check_circle_rounded,
-                              size: 14, color: Color(0xFF2ECC71)),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              'Set to: $_selectedLocationName',
-                              style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Color(0xFF2ECC71),
-                                  fontWeight: FontWeight.w500),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
+                        _selectedLat != null &&
+                        _suggestions.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.check_circle_rounded,
+                                size: 14, color: Color(0xFF2ECC71)),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'Set to: $_selectedLocationName',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFF2ECC71),
+                                    fontWeight: FontWeight.w500),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),
@@ -1081,22 +1096,22 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
 
   Widget _buildPreferencesSection() {
     const catLabels = {
-      'restaurant':         '🍜 Food',
-      'park':               '🌿 Nature',
+      'restaurant': '🍜 Food',
+      'park': '🌿 Nature',
       'tourist_attraction': '🏛️ Historical',
-      'shopping_mall':      '🛍️ Shopping',
-      'entertainment':      '🎭 Entertainment',
-      'amusement_park':     '🎭 Entertainment',
+      'shopping_mall': '🛍️ Shopping',
+      'entertainment': '🎭 Entertainment',
+      'amusement_park': '🎭 Entertainment',
     };
     const cuiLabels = {
-      'chinese':  '🥢 Chinese',
-      'malay':    '🍛 Malay',
-      'indian':   '🫓 Indian',
-      'western':  '🍔 Western',
+      'chinese': '🥢 Chinese',
+      'malay': '🍛 Malay',
+      'indian': '🫓 Indian',
+      'western': '🍔 Western',
       'japanese': '🍱 Japanese',
-      'korean':   '🥩 Korean',
-      'dessert':  '🧁 Dessert',
-      'cafe':     '☕ Cafe',
+      'korean': '🥩 Korean',
+      'dessert': '🧁 Dessert',
+      'cafe': '☕ Cafe',
     };
 
     final isEmpty = _activeCategories.isEmpty && _activeCuisines.isEmpty;
@@ -1115,15 +1130,14 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
             GestureDetector(
               onTap: _openAddSheet,
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: const Color(0xFF7C4DFF).withOpacity(0.1),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: const Row(children: [
-                  Icon(Icons.add_rounded,
-                      size: 14, color: Color(0xFF7C4DFF)),
+                  Icon(Icons.add_rounded, size: 14, color: Color(0xFF7C4DFF)),
                   SizedBox(width: 4),
                   Text('Add / Edit',
                       style: TextStyle(
@@ -1153,13 +1167,13 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                   size: 16, color: Colors.grey[400]),
               const SizedBox(width: 8),
               Text('Nothing selected — tap Add/Edit to choose',
-                  style:
-                      TextStyle(color: Colors.grey[500], fontSize: 13)),
+                  style: TextStyle(color: Colors.grey[500], fontSize: 13)),
             ]),
           )
         else
           Wrap(
-            spacing: 8, runSpacing: 8,
+            spacing: 8,
+            runSpacing: 8,
             children: [
               ..._activeCategories.map((key) => _removableTag(
                     label: catLabels[key] ?? key,
@@ -1169,8 +1183,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               ..._activeCuisines.map((key) => _removableTag(
                     label: cuiLabels[key] ??
                         '${key[0].toUpperCase()}${key.substring(1)}',
-                    onRemove: () =>
-                        setState(() => _activeCuisines.remove(key)),
+                    onRemove: () => setState(() => _activeCuisines.remove(key)),
                   )),
             ],
           ),
@@ -1188,18 +1201,21 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       children: [
         _buildSectionLabel('How far are you willing to go?'),
         const SizedBox(height: 6),
-        Text('This affects how far candidate places can be from your trip location',
+        Text(
+            'This affects how far candidate places can be from your trip location',
             style: TextStyle(fontSize: 11, color: Colors.grey[400])),
         const SizedBox(height: 12),
         Wrap(
-          spacing: 8, runSpacing: 8,
+          spacing: 8,
+          runSpacing: 8,
           children: _travelModes.map((m) {
             final isOn = _activeTravelMode == m['key'];
             return GestureDetector(
               onTap: () => setState(() => _activeTravelMode = m['key']!),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 150),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
                 decoration: BoxDecoration(
                   color: isOn
                       ? const Color(0xFF7C4DFF).withOpacity(0.12)
@@ -1214,28 +1230,26 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                     style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
-                        color: isOn ? const Color(0xFF7C4DFF) : Colors.black87)),
+                        color:
+                            isOn ? const Color(0xFF7C4DFF) : Colors.black87)),
               ),
             );
           }).toList(),
         ),
       ],
     );
-}
-
+  }
 
   Widget _removableTag({
     required String label,
     required VoidCallback onRemove,
   }) {
     return Container(
-      padding:
-          const EdgeInsets.only(left: 12, right: 6, top: 6, bottom: 6),
+      padding: const EdgeInsets.only(left: 12, right: 6, top: 6, bottom: 6),
       decoration: BoxDecoration(
         color: const Color(0xFF7C4DFF).withOpacity(0.08),
         borderRadius: BorderRadius.circular(20),
-        border:
-            Border.all(color: const Color(0xFF7C4DFF).withOpacity(0.25)),
+        border: Border.all(color: const Color(0xFF7C4DFF).withOpacity(0.25)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1249,7 +1263,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
           GestureDetector(
             onTap: onRemove,
             child: Container(
-              width: 16, height: 16,
+              width: 16,
+              height: 16,
               decoration: BoxDecoration(
                 color: const Color(0xFF7C4DFF).withOpacity(0.15),
                 shape: BoxShape.circle,
@@ -1269,9 +1284,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
 
   Widget _buildSectionLabel(String label) => Text(label,
       style: const TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.bold,
-          color: Color(0xFF1A1A2E)));
+          fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF1A1A2E)));
 
   Widget _buildTextField(TextEditingController ctrl, String hint) {
     return Container(
@@ -1307,8 +1320,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     return GestureDetector(
       onTap: _pickDate,
       child: Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(14),
@@ -1366,8 +1378,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                     color: Color(0xFF1A1A2E))),
           ),
         ),
-        _circleBtn(Icons.add_rounded,
-            value < max ? () => onChanged(value + 1) : null),
+        _circleBtn(
+            Icons.add_rounded, value < max ? () => onChanged(value + 1) : null),
       ]),
     );
   }
@@ -1377,7 +1389,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 36, height: 36,
+        width: 36,
+        height: 36,
         decoration: BoxDecoration(
           color: enabled
               ? const Color(0xFF7C4DFF).withOpacity(0.1)
@@ -1386,11 +1399,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
         ),
         child: Icon(icon,
             size: 18,
-            color:
-                enabled ? const Color(0xFF7C4DFF) : Colors.grey[400]),
+            color: enabled ? const Color(0xFF7C4DFF) : Colors.grey[400]),
       ),
     );
   }
 }
-
-

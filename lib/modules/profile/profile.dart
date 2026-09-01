@@ -21,6 +21,7 @@ import '../interaction/postMedia.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'journalBookPage.dart';
 import 'achievementsPage.dart';
+import '../../services/error_handler.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOCAL VIDEO PLAYER
@@ -47,20 +48,19 @@ class _LocalVideoPlayerState extends State<LocalVideoPlayer> {
   @override
   void initState() {
     super.initState();
-    debugPrint('🎬 LocalVideoPlayer initState: ${widget.path}');   // 👈 加这一行
     _controller = widget.path.startsWith('http')
-      ? VideoPlayerController.networkUrl(Uri.parse(widget.path))
-      : VideoPlayerController.file(File(widget.path));
+        ? VideoPlayerController.networkUrl(Uri.parse(widget.path))
+        : VideoPlayerController.file(File(widget.path));
     _controller
-        ..initialize().then((_) {
-          if (mounted) {
-            setState(() => _initialized = true);
-            if (widget.autoPlay) {
-              _controller.play();
-              _isPlaying = true;
-            }
+      ..initialize().then((_) {
+        if (mounted) {
+          setState(() => _initialized = true);
+          if (widget.autoPlay) {
+            _controller.play();
+            _isPlaying = true;
           }
-        });
+        }
+      });
     _controller.addListener(() {
       if (mounted) setState(() => _isPlaying = _controller.value.isPlaying);
     });
@@ -105,11 +105,14 @@ class _LocalVideoPlayerState extends State<LocalVideoPlayer> {
           Container(
             color: Colors.black.withOpacity(0.3),
             child: const Center(
-              child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 56),
+              child:
+                  Icon(Icons.play_circle_fill, color: Colors.white70, size: 56),
             ),
           ),
         Positioned(
-          bottom: 0, left: 0, right: 0,
+          bottom: 0,
+          left: 0,
+          right: 0,
           child: VideoProgressIndicator(
             _controller,
             allowScrubbing: true,
@@ -151,7 +154,9 @@ class _BarSwap extends StatelessWidget {
         child: Stack(
           children: [
             AnimatedAlign(
-              alignment: selectedIndex == 0 ? Alignment.centerLeft : Alignment.centerRight,
+              alignment: selectedIndex == 0
+                  ? Alignment.centerLeft
+                  : Alignment.centerRight,
               duration: const Duration(milliseconds: 250),
               curve: Curves.easeInOut,
               child: Container(
@@ -183,8 +188,12 @@ class _BarSwap extends StatelessWidget {
                         'Post',
                         style: TextStyle(
                           fontSize: 17,
-                          fontWeight: selectedIndex == 0 ? FontWeight.w600 : FontWeight.normal,
-                          color: selectedIndex == 0 ? Colors.black : Colors.grey.shade600,
+                          fontWeight: selectedIndex == 0
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                          color: selectedIndex == 0
+                              ? Colors.black
+                              : Colors.grey.shade600,
                         ),
                       ),
                     ),
@@ -200,8 +209,12 @@ class _BarSwap extends StatelessWidget {
                         'History',
                         style: TextStyle(
                           fontSize: 17,
-                          fontWeight: selectedIndex == 1 ? FontWeight.w600 : FontWeight.normal,
-                          color: selectedIndex == 1 ? Colors.black : Colors.grey.shade600,
+                          fontWeight: selectedIndex == 1
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                          color: selectedIndex == 1
+                              ? Colors.black
+                              : Colors.grey.shade600,
                         ),
                       ),
                     ),
@@ -233,7 +246,6 @@ class _PostWidgetState extends State<_PostWidget> {
 
   final Set<String> _locallyDeletedPostIds = <String>{};
 
-
   @override
   Widget build(BuildContext context) {
     final String? currentUserId = _auth.currentUser?.uid;
@@ -251,7 +263,11 @@ class _PostWidgetState extends State<_PostWidget> {
           return const Center(child: TravelLoadingIndicator());
         }
         if (snapshot.hasError) {
-          return Center(child: Text('Load failed: \${snapshot.error}'));
+          return AppErrorStateView(
+            title: 'Failed to load posts',
+            message: ErrorHandler.userFriendlyMessage(snapshot.error),
+            onRetry: () => setState(() {}),
+          );
         }
         if (!snapshot.hasData || snapshot.data!.isEmpty) {
           return Center(
@@ -260,76 +276,78 @@ class _PostWidgetState extends State<_PostWidget> {
               children: [
                 Icon(Icons.post_add, size: 60, color: Colors.grey[400]),
                 const SizedBox(height: 12),
-                Text('No posts yet!', style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+                Text('No posts yet!',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 14)),
               ],
             ),
           );
         }
 
         final allPosts = snapshot.data!
-    .where(
-      (post) =>
-          post.id == null ||
-          !_locallyDeletedPostIds.contains(post.id),
-    )
-    .toList();
+            .where(
+              (post) =>
+                  post.id == null || !_locallyDeletedPostIds.contains(post.id),
+            )
+            .toList();
 
 // 如果删除的是最后一个 post，立即显示 empty state
-if (allPosts.isEmpty) {
-  return Center(
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(
-          Icons.post_add,
-          size: 60,
-          color: Colors.grey[400],
-        ),
-        const SizedBox(height: 12),
-        Text(
-          'No posts yet!',
-          style: TextStyle(
-            color: Colors.grey[600],
-            fontSize: 14,
-          ),
-        ),
-      ],
-    ),
-  );
-}
+        if (allPosts.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.post_add,
+                  size: 60,
+                  color: Colors.grey[400],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'No posts yet!',
+                  style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
 
-final mediaPosts = allPosts
-    .where(
-      (post) =>
-          post.images.isNotEmpty ||
-          post.videoPaths.isNotEmpty,
-    )
-    .toList();
+        final mediaPosts = allPosts
+            .where(
+              (post) => post.images.isNotEmpty || post.videoPaths.isNotEmpty,
+            )
+            .toList();
 
-final textPosts = allPosts
-    .where(
-      (post) =>
-          post.images.isEmpty &&
-          post.videoPaths.isEmpty,
-    )
-    .toList();
+        final textPosts = allPosts
+            .where(
+              (post) => post.images.isEmpty && post.videoPaths.isEmpty,
+            )
+            .toList();
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (mediaPosts.isNotEmpty) ...[
-              _buildSectionHeader(icon: Icons.photo_library_outlined, label: 'Photos & Videos', count: mediaPosts.length),
+              _buildSectionHeader(
+                  icon: Icons.photo_library_outlined,
+                  label: 'Photos & Videos',
+                  count: mediaPosts.length),
               GridView.custom(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2, crossAxisSpacing: 8, mainAxisSpacing: 8,
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 8,
+                  mainAxisSpacing: 8,
                 ),
                 childrenDelegate: SliverChildBuilderDelegate(
                   (context, index) {
                     final post = mediaPosts[index];
-                    return _buildMediaCard(post, key: ValueKey(post.id ?? post.hashCode));
+                    return _buildMediaCard(post,
+                        key: ValueKey(post.id ?? post.hashCode));
                   },
                   childCount: mediaPosts.length,
                   findChildIndexCallback: (Key key) {
@@ -343,7 +361,10 @@ final textPosts = allPosts
               ),
             ],
             if (textPosts.isNotEmpty) ...[
-              _buildSectionHeader(icon: Icons.text_fields, label: 'Text Posts', count: textPosts.length),
+              _buildSectionHeader(
+                  icon: Icons.text_fields,
+                  label: 'Text Posts',
+                  count: textPosts.length),
               ListView.custom(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
@@ -353,7 +374,8 @@ final textPosts = allPosts
                     final post = textPosts[index];
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 8),
-                      child: _buildTextCard(post, key: ValueKey(post.id ?? post.hashCode)),
+                      child: _buildTextCard(post,
+                          key: ValueKey(post.id ?? post.hashCode)),
                     );
                   },
                   childCount: textPosts.length,
@@ -374,13 +396,18 @@ final textPosts = allPosts
     );
   }
 
-  Widget _buildSectionHeader({required IconData icon, required String label, required int count}) {
+  Widget _buildSectionHeader(
+      {required IconData icon, required String label, required int count}) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
       child: Row(children: [
         Icon(icon, size: 16, color: const Color(0xFFD35D3E)),
         const SizedBox(width: 6),
-        Text(label, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black54)),
+        Text(label,
+            style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.black54)),
         const SizedBox(width: 6),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
@@ -388,7 +415,11 @@ final textPosts = allPosts
             color: const Color(0xFFD35D3E).withOpacity(0.1),
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Text('$count', style: const TextStyle(fontSize: 11, color: Color(0xFFD35D3E), fontWeight: FontWeight.bold)),
+          child: Text('$count',
+              style: const TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFFD35D3E),
+                  fontWeight: FontWeight.bold)),
         ),
       ]),
     );
@@ -406,60 +437,90 @@ final textPosts = allPosts
         borderRadius: BorderRadius.circular(16),
         child: Stack(fit: StackFit.expand, children: [
           if (hasImage)
-            buildPostImage(post.images.first, fit: BoxFit.cover,
+            buildPostImage(post.images.first,
+                fit: BoxFit.cover,
                 errorBuilder: (_, __, ___) => _greyPlaceholder())
           else
             LocalVideoPlayer(path: post.videoPaths.first),
           Positioned(
-            bottom: 0, left: 0, right: 0,
+            bottom: 0,
+            left: 0,
+            right: 0,
             child: Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
                   colors: [Colors.transparent, Colors.black.withOpacity(0.72)],
                 ),
               ),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-                Text(post.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 4),
-                Row(children: [
-                  const Icon(Icons.favorite, color: Colors.white, size: 11),
-                  const SizedBox(width: 3),
-                  Text('${post.likes}', style: const TextStyle(color: Colors.white, fontSize: 10)),
-                  const SizedBox(width: 10),
-                  const Icon(Icons.comment, color: Colors.white, size: 11),
-                ]),
-              ]),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(post.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    Row(children: [
+                      const Icon(Icons.favorite, color: Colors.white, size: 11),
+                      const SizedBox(width: 3),
+                      Text('${post.likes}',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 10)),
+                      const SizedBox(width: 10),
+                      const Icon(Icons.comment, color: Colors.white, size: 11),
+                    ]),
+                  ]),
             ),
           ),
           if (post.visibility != 'public')
             Positioned(
-              top: 8, right: 8,
+              top: 8,
+              right: 8,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                 decoration: BoxDecoration(
-                  color: post.visibility == 'private' ? Colors.red.withOpacity(0.8) : Colors.orange.withOpacity(0.8),
+                  color: post.visibility == 'private'
+                      ? Colors.red.withOpacity(0.8)
+                      : Colors.orange.withOpacity(0.8),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(post.visibility == 'private' ? Icons.lock : Icons.people, color: Colors.white, size: 11),
+                  Icon(post.visibility == 'private' ? Icons.lock : Icons.people,
+                      color: Colors.white, size: 11),
                   const SizedBox(width: 3),
-                  Text(post.visibility, style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                  Text(post.visibility,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold)),
                 ]),
               ),
             ),
           if (totalMedia > 1)
             Positioned(
-              top: 8, left: 8,
+              top: 8,
+              left: 8,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                decoration: BoxDecoration(color: Colors.black.withOpacity(0.55), borderRadius: BorderRadius.circular(8)),
+                decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.55),
+                    borderRadius: BorderRadius.circular(8)),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(hasVideo ? Icons.video_collection : Icons.collections, color: Colors.white, size: 11),
+                  Icon(hasVideo ? Icons.video_collection : Icons.collections,
+                      color: Colors.white, size: 11),
                   const SizedBox(width: 3),
-                  Text('$totalMedia', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                  Text('$totalMedia',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold)),
                 ]),
               ),
             ),
@@ -478,44 +539,69 @@ final textPosts = allPosts
           color: Colors.white,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: Colors.grey.shade200),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 6, offset: const Offset(0, 2))],
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(0.03),
+                blurRadius: 6,
+                offset: const Offset(0, 2))
+          ],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
-            Expanded(child: Text(post.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold))),
+            Expanded(
+                child: Text(post.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.bold))),
             const SizedBox(width: 8),
             Icon(
-              post.visibility == 'public' ? Icons.public : post.visibility == 'friends' ? Icons.people : Icons.lock,
-              size: 14, color: Colors.grey[400],
+              post.visibility == 'public'
+                  ? Icons.public
+                  : post.visibility == 'friends'
+                      ? Icons.people
+                      : Icons.lock,
+              size: 14,
+              color: Colors.grey[400],
             ),
           ]),
           const SizedBox(height: 6),
-          Text(post.content, maxLines: 2, overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 12, color: Colors.grey[600], height: 1.5)),
+          Text(post.content,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 12, color: Colors.grey[600], height: 1.5)),
           if (post.tags.isNotEmpty) ...[
             const SizedBox(height: 8),
             Wrap(
               spacing: 6,
-              children: post.tags.take(3).map((tag) => Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFD35D3E).withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text('#$tag', style: const TextStyle(fontSize: 10, color: Color(0xFFD35D3E))),
-              )).toList(),
+              children: post.tags
+                  .take(3)
+                  .map((tag) => Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFD35D3E).withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text('#$tag',
+                            style: const TextStyle(
+                                fontSize: 10, color: Color(0xFFD35D3E))),
+                      ))
+                  .toList(),
             ),
           ],
           const SizedBox(height: 10),
           Row(children: [
             Icon(Icons.favorite_border, size: 13, color: Colors.grey[500]),
             const SizedBox(width: 3),
-            Text('${post.likes}', style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+            Text('${post.likes}',
+                style: TextStyle(fontSize: 11, color: Colors.grey[500])),
             const SizedBox(width: 10),
             Icon(Icons.chat_bubble_outline, size: 13, color: Colors.grey[500]),
             const Spacer(),
-            Text(_formatDate(post.createdAt), style: TextStyle(fontSize: 11, color: Colors.grey[400])),
+            Text(_formatDate(post.createdAt),
+                style: TextStyle(fontSize: 11, color: Colors.grey[400])),
           ]),
         ]),
       ),
@@ -523,9 +609,9 @@ final textPosts = allPosts
   }
 
   Widget _greyPlaceholder() => Container(
-    color: Colors.grey[300],
-    child: const Icon(Icons.broken_image, color: Colors.grey, size: 40),
-  );
+        color: Colors.grey[300],
+        child: const Icon(Icons.broken_image, color: Colors.grey, size: 40),
+      );
 
   String _formatDate(DateTime? date) {
     if (date == null) return '';
@@ -546,90 +632,126 @@ final textPosts = allPosts
         child: Column(children: [
           Container(
             margin: const EdgeInsets.symmetric(vertical: 12),
-            width: 40, height: 4,
-            decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2)),
           ),
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(post.title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Row(children: [
-                  Icon(
-                    post.visibility == 'public' ? Icons.public : post.visibility == 'friends' ? Icons.people : Icons.lock,
-                    size: 15, color: Colors.grey,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(post.visibility, style: TextStyle(color: Colors.grey[600])),
-                  const SizedBox(width: 16),
-                  Text(_formatDate(post.createdAt), style: TextStyle(color: Colors.grey[600])),
-                  if (post.city != null && post.city!.isNotEmpty) ...[
-                    const SizedBox(width: 16),
-                    const Icon(Icons.location_on, size: 15, color: Color(0xFFD35D3E)),
-                    const SizedBox(width: 2),
-                    Text(post.city!, style: const TextStyle(color: Color(0xFFD35D3E), fontSize: 13)),
-                  ],
-                ]),
-                const SizedBox(height: 20),
-                if (post.images.isNotEmpty)
-                  SizedBox(
-                    height: 260,
-                    child: ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: post.images.length,
-                      separatorBuilder: (_, __) => const SizedBox(width: 8),
-                      itemBuilder: (context, index) => ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: buildPostImage(post.images[index], width: 220, fit: BoxFit.cover),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(post.title,
+                        style: const TextStyle(
+                            fontSize: 22, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      Icon(
+                        post.visibility == 'public'
+                            ? Icons.public
+                            : post.visibility == 'friends'
+                                ? Icons.people
+                                : Icons.lock,
+                        size: 15,
+                        color: Colors.grey,
                       ),
-                    ),
-                  ),
-                if (post.videoPaths.isNotEmpty) ...[
-                  if (post.images.isNotEmpty) const SizedBox(height: 10),
-                  SizedBox(
-                    height: 220,
-                    child: ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: post.videoPaths.length,
-                      separatorBuilder: (_, __) => const SizedBox(width: 8),
-                      itemBuilder: (context, index) => ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: SizedBox(width: 280, height: 220, child: LocalVideoPlayer(path: post.videoPaths[index])),
+                      const SizedBox(width: 4),
+                      Text(post.visibility,
+                          style: TextStyle(color: Colors.grey[600])),
+                      const SizedBox(width: 16),
+                      Text(_formatDate(post.createdAt),
+                          style: TextStyle(color: Colors.grey[600])),
+                      if (post.city != null && post.city!.isNotEmpty) ...[
+                        const SizedBox(width: 16),
+                        const Icon(Icons.location_on,
+                            size: 15, color: Color(0xFFD35D3E)),
+                        const SizedBox(width: 2),
+                        Text(post.city!,
+                            style: const TextStyle(
+                                color: Color(0xFFD35D3E), fontSize: 13)),
+                      ],
+                    ]),
+                    const SizedBox(height: 20),
+                    if (post.images.isNotEmpty)
+                      SizedBox(
+                        height: 260,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: post.images.length,
+                          separatorBuilder: (_, __) => const SizedBox(width: 8),
+                          itemBuilder: (context, index) => ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: buildPostImage(post.images[index],
+                                width: 220, fit: BoxFit.cover),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ],
-                if (post.images.isNotEmpty || post.videoPaths.isNotEmpty) const SizedBox(height: 20),
-                Text(post.content, style: const TextStyle(fontSize: 15, height: 1.6)),
-                if (post.tags.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  Wrap(
-                    spacing: 8, runSpacing: 8,
-                    children: post.tags.map((tag) => Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFD35D3E).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(16),
+                    if (post.videoPaths.isNotEmpty) ...[
+                      if (post.images.isNotEmpty) const SizedBox(height: 10),
+                      SizedBox(
+                        height: 220,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: post.videoPaths.length,
+                          separatorBuilder: (_, __) => const SizedBox(width: 8),
+                          itemBuilder: (context, index) => ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: SizedBox(
+                                width: 280,
+                                height: 220,
+                                child: LocalVideoPlayer(
+                                    path: post.videoPaths[index])),
+                          ),
+                        ),
                       ),
-                      child: Text('#$tag', style: const TextStyle(color: Color(0xFFD35D3E), fontSize: 12)),
-                    )).toList(),
-                  ),
-                ],
-                const SizedBox(height: 24),
-                Row(children: [
-                  _buildStatItem(Icons.favorite, '${post.likes}', 'Likes'),
-                  const SizedBox(width: 24),
-
-                ]),
-              ]),
+                    ],
+                    if (post.images.isNotEmpty || post.videoPaths.isNotEmpty)
+                      const SizedBox(height: 20),
+                    Text(post.content,
+                        style: const TextStyle(fontSize: 15, height: 1.6)),
+                    if (post.tags.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: post.tags
+                            .map((tag) => Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 5),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFD35D3E)
+                                        .withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Text('#$tag',
+                                      style: const TextStyle(
+                                          color: Color(0xFFD35D3E),
+                                          fontSize: 12)),
+                                ))
+                            .toList(),
+                      ),
+                    ],
+                    const SizedBox(height: 24),
+                    Row(children: [
+                      _buildStatItem(Icons.favorite, '${post.likes}', 'Likes'),
+                      const SizedBox(width: 24),
+                    ]),
+                  ]),
             ),
           ),
           Container(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
             decoration: BoxDecoration(
               color: Colors.white,
-              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -4))],
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, -4))
+              ],
             ),
             child: Row(children: [
               Expanded(
@@ -653,7 +775,9 @@ final textPosts = allPosts
                   onPressed: () => _confirmDelete(context, post),
                   icon: const Icon(Icons.delete, size: 18),
                   label: const Text('Delete'),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white),
                 ),
               ),
             ]),
@@ -668,100 +792,94 @@ final textPosts = allPosts
       Row(children: [
         Icon(icon, size: 18, color: Colors.grey[700]),
         const SizedBox(width: 4),
-        Text(count, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+        Text(count,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
       ]),
       Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 11)),
     ]);
   }
 
-Future<void> _confirmDelete(
-  BuildContext sheetContext,
-  Post post,
-) async {
-  final shouldDelete = await showDialog<bool>(
-    context: sheetContext,
-    builder: (dialogContext) {
-      return AlertDialog(
-        title: const Text('Delete Post'),
-        content: const Text(
-          'Are you sure you want to delete this post?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(dialogContext).pop(false);
-            },
-            child: const Text('Cancel'),
+  Future<void> _confirmDelete(
+    BuildContext sheetContext,
+    Post post,
+  ) async {
+    final shouldDelete = await showDialog<bool>(
+      context: sheetContext,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete Post'),
+          content: const Text(
+            'Are you sure you want to delete this post?',
           ),
-          TextButton(
-            onPressed: () {
-              Navigator.of(dialogContext).pop(true);
-            },
-            child: const Text(
-              'Delete',
-              style: TextStyle(color: Colors.red),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(false);
+              },
+              child: const Text('Cancel'),
             ),
-          ),
-        ],
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(true);
+              },
+              child: const Text(
+                'Delete',
+                style: TextStyle(color: Colors.red),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldDelete != true) return;
+    if (!mounted) return;
+
+    final postId = post.id;
+
+    if (postId == null || postId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Unable to delete this post'),
+          backgroundColor: Colors.red,
+        ),
       );
-    },
-  );
+      return;
+    }
 
-  if (shouldDelete != true) return;
-  if (!mounted) return;
+    Navigator.of(context).pop();
 
-  final postId = post.id;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _locallyDeletedPostIds.add(postId);
+      });
 
-  if (postId == null || postId.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Unable to delete this post'),
-        backgroundColor: Colors.red,
-      ),
-    );
-    return;
-  }
-
-  Navigator.of(context).pop();
-
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (!mounted) return;
-    setState(() {
-      _locallyDeletedPostIds.add(postId);
+      // 🆕 跟 UI 消失同时弹出提示，不等后台请求结果
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Post deleted successfully'),
+          backgroundColor: Colors.green,
+        ),
+      );
     });
 
-    // 🆕 跟 UI 消失同时弹出提示，不等后台请求结果
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Post deleted successfully'),
-        backgroundColor: Colors.green,
-      ),
-    );
-  });
+    try {
+      await _postService.deletePost(postId);
+      // 🆕 成功了就不用再弹一次提示了，上面已经弹过
+    } catch (e) {
+      if (!mounted) return;
 
-  try {
-    await _postService.deletePost(postId);
-    // 🆕 成功了就不用再弹一次提示了，上面已经弹过
-  } catch (e) {
-    if (!mounted) return;
+      // 删除失败，把 post 恢复显示，并用另一条提示告知失败
+      setState(() {
+        _locallyDeletedPostIds.remove(postId);
+      });
 
-    // 删除失败，把 post 恢复显示，并用另一条提示告知失败
-    setState(() {
-      _locallyDeletedPostIds.remove(postId);
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Failed to delete post: $e'),
-        backgroundColor: Colors.red,
-      ),
-    );
+      ErrorHandler.showError(context,
+          error: e, message: 'Failed to delete post. Please try again.');
+    }
   }
-}
-
-
-}   // 关闭 _PostWidgetState class
-
+} // 关闭 _PostWidgetState class
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HISTORY WIDGET
@@ -779,23 +897,23 @@ class _HistoryWidget extends StatefulWidget {
   const _HistoryWidget({super.key});
 
   @override
-    State<_HistoryWidget> createState() => _HistoryWidgetState();
-  }
+  State<_HistoryWidget> createState() => _HistoryWidgetState();
+}
 
-  class _HistoryWidgetState extends State<_HistoryWidget> {
-    @override
-    Widget build(BuildContext context) {
-      return StreamBuilder<List<TripHistory>>(
-        stream: HistoryService.instance.streamGrouped(),
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const SizedBox(
-              height: 240,
-              child: Center(child: TravelLoadingIndicator()),
-            );
-          }
-          final trips = snap.data ?? [];
-          if (trips.isEmpty) return _buildEmptyState();
+class _HistoryWidgetState extends State<_HistoryWidget> {
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<TripHistory>>(
+      stream: HistoryService.instance.streamGrouped(),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const SizedBox(
+            height: 240,
+            child: Center(child: TravelLoadingIndicator()),
+          );
+        }
+        final trips = snap.data ?? [];
+        if (trips.isEmpty) return _buildEmptyState();
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -806,20 +924,35 @@ class _HistoryWidget extends StatefulWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text('My Trips',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF1A1A2E), letterSpacing: -0.5)),
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF1A1A2E),
+                          letterSpacing: -0.5)),
                   Row(
                     children: [
                       Text('${trips.length} trip${trips.length > 1 ? "s" : ""}',
-                          style: TextStyle(fontSize: 12, color: Colors.grey[400], fontWeight: FontWeight.w500)),
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[400],
+                              fontWeight: FontWeight.w500)),
                       const SizedBox(width: 10),
                       GestureDetector(
-                        onTap: trips.isEmpty ? null : () => _openJournalBook(context, trips, trips.first, isOverall: true),
+                        onTap: trips.isEmpty
+                            ? null
+                            : () => _openJournalBook(
+                                context, trips, trips.first,
+                                isOverall: true),
                         child: Row(
                           children: [
-                            Icon(Icons.menu_book_rounded, size: 14, color: Color(0xFFD35D3E)),
+                            Icon(Icons.menu_book_rounded,
+                                size: 14, color: Color(0xFFD35D3E)),
                             const SizedBox(width: 3),
                             Text('View All',
-                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFD35D3E))),
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFFD35D3E))),
                           ],
                         ),
                       ),
@@ -838,7 +971,8 @@ class _HistoryWidget extends StatefulWidget {
                 itemBuilder: (_, i) => _TripCard(
                   trip: trips[i],
                   index: i,
-                  onTap: () => _openJournalBook(context, [trips[i]], trips[i] , isOverall: false),
+                  onTap: () => _openJournalBook(context, [trips[i]], trips[i],
+                      isOverall: false),
                 ),
               ),
             ),
@@ -848,19 +982,21 @@ class _HistoryWidget extends StatefulWidget {
     );
   }
 
-    void _openJournalBook(BuildContext context, List<TripHistory> trips, TripHistory tapped, {required bool isOverall}) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          fullscreenDialog: true,
-          builder: (_) => JournalBookPage(
-            trips: trips,
-            initialItineraryId: tapped.itineraryId,
-            isOverall: isOverall,
-          ),
+  void _openJournalBook(
+      BuildContext context, List<TripHistory> trips, TripHistory tapped,
+      {required bool isOverall}) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => JournalBookPage(
+          trips: trips,
+          initialItineraryId: tapped.itineraryId,
+          isOverall: isOverall,
         ),
-      );
-    }
+      ),
+    );
+  }
 
   Widget _buildEmptyState() {
     return SizedBox(
@@ -868,14 +1004,22 @@ class _HistoryWidget extends StatefulWidget {
       child: Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
-            width: 72, height: 72,
-            decoration: BoxDecoration(color: Colors.grey[100], shape: BoxShape.circle),
-            child: Icon(Icons.flight_takeoff_rounded, size: 32, color: Colors.grey[350]),
+            width: 72,
+            height: 72,
+            decoration:
+                BoxDecoration(color: Colors.grey[100], shape: BoxShape.circle),
+            child: Icon(Icons.flight_takeoff_rounded,
+                size: 32, color: Colors.grey[350]),
           ),
           const SizedBox(height: 14),
-          Text('No adventures yet', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.grey[500])),
+          Text('No adventures yet',
+              style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.grey[500])),
           const SizedBox(height: 4),
-          Text('Your travel stories will live here', style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+          Text('Your travel stories will live here',
+              style: TextStyle(fontSize: 12, color: Colors.grey[400])),
         ]),
       ),
     );
@@ -897,7 +1041,8 @@ class _TripCard extends StatelessWidget {
   final int index;
   final VoidCallback onTap;
 
-  const _TripCard({required this.trip, required this.index, required this.onTap});
+  const _TripCard(
+      {required this.trip, required this.index, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -914,7 +1059,8 @@ class _TripCard extends StatelessWidget {
           boxShadow: [
             BoxShadow(
               color: (hasPhoto ? Colors.black : accent[0]).withOpacity(0.22),
-              blurRadius: 18, offset: const Offset(0, 8),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
             ),
           ],
         ),
@@ -925,6 +1071,7 @@ class _TripCard extends StatelessWidget {
               CachedNetworkImage(
                 imageUrl: trip.coverPhoto!,
                 fit: BoxFit.cover,
+                memCacheWidth: 400,
                 errorWidget: (_, __, ___) => _gradientBg(accent),
               )
             else
@@ -932,48 +1079,84 @@ class _TripCard extends StatelessWidget {
             DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.black.withOpacity(0.08), Colors.black.withOpacity(0.75)],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.black.withOpacity(0.08),
+                    Colors.black.withOpacity(0.75)
+                  ],
                   stops: const [0.35, 0.6, 1.0],
                 ),
               ),
             ),
             Positioned(
-              top: 12, right: 12,
+              top: 12,
+              right: 12,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                decoration: BoxDecoration(color: Colors.white.withOpacity(0.93), borderRadius: BorderRadius.circular(20)),
+                decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.93),
+                    borderRadius: BorderRadius.circular(20)),
                 child: Text(DateFormat('dd MMM').format(trip.latestVisit),
-                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF1A1A2E), letterSpacing: 0.2)),
+                    style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF1A1A2E),
+                        letterSpacing: 0.2)),
               ),
             ),
             Positioned(
-              bottom: 0, left: 0, right: 0,
+              bottom: 0,
+              left: 0,
+              right: 0,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-                  Text(trip.itineraryTitle, maxLines: 2, overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w800, height: 1.25, letterSpacing: -0.2)),
-                  const SizedBox(height: 8),
-                  Row(children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(color: const Color(0xFF4DB6AC).withOpacity(0.85), borderRadius: BorderRadius.circular(20)),
-                      child: Row(children: [
-                        const Icon(Icons.location_on_rounded, size: 9, color: Colors.white),
-                        const SizedBox(width: 3),
-                        Text('${trip.places.length} place${trip.places.length > 1 ? "s" : ""}',
-                            style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700)),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(trip.itineraryTitle,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                              height: 1.25,
+                              letterSpacing: -0.2)),
+                      const SizedBox(height: 8),
+                      Row(children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                              color: const Color(0xFF4DB6AC).withOpacity(0.85),
+                              borderRadius: BorderRadius.circular(20)),
+                          child: Row(children: [
+                            const Icon(Icons.location_on_rounded,
+                                size: 9, color: Colors.white),
+                            const SizedBox(width: 3),
+                            Text(
+                                '${trip.places.length} place${trip.places.length > 1 ? "s" : ""}',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700)),
+                          ]),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          width: 22,
+                          height: 22,
+                          decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              shape: BoxShape.circle),
+                          child: const Icon(Icons.arrow_forward_rounded,
+                              size: 11, color: Colors.white),
+                        ),
                       ]),
-                    ),
-                    const SizedBox(width: 6),
-                    Container(
-                      width: 22, height: 22,
-                      decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), shape: BoxShape.circle),
-                      child: const Icon(Icons.arrow_forward_rounded, size: 11, color: Colors.white),
-                    ),
-                  ]),
-                ]),
+                    ]),
               ),
             ),
           ]),
@@ -983,9 +1166,15 @@ class _TripCard extends StatelessWidget {
   }
 
   Widget _gradientBg(List<Color> colors) => Container(
-    decoration: BoxDecoration(gradient: LinearGradient(colors: colors, begin: Alignment.topLeft, end: Alignment.bottomRight)),
-    child: Center(child: Icon(Icons.map_rounded, size: 52, color: Colors.white.withOpacity(0.15))),
-  );
+        decoration: BoxDecoration(
+            gradient: LinearGradient(
+                colors: colors,
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight)),
+        child: Center(
+            child: Icon(Icons.map_rounded,
+                size: 52, color: Colors.white.withOpacity(0.15))),
+      );
 }
 
 class _TripDetailPopup extends StatelessWidget {
@@ -994,26 +1183,39 @@ class _TripDetailPopup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final places = [...trip.places]..sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
+    final places = [...trip.places]
+      ..sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
 
     return DraggableScrollableSheet(
-      initialChildSize: 0.82, minChildSize: 0.5, maxChildSize: 0.95,
+      initialChildSize: 0.82,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
       builder: (_, controller) => Container(
         margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-        decoration: const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.all(Radius.circular(32))),
+        decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.all(Radius.circular(32))),
         child: Column(children: [
           const SizedBox(height: 12),
-          Center(child: Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(2)))),
+          Center(
+              child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: Colors.grey[200],
+                      borderRadius: BorderRadius.circular(2)))),
           if (trip.coverPhoto != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(20),
                 child: SizedBox(
-                  height: 120, width: double.infinity,
+                  height: 120,
+                  width: double.infinity,
                   child: CachedNetworkImage(
                     imageUrl: trip.coverPhoto!,
                     fit: BoxFit.cover,
+                    memCacheWidth: 500,
                     errorWidget: (_, __, ___) => const SizedBox(),
                   ),
                 ),
@@ -1022,21 +1224,38 @@ class _TripDetailPopup extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 6),
             child: Row(children: [
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(trip.itineraryTitle, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF1A1A2E), letterSpacing: -0.4)),
-                const SizedBox(height: 3),
-                Text('${trip.places.length} location${trip.places.length > 1 ? "s" : ""} visited',
-                    style: TextStyle(fontSize: 13, color: Colors.grey[500])),
-              ])),
+              Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text(trip.itineraryTitle,
+                        style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF1A1A2E),
+                            letterSpacing: -0.4)),
+                    const SizedBox(height: 3),
+                    Text(
+                        '${trip.places.length} location${trip.places.length > 1 ? "s" : ""} visited',
+                        style:
+                            TextStyle(fontSize: 13, color: Colors.grey[500])),
+                  ])),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(color: const Color(0xFF4DB6AC).withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                    color: const Color(0xFF4DB6AC).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12)),
                 child: Text(DateFormat('MMM yyyy').format(trip.latestVisit),
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF4DB6AC), fontWeight: FontWeight.w700)),
+                    style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF4DB6AC),
+                        fontWeight: FontWeight.w700)),
               ),
             ]),
           ),
-          Divider(color: Colors.grey[100], height: 1, indent: 24, endIndent: 24),
+          Divider(
+              color: Colors.grey[100], height: 1, indent: 24, endIndent: 24),
           Expanded(
             child: ListView.builder(
               controller: controller,
@@ -1045,54 +1264,88 @@ class _TripDetailPopup extends StatelessWidget {
               itemBuilder: (_, i) {
                 final item = places[i];
                 final isLast = i == places.length - 1;
-                return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Column(children: [
-                    Container(
-                      width: 14, height: 14,
-                      decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF4DB6AC)),
-                      child: const Center(child: Icon(Icons.check_rounded, size: 8, color: Colors.white)),
-                    ),
-                    if (!isLast) Container(width: 2, height: 88, color: Colors.grey[100]),
-                  ]),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(DateFormat('hh:mm a').format(item.visitedAt),
-                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF4DB6AC), letterSpacing: 0.3)),
-                        const SizedBox(height: 6),
+                return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Column(children: [
                         Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF8F9FA),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: Colors.grey[100]!, width: 1),
-                          ),
-                          child: Row(children: [
-                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              Text(item.placeName, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: Color(0xFF1A1A2E))),
-                              const SizedBox(height: 3),
-                              Text(item.address, maxLines: 1, overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(fontSize: 11, color: Colors.grey[500])),
-                            ])),
-                            if (item.photoUrl != null) ...[
-                              const SizedBox(width: 10),
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
-                                child: CachedNetworkImage(
-                                  imageUrl: item.photoUrl!,
-                                  width: 48, height: 48, fit: BoxFit.cover,
-                                  errorWidget: (_, __, ___) => const SizedBox(),
-                                ),
-                              ),
-                            ],
-                          ]),
+                          width: 14,
+                          height: 14,
+                          decoration: const BoxDecoration(
+                              shape: BoxShape.circle, color: Color(0xFF4DB6AC)),
+                          child: const Center(
+                              child: Icon(Icons.check_rounded,
+                                  size: 8, color: Colors.white)),
                         ),
+                        if (!isLast)
+                          Container(
+                              width: 2, height: 88, color: Colors.grey[100]),
                       ]),
-                    ),
-                  ),
-                ]);
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                    DateFormat('hh:mm a')
+                                        .format(item.visitedAt),
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFF4DB6AC),
+                                        letterSpacing: 0.3)),
+                                const SizedBox(height: 6),
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF8F9FA),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                        color: Colors.grey[100]!, width: 1),
+                                  ),
+                                  child: Row(children: [
+                                    Expanded(
+                                        child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                          Text(item.placeName,
+                                              style: const TextStyle(
+                                                  fontWeight: FontWeight.w700,
+                                                  fontSize: 13,
+                                                  color: Color(0xFF1A1A2E))),
+                                          const SizedBox(height: 3),
+                                          Text(item.address,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.grey[500])),
+                                        ])),
+                                    if (item.photoUrl != null) ...[
+                                      const SizedBox(width: 10),
+                                      ClipRRect(
+                                        borderRadius: BorderRadius.circular(10),
+                                        child: CachedNetworkImage(
+                                          imageUrl: item.photoUrl!,
+                                          width: 48,
+                                          height: 48,
+                                          fit: BoxFit.cover,
+                                          memCacheWidth: 120,
+                                          memCacheHeight: 120,
+                                          errorWidget: (_, __, ___) =>
+                                              const SizedBox(),
+                                        ),
+                                      ),
+                                    ],
+                                  ]),
+                                ),
+                              ]),
+                        ),
+                      ),
+                    ]);
               },
             ),
           ),
@@ -1118,12 +1371,15 @@ class _ProfilePageState extends State<ProfilePage> {
   final UserService _userService = UserService();
   StreamSubscription<UserProfile?>? _profileSub;
 
-  // 🆕 缓存当前 profile 数据，避免每次切换 zoom 视图时重新订阅流
-  //    （广播流对新监听者不会补发历史数据，之前就是这里导致的白屏）
   UserProfile? _profile;
+  bool _profileLoading = true;
+  String? _profileError;
+  ImageProvider? _bgImageProvider;
+  ImageProvider? _avatarImageProvider;
+  int _visualLoadGeneration = 0;
 
-  bool _showZoom    = false;
-  int  _currentIndex = 0;
+  bool _showZoom = false;
+  int _currentIndex = 0;
   List<AchievementTier> _badges = [];
 
   static const List<Widget> _tabs = [_PostWidget(), _HistoryWidget()];
@@ -1132,23 +1388,62 @@ class _ProfilePageState extends State<ProfilePage> {
   void initState() {
     super.initState();
     _currentIndex = widget.initialTab;
+    _listenProfile();
+    _loadBadges();
+  }
 
-    // 🆕 只订阅一次，数据统一存到 _profile 里，任何视图都用这份缓存
+  void _listenProfile() {
+    _profileSub?.cancel();
     _profileSub = _userService.getCurrentUserProfileStream().listen(
-      (profile) {
-        if (mounted) setState(() => _profile = profile);
+      (profile) async {
+        final gen = ++_visualLoadGeneration;
+        final targetProfile = profile ??
+            UserProfile(
+              uid: _userService.currentUserId ?? '',
+              username:
+                  FirebaseAuth.instance.currentUser?.displayName ?? 'User',
+              bio: 'Hello! I\'m new here 👋',
+              profileImageUrl:
+                  FirebaseAuth.instance.currentUser?.photoURL ?? '',
+              backgroundImageUrl: '',
+            );
+
+        final bgFuture = _prepareImageProvider(
+          targetProfile.backgroundImageUrl,
+          'assets/images/longbg1.jpg',
+        );
+        final avatarFuture = _prepareImageProvider(
+          targetProfile.profileImageUrl,
+          'assets/images/profile.jpg',
+        );
+
+        final results = await Future.wait([bgFuture, avatarFuture]);
+
+        if (!mounted || gen != _visualLoadGeneration) return;
+
+        setState(() {
+          _profile = targetProfile;
+          _bgImageProvider = results[0];
+          _avatarImageProvider = results[1];
+          _profileLoading = false;
+          _profileError = null;
+        });
       },
       onError: (e) {
-        // 避免未处理异常导致页面崩溃/白屏
         debugPrint('Profile stream error: $e');
+        if (mounted) {
+          setState(() {
+            _profileLoading = false;
+            _profileError = 'Failed to load profile. Please try again.';
+          });
+        }
       },
     );
-
-    _loadBadges();
   }
 
   @override
   void dispose() {
+    _visualLoadGeneration++;
     _profileSub?.cancel();
     super.dispose();
   }
@@ -1158,13 +1453,65 @@ class _ProfilePageState extends State<ProfilePage> {
     if (mounted) setState(() => _badges = badges);
   }
 
+  Future<ImageProvider> _prepareImageProvider(
+    String imageUrl,
+    String defaultAsset,
+  ) async {
+    ImageProvider provider;
+    bool isNetwork = false;
+
+    if (imageUrl.isEmpty) {
+      provider = AssetImage(defaultAsset);
+    } else if (imageUrl.startsWith('data:image')) {
+      try {
+        final parts = imageUrl.split(',');
+        if (parts.length < 2) {
+          provider = AssetImage(defaultAsset);
+        } else {
+          final bytes = base64Decode(parts[1]);
+          provider = MemoryImage(bytes);
+        }
+      } catch (_) {
+        provider = AssetImage(defaultAsset);
+      }
+    } else if (imageUrl.startsWith('http://') ||
+        imageUrl.startsWith('https://')) {
+      provider = CachedNetworkImageProvider(imageUrl);
+      isNetwork = true;
+    } else {
+      provider = AssetImage(defaultAsset);
+    }
+
+    try {
+      if (mounted) {
+        if (isNetwork) {
+          await precacheImage(provider, context)
+              .timeout(const Duration(seconds: 3));
+        } else {
+          await precacheImage(provider, context);
+        }
+      }
+      return provider;
+    } catch (_) {
+      final fallback = AssetImage(defaultAsset);
+      if (mounted) {
+        try {
+          await precacheImage(fallback, context);
+        } catch (_) {}
+      }
+      return fallback;
+    }
+  }
+
   ImageProvider _getImageProvider(String imageUrl, String defaultAsset) {
     if (imageUrl.isEmpty) return AssetImage(defaultAsset);
 
     if (imageUrl.startsWith('data:image')) {
       try {
         final parts = imageUrl.split(',');
-        if (parts.length < 2) return AssetImage(defaultAsset);   // 🆕 格式不对，直接 fallback
+        if (parts.length < 2) {
+          return AssetImage(defaultAsset); // 🆕 格式不对，直接 fallback
+        }
         final bytes = base64Decode(parts[1]);
         return MemoryImage(bytes);
       } catch (e) {
@@ -1173,7 +1520,9 @@ class _ProfilePageState extends State<ProfilePage> {
       }
     }
 
-    if (imageUrl.startsWith('http')) return NetworkImage(imageUrl);
+    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+      return CachedNetworkImageProvider(imageUrl);
+    }
     return AssetImage(defaultAsset);
   }
 
@@ -1188,19 +1537,51 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Widget _buildProfileView(double height) {
+    if (_profileLoading && _profile == null) {
+      return const Center(child: TravelLoadingIndicator());
+    }
+
+    if (_profileError != null && _profile == null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline_rounded,
+                size: 56, color: Colors.grey),
+            const SizedBox(height: 12),
+            Text(_profileError!,
+                style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () {
+                setState(() => _profileLoading = true);
+                _listenProfile();
+              },
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+
     final userProfile = _profile;
+    if (userProfile == null) {
+      return const Center(child: Text('Profile unavailable'));
+    }
 
     return Stack(children: [
-      if (userProfile != null)
-        Container(
-          height: 200, width: double.infinity,
-          decoration: BoxDecoration(
-            image: DecorationImage(
-              image: _getImageProvider(userProfile.backgroundImageUrl, 'assets/images/longbg1.jpg'),
-              fit: BoxFit.cover,
-            ),
+      Container(
+        height: 200,
+        width: double.infinity,
+        decoration: BoxDecoration(
+          image: DecorationImage(
+            image: _bgImageProvider ??
+                _getImageProvider(
+                    userProfile.backgroundImageUrl, 'assets/images/longbg1.jpg'),
+            fit: BoxFit.cover,
           ),
         ),
+      ),
       Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -1213,7 +1594,8 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
       Center(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.only(bottom: kBottomNavigationBarHeight + 16),
+          padding:
+              const EdgeInsets.only(bottom: kBottomNavigationBarHeight + 16),
           child: Column(children: [
             SizedBox(height: height * 0.13),
             _buildProfileInfo(height),
@@ -1245,10 +1627,13 @@ class _ProfilePageState extends State<ProfilePage> {
       onTap: () => setState(() => _showZoom = false),
       child: Stack(children: [
         Container(
-          height: 200, width: double.infinity,
+          height: 200,
+          width: double.infinity,
           decoration: BoxDecoration(
             image: DecorationImage(
-              image: _getImageProvider(userProfile.profileImageUrl, 'assets/images/profile.jpg'),
+              image: _avatarImageProvider ??
+                  _getImageProvider(
+                      userProfile.profileImageUrl, 'assets/images/profile.jpg'),
               fit: BoxFit.cover,
             ),
           ),
@@ -1271,7 +1656,9 @@ class _ProfilePageState extends State<ProfilePage> {
             child: Center(
               child: CircleAvatar(
                 radius: 120,
-                backgroundImage: _getImageProvider(userProfile.profileImageUrl, 'assets/images/profile.jpg'),
+                backgroundImage: _avatarImageProvider ??
+                    _getImageProvider(
+                        userProfile.profileImageUrl, 'assets/images/profile.jpg'),
                 onBackgroundImageError: (exception, stackTrace) {
                   // 🆕 静默处理，避免未捕获异常
                 },
@@ -1287,19 +1674,24 @@ class _ProfilePageState extends State<ProfilePage> {
     final userProfile = _profile;
 
     if (userProfile == null) {
-      return SizedBox(height: 200, child: Center(child: TravelLoadingIndicator()));
+      return SizedBox(
+          height: 200, child: Center(child: TravelLoadingIndicator()));
     }
 
     return Column(children: [
       CircleAvatar(
-        backgroundColor: Colors.indigoAccent, radius: 47,
+        backgroundColor: Colors.indigoAccent,
+        radius: 47,
         child: CircleAvatar(
-          backgroundColor: Colors.white, radius: 45,
+          backgroundColor: Colors.white,
+          radius: 45,
           child: InkWell(
             onTap: () => setState(() => _showZoom = true),
             child: CircleAvatar(
               radius: 43,
-              backgroundImage: _getImageProvider(userProfile.profileImageUrl, 'assets/images/profile.jpg'),
+              backgroundImage: _avatarImageProvider ??
+                  _getImageProvider(
+                      userProfile.profileImageUrl, 'assets/images/profile.jpg'),
               onBackgroundImageError: (exception, stackTrace) {
                 // 🆕 静默处理，避免未捕获异常
               },
@@ -1309,7 +1701,9 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
       SizedBox(height: height * 0.02),
       Text(
-        userProfile.username.isNotEmpty ? '@${userProfile.username}' : '@username',
+        userProfile.username.isNotEmpty
+            ? '@${userProfile.username}'
+            : '@username',
         style: const TextStyle(fontSize: 16, color: Colors.grey),
       ),
 
@@ -1331,7 +1725,8 @@ class _ProfilePageState extends State<ProfilePage> {
       ElevatedButton.icon(
         onPressed: () => Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => EditProfilePage(userProfile: userProfile)),
+          MaterialPageRoute(
+              builder: (_) => EditProfilePage(userProfile: userProfile)),
         ),
         icon: const Icon(Icons.edit, size: 18),
         label: const Text('Edit Profile'),
@@ -1339,7 +1734,8 @@ class _ProfilePageState extends State<ProfilePage> {
           backgroundColor: Colors.indigoAccent,
           foregroundColor: Colors.white,
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         ),
       ),
       SizedBox(height: height * 0.02),
@@ -1358,15 +1754,15 @@ class _ProfilePageState extends State<ProfilePage> {
   static const _tierColors = {
     'bronze': Color(0xFFCD7F32),
     'silver': Color(0xFFA8A9AD),
-    'gold':   Color(0xFFFFD700),
+    'gold': Color(0xFFFFD700),
   };
 
   Widget _buildBadgeRow() {
     return GestureDetector(
-    onTap: () => Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const AchievementsPage()),
-    ),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const AchievementsPage()),
+      ),
       child: Wrap(
         spacing: 6,
         runSpacing: 4,
@@ -1416,7 +1812,8 @@ class _ProfilePageState extends State<ProfilePage> {
             // Handle bar
             Center(
               child: Container(
-                width: 40, height: 4,
+                width: 40,
+                height: 4,
                 decoration: BoxDecoration(
                   color: Colors.grey[300],
                   borderRadius: BorderRadius.circular(2),
@@ -1427,16 +1824,19 @@ class _ProfilePageState extends State<ProfilePage> {
             const Text('My Badges',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
-            Text('${_badges.length} badge${_badges.length == 1 ? '' : 's'} earned',
+            Text(
+                '${_badges.length} badge${_badges.length == 1 ? '' : 's'} earned',
                 style: TextStyle(fontSize: 13, color: Colors.grey[500])),
             const SizedBox(height: 20),
             Wrap(
               spacing: 10,
               runSpacing: 10,
               children: _badges.map((tier) {
-                final color = _tierColors[tier.level] ?? const Color(0xFF6366F1);
+                final color =
+                    _tierColors[tier.level] ?? const Color(0xFF6366F1);
                 return Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: color.withOpacity(0.10),
                     borderRadius: BorderRadius.circular(16),
@@ -1491,7 +1891,11 @@ class _ProfilePageState extends State<ProfilePage> {
       Text(label, style: const TextStyle(fontSize: 15, color: Colors.grey)),
       Padding(
         padding: const EdgeInsets.only(top: 6),
-        child: Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87)),
+        child: Text(value,
+            style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87)),
       ),
     ]);
   }

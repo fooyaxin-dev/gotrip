@@ -55,12 +55,21 @@ class LocationService extends ChangeNotifier {
 
   final Set<String> _alreadyArrived = {};
   List<_WatchedPlace> _watchedPlaces = [];
+  String? _watchedItineraryId;
 
   /// Rebuilds the proximity watch list and returns whether continuous GPS is
   /// actually needed for today's itinerary day.
   bool watchItinerary(ItineraryModel itinerary) {
     _watchedPlaces = [];
-    _alreadyArrived.clear();
+
+    // Only clear already-arrived set when a different itinerary is being
+    // watched. Clearing unconditionally caused the same arrival dialog to
+    // appear again whenever _refreshItineraryTracking() was re-called (e.g.
+    // after a UI rebuild or after closing a dialog).
+    if (_watchedItineraryId != itinerary.id) {
+      _watchedItineraryId = itinerary.id;
+      _alreadyArrived.clear();
+    }
 
     // Only today's scheduled day may trigger proximity arrivals. Watching all
     // itinerary days allowed a Day 2/Day 3 place to trigger while travelling
@@ -202,7 +211,7 @@ class LocationService extends ChangeNotifier {
     );
 
     if (dist >= _refetchThresholdMetres) {
-      print('📍 Moved ${dist.toStringAsFixed(0)}m — notifying all listeners');
+      debugPrint('📍 Moved ${dist.toStringAsFixed(0)}m — notifying all listeners');
       _lastFetchLat = pos.latitude;
       _lastFetchLng = pos.longitude;
       notifyListeners();
