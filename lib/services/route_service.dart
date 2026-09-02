@@ -286,10 +286,10 @@ class RouteService {
         'Content-Type':     'application/json',
         'X-Goog-Api-Key':   _apiKey,
         'X-Goog-FieldMask':
-            'originIndex,destinationIndex,distanceMeters,duration,condition',
+            'originIndex,destinationIndex,distanceMeters,duration,condition,status',
       },
       body: body,
-    );
+    ).timeout(const Duration(seconds: 6));
 
     if (resp.statusCode != 200) {
       throw Exception('Route Matrix API HTTP ${resp.statusCode}: ${resp.body}');
@@ -301,14 +301,50 @@ class RouteService {
     final data = json.decode(resp.body) as List;
 
     return data.map((raw) {
-      final el = raw as Map<String, dynamic>;
-      final condition = el['condition'] as String? ?? 'ROUTE_EXISTS';
+      if (raw is! Map<String, dynamic>) {
+        return const RouteMatrixElement(
+          originIndex: 0,
+          destinationIndex: 0,
+          distanceMeters: 0,
+          durationSeconds: 0,
+          isValid: false,
+        );
+      }
+      final el = raw;
+      final condition = el['condition'] as String?;
+      final originIndex = (el['originIndex'] as num?)?.toInt();
+      final destinationIndex = (el['destinationIndex'] as num?)?.toInt();
+      final rawDistance = el['distanceMeters'];
+      final rawDuration = el['duration'] as String?;
+
+      bool statusOk = true;
+      if (el['status'] is Map) {
+        final statusMap = el['status'] as Map<String, dynamic>;
+        final statusCode = (statusMap['code'] as num?)?.toInt();
+        if (statusCode != null && statusCode != 0) {
+          statusOk = false;
+        }
+      }
+
+      final hasValidDistance = rawDistance is num && rawDistance >= 0;
+      int? parsedDuration;
+      if (rawDuration != null && RegExp(r'^\d+(\.\d+)?s$').hasMatch(rawDuration)) {
+        parsedDuration = _parseSecs(rawDuration);
+      }
+
+      final isElementValid = statusOk &&
+          condition == 'ROUTE_EXISTS' &&
+          originIndex != null &&
+          destinationIndex != null &&
+          hasValidDistance &&
+          parsedDuration != null;
+
       return RouteMatrixElement(
-        originIndex:      (el['originIndex']      as num?)?.toInt() ?? 0,
-        destinationIndex: (el['destinationIndex'] as num?)?.toInt() ?? 0,
-        distanceMeters:   (el['distanceMeters']   as num?)?.toDouble() ?? 0,
-        durationSeconds:  _parseSecs(el['duration'] as String? ?? '0s'),
-        isValid:          condition == 'ROUTE_EXISTS',
+        originIndex:      originIndex ?? 0,
+        destinationIndex: destinationIndex ?? 0,
+        distanceMeters:   hasValidDistance ? rawDistance.toDouble() : 0,
+        durationSeconds:  parsedDuration ?? 0,
+        isValid:          isElementValid,
       );
     }).toList();
   }
@@ -408,8 +444,11 @@ class RouteService {
     ),
   );
 
-  int _parseSecs(String s) =>
-      int.tryParse(s.replaceAll('s', '').trim()) ?? 0;
+  int _parseSecs(String s) {
+    final cleaned = s.replaceAll('s', '').trim();
+    final doubleVal = double.tryParse(cleaned);
+    return doubleVal?.round() ?? 0;
+  }
 
   String _sanitizeInstruction(String instruction) {
       var text = instruction.replaceAll(RegExp(r'<[^>]*>'), '');

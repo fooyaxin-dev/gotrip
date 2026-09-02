@@ -44,7 +44,8 @@ class PlacesApiService {
     print('║ - Cache Hits: $_cacheHits');
     print('║ - Cache Misses: $_cacheMisses');
     if (_cacheHits + _cacheMisses > 0) {
-      final hitRate = (_cacheHits / (_cacheHits + _cacheMisses) * 100).toStringAsFixed(1);
+      final hitRate =
+          (_cacheHits / (_cacheHits + _cacheMisses) * 100).toStringAsFixed(1);
       print('║ - Hit Rate: $hitRate%');
     }
     print('╠════════════════════════════════════════╣');
@@ -73,7 +74,7 @@ class PlacesApiService {
   // Uses Text Search with name + coords to find the matching Google Place ID.
   // Result is cached in Firestore so the same place is never looked up twice.
   static Future<String?> findGooglePlaceId({
-    required String geoInternalId,   // our 'geo_xxx' id — used as cache key
+    required String geoInternalId, // our 'geo_xxx' id — used as cache key
     required String placeName,
     required double lat,
     required double lng,
@@ -94,7 +95,8 @@ class PlacesApiService {
       if (cacheDoc.exists) {
         final googleId = cacheDoc.data()?['googlePlaceId'] as String?;
         if (googleId != null && googleId.isNotEmpty) {
-          print('💾 findGooglePlaceId: Firestore hit for $placeName → $googleId');
+          print(
+              '💾 findGooglePlaceId: Firestore hit for $placeName → $googleId');
           _geoToGoogleIdCache[geoInternalId] = googleId;
           return googleId;
         }
@@ -117,7 +119,7 @@ class PlacesApiService {
           'locationBias': {
             'circle': {
               'center': {'latitude': lat, 'longitude': lng},
-              'radius': 100.0,   // tight radius — we know the coords
+              'radius': 100.0, // tight radius — we know the coords
             }
           },
           'maxResultCount': 1,
@@ -142,20 +144,16 @@ class PlacesApiService {
       print('✅ findGooglePlaceId: "$placeName" → $googleId');
 
       // 4. Save to Firestore cache so we never call this again for the same place
-      _firestore
-          .collection('geo_to_google_id')
-          .doc(geoInternalId)
-          .set({
-            'googlePlaceId': googleId,
-            'placeName':     placeName,
-            'lat':           lat,
-            'lng':           lng,
-            'cachedAt':      FieldValue.serverTimestamp(),
-          });
+      _firestore.collection('geo_to_google_id').doc(geoInternalId).set({
+        'googlePlaceId': googleId,
+        'placeName': placeName,
+        'lat': lat,
+        'lng': lng,
+        'cachedAt': FieldValue.serverTimestamp(),
+      });
 
       _geoToGoogleIdCache[geoInternalId] = googleId;
       return googleId;
-
     } catch (e) {
       print('❌ findGooglePlaceId exception: $e');
       return null;
@@ -185,7 +183,8 @@ class PlacesApiService {
     _searchNearbyCallCount++;
 
     final label = types == null ? 'ALL' : types.first;
-    print('🟡 API Call #$_totalApiCalls: searchNearby | $label | rank=$rankPreference');
+    print(
+        '🟡 API Call #$_totalApiCalls: searchNearby | $label | rank=$rankPreference');
 
     final Map<String, dynamic> bodyMap = {
       "locationRestriction": {
@@ -205,7 +204,7 @@ class PlacesApiService {
     final response = await http.post(
       Uri.parse('$_baseUrl/places:searchNearby'),
       headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
+        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow,places.regularOpeningHours.periods,places.utcOffsetMinutes',
       ),
       body: jsonEncode(bodyMap),
     );
@@ -217,7 +216,8 @@ class PlacesApiService {
 
     final data = json.decode(response.body);
     final List rawPlaces = data['places'] ?? [];
-    print('✅ searchNearby: ${rawPlaces.length} places (${duration.inMilliseconds}ms)');
+    print(
+        '✅ searchNearby: ${rawPlaces.length} places (${duration.inMilliseconds}ms)');
     return rawPlaces.map(_normalizePlace).toList();
   }
 
@@ -250,7 +250,7 @@ class PlacesApiService {
     final response = await http.post(
       url,
       headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
+        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow,places.regularOpeningHours.periods,places.utcOffsetMinutes',
       ),
       body: body,
     );
@@ -262,7 +262,8 @@ class PlacesApiService {
 
     final data = json.decode(response.body);
     final List rawPlaces = data['places'] ?? [];
-    print('✅ searchText: ${rawPlaces.length} places (${duration.inMilliseconds}ms)');
+    print(
+        '✅ searchText: ${rawPlaces.length} places (${duration.inMilliseconds}ms)');
     return rawPlaces.map(_normalizePlace).toList();
   }
 
@@ -289,7 +290,8 @@ class PlacesApiService {
 
     final response = await http.post(
       url,
-      headers: _headers('suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat'),
+      headers: _headers(
+          'suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat'),
       body: jsonEncode(body),
     );
 
@@ -301,15 +303,19 @@ class PlacesApiService {
     final data = json.decode(response.body);
     final suggestions = (data['suggestions'] as List?) ?? [];
 
-    return suggestions.map((s) {
-      final pred = s['placePrediction'];
-      return {
-        'placeId':       pred['placeId'] ?? '',
-        'description':   pred['text']?['text'] ?? '',
-        'mainText':      pred['structuredFormat']?['mainText']?['text'] ?? '',
-        'secondaryText': pred['structuredFormat']?['secondaryText']?['text'] ?? '',
-      };
-    }).where((s) => (s['placeId'] as String).isNotEmpty).toList();
+    return suggestions
+        .map((s) {
+          final pred = s['placePrediction'];
+          return {
+            'placeId': pred['placeId'] ?? '',
+            'description': pred['text']?['text'] ?? '',
+            'mainText': pred['structuredFormat']?['mainText']?['text'] ?? '',
+            'secondaryText':
+                pred['structuredFormat']?['secondaryText']?['text'] ?? '',
+          };
+        })
+        .where((s) => (s['placeId'] as String).isNotEmpty)
+        .toList();
   }
 
   /// 📍 Get lat/lng from place ID
@@ -317,7 +323,8 @@ class PlacesApiService {
     final url = Uri.parse('$_baseUrl/places/$placeId');
     final response = await http.get(
       url,
-      headers: _headers('displayName,formattedAddress,location,types'), // ← 加 types
+      headers:
+          _headers('displayName,formattedAddress,location,types'), // ← 加 types
     );
 
     if (response.statusCode != 200) {
@@ -327,11 +334,11 @@ class PlacesApiService {
 
     final data = json.decode(response.body);
     return {
-      'name':    data['displayName']?['text'] ?? '',
+      'name': data['displayName']?['text'] ?? '',
       'address': data['formattedAddress'] ?? '',
-      'lat':     data['location']?['latitude'],
-      'lng':     data['location']?['longitude'],
-      'types':   (data['types'] as List?)?.cast<String>() ?? <String>[], // ← 加这行
+      'lat': data['location']?['latitude'],
+      'lng': data['location']?['longitude'],
+      'types': (data['types'] as List?)?.cast<String>() ?? <String>[], // ← 加这行
     };
   }
 
@@ -342,10 +349,8 @@ class PlacesApiService {
 
     try {
       print('💾 Checking Firebase cache...');
-      final docSnapshot = await _firestore
-          .collection(_collectionName)
-          .doc(placeId)
-          .get();
+      final docSnapshot =
+          await _firestore.collection(_collectionName).doc(placeId).get();
 
       if (docSnapshot.exists) {
         final cachedData = docSnapshot.data()!;
@@ -357,13 +362,14 @@ class PlacesApiService {
           isExpired = age.inDays > 30;
         }
 
-        final hasTypes    = cachedData.containsKey('types') &&
+        final hasTypes = cachedData.containsKey('types') &&
             (cachedData['types'] as List?)?.isNotEmpty == true;
         final hasLocation = cachedData.containsKey('location');
 
         if (hasTypes && hasLocation && !isExpired) {
           _cacheHits++;
-          print('✅ CACHE HIT (${DateTime.now().difference(startTime).inMilliseconds}ms)');
+          print(
+              '✅ CACHE HIT (${DateTime.now().difference(startTime).inMilliseconds}ms)');
           return cachedData;
         } else {
           print('⚠️ Cache expired or outdated, re-fetching...');
@@ -380,7 +386,7 @@ class PlacesApiService {
       final response = await http.get(
         url,
         headers: _headers(
-          'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,primaryType,location',
+          'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,primaryType,location,utcOffsetMinutes',
         ),
       );
 
@@ -401,16 +407,15 @@ class PlacesApiService {
         'cachedAt': FieldValue.serverTimestamp(),
       });
 
-      print('✅ Fetched & cached (${DateTime.now().difference(startTime).inMilliseconds}ms)');
+      print(
+          '✅ Fetched & cached (${DateTime.now().difference(startTime).inMilliseconds}ms)');
       return data;
-
     } catch (e) {
       print('❌ Error in getPlaceDetails: $e');
       rethrow;
     }
   }
 
-  
   /// 🆕 把 getPlaceDetails() 的原始 Google 格式转成 PlaceModel。
   /// 专门给 RouteOptimizerPage 的候补池 lazy-hydrate 用——
   /// 存档时只存了 placeId，用户点开 "More Places" tab 才需要
@@ -424,27 +429,34 @@ class PlacesApiService {
         ? buildPhotoUrl(photos[0]['name'])
         : null;
 
-    final rawTypes = (data['types'] as List?)
-            ?.map((e) => e.toString())
-            .toList() ??
-        [];
+    final rawTypes =
+        (data['types'] as List?)?.map((e) => e.toString()).toList() ?? [];
+
+    final rawPeriods = (data['regularOpeningHours'] is Map)
+        ? (data['regularOpeningHours']['periods'] as List?)
+        : null;
+    final periods = rawPeriods
+        ?.map((p) => OpeningHoursPeriod.fromJson(p))
+        .whereType<OpeningHoursPeriod>()
+        .toList();
 
     return PlaceModel(
-      id:          placeId,
-      name:        data['displayName']?['text'] ?? 'Unknown',
-      address:     data['formattedAddress'],
-      lat:         (data['location']?['latitude']  as num?)?.toDouble(),
-      lng:         (data['location']?['longitude'] as num?)?.toDouble(),
-      rating:      (data['rating'] as num?)?.toDouble(),
-      photoUrl:    photoUrl,
-      source:      'google',
+      id: placeId,
+      name: data['displayName']?['text'] ?? 'Unknown',
+      address: data['formattedAddress'],
+      lat: (data['location']?['latitude'] as num?)?.toDouble(),
+      lng: (data['location']?['longitude'] as num?)?.toDouble(),
+      rating: (data['rating'] as num?)?.toDouble(),
+      photoUrl: photoUrl,
+      source: 'google',
       primaryType: data['primaryType'] as String?,
-      allTypes:    rawTypes,
-      isOpenNow:   data['regularOpeningHours']?['openNow'] as bool?,
+      allTypes: rawTypes,
+      isOpenNow: data['regularOpeningHours']?['openNow'] as bool?,
+      regularOpeningPeriods: periods,
+      utcOffsetMinutes: (data['utcOffsetMinutes'] as num?)?.toInt(),
     );
   }
-  
-  
+
   static Future<void> clearPlaceCache(String placeId) async {
     try {
       await _firestore.collection(_collectionName).doc(placeId).delete();
@@ -456,7 +468,7 @@ class PlacesApiService {
 
   static Future<void> clearAllCache() async {
     try {
-      final batch    = _firestore.batch();
+      final batch = _firestore.batch();
       final snapshot = await _firestore.collection(_collectionName).get();
       for (var doc in snapshot.docs) {
         batch.delete(doc.reference);
@@ -481,22 +493,22 @@ class PlacesApiService {
     }
 
     return {
-      'id':               p['id'],
-      'displayName':      p['displayName'],
+      'id': p['id'],
+      'displayName': p['displayName'],
       'formattedAddress': p['formattedAddress'] ?? '',
       'location': {
-        'latitude':  p['location']['latitude'],
+        'latitude': p['location']['latitude'],
         'longitude': p['location']['longitude'],
       },
-      'types':      (p['types'] as List?) ?? [],
-      'rating':     (p['rating'] as num?)?.toDouble(),
+      'types': (p['types'] as List?) ?? [],
+      'rating': (p['rating'] as num?)?.toDouble(),
       'userRatingCount': (p['userRatingCount'] as num?)?.toInt(),
-      'photos':     photoList,
+      'photos': photoList,
       'priceLevel': p['priceLevel'],
-      'isOpenNow':  p['regularOpeningHours']?['openNow'] as bool?, 
-      'source':     'google',
+      'isOpenNow': p['regularOpeningHours']?['openNow'] as bool?,
+      'regularOpeningHours': p['regularOpeningHours'],
+      'utcOffsetMinutes': p['utcOffsetMinutes'],
+      'source': 'google',
     };
   }
 }
-
-

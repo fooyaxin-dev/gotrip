@@ -16,6 +16,8 @@ class FavouriteButton extends StatefulWidget {
   final double? lat;
   final double? lng;
   final List<String>? types; // 👈 新增：用于 FavouritePage 分类 filter
+  final String source;
+  final String? googlePlaceId;
 
   final Color activeColor;
   final Color inactiveColor;
@@ -31,7 +33,9 @@ class FavouriteButton extends StatefulWidget {
     this.photoUrl,
     this.lat,
     this.lng,
-    this.types, // 👈 新增
+    this.types,
+    this.source = 'place',
+    this.googlePlaceId,
     this.activeColor = Colors.red,
     this.inactiveColor = Colors.grey,
     this.iconSize = 24,
@@ -86,9 +90,8 @@ class _FavouriteButtonState extends State<FavouriteButton>
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(newStatus
-            ? '❤️ Added to favourites'
-            : 'Removed from favourites'),
+        content: Text(
+            newStatus ? '❤️ Added to favourites' : 'Removed from favourites'),
         duration: const Duration(seconds: 1),
         behavior: SnackBarBehavior.floating,
       ),
@@ -105,6 +108,8 @@ class _FavouriteButtonState extends State<FavouriteButton>
           lat: widget.lat,
           lng: widget.lng,
           types: widget.types,
+          source: widget.source,
+          googlePlaceId: widget.googlePlaceId,
         );
       } else {
         await FavouriteService.removeFavourite(widget.placeId);
@@ -149,7 +154,8 @@ class _FavouriteButtonState extends State<FavouriteButton>
     }
   }
 
-  Future<void> _learnFromFavourite(List<String> types, bool isFavouriting) async {
+  Future<void> _learnFromFavourite(
+      List<String> types, bool isFavouriting) async {
     try {
       await UserPreferenceService.instance.updateFromFavourite(
         primaryType: types.isNotEmpty ? types.first : '',

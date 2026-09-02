@@ -1,6 +1,7 @@
 //routeOptimizerPage.dart
 import 'dart:ui' as ui;
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -15,10 +16,11 @@ import '../itinerary/itineraryDetail.dart';
 import '../../services/route_service.dart';
 import '../../models/placeModel.dart';
 import '../../services/placesAPI_service.dart';
-import 'placeDetailPage.dart'; // 跟 RealTimeDetectPage 用的是同一个相对路径，如果不在同一文件夹，按实际路径调整
-import '../../services/connectivity_service.dart';
+import 'placeDetailPage.dart';
 import '../../services/category_mapper.dart';
 import '../../services/error_handler.dart';
+import '../../services/flexible_route_optimizer.dart';
+import '../../services/opening_hours_evaluator.dart';
 
 class RouteOptimizerPage extends StatefulWidget {
   final ItineraryModel itinerary;
@@ -33,6 +35,7 @@ class RouteOptimizerPage extends StatefulWidget {
   final bool isEditingExisting;
   final List<PlaceModel> leftoverCandidates;
   final List<String> leftoverPlaceIds;
+  final bool preserveGeneratedSchedule;
 
   const RouteOptimizerPage({
     super.key,
@@ -44,6 +47,7 @@ class RouteOptimizerPage extends StatefulWidget {
     this.isEditingExisting = false,
     this.leftoverCandidates = const [],
     this.leftoverPlaceIds = const [],
+    this.preserveGeneratedSchedule = false,
   });
 
   @override
@@ -98,6 +102,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // Days currently fetching a real route matrix for Re-optimize
   final Set<int> _reOptimizingDays = {};
   bool _isReOptimizingAll = false;
+  bool _isInitialOptimizing = false;
+  bool _isAddingStop = false;
+  String? _addingCandidateId;
+  final Map<int, String> _dayRouteStatus = {};
+  final Map<int, List<String>> _dayWarnings = {};
 
   String _computeLegsSignature(int dayIndex) {
     final places = _itinerary.days[dayIndex].places;
@@ -201,23 +210,49 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   @override
   void initState() {
     super.initState();
-    _itinerary = widget.itinerary;
-    _leftovers = List.from(widget.leftoverCandidates);
-
-    // 🆕 Generate 流程直接带完整 PlaceModel，不需要 hydrate；
-    // Edit 已存档行程时只有 id，标记成"待 hydrate"，等用户真的点开
-    // More Places tab 才去补全，而不是一进页面就打一堆 API
-    if (widget.leftoverCandidates.isEmpty &&
-        widget.leftoverPlaceIds.isNotEmpty) {
-      _pendingLeftoverIds = List.from(widget.leftoverPlaceIds);
-      _poolHydrated = false;
-    } else {
-      _poolHydrated = true;
+    debugPrint(
+        '[ITIN_TRACE][OPT_INPUT] startLat=${widget.startLat} startLng=${widget.startLng} startLocationName=${widget.startLocationName} travelMode=${widget.travelMode.name} dayCount=${widget.itinerary.days.length}');
+    for (int d = 0; d < widget.itinerary.days.length; d++) {
+      for (int s = 0; s < widget.itinerary.days[d].places.length; s++) {
+        final p = widget.itinerary.days[d].places[s];
+        debugPrint(
+            '[ITIN_TRACE][OPT_INPUT] day=$d stop=$s placeId=${p.placeId} name=${p.name} lat=${p.lat} lng=${p.lng}');
+        debugPrint(
+            '[ROUTE_TRACE][ORIGINAL_ORDER] day=$d index=$s displayNumber=${s + 1} placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng} suggestedTime=${p.suggestedTime}');
+      }
     }
+    _itinerary = widget.itinerary;
+    final mergedLeftovers = <PlaceModel>[];
+    final loadedIds = <String>{};
+
+    for (final p in widget.leftoverCandidates) {
+      if (p.id.isNotEmpty && loadedIds.add(p.id)) {
+        mergedLeftovers.add(p);
+      }
+    }
+    for (final p in widget.itinerary.leftoverPlaces) {
+      if (p.id.isNotEmpty && loadedIds.add(p.id)) {
+        mergedLeftovers.add(p);
+      }
+    }
+
+    final allSourceIds = <String>{
+      ...widget.leftoverPlaceIds,
+      ...widget.itinerary.leftoverPlaceIds,
+    };
+
+    final pending = allSourceIds
+        .where((id) => id.isNotEmpty && !loadedIds.contains(id))
+        .toList();
+
+    _leftovers = mergedLeftovers;
+    _pendingLeftoverIds = pending;
+    _poolHydrated = pending.isEmpty;
 
     _updateMapOverlays();
 
-    if (!widget.isEditingExisting && _itinerary.id.isEmpty) {
+    if (!widget.isEditingExisting && !widget.preserveGeneratedSchedule) {
+      _isInitialOptimizing = true;
       _autoOptimizeAllDays();
     }
   }
@@ -229,6 +264,12 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       if (_itinerary.days[d].places.length >= 2) {
         await _reOptimizeDay(d);
       }
+    }
+    if (mounted) {
+      setState(() {
+        _isInitialOptimizing = false;
+      });
+      _updateMapOverlays();
     }
   }
 
@@ -256,10 +297,12 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         .toList();
     var changed = false;
 
-    bool isRestaurant(ItineraryPlace place) => CategoryMapper.isRestaurant(
-          place.primaryType,
-          const <String>[],
-        );
+    bool isRestaurant(ItineraryPlace place) =>
+        PlaceRoleClassifier.classify(
+          primaryType: place.primaryType,
+          allTypes: place.allTypes,
+        ) ==
+        PlaceRole.fullMeal;
 
     for (int pass = 0; pass < 60; pass++) {
       double bestSaving = 0;
@@ -334,9 +377,42 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     try {
       _improveCrossDayAssignments();
       if (mounted) setState(() {});
+      final failedDays = <OptimizationFailureInfo>[];
+      int optimizedCount = 0;
+
       for (int day = 0; day < _itinerary.days.length; day++) {
         if (!mounted) return;
-        await _reOptimizeDay(day);
+        if (_itinerary.days[day].places.length >= 2) {
+          final failure = await _reOptimizeDay(day, showFeedback: false);
+          if (failure != null) {
+            failedDays.add(failure);
+          } else {
+            optimizedCount++;
+          }
+        }
+      }
+
+      if (!mounted) return;
+
+      if (failedDays.isEmpty) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('All ${_itinerary.days.length} days optimized.'),
+            duration: const Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+            backgroundColor: const Color(0xFF1A1A2E),
+          ),
+        );
+      } else {
+        _showOptimizationFeedbackSheet(
+          failedDays,
+          totalDays: _itinerary.days.length,
+          successfulDays: optimizedCount,
+        );
       }
     } finally {
       if (mounted) setState(() => _isReOptimizingAll = false);
@@ -413,26 +489,27 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     final legMins = <int>[];
     double totalM = 0;
 
-    double prevLat;
-    double prevLng;
-    if (dayIndex == 0) {
-      prevLat = widget.startLat;
-      prevLng = widget.startLng;
-    } else if (places.isNotEmpty) {
-      prevLat = places.first.lat ?? widget.startLat;
-      prevLng = places.first.lng ?? widget.startLng;
-    } else {
-      prevLat = widget.startLat;
-      prevLng = widget.startLng;
-    }
+    final hasOrigin = widget.startLat != 0 &&
+        widget.startLng != 0 &&
+        widget.startLat.isFinite &&
+        widget.startLng.isFinite;
+
+    double prevLat = hasOrigin
+        ? widget.startLat
+        : (places.isNotEmpty
+            ? (places.first.lat ?? widget.startLat)
+            : widget.startLat);
+    double prevLng = hasOrigin
+        ? widget.startLng
+        : (places.isNotEmpty
+            ? (places.first.lng ?? widget.startLng)
+            : widget.startLng);
 
     for (int i = 0; i < places.length; i++) {
       final place = places[i];
       final lat = place.lat ?? prevLat;
       final lng = place.lng ?? prevLng;
-      // Day > 0 has no known real-world starting point, so its first
-      // leg contributes 0 distance instead of a misleading jump.
-      final d = (dayIndex > 0 && i == 0)
+      final d = (!hasOrigin && i == 0)
           ? 0.0
           : Geolocator.distanceBetween(prevLat, prevLng, lat, lng);
       legs.add(d);
@@ -459,19 +536,27 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     final places = _itinerary.days[dayIndex].places;
     if (places.isEmpty) return;
 
-    // Build the (from → to) pairs for every leg of this day first, so
-    // all the Routes API calls can fire in parallel instead of one by one.
+    final hasOrigin = widget.startLat != 0 &&
+        widget.startLng != 0 &&
+        widget.startLat.isFinite &&
+        widget.startLng.isFinite;
+
     final pairs = <_LegPair>[];
-    double prevLat =
-        dayIndex == 0 ? widget.startLat : (places.first.lat ?? widget.startLat);
-    double prevLng =
-        dayIndex == 0 ? widget.startLng : (places.first.lng ?? widget.startLng);
+    double prevLat = hasOrigin
+        ? widget.startLat
+        : (places.isNotEmpty
+            ? (places.first.lat ?? widget.startLat)
+            : widget.startLat);
+    double prevLng = hasOrigin
+        ? widget.startLng
+        : (places.isNotEmpty
+            ? (places.first.lng ?? widget.startLng)
+            : widget.startLng);
 
     for (int i = 0; i < places.length; i++) {
       final lat = places[i].lat ?? prevLat;
       final lng = places[i].lng ?? prevLng;
-      // Day > 0 has no known real-world starting point for its first leg.
-      final skip = dayIndex > 0 && i == 0;
+      final skip = !hasOrigin && i == 0;
       pairs.add(_LegPair(
           fromLat: prevLat,
           fromLng: prevLng,
@@ -482,8 +567,30 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       prevLng = lng;
     }
 
+    debugPrint(
+        '[ROUTE_TRACE][OPTIMIZATION_CONFIG] optimizeWaypointOrder=false travelMode=${widget.travelMode.name}');
+    if (hasOrigin) {
+      debugPrint(
+          '[ROUTE_TRACE][API_INPUT] day=$dayIndex originLat=${widget.startLat} originLng=${widget.startLng} travelMode=${widget.travelMode.name} inputIndex=0 placeId=ORIGIN name="${widget.startLocationName ?? "Origin"}" lat=${widget.startLat} lng=${widget.startLng} pointType=origin');
+    }
+    for (int i = 0; i < places.length; i++) {
+      final p = places[i];
+      final inputIdx = hasOrigin ? i + 1 : i;
+      final pointType = i == places.length - 1
+          ? 'destination'
+          : (!hasOrigin && i == 0 ? 'origin' : 'waypoint');
+      debugPrint(
+          '[ROUTE_TRACE][API_INPUT] day=$dayIndex originLat=${widget.startLat} originLng=${widget.startLng} travelMode=${widget.travelMode.name} inputIndex=$inputIdx placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng} pointType=$pointType');
+    }
+    debugPrint(
+        '[ROUTE_TRACE][API_RETURNED_ORDER] optimizedIndices=NONE routePreservesInputOrder=true');
+
     final results = await Future.wait(pairs.map((p) async {
-      if (p.skip) return const _LegResult(distance: 0, minutes: 0, points: []);
+      if (p.skip) {
+        debugPrint(
+            '[ITIN_TRACE][ROAD_LEG] day=$dayIndex from=(${p.fromLat},${p.fromLng}) to=(${p.toLat},${p.toLng}) travelMode=${widget.travelMode.name} roadDistanceMeters=0 roadDurationSec=0 calculationSource="skipped_day_start"');
+        return const _LegResult(distance: 0, minutes: 0, points: []);
+      }
       try {
         final summary = await RouteService.instance.fetchRouteSummary(
           fromLat: p.fromLat,
@@ -492,29 +599,53 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           toLng: p.toLng,
           mode: widget.travelMode,
         );
+        debugPrint(
+            '[ITIN_TRACE][ROAD_LEG] day=$dayIndex from=(${p.fromLat},${p.fromLng}) to=(${p.toLat},${p.toLng}) travelMode=${widget.travelMode.name} roadDistanceMeters=${summary.distanceMeters} roadDurationSec=${summary.durationSeconds} calculationSource="google_routes_api"');
         return _LegResult(
           distance: summary.distanceMeters,
           minutes: (summary.durationSeconds / 60).round(),
           points: summary.polylinePoints,
+          isVerified: true,
         );
       } catch (_) {
         // Per-leg fallback — one failed leg shouldn't blank out the rest.
         final straight =
             Geolocator.distanceBetween(p.fromLat, p.fromLng, p.toLat, p.toLng);
+        debugPrint(
+            '[ITIN_TRACE][ROAD_LEG] day=$dayIndex from=(${p.fromLat},${p.fromLng}) to=(${p.toLat},${p.toLng}) travelMode=${widget.travelMode.name} roadDistanceMeters=$straight roadDurationSec=${(straight / _speedMps).round()} calculationSource="geolocator_straight_line_fallback"');
         return _LegResult(
           distance: straight,
           minutes: (straight / _speedMps / 60).round(),
           points: [LatLng(p.fromLat, p.fromLng), LatLng(p.toLat, p.toLng)],
+          isVerified: false,
         );
       }
     }));
 
     if (!mounted || _legsFetchGen[dayIndex] != myGen) return; // superseded
 
+    for (int i = 0; i < results.length; i++) {
+      final p = places[i];
+      final fromPlaceId = (hasOrigin && i == 0)
+          ? 'ORIGIN'
+          : (i > 0 ? places[i - 1].placeId : places.first.placeId);
+      final fromName = (hasOrigin && i == 0)
+          ? (widget.startLocationName ?? 'Origin')
+          : (i > 0 ? places[i - 1].name : places.first.name);
+      final r = results[i];
+      final legStatus =
+          pairs[i].skip ? 'skipped' : (r.isVerified ? 'valid' : 'unverified');
+      debugPrint(
+          '[ROUTE_TRACE][LEG] day=$dayIndex legIndex=$i fromPlaceId=$fromPlaceId fromName="$fromName" toPlaceId=${p.placeId} toName="${p.name}" distanceMeters=${r.distance} durationSeconds=${r.minutes * 60} legStatus=$legStatus');
+    }
+
     final distances = results.map((r) => r.distance).toList();
     final minutes = results.map((r) => r.minutes).toList();
     final segments = results.map((r) => r.points).toList();
     final totalM = distances.fold<double>(0, (a, b) => a + b);
+
+    debugPrint(
+        '[ITIN_TRACE][ROAD_TOTAL] day=$dayIndex totalRoadDistanceMeters=$totalM totalDisplayedKm=${(totalM / 1000).toStringAsFixed(2)}');
 
     final newLegs = _DayLegs(
       distances: distances,
@@ -565,6 +696,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   }
 
   Future<void> _updateOverviewOverlays() async {
+    debugPrint(
+        '[ITIN_TRACE][MAP_ORIGIN] blueMarkerLat=${widget.startLat} blueMarkerLng=${widget.startLng} label=${widget.startLocationName}');
     final newMarkers = <Marker>{};
     final newPolylines = <Polyline>{};
     final allPoints = <LatLng>[LatLng(widget.startLat, widget.startLng)];
@@ -577,15 +710,22 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           InfoWindow(title: widget.startLocationName ?? 'Your Location'),
     ));
 
+    final hasOrigin = widget.startLat != 0 &&
+        widget.startLng != 0 &&
+        widget.startLat.isFinite &&
+        widget.startLng.isFinite;
+
     for (int d = 0; d < _itinerary.days.length; d++) {
       final color = _dayColors[d % _dayColors.length];
       final places = _itinerary.days[d].places;
       final dayPoints = <LatLng>[]; // marker points — used for camera fit only
-      if (d == 0) dayPoints.add(LatLng(widget.startLat, widget.startLng));
+      if (hasOrigin) dayPoints.add(LatLng(widget.startLat, widget.startLng));
 
       for (int i = 0; i < places.length; i++) {
         final p = places[i];
         if (p.lat == null || p.lng == null) continue;
+        debugPrint(
+            '[ROUTE_TRACE][MARKER_ORDER] day=$d markerNumber=${i + 1} sourceListIndex=$i placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng}');
         final icon = await _buildNumberedPin(i + 1, color);
         newMarkers.add(Marker(
           markerId: MarkerId('d${d}_s$i'),
@@ -599,6 +739,14 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
       final legs = _legsFor(d);
       final routePoints = <LatLng>[];
+      final polySource =
+          legs.isReal ? 'reconstructed_legs' : 'straight_line_fallback';
+      debugPrint('[ROUTE_TRACE][POLYLINE_SOURCE] day=$d source=$polySource');
+      for (int i = 0; i < places.length; i++) {
+        final p = places[i];
+        debugPrint(
+            '[ROUTE_TRACE][POLYLINE_ORDER] day=$d position=$i placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng}');
+      }
       if (legs.isReal) {
         for (final seg in legs.segments) {
           routePoints.addAll(seg);
@@ -633,7 +781,12 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     final color = _dayColors[dayIndex % _dayColors.length];
     final points = <LatLng>[];
 
-    if (dayIndex == 0) {
+    final hasOrigin = widget.startLat != 0 &&
+        widget.startLng != 0 &&
+        widget.startLat.isFinite &&
+        widget.startLng.isFinite;
+
+    if (hasOrigin) {
       newMarkers.add(Marker(
         markerId: const MarkerId('__start__'),
         position: LatLng(widget.startLat, widget.startLng),
@@ -647,6 +800,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     for (int i = 0; i < places.length; i++) {
       final p = places[i];
       if (p.lat == null || p.lng == null) continue;
+      debugPrint(
+          '[ROUTE_TRACE][MARKER_ORDER] day=$dayIndex markerNumber=${i + 1} sourceListIndex=$i placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng}');
       final icon =
           await _buildNumberedPin(i + 1, _stopColor(i, places.length, color));
       newMarkers.add(Marker(
@@ -660,6 +815,15 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     final legs = _legsFor(dayIndex);
     final routePoints = <LatLng>[];
+    final polySource =
+        legs.isReal ? 'reconstructed_legs' : 'straight_line_fallback';
+    debugPrint(
+        '[ROUTE_TRACE][POLYLINE_SOURCE] day=$dayIndex source=$polySource');
+    for (int i = 0; i < places.length; i++) {
+      final p = places[i];
+      debugPrint(
+          '[ROUTE_TRACE][POLYLINE_ORDER] day=$dayIndex position=$i placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng}');
+    }
     if (legs.isReal) {
       for (final seg in legs.segments) {
         routePoints.addAll(seg);
@@ -667,6 +831,28 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     } else {
       routePoints.addAll(points); // straight-line fallback while loading
     }
+
+    final originalPlaces = widget.itinerary.days.length > dayIndex
+        ? widget.itinerary.days[dayIndex].places
+        : <ItineraryPlace>[];
+    final originalIds = originalPlaces.map((p) => p.placeId).toList();
+    final currentIds = places.map((p) => p.placeId).toList();
+    final markerIds = places
+        .where((p) => p.lat != null && p.lng != null)
+        .map((p) => p.placeId)
+        .toList();
+    final cardIds = List<String>.from(currentIds);
+
+    debugPrint(
+        '[ROUTE_TRACE][ORDER_SUMMARY] day=$dayIndex originalIds=$originalIds apiInputIds=$currentIds apiReturnedIds=$currentIds markerIds=$markerIds cardIds=$cardIds');
+
+    final apiMatchesOriginal = originalIds.join(',') == currentIds.join(',');
+    final markerMatchesApi = markerIds.join(',') == currentIds.join(',');
+    final cardsMatchApi = cardIds.join(',') == currentIds.join(',');
+    final markersMatchCards = markerIds.join(',') == cardIds.join(',');
+
+    debugPrint(
+        '[ROUTE_TRACE][ORDER_CHECK] day=$dayIndex apiMatchesOriginal=$apiMatchesOriginal markerMatchesApi=$markerMatchesApi cardsMatchApi=$cardsMatchApi markersMatchCards=$markersMatchCards');
 
     if (routePoints.length >= 2) {
       newPolylines.add(Polyline(
@@ -767,8 +953,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // 🆕 把 _pendingLeftoverIds 逐个补全成 PlaceModel。
   // 单个 id 失败（place 下架/无效）不影响其他的，直接跳过。
   Future<void> _hydrateLeftoverPool() async {
-    if (_pendingLeftoverIds.isEmpty) {
-      if (mounted) {
+    if (_isHydratingPool || _pendingLeftoverIds.isEmpty) {
+      if (mounted && _pendingLeftoverIds.isEmpty) {
         setState(() {
           _poolHydrated = true;
           _isHydratingPool = false;
@@ -786,59 +972,60 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     // Work from a snapshot so the source list cannot
     // change while the async requests are running.
     final idsToHydrate = List<String>.from(_pendingLeftoverIds);
+    const batchSize = 3;
 
-    final successfulPlaces = <PlaceModel>[];
-    final failedIds = <String>[];
+    for (int i = 0; i < idsToHydrate.length; i += batchSize) {
+      if (!mounted) break;
+      final batch = idsToHydrate.sublist(
+        i,
+        math.min(i + batchSize, idsToHydrate.length),
+      );
 
-    await Future.wait(
-      idsToHydrate.map((id) async {
-        try {
-          final place = await PlacesApiService.getPlaceModelDetails(
-            id,
-          );
+      final batchSuccesses = <PlaceModel>[];
 
-          successfulPlaces.add(place);
-        } catch (e) {
-          // IMPORTANT:
-          // A temporary API/network/cache failure must NOT
-          // permanently remove this candidate from the pool.
-          failedIds.add(id);
+      await Future.wait(
+        batch.map((id) async {
+          try {
+            final place = await PlacesApiService.getPlaceModelDetails(
+              id,
+            );
 
-          debugPrint(
-            '⚠️ Failed to hydrate leftover place '
-            '$id: $e',
-          );
+            batchSuccesses.add(place);
+          } catch (e) {
+            // A temporary API/network/cache failure must NOT
+            // permanently remove this candidate from the pool.
+            debugPrint(
+              '⚠️ Failed to hydrate leftover place '
+              '$id: $e',
+            );
+          }
+        }),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        final existingIds = _leftovers.map((p) => p.id).toSet();
+        for (final place in batchSuccesses) {
+          if (existingIds.add(place.id)) {
+            _leftovers.add(place);
+          }
+          _pendingLeftoverIds.remove(place.id);
         }
-      }),
-    );
+      });
+    }
 
     if (!mounted) return;
 
     setState(() {
-      // Add successful candidates without duplicates.
-      final existingIds = _leftovers.map((p) => p.id).toSet();
-
-      for (final place in successfulPlaces) {
-        if (existingIds.add(place.id)) {
-          _leftovers.add(place);
-        }
-      }
-
-      // Keep ONLY failed IDs pending.
-      //
-      // They remain stored and can be retried later.
-      _pendingLeftoverIds = failedIds;
-
       _isHydratingPool = false;
-
-      // Fully hydrated only when nothing remains unresolved.
       _poolHydrated = _pendingLeftoverIds.isEmpty;
     });
 
     debugPrint(
-      '✅ Leftover hydration: '
-      '${successfulPlaces.length} loaded, '
-      '${failedIds.length} pending retry',
+      '✅ Leftover hydration finished: '
+      '${_leftovers.length} total loaded, '
+      '${_pendingLeftoverIds.length} pending retry',
     );
   }
 
@@ -903,9 +1090,58 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       return;
     }
 
+    final currentPlaces = _itinerary.days[dayIndex].places;
+    if (placeIndex < 0 || placeIndex >= currentPlaces.length) return;
+    final removed = currentPlaces[placeIndex];
+
+    final removedRole = PlaceRoleClassifier.classify(
+      primaryType: removed.primaryType,
+      allTypes: removed.allTypes,
+    );
+
+    if (removedRole == PlaceRole.fullMeal) {
+      final remainingPlaces = List<ItineraryPlace>.from(currentPlaces)
+        ..removeAt(placeIndex);
+      final hasNonMeal = remainingPlaces.any((p) =>
+          PlaceRoleClassifier.classify(
+            primaryType: p.primaryType,
+            allTypes: p.allTypes,
+          ) ==
+          PlaceRole.nonMeal);
+      final hasRemainingFullMeal = remainingPlaces.any((p) =>
+          PlaceRoleClassifier.classify(
+            primaryType: p.primaryType,
+            allTypes: p.allTypes,
+          ) ==
+          PlaceRole.fullMeal);
+
+      if (hasNonMeal && !hasRemainingFullMeal) {
+        debugPrint(
+          '[ITIN_REMOVE_STOP][RESULT] day=$dayIndex placeId=${removed.placeId} status=rejected reason=required_full_meal',
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                "This is the day's only meal stop. Add or swap another restaurant first.",
+                style: TextStyle(fontSize: 13),
+              ),
+              duration: const Duration(seconds: 4),
+              behavior: SnackBarBehavior.floating,
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              backgroundColor: const Color(0xFF1A1A2E),
+            ),
+          );
+        }
+        return;
+      }
+    }
+
     final days = List<ItineraryDay>.from(_itinerary.days);
-    final places = List<ItineraryPlace>.from(days[dayIndex].places);
-    final removed = places[placeIndex];
+    final places = List<ItineraryPlace>.from(currentPlaces);
     places.removeAt(placeIndex);
     days[dayIndex] = days[dayIndex].copyWith(places: places);
 
@@ -913,9 +1149,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       _lastDeletedPlace = removed;
       _lastDeletedDayIndex = dayIndex;
       _lastDeletedPlaceIndex = placeIndex;
-      _itinerary = _itinerary.copyWith(days: days);
 
-      // 🆕 删除后放回候补池,跟 swap 的逻辑保持一致
+      // Return removed place to leftovers with complete snapshot preserved
       if (removed.lat != null &&
           removed.lng != null &&
           !_leftovers.any((p) => p.id == removed.placeId)) {
@@ -928,13 +1163,30 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           photoUrl: removed.photoUrl,
           source: 'google',
           primaryType: removed.primaryType,
-          allTypes:
-              removed.primaryType != null ? [removed.primaryType!] : const [],
+          allTypes: removed.allTypes.isNotEmpty
+              ? removed.allTypes
+              : (removed.primaryType != null
+                  ? [removed.primaryType!]
+                  : const []),
+          regularOpeningPeriods: removed.regularOpeningPeriods,
         ));
       }
+
+      _itinerary = _itinerary.copyWith(
+        days: days,
+        leftoverPlaces: _leftovers,
+      );
     });
+
+    debugPrint(
+      '[ITIN_REMOVE_STOP] day=$dayIndex placeId=${removed.placeId} returnedToLeftovers=true newStopCount=${places.length}',
+    );
+
     _invalidateLegs(dayIndex);
     _updateMapOverlays();
+    if (places.length >= 2) {
+      _reOptimizeDay(dayIndex);
+    }
 
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -955,7 +1207,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
             ),
           ],
         ),
-        duration: const Duration(seconds: 5), // 🔧 3 → 5
+        duration: const Duration(seconds: 5),
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -994,16 +1246,322 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     _updateMapOverlays();
   }
 
-  Future<void> _reOptimizeDay(int dayIndex) async {
+  OptimizationFailureInfo _identifyOptimizationFailure({
+    required int dayIndex,
+    required PermutationOptimizationResult optResult,
+    required List<ItineraryPlace> geoPlaces,
+    required Map<String, List<OpeningHoursPeriod>> periodsByPlaceId,
+    required String? dayDate,
+    required bool isRoadMatrixFailure,
+  }) {
+    final dayNumber = dayIndex + 1;
+    final weekday = dayDate != null && dayDate.isNotEmpty
+        ? ((DateTime.tryParse(dayDate)?.weekday ?? 1) % 7)
+        : 1;
+
+    if (isRoadMatrixFailure ||
+        (optResult.rejectedInvalidRoute > 0 &&
+            optResult.rejectedOpeningHours == 0 &&
+            optResult.rejectedMealWindow == 0 &&
+            optResult.rejectedDayEnd == 0)) {
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.routeUnavailable,
+        title: 'Route information unavailable',
+        message:
+            'We couldn’t check the route between some places in Day $dayNumber. Your current itinerary has been kept. Please try again later.',
+      );
+    }
+
+    final totalIssues = (optResult.rejectedOpeningHours > 0 ? 1 : 0) +
+        (optResult.rejectedMealWindow > 0 ? 1 : 0) +
+        (optResult.rejectedDayEnd > 0 ? 1 : 0) +
+        (optResult.rejectedInvalidRoute > 0 ? 1 : 0);
+
+    if (totalIssues > 1) {
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.multipleIssues,
+        title: 'Schedule adjustments needed',
+        message:
+            'Some visit times or routes in Day $dayNumber may not work as planned. Your current itinerary has been kept.',
+      );
+    }
+
+    if (optResult.rejectedDayEnd > 0) {
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.dayEndTooLate,
+        title: 'Day finishes late',
+        message:
+            'Day $dayNumber may finish later than 9:30 PM. Your current itinerary has been kept.',
+      );
+    }
+
+    if (optResult.rejectedMealWindow > 0) {
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.mealTiming,
+        title: 'Meal timing issue',
+        message:
+            'A meal stop in Day $dayNumber may be scheduled at an inconvenient time. Your current itinerary has been kept.',
+      );
+    }
+
+    // Opening hours evaluation — identify specific conflicting place when possible
+    final conflictingPlaces = <ItineraryPlace>[];
+    for (final place in geoPlaces) {
+      final periods =
+          periodsByPlaceId[place.placeId] ?? place.regularOpeningPeriods;
+      if (periods != null && periods.isNotEmpty) {
+        bool isOpenAnytime = false;
+        for (int t = 9 * 60; t <= 18 * 60; t += 60) {
+          final status = OpeningHoursEvaluator.evaluateVisit(
+            visitWeekday: weekday,
+            arrivalMinutes: t,
+            durationMinutes:
+                place.durationMinutes > 0 ? place.durationMinutes : 60,
+            periods: periods,
+          );
+          if (status == OpeningStatus.open) {
+            isOpenAnytime = true;
+            break;
+          }
+        }
+        if (!isOpenAnytime) {
+          conflictingPlaces.add(place);
+        }
+      }
+    }
+
+    if (conflictingPlaces.length == 1) {
+      final placeName = conflictingPlaces.first.name;
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.knownOpeningHoursConflict,
+        conflictingPlaceName: placeName,
+        conflictingPlaceId: conflictingPlaces.first.placeId,
+        title: 'Some visit times may not work',
+        message:
+            'Day $dayNumber couldn’t be fully optimized because $placeName may be closed when you arrive. Your current itinerary has been kept.',
+      );
+    }
+
+    return OptimizationFailureInfo(
+      dayIndex: dayIndex,
+      dayNumber: dayNumber,
+      issueType: OptimizationIssueType.multipleOpeningHoursConflicts,
+      title: 'Some visit times may not work',
+      message:
+          'Day $dayNumber couldn’t be fully optimized because some places may be closed when you arrive. Your current itinerary has been kept.',
+    );
+  }
+
+  void _showOptimizationFeedbackSheet(
+    List<OptimizationFailureInfo> failures, {
+    int? totalDays,
+    int? successfulDays,
+  }) {
+    if (!mounted || failures.isEmpty) return;
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        final isMultiDay =
+            (totalDays != null && totalDays > 1) || failures.length > 1;
+        final title =
+            isMultiDay ? 'Optimization Summary' : failures.first.title;
+
+        String mainMessage;
+        if (isMultiDay && totalDays != null && successfulDays != null) {
+          if (successfulDays > 0) {
+            final failedDayNums =
+                failures.map((f) => 'Day ${f.dayNumber}').join(', ');
+            mainMessage =
+                'We optimized $successfulDays of $totalDays days. $failedDayNums still has visit-time conflicts, so its original plan was kept.';
+          } else {
+            mainMessage =
+                'We couldn’t fully optimize these days due to timing or route conflicts. Your original itinerary has been kept.';
+          }
+        } else {
+          mainMessage = failures.first.message;
+        }
+
+        return Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF3E0),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(
+                      Icons.info_outline_rounded,
+                      color: Color(0xFFE65100),
+                      size: 24,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1A1A2E),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                mainMessage,
+                style: TextStyle(
+                  fontSize: 14,
+                  height: 1.4,
+                  color: Colors.grey[800],
+                ),
+              ),
+              if (isMultiDay && failures.length > 1) ...[
+                const SizedBox(height: 12),
+                const Divider(height: 1),
+                const SizedBox(height: 8),
+                ...failures.map((f) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded,
+                              size: 16, color: Colors.orange[800]),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              f.conflictingPlaceName != null
+                                  ? 'Day ${f.dayNumber}: ${f.conflictingPlaceName} closed'
+                                  : 'Day ${f.dayNumber}: timing conflict',
+                              style: const TextStyle(
+                                  fontSize: 13, fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              Navigator.pop(sheetContext);
+                              _switchTab(f.dayIndex);
+                            },
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: Text('View Day ${f.dayNumber}',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF7C4DFF))),
+                          ),
+                        ],
+                      ),
+                    )),
+              ],
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(sheetContext),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        side: BorderSide(color: Colors.grey[300]!),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text(
+                        'Keep My Plan',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1A1A2E),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (!isMultiDay) ...[
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.pop(sheetContext);
+                          _switchTab(failures.first.dayIndex);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF7C4DFF),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: Text(
+                          'View Day ${failures.first.dayNumber}',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<OptimizationFailureInfo?> _reOptimizeDay(int dayIndex,
+      {bool showFeedback = true}) async {
     // Historical/visited stops are immutable. Re-optimizing a partially
     // travelled day could change their order, so only untouched days enter
     // the automatic solver; future stops remain manually editable.
     if (_isDayLocked(dayIndex) || _isDayStarted(dayIndex)) {
-      return;
+      return null;
     }
 
     final places = _itinerary.days[dayIndex].places;
-    if (places.length < 2) return; // nothing meaningful to reorder
+    if (places.length < 2) return null; // nothing meaningful to reorder
 
     setState(() => _reOptimizingDays.add(dayIndex));
 
@@ -1012,43 +1570,49 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           places.where((p) => p.lat != null && p.lng != null).toList();
       final nonGeoPlaces =
           places.where((p) => p.lat == null || p.lng == null).toList();
-      if (geoPlaces.length < 2) return;
+      if (geoPlaces.length < 2) return null;
 
-      // Day 0 has a known real starting point (widget.startLat/Lng) — include
-      // it as point 0 so the matrix/ordering accounts for it. Day > 0 has no
-      // known real start, so ordering just starts from the first place.
-      final hasStart = dayIndex == 0;
+      // Every day uses the shared trip origin as its starting point when
+      // valid origin coordinates are available.
+      final hasStart = widget.startLat != 0 &&
+          widget.startLng != 0 &&
+          widget.startLat.isFinite &&
+          widget.startLng.isFinite;
       final points = <LatLng>[
         if (hasStart) LatLng(widget.startLat, widget.startLng),
         ...geoPlaces.map((p) => LatLng(p.lat!, p.lng!)),
       ];
 
-      // Try to get a real road-distance matrix for every pair of points in
-      // one call. If the API call fails for any reason (offline, quota,
-      // etc.), fall back to straight-line distance so re-optimize still works.
-      List<List<double>>? matrix;
+      List<List<double>>? matrixDist;
+      List<List<int>>? matrixDur;
+      String roadMatrixSource = 'google_routes_api';
       try {
         final elements = await RouteService.instance.fetchRouteMatrix(
           origins: points,
           destinations: points,
           mode: widget.travelMode,
         );
-        matrix = List.generate(
+        matrixDist = List.generate(
             points.length, (_) => List.filled(points.length, double.infinity));
+        matrixDur =
+            List.generate(points.length, (_) => List.filled(points.length, -1));
         for (final e in elements) {
           if (e.isValid &&
               e.originIndex < points.length &&
               e.destinationIndex < points.length) {
-            matrix[e.originIndex][e.destinationIndex] = e.distanceMeters;
+            matrixDist[e.originIndex][e.destinationIndex] = e.distanceMeters;
+            matrixDur[e.originIndex][e.destinationIndex] = e.durationSeconds;
           }
         }
       } catch (_) {
-        matrix = null;
+        matrixDist = null;
+        matrixDur = null;
+        roadMatrixSource = 'geolocator_straight_line_fallback';
       }
 
-      double distBetween(int i, int j) {
-        final fromMatrix = matrix?[i][j];
-        if (fromMatrix != null && fromMatrix.isFinite) return fromMatrix;
+      double getDist(int i, int j) {
+        final d = matrixDist?[i][j];
+        if (d != null && d.isFinite && d >= 0) return d;
         return Geolocator.distanceBetween(
           points[i].latitude,
           points[i].longitude,
@@ -1057,269 +1621,112 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         );
       }
 
-      // Route optimization has two levels:
-      //   1. preserve sensible meal slots;
-      //   2. choose the nearest candidate that matches the current slot.
-      //
-      // A completely unconstrained nearest-neighbour pass can put two nearby
-      // restaurants next to each other and destroy the itinerary's meal
-      // pattern. Food-only days remain all-Food naturally.
-      final placeOffset = hasStart ? 1 : 0;
-      final remaining = List<int>.generate(
-        geoPlaces.length,
-        (i) => i + placeOffset,
-      );
-      final order = <int>[];
-      final restaurantCount = geoPlaces.where((place) {
-        return CategoryMapper.isRestaurant(
-          place.primaryType,
-          const <String>[],
-        );
-      }).length;
-      final mealPattern = _buildMealSlotPattern(
-        geoPlaces.length,
-        restaurantCount,
-      );
-
-      bool isRestaurantPoint(int pointIndex) {
-        final place = geoPlaces[pointIndex - placeOffset];
-        return CategoryMapper.isRestaurant(
-          place.primaryType,
-          const <String>[],
-        );
+      int getDurSec(int i, int j) {
+        final dur = matrixDur?[i][j];
+        if (dur != null && dur >= 0) return dur;
+        final d = getDist(i, j);
+        return (d / _speedMps).round();
       }
 
-      int? currentPoint = hasStart ? 0 : null;
-      for (int slot = 0; slot < mealPattern.length; slot++) {
-        final desiredRestaurant = mealPattern[slot];
-        var eligible = remaining
-            .where((idx) => isRestaurantPoint(idx) == desiredRestaurant)
-            .toList();
+      final periodsByPlaceId = <String, List<OpeningHoursPeriod>>{};
+      for (final place in geoPlaces) {
+        if (place.regularOpeningPeriods != null &&
+            place.regularOpeningPeriods!.isNotEmpty) {
+          periodsByPlaceId[place.placeId] = place.regularOpeningPeriods!;
+        }
+      }
+      for (final place in _leftovers) {
+        if (place.regularOpeningPeriods != null &&
+            place.regularOpeningPeriods!.isNotEmpty) {
+          periodsByPlaceId[place.id] = place.regularOpeningPeriods!;
+        }
+      }
 
-        // Defensive fallback for incomplete/misclassified place data.
-        if (eligible.isEmpty) eligible = List<int>.from(remaining);
+      final optResult = FlexibleRouteOptimizer.optimizeDay(
+        dayIndex: dayIndex,
+        dayDate: dayIndex < _itinerary.days.length
+            ? _itinerary.days[dayIndex].date
+            : null,
+        places: geoPlaces,
+        originLat: hasStart ? widget.startLat : null,
+        originLng: hasStart ? widget.startLng : null,
+        originName: hasStart ? (widget.startLocationName ?? 'Origin') : null,
+        travelMode: widget.travelMode,
+        getDistanceMeters: getDist,
+        getDurationSeconds: getDurSec,
+        periodsByPlaceId: periodsByPlaceId,
+        roadMatrixSource: roadMatrixSource,
+      );
 
-        int selected;
-        if (currentPoint != null) {
-          final current = currentPoint; // promote to non-null
-          selected = eligible.reduce((best, candidate) {
-            return distBetween(current, candidate) < distBetween(current, best)
-                ? candidate
-                : best;
-          });
-        } else {
-          // Later days have no user origin. Start at the most central candidate
-          // of the required type instead of arbitrarily fixing list index 0.
-          selected = eligible.reduce((best, candidate) {
-            final candidateTotal = remaining
-                .where((idx) => idx != candidate)
-                .fold<double>(
-                    0, (sum, idx) => sum + distBetween(candidate, idx));
-            final bestTotal = remaining
-                .where((idx) => idx != best)
-                .fold<double>(0, (sum, idx) => sum + distBetween(best, idx));
-            return candidateTotal < bestTotal ? candidate : best;
-          });
+      if (!optResult.isFeasible) {
+        String dominantRejectionReason = 'opening_hours';
+        if (optResult.rejectedMealWindow >= optResult.rejectedOpeningHours &&
+            optResult.rejectedMealWindow >= optResult.rejectedDayEnd &&
+            optResult.rejectedMealWindow >= optResult.rejectedInvalidRoute) {
+          dominantRejectionReason = 'meal_window';
+        } else if (optResult.rejectedDayEnd >= optResult.rejectedOpeningHours &&
+            optResult.rejectedDayEnd >= optResult.rejectedMealWindow &&
+            optResult.rejectedDayEnd >= optResult.rejectedInvalidRoute) {
+          dominantRejectionReason = 'day_end';
+        } else if (optResult.rejectedInvalidRoute >=
+                optResult.rejectedOpeningHours &&
+            optResult.rejectedInvalidRoute >= optResult.rejectedMealWindow &&
+            optResult.rejectedInvalidRoute >= optResult.rejectedDayEnd) {
+          dominantRejectionReason = 'invalid_road';
         }
 
-        order.add(selected);
-        remaining.remove(selected);
-        currentPoint = selected;
+        debugPrint(
+          '[FLEX_ROUTE][INFEASIBLE] day=$dayIndex rejectedOpeningHours=${optResult.rejectedOpeningHours} rejectedMealWindow=${optResult.rejectedMealWindow} rejectedDayEnd=${optResult.rejectedDayEnd} rejectedInvalidRoute=${optResult.rejectedInvalidRoute} dominantReason=$dominantRejectionReason action=preserve_previous',
+        );
+
+        final failureInfo = _identifyOptimizationFailure(
+          dayIndex: dayIndex,
+          optResult: optResult,
+          geoPlaces: geoPlaces,
+          periodsByPlaceId: periodsByPlaceId,
+          dayDate: dayIndex < _itinerary.days.length
+              ? _itinerary.days[dayIndex].date
+              : null,
+          isRoadMatrixFailure: matrixDist == null || matrixDur == null,
+        );
+
+        if (showFeedback && mounted) {
+          _showOptimizationFeedbackSheet([failureInfo]);
+        }
+        return failureInfo;
+      } else {
+        final reordered = optResult.places;
+        if (!mounted) return null;
+        final days = List<ItineraryDay>.from(_itinerary.days);
+        days[dayIndex] =
+            days[dayIndex].copyWith(places: [...reordered, ...nonGeoPlaces]);
+        setState(() {
+          _dayRouteStatus[dayIndex] = 'verified_feasible';
+          _dayWarnings.remove(dayIndex);
+          _itinerary = _itinerary.copyWith(days: days);
+        });
+        _invalidateLegs(dayIndex);
+        _updateMapOverlays();
+
+        if (showFeedback && mounted) {
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Day ${dayIndex + 1} route optimized.'),
+              duration: const Duration(seconds: 3),
+              behavior: SnackBarBehavior.floating,
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              backgroundColor: const Color(0xFF1A1A2E),
+            ),
+          );
+        }
+        return null;
       }
-
-      final slotMinutes = geoPlaces
-          .map((p) => _parseTimeToMinutes(p.suggestedTime))
-          .toList()
-        ..sort();
-      final optimizedOrder = _improveRouteOrder(
-        order,
-        distance: distBetween,
-        isRestaurantPoint: isRestaurantPoint,
-        slotMinutes: slotMinutes,
-        startPoint: hasStart ? 0 : null,
-      );
-
-      final reordered =
-          optimizedOrder.map((idx) => geoPlaces[idx - placeOffset]).toList();
-
-      // Preserve the day's existing chronological slots. Sequentially adding
-      // only visit duration used to collapse lunch/dinner gaps after a route
-      // reorder, which is another way restaurants became grouped together.
-      final retimed = List<ItineraryPlace>.generate(
-        reordered.length,
-        (i) => reordered[i].copyWith(
-          suggestedTime: _minutesToTimeString(slotMinutes[i]),
-        ),
-      );
-
-      if (!mounted) return;
-
-      final days = List<ItineraryDay>.from(_itinerary.days);
-      days[dayIndex] =
-          days[dayIndex].copyWith(places: [...retimed, ...nonGeoPlaces]);
-      setState(() => _itinerary = _itinerary.copyWith(days: days));
-      _invalidateLegs(dayIndex);
-      _updateMapOverlays();
     } finally {
       if (mounted) setState(() => _reOptimizingDays.remove(dayIndex));
     }
-  }
-
-  List<int> _improveRouteOrder(
-    List<int> initial, {
-    required double Function(int, int) distance,
-    required bool Function(int) isRestaurantPoint,
-    required List<int> slotMinutes,
-    int? startPoint,
-  }) {
-    if (initial.length < 2) return List<int>.from(initial);
-    final restaurantCount = initial.where(isRestaurantPoint).length;
-    final allRestaurants = restaurantCount == initial.length;
-
-    int minutesOutsideMealWindows(int minute) {
-      const windows = <(int, int)>[
-        (11 * 60, 14 * 60),
-        (17 * 60 + 30, 20 * 60 + 30),
-      ];
-      var nearest = 24 * 60;
-      for (final window in windows) {
-        if (minute >= window.$1 && minute <= window.$2) return 0;
-        final delta =
-            minute < window.$1 ? window.$1 - minute : minute - window.$2;
-        if (delta < nearest) nearest = delta;
-      }
-      return nearest;
-    }
-
-    double objective(List<int> route) {
-      var cost = 0.0;
-      if (startPoint != null) cost += distance(startPoint, route.first);
-      for (int i = 1; i < route.length; i++) {
-        cost += distance(route[i - 1], route[i]);
-      }
-
-      if (!allRestaurants) {
-        for (int i = 0; i < route.length && i < slotMinutes.length; i++) {
-          if (isRestaurantPoint(route[i])) {
-            // Soft time-window cost: distance can override it when necessary,
-            // but lunch/dinner placement is normally preferred.
-            cost += minutesOutsideMealWindows(slotMinutes[i]) * 35.0;
-            if (i > 0 && isRestaurantPoint(route[i - 1])) cost += 4000.0;
-          }
-        }
-      }
-      return cost;
-    }
-
-    var best = List<int>.from(initial);
-    var bestCost = objective(best);
-
-    // Swap, relocate and 2-opt neighbourhoods. This evaluates the
-    // whole route cost rather than greedily selecting only the next stop.
-    for (int pass = 0; pass < 80; pass++) {
-      List<int>? bestCandidate;
-      var candidateCost = bestCost;
-
-      for (int i = 0; i < best.length - 1; i++) {
-        for (int j = i + 1; j < best.length; j++) {
-          final swapped = List<int>.from(best);
-          final temp = swapped[i];
-          swapped[i] = swapped[j];
-          swapped[j] = temp;
-          final swapCost = objective(swapped);
-          if (swapCost + 1.0 < candidateCost) {
-            candidateCost = swapCost;
-            bestCandidate = swapped;
-          }
-
-          final relocated = List<int>.from(best);
-          final moved = relocated.removeAt(i);
-          relocated.insert(j, moved);
-          final relocateCost = objective(relocated);
-          if (relocateCost + 1.0 < candidateCost) {
-            candidateCost = relocateCost;
-            bestCandidate = relocated;
-          }
-
-          final relocatedBack = List<int>.from(best);
-          final movedBack = relocatedBack.removeAt(j);
-          relocatedBack.insert(i, movedBack);
-          final relocateBackCost = objective(relocatedBack);
-          if (relocateBackCost + 1.0 < candidateCost) {
-            candidateCost = relocateBackCost;
-            bestCandidate = relocatedBack;
-          }
-
-          final reversed = <int>[
-            ...best.take(i),
-            ...best.sublist(i, j + 1).reversed,
-            ...best.skip(j + 1),
-          ];
-          final reverseCost = objective(reversed);
-          if (reverseCost + 1.0 < candidateCost) {
-            candidateCost = reverseCost;
-            bestCandidate = reversed;
-          }
-        }
-      }
-
-      if (bestCandidate == null) break;
-      best = bestCandidate;
-      bestCost = candidateCost;
-    }
-
-    return best;
-  }
-
-  List<bool> _buildMealSlotPattern(int totalStops, int restaurantCount) {
-    if (totalStops <= 0 || restaurantCount <= 0) {
-      return List<bool>.filled(totalStops, false);
-    }
-    if (restaurantCount >= totalStops) {
-      return List<bool>.filled(totalStops, true);
-    }
-
-    final preferredRestaurantSlots = switch (totalStops) {
-      1 => <int>[],
-      2 => <int>[1],
-      3 => <int>[1],
-      4 => <int>[1, 3],
-      5 => <int>[1, 3],
-      _ => <int>[2, 4],
-    };
-
-    final selectedSlots = <int>{};
-    for (final slot in preferredRestaurantSlots) {
-      if (selectedSlots.length >= restaurantCount) break;
-      if (slot < totalStops) selectedSlots.add(slot);
-    }
-
-    // Normally mixed itineraries need at most two restaurant slots. This
-    // fallback still preserves every restaurant if older saved data contains
-    // more, while spreading the extra Food stops as evenly as possible.
-    while (selectedSlots.length < restaurantCount) {
-      int? bestSlot;
-      double bestSeparation = -1;
-      for (int slot = 0; slot < totalStops; slot++) {
-        if (selectedSlots.contains(slot)) continue;
-        final separation = selectedSlots.isEmpty
-            ? totalStops.toDouble()
-            : selectedSlots
-                .map((used) => (slot - used).abs().toDouble())
-                .reduce((a, b) => a < b ? a : b);
-        if (separation > bestSeparation) {
-          bestSeparation = separation;
-          bestSlot = slot;
-        }
-      }
-      if (bestSlot == null) break;
-      selectedSlots.add(bestSlot);
-    }
-
-    return List<bool>.generate(
-      totalStops,
-      selectedSlots.contains,
-    );
   }
 
   // 晚上 22:00 之后才结束/开始，视为需要提醒用户"太晚了"
@@ -1836,6 +2243,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       }.toList();
 
       _itinerary = _itinerary.copyWith(
+        leftoverPlaces: _leftovers,
         leftoverPlaceIds: leftoverIds,
       );
 
@@ -2025,6 +2433,33 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
               },
             ),
           ),
+
+          if (_isInitialOptimizing)
+            Positioned.fill(
+              child: Container(
+                color: const Color(0xFFF8F6FF),
+                child: const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(Color(0xFF7C4DFF)),
+                      ),
+                      SizedBox(height: 16),
+                      Text(
+                        'Optimizing route order and opening hours...',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF2D3436),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -2206,43 +2641,103 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
                 final isBusy = isOverview
                     ? _isReOptimizingAll
                     : _reOptimizingDays.contains(dayIndex);
-                return GestureDetector(
-                  onTap: isBusy
-                      ? null
-                      : isOverview
-                          ? _reOptimizeAllDays
-                          : () => _reOptimizeDay(dayIndex),
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(20),
+                final canAddStop = !isOverview &&
+                    dayIndex >= 0 &&
+                    dayIndex < _itinerary.days.length &&
+                    !_isDayLocked(dayIndex);
+
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (canAddStop) ...[
+                      GestureDetector(
+                        onTap: _itinerary.days[dayIndex].places.length >= 6
+                            ? () {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Maximum 6 stops per day'),
+                                    duration: Duration(seconds: 2),
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                              }
+                            : () => _showAddStopSheet(dayIndex),
+                        child: Container(
+                          margin: const EdgeInsets.only(right: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF00BFA5).withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.add_location_alt_rounded,
+                                size: 13,
+                                color:
+                                    _itinerary.days[dayIndex].places.length >= 6
+                                        ? Colors.grey
+                                        : const Color(0xFF00BFA5),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                '+ Add Stop',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color:
+                                      _itinerary.days[dayIndex].places.length >=
+                                              6
+                                          ? Colors.grey
+                                          : const Color(0xFF00BFA5),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    GestureDetector(
+                      onTap: isBusy
+                          ? null
+                          : isOverview
+                              ? _reOptimizeAllDays
+                              : () => _reOptimizeDay(dayIndex),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          if (isBusy)
+                            const SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 1.5, color: Color(0xFF7C4DFF)),
+                            )
+                          else
+                            const Icon(Icons.auto_fix_high_rounded,
+                                size: 13, color: Color(0xFF7C4DFF)),
+                          const SizedBox(width: 4),
+                          Text(
+                              isBusy
+                                  ? 'Optimizing...'
+                                  : isOverview
+                                      ? 'Optimize All'
+                                      : 'Re-optimize',
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF7C4DFF),
+                                  fontWeight: FontWeight.w600)),
+                        ]),
+                      ),
                     ),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      if (isBusy)
-                        const SizedBox(
-                          width: 13,
-                          height: 13,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 1.5, color: Color(0xFF7C4DFF)),
-                        )
-                      else
-                        const Icon(Icons.auto_fix_high_rounded,
-                            size: 13, color: Color(0xFF7C4DFF)),
-                      const SizedBox(width: 4),
-                      Text(
-                          isBusy
-                              ? 'Optimizing...'
-                              : isOverview
-                                  ? 'Optimize All'
-                                  : 'Re-optimize',
-                          style: const TextStyle(
-                              fontSize: 11,
-                              color: Color(0xFF7C4DFF),
-                              fontWeight: FontWeight.w600)),
-                    ]),
-                  ),
+                  ],
                 );
               }),
           ],
@@ -2626,6 +3121,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           physics: const ClampingScrollPhysics(),
           slivers: [
             SliverToBoxAdapter(child: _buildDaySummaryBar(dayIndex, legs)),
+            SliverToBoxAdapter(child: _buildDayWarningBanner(dayIndex)),
             const SliverToBoxAdapter(child: Divider(height: 1, thickness: 0.5)),
             if (day.places.isEmpty)
               SliverToBoxAdapter(
@@ -2684,6 +3180,57 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
                   ),
                 ),
               ),
+            if (!_isDayLocked(dayIndex))
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: OutlinedButton.icon(
+                    onPressed: day.places.length >= 6
+                        ? () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Maximum 6 stops per day'),
+                                duration: Duration(seconds: 2),
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        : () => _showAddStopSheet(dayIndex),
+                    icon: Icon(
+                      Icons.add_location_alt_rounded,
+                      size: 16,
+                      color: day.places.length >= 6
+                          ? Colors.grey
+                          : const Color(0xFF7C4DFF),
+                    ),
+                    label: Text(
+                      day.places.length >= 6
+                          ? 'Maximum 6 stops per day'
+                          : '+ Add Stop to Day ${dayIndex + 1}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: day.places.length >= 6
+                            ? Colors.grey
+                            : const Color(0xFF7C4DFF),
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      side: BorderSide(
+                        color: day.places.length >= 6
+                            ? Colors.grey[300]!
+                            : const Color(0xFF7C4DFF).withOpacity(0.5),
+                        width: 1.2,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             const SliverToBoxAdapter(child: SizedBox(height: 24)),
           ],
         );
@@ -2701,6 +3248,60 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
             SizedBox(height: 12),
           ],
         ),
+      );
+    }
+
+    if (_leftovers.isEmpty &&
+        _pendingLeftoverIds.isNotEmpty &&
+        !_isHydratingPool) {
+      return ListView(
+        controller: scrollController,
+        physics: const ClampingScrollPhysics(),
+        children: [
+          SizedBox(
+            height: 280,
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.cloud_off_rounded,
+                        size: 56, color: Colors.grey[400]),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Unable to load alternative places',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1A1A2E),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Check your connection and try again.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: _isHydratingPool ? null : _hydrateLeftoverPool,
+                      icon: const Icon(Icons.refresh_rounded, size: 16),
+                      label: Text('Retry ${_pendingLeftoverIds.length} places'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF7C4DFF),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
       );
     }
 
@@ -2744,6 +3345,42 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       physics: const ClampingScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       children: [
+        if (_pendingLeftoverIds.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.amber[50],
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.amber[200]!),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline_rounded,
+                    size: 14, color: Colors.amber[800]),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${_pendingLeftoverIds.length} alternative places could not be loaded',
+                    style: TextStyle(fontSize: 11, color: Colors.amber[900]),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: _isHydratingPool ? null : _hydrateLeftoverPool,
+                  child: Text(
+                    'Retry',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.amber[900],
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         Row(children: [
           Icon(Icons.info_outline_rounded, size: 13, color: Colors.grey[400]),
           const SizedBox(width: 6),
@@ -2869,6 +3506,63 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     );
   }
 
+  Widget _buildDayWarningBanner(int dayIndex) {
+    final status = _dayRouteStatus[dayIndex];
+    final warnings = _dayWarnings[dayIndex] ?? [];
+    if (status == null ||
+        status == 'verified_feasible' ||
+        (warnings.isEmpty && status != 'unverified')) {
+      return const SizedBox.shrink();
+    }
+
+    String text = '';
+    if (status == 'unverified') {
+      text = 'Route unverified — tap Re-optimize to recalculate road route';
+    } else {
+      final msgs = <String>[];
+      if (warnings.contains('opening_hours')) {
+        msgs.add('A place may be closed at suggested time');
+      }
+      if (warnings.contains('meal_window')) {
+        msgs.add('Meal timing may not be ideal');
+      }
+      if (warnings.contains('day_end')) {
+        msgs.add('Day extends beyond 9:30 PM');
+      }
+      if (warnings.contains('opening_hours_unavailable')) {
+        msgs.add('Opening hours unavailable — please verify');
+      }
+      text = msgs.isEmpty ? 'Timing or route warning' : msgs.join(' • ');
+    }
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3E0),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFFB74D), width: 1),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              size: 16, color: Color(0xFFE65100)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFFE65100),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildDaySummaryBar(int dayIndex, _DayLegs legs) {
     final day = _itinerary.days[dayIndex];
     final visitMin = day.places.fold<int>(0, (s, p) => s + p.durationMinutes);
@@ -2956,6 +3650,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     required bool isLast,
     required Key key,
   }) {
+    debugPrint(
+        '[ROUTE_TRACE][CARD_ORDER] day=$dayIndex cardNumber=${index + 1} sourceListIndex=$index placeId=${place.placeId} name="${place.name}" suggestedTime=${place.suggestedTime}');
     final dayColor = _dayColors[dayIndex % _dayColors.length];
 
     final numColor = _stopColor(
@@ -3514,7 +4210,6 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     days[dayIndex] = days[dayIndex].copyWith(places: places);
 
     setState(() {
-      _itinerary = _itinerary.copyWith(days: days);
       _leftovers.removeWhere((p) => p.id == replacement.id);
       _pendingLeftoverIds.remove(replacement.id);
       if (old.lat != null &&
@@ -3529,9 +4224,16 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           photoUrl: old.photoUrl,
           source: 'google',
           primaryType: old.primaryType,
-          allTypes: old.primaryType != null ? [old.primaryType!] : const [],
+          allTypes: old.allTypes.isNotEmpty
+              ? old.allTypes
+              : (old.primaryType != null ? [old.primaryType!] : const []),
+          regularOpeningPeriods: old.regularOpeningPeriods,
         ));
       }
+      _itinerary = _itinerary.copyWith(
+        days: days,
+        leftoverPlaces: _leftovers,
+      );
     });
 
     _invalidateLegs(dayIndex);
@@ -3549,11 +4251,12 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         backgroundColor: const Color(0xFF1A1A2E),
       ),
     );
+
+    if (places.length >= 2) {
+      _reOptimizeDay(dayIndex);
+    }
   }
 
-  // The leftover pool was built from the categories selected during Generate.
-  // Swap may use any of those selected categories, rather than being locked to
-  // the current place's category. No additional nearby-search API call is made.
   // The leftover pool was built from the categories selected during Generate.
   // Swap may use any of those selected categories, rather than being locked to
   // the current place's category. No additional nearby-search API call is made.
@@ -3635,12 +4338,6 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
                           style: TextStyle(color: Colors.grey[400])),
                     )
                   : Builder(builder: (_) {
-                      // Group while preserving the existing distance/rating
-                      // order — candidates is already sorted, and Map
-                      // insertion order keeps that ordering within each
-                      // category bucket. Grouped by the canonical category
-                      // (not the display string) so it lines up with
-                      // _typeLabel's key set.
                       final grouped = <String, List<PlaceModel>>{};
                       for (final c in candidates) {
                         final category = CategoryMapper.resolvePrimaryType(
@@ -3723,6 +4420,616 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
                     }),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addStop(int dayIndex, PlaceModel candidate) async {
+    if (_isAddingStop) return;
+
+    final currentPlaces = _itinerary.days[dayIndex].places;
+    debugPrint(
+      '[ITIN_ADD_STOP][REQUEST] day=$dayIndex placeId=${candidate.id} name="${candidate.name}" currentStopCount=${currentPlaces.length}',
+    );
+
+    // Hard-block 1: Day locked or started
+    if (_isDayLocked(dayIndex) || _isDayStarted(dayIndex)) {
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=rejected reason=day_locked newStopCount=${currentPlaces.length}',
+      );
+      return;
+    }
+
+    // Hard-block 2: Max 6 stops per day
+    if (currentPlaces.length >= 6) {
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=rejected reason=max_stops_reached newStopCount=${currentPlaces.length}',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Maximum 6 stops per day'),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Hard-block 3: Missing or invalid coordinates
+    if (candidate.lat == null ||
+        candidate.lng == null ||
+        !candidate.lat!.isFinite ||
+        !candidate.lng!.isFinite) {
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=rejected reason=invalid_coordinates newStopCount=${currentPlaces.length}',
+      );
+      return;
+    }
+
+    // Hard-block 4: Duplicate place anywhere in itinerary
+    final scheduledIds =
+        _itinerary.days.expand((d) => d.places).map((p) => p.placeId).toSet();
+    if (scheduledIds.contains(candidate.id)) {
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=rejected reason=duplicate_place newStopCount=${currentPlaces.length}',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('This place is already in your itinerary'),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    _isAddingStop = true;
+    _addingCandidateId = candidate.id;
+    if (mounted) setState(() {});
+
+    try {
+      final candidateRole = PlaceRoleClassifier.classify(
+        primaryType: candidate.primaryType,
+        allTypes: candidate.allTypes,
+      );
+
+      final candidatePlace = ItineraryPlace(
+        placeId: candidate.id,
+        name: candidate.name,
+        address: candidate.address ?? '',
+        photoUrl: candidate.photoUrl,
+        lat: candidate.lat,
+        lng: candidate.lng,
+        primaryType: candidate.primaryType,
+        allTypes: candidate.allTypes,
+        regularOpeningPeriods: candidate.regularOpeningPeriods,
+        suggestedTime: '09:00',
+        durationMinutes: candidateRole == PlaceRole.fullMeal ? 75 : 90,
+      );
+
+      final trialPlaces = List<ItineraryPlace>.from(currentPlaces)
+        ..add(candidatePlace);
+
+      final hasStart = widget.startLat != 0 &&
+          widget.startLng != 0 &&
+          widget.startLat.isFinite &&
+          widget.startLng.isFinite;
+
+      final geoPlaces =
+          trialPlaces.where((p) => p.lat != null && p.lng != null).toList();
+      final nonGeoPlaces =
+          trialPlaces.where((p) => p.lat == null || p.lng == null).toList();
+
+      final points = <LatLng>[
+        if (hasStart) LatLng(widget.startLat, widget.startLng),
+        ...geoPlaces.map((p) => LatLng(p.lat!, p.lng!)),
+      ];
+
+      final matrixDist = List.generate(
+          points.length, (_) => List.filled(points.length, double.infinity));
+      final matrixDur =
+          List.generate(points.length, (_) => List.filled(points.length, -1));
+
+      try {
+        final elements = await RouteService.instance.fetchRouteMatrix(
+          origins: points,
+          destinations: points,
+          mode: widget.travelMode,
+        );
+        if (elements.isNotEmpty) {
+          for (final e in elements) {
+            if (e.isValid &&
+                e.originIndex < points.length &&
+                e.destinationIndex < points.length &&
+                e.distanceMeters.isFinite &&
+                !e.distanceMeters.isNaN &&
+                e.distanceMeters >= 0 &&
+                e.durationSeconds >= 0) {
+              matrixDist[e.originIndex][e.destinationIndex] = e.distanceMeters;
+              matrixDur[e.originIndex][e.destinationIndex] = e.durationSeconds;
+            }
+          }
+        }
+      } catch (_) {
+        // Handled below if matrix is empty/disconnected
+      }
+
+      final periodsByPlaceId = <String, List<OpeningHoursPeriod>>{};
+      for (final place in geoPlaces) {
+        if (place.regularOpeningPeriods != null &&
+            place.regularOpeningPeriods!.isNotEmpty) {
+          periodsByPlaceId[place.placeId] = place.regularOpeningPeriods!;
+        }
+      }
+
+      // Check strict feasibility first
+      final optResult = FlexibleRouteOptimizer.optimizeDay(
+        dayIndex: dayIndex,
+        dayDate: dayIndex < _itinerary.days.length
+            ? _itinerary.days[dayIndex].date
+            : null,
+        places: geoPlaces,
+        originLat: hasStart ? widget.startLat : null,
+        originLng: hasStart ? widget.startLng : null,
+        originName: hasStart ? (widget.startLocationName ?? 'Origin') : null,
+        travelMode: widget.travelMode,
+        getDistanceMeters: (i, j) => i == j ? 0.0 : matrixDist[i][j],
+        getDurationSeconds: (i, j) => i == j ? 0 : matrixDur[i][j],
+        periodsByPlaceId: periodsByPlaceId,
+        roadMatrixSource: 'google_routes_api',
+      );
+
+      String routeStatus;
+      final List<String> warningReasons = [];
+      String snackBarMessage;
+      List<ItineraryPlace> finalPlaces;
+
+      if (optResult.isFeasible) {
+        // CASE A: Fully Feasible
+        routeStatus = 'verified_feasible';
+        snackBarMessage = 'Added and route optimized.';
+        finalPlaces = [...optResult.places, ...nonGeoPlaces];
+      } else {
+        // CASE B & C: Find the shortest connected road permutation using only valid edges
+        final offset = hasStart ? 1 : 0;
+        final placeIndices = List.generate(geoPlaces.length, (i) => i);
+        final allPermutations =
+            FlexibleRouteOptimizer.generatePermutations(placeIndices);
+
+        List<int>? bestConnectedPerm;
+        double bestDist = double.infinity;
+
+        for (final perm in allPermutations) {
+          bool connected = true;
+          double dSum = 0;
+
+          if (hasStart) {
+            final d0 = matrixDist[0][perm[0] + offset];
+            final dur0 = matrixDur[0][perm[0] + offset];
+            if (!d0.isFinite || d0.isNaN || d0 < 0 || dur0 < 0) {
+              connected = false;
+            } else {
+              dSum += d0;
+            }
+          }
+
+          if (connected) {
+            for (int s = 0; s < perm.length - 1; s++) {
+              final d = matrixDist[perm[s] + offset][perm[s + 1] + offset];
+              final dur = matrixDur[perm[s] + offset][perm[s + 1] + offset];
+              if (!d.isFinite || d.isNaN || d < 0 || dur < 0) {
+                connected = false;
+                break;
+              }
+              dSum += d;
+            }
+          }
+
+          if (connected) {
+            if (dSum < bestDist) {
+              bestDist = dSum;
+              bestConnectedPerm = perm;
+            }
+          }
+        }
+
+        if (bestConnectedPerm != null) {
+          // Connected route found via road matrix!
+          routeStatus = 'verified_with_warning';
+
+          final dayDate = dayIndex < _itinerary.days.length
+              ? _itinerary.days[dayIndex].date
+              : null;
+          final int weekday = dayDate != null && dayDate.isNotEmpty
+              ? ((DateTime.tryParse(dayDate)?.weekday ?? 1) % 7)
+              : 1;
+
+          int cursorMinutes = 9 * 60; // 09:00
+          final orderedGeoPlaces = <ItineraryPlace>[];
+
+          bool hasOpeningHoursWarning = false;
+          bool hasMealWindowWarning = false;
+          bool hasDayEndWarning = false;
+          bool hasHoursUnavailable = false;
+
+          for (int s = 0; s < bestConnectedPerm.length; s++) {
+            final pIdx = bestConnectedPerm[s];
+            final originalPlace = geoPlaces[pIdx];
+            final role = PlaceRoleClassifier.classify(
+              primaryType: originalPlace.primaryType,
+              allTypes: originalPlace.allTypes,
+            );
+
+            int legDur = 0;
+            if (s == 0) {
+              legDur = hasStart ? matrixDur[0][pIdx + offset] : 0;
+            } else {
+              final prevIdx = bestConnectedPerm[s - 1];
+              legDur = matrixDur[prevIdx + offset][pIdx + offset];
+            }
+            if (legDur < 0) legDur = 0;
+
+            final travelMin = (legDur / 60.0).ceil();
+            final arrivalMin = cursorMinutes + travelMin;
+            final durMin = originalPlace.durationMinutes > 0
+                ? originalPlace.durationMinutes
+                : FlexibleRouteOptimizer.getDefaultDurationMinutes(
+                    originalPlace.primaryType);
+
+            int visitStart = arrivalMin;
+            if (role == PlaceRole.fullMeal) {
+              if (arrivalMin < FlexibleRouteOptimizer.lunchStartMinutes) {
+                visitStart = FlexibleRouteOptimizer.lunchStartMinutes;
+              } else if (arrivalMin > FlexibleRouteOptimizer.lunchEndMinutes &&
+                  arrivalMin < FlexibleRouteOptimizer.dinnerStartMinutes) {
+                visitStart = FlexibleRouteOptimizer.dinnerStartMinutes;
+              }
+
+              if (visitStart > FlexibleRouteOptimizer.dinnerEndMinutes ||
+                  (visitStart > FlexibleRouteOptimizer.lunchEndMinutes &&
+                      visitStart < FlexibleRouteOptimizer.dinnerStartMinutes)) {
+                hasMealWindowWarning = true;
+              }
+            }
+
+            final periods = periodsByPlaceId[originalPlace.placeId] ??
+                originalPlace.regularOpeningPeriods;
+            if (periods == null || periods.isEmpty) {
+              hasHoursUnavailable = true;
+            } else {
+              final opStatus = OpeningHoursEvaluator.evaluateVisit(
+                visitWeekday: weekday,
+                arrivalMinutes: visitStart,
+                durationMinutes: durMin,
+                periods: periods,
+              );
+              if (opStatus == OpeningStatus.closed) {
+                hasOpeningHoursWarning = true;
+              }
+            }
+
+            final visitEnd = visitStart + durMin;
+            if (visitEnd > FlexibleRouteOptimizer.maxDayEndMinutes) {
+              hasDayEndWarning = true;
+            }
+
+            cursorMinutes = visitEnd;
+
+            orderedGeoPlaces.add(originalPlace.copyWith(
+              suggestedTime:
+                  FlexibleRouteOptimizer.minutesToTimeString(visitStart),
+              durationMinutes: durMin,
+            ));
+          }
+
+          final warningMsgs = <String>[];
+          if (hasOpeningHoursWarning) {
+            warningReasons.add('opening_hours');
+            warningMsgs.add('this place may be closed at the suggested time');
+          }
+          if (hasMealWindowWarning) {
+            warningReasons.add('meal_window');
+            warningMsgs.add('the meal timing may not be ideal');
+          }
+          if (hasDayEndWarning) {
+            warningReasons.add('day_end');
+            warningMsgs.add('this may extend your day beyond 9:30 PM');
+          }
+          if (warningReasons.isEmpty && hasHoursUnavailable) {
+            warningReasons.add('opening_hours_unavailable');
+            warningMsgs.add(
+                'opening hours unavailable — please verify before visiting');
+          }
+
+          if (warningMsgs.isEmpty) {
+            snackBarMessage = 'Added and route optimized.';
+          } else {
+            snackBarMessage = 'Added, but ${warningMsgs.join(' and ')}.';
+          }
+
+          finalPlaces = [...orderedGeoPlaces, ...nonGeoPlaces];
+        } else {
+          // CASE D: Road Matrix Completely Unavailable / No Connected Permutation
+          routeStatus = 'unverified';
+          warningReasons.add('route_unavailable');
+          snackBarMessage =
+              'Place added, but the route could not be verified. Try Re-optimize later.';
+
+          int prevEnd = 9 * 60;
+          if (currentPlaces.isNotEmpty) {
+            final lastP = currentPlaces.last;
+            final lastStart = FlexibleRouteOptimizer.parseTimeToMinutes(
+                lastP.suggestedTime,
+                fallback: 9 * 60);
+            final lastDur = lastP.durationMinutes > 0
+                ? lastP.durationMinutes
+                : FlexibleRouteOptimizer.getDefaultDurationMinutes(
+                    lastP.primaryType);
+            prevEnd = lastStart + lastDur + 30;
+          }
+
+          final appendedCandidate = candidatePlace.copyWith(
+            suggestedTime: FlexibleRouteOptimizer.minutesToTimeString(prevEnd),
+          );
+          finalPlaces = [...currentPlaces, appendedCandidate];
+        }
+      }
+
+      // Commit update
+      _leftovers.removeWhere((p) => p.id == candidate.id);
+      _pendingLeftoverIds.remove(candidate.id);
+
+      final days = List<ItineraryDay>.from(_itinerary.days);
+      days[dayIndex] = days[dayIndex].copyWith(places: finalPlaces);
+
+      setState(() {
+        _dayRouteStatus[dayIndex] = routeStatus;
+        _dayWarnings[dayIndex] = warningReasons;
+        _itinerary = _itinerary.copyWith(
+          days: days,
+          leftoverPlaces: _leftovers,
+        );
+      });
+
+      _invalidateLegs(dayIndex);
+      _updateMapOverlays();
+
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=accepted routeStatus=$routeStatus warningReasons=${warningReasons.isEmpty ? "none" : warningReasons.join(",")} newStopCount=${finalPlaces.length}',
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              snackBarMessage,
+              style: const TextStyle(fontSize: 13),
+            ),
+            duration: const Duration(seconds: 4),
+            behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            backgroundColor: const Color(0xFF1A1A2E),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAddingStop = false;
+          _addingCandidateId = null;
+        });
+      } else {
+        _isAddingStop = false;
+        _addingCandidateId = null;
+      }
+    }
+  }
+
+  void _showAddStopSheet(int dayIndex) {
+    if (_isDayLocked(dayIndex) || _isDayStarted(dayIndex)) return;
+
+    final currentPlaces = _itinerary.days[dayIndex].places;
+    if (currentPlaces.length >= 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Maximum 6 stops per day'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final scheduledIds = _itinerary.days
+        .expand((day) => day.places)
+        .map((place) => place.placeId)
+        .toSet();
+
+    double centerLat = widget.startLat;
+    double centerLng = widget.startLng;
+    if (currentPlaces.isNotEmpty) {
+      final valid =
+          currentPlaces.where((p) => p.lat != null && p.lng != null).toList();
+      if (valid.isNotEmpty) {
+        centerLat =
+            valid.map((p) => p.lat!).reduce((a, b) => a + b) / valid.length;
+        centerLng =
+            valid.map((p) => p.lng!).reduce((a, b) => a + b) / valid.length;
+      }
+    }
+
+    final candidates = _leftovers.where((place) {
+      final category = CategoryMapper.resolvePrimaryType(
+        place.primaryType,
+        place.allTypes,
+      );
+      return !scheduledIds.contains(place.id) &&
+          CategoryMapper.isLearnableCategory(category);
+    }).toList()
+      ..sort((a, b) {
+        final da = (a.lat != null && a.lng != null)
+            ? _distSqStatic(a.lat!, a.lng!, centerLat, centerLng)
+            : double.infinity;
+        final db = (b.lat != null && b.lng != null)
+            ? _distSqStatic(b.lat!, b.lng!, centerLat, centerLng)
+            : double.infinity;
+        final distanceOrder = da.compareTo(db);
+        if (distanceOrder != 0) return distanceOrder;
+        return (b.rating ?? 0).compareTo(a.rating ?? 0);
+      });
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => Container(
+          height: MediaQuery.of(context).size.height * 0.6,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Add to Day ${dayIndex + 1}',
+                        style: const TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.bold)),
+                    Text('${candidates.length} options',
+                        style:
+                            TextStyle(fontSize: 12, color: Colors.grey[500])),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: candidates.isEmpty
+                    ? Center(
+                        child: Text('No extra places available',
+                            style: TextStyle(color: Colors.grey[400])),
+                      )
+                    : Builder(builder: (_) {
+                        final grouped = <String, List<PlaceModel>>{};
+                        for (final c in candidates) {
+                          final category = CategoryMapper.resolvePrimaryType(
+                            c.primaryType,
+                            c.allTypes,
+                          );
+                          grouped.putIfAbsent(category, () => []).add(c);
+                        }
+
+                        return ListView(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          children: [
+                            for (final entry in grouped.entries) ...[
+                              Padding(
+                                padding:
+                                    const EdgeInsets.only(bottom: 10, top: 8),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 5),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF00BFA5)
+                                        .withOpacity(0.08),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    _typeLabel(entry.key),
+                                    style: const TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF1A1A2E)),
+                                  ),
+                                ),
+                              ),
+                              ...entry.value.map((c) {
+                                final isThisCandidateLoading =
+                                    _isAddingStop && _addingCandidateId == c.id;
+                                return ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: ClipRRect(
+                                    borderRadius: BorderRadius.circular(10),
+                                    child: c.photoUrl != null
+                                        ? CachedNetworkImage(
+                                            imageUrl: c.photoUrl!,
+                                            width: 52,
+                                            height: 52,
+                                            fit: BoxFit.cover,
+                                            errorWidget: (_, __, ___) =>
+                                                _photoPlaceholder(),
+                                          )
+                                        : _photoPlaceholder(),
+                                  ),
+                                  title: Text(c.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 14)),
+                                  subtitle: c.rating != null
+                                      ? Row(children: [
+                                          const Icon(Icons.star_rounded,
+                                              size: 13, color: Colors.orange),
+                                          const SizedBox(width: 2),
+                                          Text('${c.rating}',
+                                              style: const TextStyle(
+                                                  fontSize: 12,
+                                                  color: Colors.orange)),
+                                        ])
+                                      : null,
+                                  trailing: isThisCandidateLoading
+                                      ? const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Color(0xFF00BFA5),
+                                          ),
+                                        )
+                                      : IconButton(
+                                          icon: const Icon(
+                                              Icons.info_outline_rounded,
+                                              size: 20),
+                                          onPressed: () => _openPlaceDetail(c),
+                                        ),
+                                  onTap: _isAddingStop
+                                      ? null
+                                      : () {
+                                          setModalState(() {});
+                                          Navigator.pop(ctx);
+                                          _addStop(dayIndex, c);
+                                        },
+                                );
+                              }),
+                              const SizedBox(height: 6),
+                            ],
+                          ],
+                        );
+                      }),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -3871,10 +5178,41 @@ class _LegResult {
   final double distance;
   final int minutes;
   final List<LatLng> points;
+  final bool isVerified;
 
   const _LegResult({
     required this.distance,
     required this.minutes,
     required this.points,
+    this.isVerified = true,
+  });
+}
+
+enum OptimizationIssueType {
+  knownOpeningHoursConflict,
+  multipleOpeningHoursConflicts,
+  routeUnavailable,
+  dayEndTooLate,
+  mealTiming,
+  multipleIssues,
+}
+
+class OptimizationFailureInfo {
+  final int dayIndex;
+  final int dayNumber;
+  final OptimizationIssueType issueType;
+  final String? conflictingPlaceName;
+  final String? conflictingPlaceId;
+  final String title;
+  final String message;
+
+  const OptimizationFailureInfo({
+    required this.dayIndex,
+    required this.dayNumber,
+    required this.issueType,
+    this.conflictingPlaceName,
+    this.conflictingPlaceId,
+    required this.title,
+    required this.message,
   });
 }

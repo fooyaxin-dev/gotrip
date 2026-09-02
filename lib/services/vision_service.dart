@@ -38,6 +38,41 @@ class VisionService {
 
   static const double _highConfidenceThreshold = 0.70;
 
+  static const Set<String> allowedLandmarkTypes = {
+    'monument',
+    'historic_building',
+    'religious_site',
+    'museum',
+    'tower',
+    'bridge',
+    'public_square',
+    'natural_landmark',
+    'tourist_attraction',
+    'notable_building',
+  };
+
+  static const Set<String> genericExcludedLabels = {
+    'unknown',
+    'unknown landmark',
+    'building',
+    'modern building',
+    'office building',
+    'house',
+    'room',
+    'living room',
+    'bedroom',
+    'street',
+    'city',
+    'park',
+    'person',
+    'selfie',
+    'dog',
+    'cat',
+    'food',
+    'car',
+    'vehicle',
+  };
+
   static Future<LandmarkResult> detectLandmark(
     String base64Image,
   ) async {
@@ -47,15 +82,13 @@ class VisionService {
     try {
       rawJson = await _callVisionApi(base64Image);
 
-      final decoded =
-          jsonDecode(rawJson) as Map<String, dynamic>;
+      final decoded = jsonDecode(rawJson) as Map<String, dynamic>;
 
       final responses = decoded['responses'] as List<dynamic>?;
 
-      final response =
-          responses != null && responses.isNotEmpty
-              ? responses.first as Map<String, dynamic>
-              : <String, dynamic>{};
+      final response = responses != null && responses.isNotEmpty
+          ? responses.first as Map<String, dynamic>
+          : <String, dynamic>{};
 
       final apiError = response['error'];
 
@@ -65,19 +98,14 @@ class VisionService {
         );
       } else {
         final landmarks =
-            response['landmarkAnnotations']
-                    as List<dynamic>? ??
-                [];
+            response['landmarkAnnotations'] as List<dynamic>? ?? [];
 
         if (landmarks.isNotEmpty) {
-          final best =
-              landmarks.first as Map<String, dynamic>;
+          final best = landmarks.first as Map<String, dynamic>;
 
-          final description =
-              (best['description'] as String? ?? '').trim();
+          final description = (best['description'] as String? ?? '').trim();
 
-          final score =
-              (best['score'] as num?)?.toDouble() ?? 0.0;
+          final score = (best['score'] as num?)?.toDouble() ?? 0.0;
 
           double? lat;
           double? lng;
@@ -85,21 +113,16 @@ class VisionService {
           final locations = best['locations'] as List<dynamic>?;
 
           if (locations != null && locations.isNotEmpty) {
-            final location =
-                locations.first as Map<String, dynamic>;
+            final location = locations.first as Map<String, dynamic>;
 
-            final latLng =
-                location['latLng'] as Map<String, dynamic>?;
+            final latLng = location['latLng'] as Map<String, dynamic>?;
 
-            lat =
-                (latLng?['latitude'] as num?)?.toDouble();
+            lat = (latLng?['latitude'] as num?)?.toDouble();
 
-            lng =
-                (latLng?['longitude'] as num?)?.toDouble();
+            lng = (latLng?['longitude'] as num?)?.toDouble();
           }
 
-          if (description.isNotEmpty &&
-              score >= _highConfidenceThreshold) {
+          if (description.isNotEmpty && score >= _highConfidenceThreshold) {
             debugPrint(
               '✅ [Vision] High-confidence: '
               '$description '
@@ -107,8 +130,7 @@ class VisionService {
             );
 
             return LandmarkResult(
-              landmark:
-                  '$description '
+              landmark: '$description '
                   '(Confidence: '
                   '${(score * 100).toStringAsFixed(1)}%)',
               normalizedName: description,
@@ -202,8 +224,7 @@ class VisionService {
     return response.body;
   }
 
-  static Future<LandmarkResult>
-      _detectWithGeminiVision(
+  static Future<LandmarkResult> _detectWithGeminiVision(
     String base64Image,
     String rawJson,
   ) async {
@@ -230,24 +251,62 @@ class VisionService {
               },
               {
                 'text': '''
-You are a landmark identification expert.
+You are a landmark identification expert for a travel application.
+
+This task is specifically Landmark Recognition, NOT general image description or object detection.
 
 Look carefully at the provided image.
 
-If you can identify a landmark, famous place, tourist attraction, historical site, or notable building, respond only with valid JSON:
+A valid landmark is a specific, uniquely identifiable place with recognized tourism, historical, cultural, architectural, public, or geographical significance.
+
+Allowed landmark_type values:
+- "monument"
+- "historic_building"
+- "religious_site"
+- "museum"
+- "tower"
+- "bridge"
+- "public_square"
+- "natural_landmark"
+- "tourist_attraction"
+- "notable_building"
+
+Mandatory rejection rules:
+You MUST respond with is_landmark: false if the image primarily contains:
+- a person, selfie, or group of people without an identifiable landmark in the background
+- an animal or pet
+- food, drinks, or dining tableware
+- a product, device, furniture, or ordinary object
+- a vehicle (car, bus, motorcycle, bike)
+- an ordinary indoor room or residential interior
+- a generic residential or commercial office building without distinct landmark status
+- a generic city street or traffic scene
+- a document, screenshot, map, or graphic
+- a blank, dark, blurry, or heavily obstructed scene
+- unidentified nature or scenery (e.g. generic forest, grass, ocean without a specific landmark)
+- anything you cannot identify with high confidence (>= 0.70)
+
+If a person or object is in the foreground in front of a clearly recognizable and confident landmark, you may accept the landmark.
+Do not guess. Do not infer a landmark only from people, clothing, weather, or assumptions.
+
+Respond ONLY with valid JSON matching this schema:
 
 {
-  "name": "Official English name",
+  "is_landmark": true,
+  "name": "Official English name of the specific landmark",
+  "landmark_type": "one of the allowed types above",
+  "confidence": 0.95,
   "lat": 0.0,
   "lng": 0.0
 }
 
-Use null for latitude and longitude when uncertain.
-
-If no recognizable landmark is visible, respond only with:
+If no recognizable landmark is identified with confidence >= 0.70, respond with:
 
 {
+  "is_landmark": false,
   "name": null,
+  "landmark_type": null,
+  "confidence": 0.0,
   "lat": null,
   "lng": null
 }
@@ -257,34 +316,34 @@ If no recognizable landmark is visible, respond only with:
           },
         ],
         'generationConfig': {
-        'temperature': 0.1,
-        'maxOutputTokens': 500,
-        'responseMimeType': 'application/json',
-        'thinkingConfig': {
-          'thinkingBudget': 0,
+          'temperature': 0.1,
+          'maxOutputTokens': 500,
+          'responseMimeType': 'application/json',
+          'thinkingConfig': {
+            'thinkingBudget': 0,
+          },
         },
-      },
       };
 
-     final stopwatch = Stopwatch()..start();
+      final stopwatch = Stopwatch()..start();
 
-    final response = await http
-        .post(
-          uri,
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: jsonEncode(body),
-        )
-        .timeout(const Duration(seconds: 30));
+      final response = await http
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 30));
 
-    debugPrint(
-      '⏱️ Gemini request took ${stopwatch.elapsedMilliseconds}ms',
-    );
-    debugPrint(
-      '📩 Gemini Vision status: '
-      '${response.statusCode}',
-    );
+      debugPrint(
+        '⏱️ Gemini request took ${stopwatch.elapsedMilliseconds}ms',
+      );
+      debugPrint(
+        '📩 Gemini Vision status: '
+        '${response.statusCode}',
+      );
 
       if (response.statusCode != 200) {
         debugPrint(
@@ -293,12 +352,9 @@ If no recognizable landmark is visible, respond only with:
         return _noLandmark(rawJson);
       }
 
-      final data =
-          jsonDecode(response.body)
-              as Map<String, dynamic>;
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
 
-      final candidates =
-          data['candidates'] as List<dynamic>?;
+      final candidates = data['candidates'] as List<dynamic>?;
 
       if (candidates == null || candidates.isEmpty) {
         debugPrint(
@@ -307,14 +363,11 @@ If no recognizable landmark is visible, respond only with:
         return _noLandmark(rawJson);
       }
 
-      final candidate =
-          candidates.first as Map<String, dynamic>;
+      final candidate = candidates.first as Map<String, dynamic>;
 
-      final content =
-          candidate['content'] as Map<String, dynamic>?;
+      final content = candidate['content'] as Map<String, dynamic>?;
 
-      final parts =
-          content?['parts'] as List<dynamic>?;
+      final parts = content?['parts'] as List<dynamic>?;
 
       if (parts == null || parts.isEmpty) {
         debugPrint(
@@ -329,72 +382,7 @@ If no recognizable landmark is visible, respond only with:
           .whereType<String>()
           .join();
 
-      debugPrint('🧾 [Gemini Vision] Combined text: $text');
-
-      final clean = text
-          .replaceAll(
-            RegExp(r'```json|```', caseSensitive: false),
-            '',
-          )
-          .trim();
-
-      debugPrint('🧾 [Gemini Vision] Raw text: $clean');
-
-      final start = clean.indexOf('{');
-      final end = clean.lastIndexOf('}');
-
-      if (start == -1 || end == -1 || end <= start) {
-        debugPrint(
-          '❌ [Gemini Vision] No valid JSON object found: $clean',
-        );
-        return _noLandmark(rawJson);
-      }
-
-      final jsonText = clean.substring(start, end + 1);
-
-      final Map<String, dynamic> parsed;
-
-      try {
-        parsed = jsonDecode(jsonText) as Map<String, dynamic>;
-      } on FormatException catch (e) {
-        debugPrint(
-          '❌ [Gemini Vision] Invalid JSON: $e\n'
-          'Extracted JSON: $jsonText\n'
-          'Full response: $clean',
-        );
-        return _noLandmark(rawJson);
-      }
-
-      final name =
-          (parsed['name'] as String?)?.trim();
-
-      if (name == null || name.isEmpty) {
-        debugPrint(
-          '❌ [Gemini Vision] '
-          'Could not identify landmark.',
-        );
-        return _noLandmark(rawJson);
-      }
-
-      final lat =
-          (parsed['lat'] as num?)?.toDouble();
-
-      final lng =
-          (parsed['lng'] as num?)?.toDouble();
-
-      debugPrint(
-        '✅ [Gemini Vision] Identified: $name',
-      );
-
-      return LandmarkResult(
-        landmark: name,
-        normalizedName: name,
-        rawJson: rawJson,
-        lat: lat,
-        lng: lng,
-        confidence: 0.6,
-        method: DetectionMethod.geminiVision,
-      );
+      return parseGeminiResponse(text, rawJson: rawJson);
     } on TimeoutException {
       debugPrint(
         '❌ [Gemini Vision] Request timed out.',
@@ -407,6 +395,118 @@ If no recognizable landmark is visible, respond only with:
       debugPrintStack(stackTrace: stackTrace);
       return _noLandmark(rawJson);
     }
+  }
+
+  static LandmarkResult parseGeminiResponse(
+    String responseText, {
+    String rawJson = '{"responses":[{}]}',
+  }) {
+    final clean = responseText
+        .replaceAll(
+          RegExp(r'```json|```', caseSensitive: false),
+          '',
+        )
+        .trim();
+
+    final start = clean.indexOf('{');
+    final end = clean.lastIndexOf('}');
+
+    if (start == -1 || end == -1 || end <= start) {
+      debugPrint('❌ [Gemini Vision] No valid JSON object found: $clean');
+      return _noLandmark(rawJson);
+    }
+
+    final jsonText = clean.substring(start, end + 1);
+    final Map<String, dynamic> parsed;
+
+    try {
+      parsed = jsonDecode(jsonText) as Map<String, dynamic>;
+    } on FormatException catch (e) {
+      debugPrint(
+        '❌ [Gemini Vision] Invalid JSON: $e\n'
+        'Extracted JSON: $jsonText\n'
+        'Full response: $clean',
+      );
+      return _noLandmark(rawJson);
+    }
+
+    return parseGeminiJson(parsed, rawJson: rawJson);
+  }
+
+  static LandmarkResult parseGeminiJson(
+    Map<String, dynamic> parsed, {
+    String rawJson = '{"responses":[{}]}',
+  }) {
+    final isLandmark = parsed['is_landmark'];
+    if (isLandmark != true) {
+      debugPrint('ℹ️ [Gemini Vision] is_landmark is false or not boolean.');
+      return _noLandmark(rawJson);
+    }
+
+    final name = (parsed['name'] as String?)?.trim();
+    if (name == null || name.isEmpty) {
+      debugPrint('❌ [Gemini Vision] Missing or empty landmark name.');
+      return _noLandmark(rawJson);
+    }
+
+    final normalizedLowerName = name.toLowerCase();
+    if (genericExcludedLabels.contains(normalizedLowerName)) {
+      debugPrint(
+          '❌ [Gemini Vision] Generic non-landmark name rejected: "$name"');
+      return _noLandmark(rawJson);
+    }
+
+    final landmarkType =
+        (parsed['landmark_type'] as String?)?.trim().toLowerCase();
+    if (landmarkType == null || !allowedLandmarkTypes.contains(landmarkType)) {
+      debugPrint(
+          '❌ [Gemini Vision] Unsupported or missing landmark_type: "$landmarkType"');
+      return _noLandmark(rawJson);
+    }
+
+    final confidenceRaw = parsed['confidence'];
+    if (confidenceRaw is! num) {
+      debugPrint('❌ [Gemini Vision] Missing or non-numeric confidence.');
+      return _noLandmark(rawJson);
+    }
+
+    final confidence = confidenceRaw.toDouble();
+    if (confidence < 0.70 || confidence > 1.0) {
+      debugPrint(
+          '❌ [Gemini Vision] Confidence $confidence below threshold 0.70 or out of range.');
+      return _noLandmark(rawJson);
+    }
+
+    double? validLat;
+    final latRaw = parsed['lat'];
+    if (latRaw is num) {
+      final latVal = latRaw.toDouble();
+      if (latVal >= -90.0 && latVal <= 90.0) {
+        validLat = latVal;
+      }
+    }
+
+    double? validLng;
+    final lngRaw = parsed['lng'];
+    if (lngRaw is num) {
+      final lngVal = lngRaw.toDouble();
+      if (lngVal >= -180.0 && lngVal <= 180.0) {
+        validLng = lngVal;
+      }
+    }
+
+    debugPrint(
+        '✅ [Gemini Vision] Validated landmark: $name ($landmarkType, ${(confidence * 100).toStringAsFixed(1)}%)');
+
+    return LandmarkResult(
+      landmark: name,
+      normalizedName: name,
+      rawJson: rawJson,
+      lat: validLat,
+      lng: validLng,
+      confidence: confidence,
+      method: DetectionMethod.geminiVision,
+    );
   }
 
   static LandmarkResult _noLandmark(

@@ -81,8 +81,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
 
   static const _travelModes = [
     {'key': 'walk', 'label': 'Walking', 'icon': '🚶'},
+    {'key': 'motor', 'label': 'Motorcycle', 'icon': '🏍️'},
     {'key': 'drive', 'label': 'Driving', 'icon': '🚗'},
-    {'key': 'both', 'label': 'Flexible', 'icon': '🔀'},
   ];
 
   @override
@@ -91,7 +91,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     final prefs = UserPreferenceService.instance.current;
     _activeCategories = Set.from(prefs.categories);
     _activeCuisines = Set.from(prefs.cuisines);
-    _activeTravelMode = prefs.travelMode;
+    final rawMode = prefs.travelMode;
+    _activeTravelMode = (rawMode == 'both') ? 'drive' : rawMode;
   }
 
   @override
@@ -224,6 +225,8 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
     switch (_activeTravelMode) {
       case 'walk':
         return TravelMode.walk;
+      case 'motor':
+        return TravelMode.motor;
       case 'drive':
       case 'both': // "Flexible" = willing to go far → default to driving
         return TravelMode.drive;
@@ -276,6 +279,11 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
       _showSnack('Please select a valid location from the suggestions.');
       return;
     }
+
+    final pos = LocationService.instance.currentPosition;
+    final resolvedOptMode = _resolveOptimizerTravelMode();
+    debugPrint(
+        '[ITIN_TRACE][UI] locationLabel=$_selectedLocationName isCurrentLocation=$_useCurrentLocation selectedLat=$_selectedLat selectedLng=$_selectedLng gpsLat=${pos?.latitude} gpsLng=${pos?.longitude} travelMode=$_activeTravelMode resolvedOptimizerMode=${travelModeToString(resolvedOptMode)} days=$_totalDays placesPerDay=$_placesPerDay categories=${_activeCategories.toList()} cuisines=${_activeCuisines.toList()}');
 
     print('🎯 [Page] _activeTravelMode = $_activeTravelMode');
 
@@ -341,6 +349,12 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
         _useCurrentLocation ? 'Current Location' : _selectedLocationName;
 
     final resolvedTravelMode = _resolveOptimizerTravelMode(); // 🆕 已有的方法，直接复用
+    final orderedPlacesStr = itinerary.days
+        .expand((d) => d.places)
+        .map((p) => '${p.placeId}(${p.lat},${p.lng})')
+        .join(', ');
+    debugPrint(
+        '[ITIN_TRACE][OPT_INPUT] originLat=$startLat originLng=$startLng generatorTravelMode=$_activeTravelMode resolvedOptimizerTravelMode=${travelModeToString(resolvedTravelMode)} orderedPlaces=[$orderedPlacesStr]');
 
     final itineraryWithOrigin = itinerary.copyWith(
       isOriginCurrentLocation: _useCurrentLocation,
@@ -729,13 +743,13 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
               const SizedBox(height: 10),
               _buildNumberSelector(
                 value: _placesPerDay,
-                min: 2,
+                min: 1,
                 max: 6,
                 onChanged: (v) {
                   _dismissKeyboard();
                   setState(() => _placesPerDay = v);
                 },
-                suffix: 'places',
+                suffix: _placesPerDay == 1 ? 'place' : 'places',
               ),
 
               const SizedBox(height: 24),
@@ -764,7 +778,7 @@ class _GenerateItineraryPageState extends State<GenerateItineraryPage> {
                   Expanded(
                     child: Text(
                       '$_totalDays ${_totalDays == 1 ? "day" : "days"} · '
-                      '${_totalDays * _placesPerDay} places total · '
+                      '${_totalDays * _placesPerDay} ${_totalDays * _placesPerDay == 1 ? "place" : "places"} total · '
                       'Starting ${DateFormat('MMM dd').format(_startDate)}',
                       style: const TextStyle(
                           fontSize: 13,

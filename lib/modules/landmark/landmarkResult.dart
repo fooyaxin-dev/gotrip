@@ -14,10 +14,14 @@ import '../../services/api_Keys.dart';
 import '../../services/apps_Loading.dart';
 
 class ResultPage extends StatefulWidget {
-  final Uint8List? imageBytes;       // null when opened from History (no original photo saved)
-  final String? fallbackImageUrl;    // Google Places photo, used when imageBytes is null
+  final Uint8List?
+      imageBytes; // null when opened from History (no original photo saved)
+  final String?
+      fallbackImageUrl; // Google Places photo, used when imageBytes is null
   final LandmarkResult landmarkResult;
-  final bool skipHistorySave;        // true when opened from History, to avoid re-saving a duplicate entry
+  final bool
+      skipHistorySave; // true when opened from History, to avoid re-saving a duplicate entry
+  final String? landmarkId;
 
   const ResultPage({
     super.key,
@@ -25,7 +29,23 @@ class ResultPage extends StatefulWidget {
     this.fallbackImageUrl,
     required this.landmarkResult,
     this.skipHistorySave = false,
+    this.landmarkId,
   });
+
+  static String resolveStablePlaceId({
+    String? landmarkId,
+    required String normalizedName,
+  }) {
+    final customId = landmarkId?.trim();
+    if (customId != null && customId.isNotEmpty) {
+      return customId;
+    }
+    final rawSlug = normalizedName
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+    return rawSlug.isNotEmpty ? rawSlug : 'unknown_landmark';
+  }
 
   @override
   State<ResultPage> createState() => _ResultPageState();
@@ -39,7 +59,7 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
   Map<String, dynamic>? placeDetails;
   bool placeLoading = true;
-  bool _imagesLoading = true;  
+  bool _imagesLoading = true;
 
   List<String> displayImages = [];
 
@@ -69,18 +89,18 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // and sorting here only operate on that small sample — never the full
   // review count — so the UI is careful to say "sample", not "all
   // reviews".
-  int? _reviewFilterStars;         // null = All
-  String _reviewSort = 'relevant';  // 'relevant' | 'highest' | 'lowest'
+  int? _reviewFilterStars; // null = All
+  String _reviewSort = 'relevant'; // 'relevant' | 'highest' | 'lowest'
 
-  List<dynamic> get _allReviews =>
-      (placeDetails?['reviews'] as List?) ?? [];
+  List<dynamic> get _allReviews => (placeDetails?['reviews'] as List?) ?? [];
 
   List<dynamic> get _filteredReviews {
     var list = List<dynamic>.from(_allReviews);
 
     if (_reviewFilterStars != null) {
-      list = list.where((r) =>
-          (r['rating'] as num?)?.toInt() == _reviewFilterStars).toList();
+      list = list
+          .where((r) => (r['rating'] as num?)?.toInt() == _reviewFilterStars)
+          .toList();
     }
 
     switch (_reviewSort) {
@@ -114,14 +134,14 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   final ScrollController _fallbackScrollController = ScrollController();
 
   static const _languages = [
-    {'code': 'en',    'label': '🇬🇧 English'},
-    {'code': 'zh',    'label': '🇨🇳 中文（简体）'},
+    {'code': 'en', 'label': '🇬🇧 English'},
+    {'code': 'zh', 'label': '🇨🇳 中文（简体）'},
     {'code': 'zh-tw', 'label': '🇹🇼 中文（繁體）'},
-    {'code': 'ms',    'label': '🇲🇾 Bahasa Melayu'},
-    {'code': 'ja',    'label': '🇯🇵 日本語'},
-    {'code': 'ko',    'label': '🇰🇷 한국어'},
-    {'code': 'fr',    'label': '🇫🇷 Français'},
-    {'code': 'ar',    'label': '🇸🇦 العربية'},
+    {'code': 'ms', 'label': '🇲🇾 Bahasa Melayu'},
+    {'code': 'ja', 'label': '🇯🇵 日本語'},
+    {'code': 'ko', 'label': '🇰🇷 한국어'},
+    {'code': 'fr', 'label': '🇫🇷 Français'},
+    {'code': 'ar', 'label': '🇸🇦 العربية'},
   ];
 
   LandmarkResult get _result => widget.landmarkResult;
@@ -136,23 +156,48 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
 
   String get _wikiUrl => _wikiResult?['wikiUrl'] ?? '';
 
-
   // ── Place ID for FavouriteButton ──────────────────────────
-  // Use Google Places id if available, fallback to landmark name slug
-  String get _placeId =>
-      placeDetails?['id'] as String? ??
-      _name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '_');
+  // Deterministic canonical slug fallback fixed per session
+  late final String _stablePlaceId;
+
+  String get _favName {
+    final placeName = placeDetails?['displayName']?['text'] as String?;
+    if (placeName != null && placeName.isNotEmpty) return placeName;
+    if (_name.isNotEmpty) return _name;
+    return _result.landmark;
+  }
 
   String get _placeAddress =>
       placeDetails?['formattedAddress'] as String? ?? '';
 
-  double? get _placeRating =>
-      (placeDetails?['rating'] as num?)?.toDouble();
+  String get _favAddress {
+    final addr = _placeAddress;
+    if (addr.isNotEmpty) return addr;
+    final wikiDesc = _wikiResult?['description'] as String?;
+    if (wikiDesc != null && wikiDesc.isNotEmpty) return wikiDesc;
+    return '';
+  }
+
+  double? get _placeRating => (placeDetails?['rating'] as num?)?.toDouble();
 
   String? get _placePhoto {
     final photos = placeDetails?['photos'] as List?;
     if (photos != null && photos.isNotEmpty) {
       return (photos[0] as Map<String, dynamic>)['photoUri'] as String?;
+    }
+    return null;
+  }
+
+  String? get _favPhotoUrl {
+    if (_placePhoto != null && _placePhoto!.isNotEmpty) {
+      return _placePhoto;
+    }
+    if (widget.fallbackImageUrl != null &&
+        widget.fallbackImageUrl!.isNotEmpty) {
+      return widget.fallbackImageUrl;
+    }
+    if (displayImages.isNotEmpty && displayImages.first.isNotEmpty) {
+      return displayImages.first;
     }
     return null;
   }
@@ -167,14 +212,55 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     return (loc?['longitude'] as num?)?.toDouble() ?? _result.lng;
   }
 
-  bool get _canFavourite =>
-    !placeLoading &&
-    placeDetails != null &&
-    (placeDetails?['id'] as String?)?.isNotEmpty == true;
+  List<String> get _favTypes {
+    final rawTypes =
+        (placeDetails?['types'] as List?)?.map((e) => e.toString()).toList();
+    if (rawTypes != null && rawTypes.isNotEmpty) {
+      return rawTypes;
+    }
+    return const ['tourist_attraction', 'landmark', 'point_of_interest'];
+  }
+
+  Widget _buildFavouriteButton({required bool isHeroMode}) {
+    final String? resolvedGooglePlaceId = placeDetails?['id'] as String?;
+    final button = FavouriteButton(
+      placeId: _stablePlaceId,
+      source: 'landmark',
+      googlePlaceId:
+          (resolvedGooglePlaceId != null && resolvedGooglePlaceId.isNotEmpty)
+              ? resolvedGooglePlaceId
+              : null,
+      name: _favName,
+      address: _favAddress,
+      rating: _placeRating,
+      photoUrl: _favPhotoUrl,
+      lat: _lat,
+      lng: _lng,
+      types: _favTypes,
+      iconSize: isHeroMode ? 20 : 24,
+      activeColor: Colors.red,
+      inactiveColor: Colors.black,
+      showBackground: false,
+    );
+
+    if (isHeroMode) {
+      return CircleAvatar(
+        backgroundColor: Colors.white.withAlpha(200),
+        child: button,
+      );
+    }
+
+    return button;
+  }
 
   @override
   void initState() {
     super.initState();
+    _stablePlaceId = ResultPage.resolveStablePlaceId(
+      landmarkId: widget.landmarkId,
+      normalizedName: _name,
+    );
+
     _tabController = TabController(length: 3, vsync: this);
     _shimmerController = AnimationController(
       vsync: this,
@@ -194,13 +280,13 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       // _maybeSaveHistory()，保证"扫一次就存一条记录"。
       Future.wait([_fetchInfo(), _fetchPlaceDetails()]).then((_) {
         _maybeSaveHistory();
-        _precacheDisplayImages(); 
+        _precacheDisplayImages();
       });
     } else {
-      _infoLoading    = false;
-      placeLoading    = false;
+      _infoLoading = false;
+      placeLoading = false;
       admissionLoading = false;
-      _imagesLoading   = false; 
+      _imagesLoading = false;
     }
   }
 
@@ -222,10 +308,10 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       final result = await WikipediaService.fetchLandmarkHistory(_name);
       if (!mounted) return;
       setState(() {
-        _wikiResult      = result;
-        admissionInfo    = result['admissionInfo'] as String?;
+        _wikiResult = result;
+        admissionInfo = result['admissionInfo'] as String?;
         admissionLoading = false;
-        _infoLoading     = false;
+        _infoLoading = false;
         final imgs = List<String>.from(result['images'] ?? []);
         if (displayImages.isEmpty && imgs.isNotEmpty) displayImages = imgs;
       });
@@ -241,98 +327,100 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     } catch (e) {
       debugPrint('⚠️ _fetchInfo error: $e');
       if (!mounted) return;
-      setState(() { _infoLoading = false; admissionLoading = false; });
+      setState(() {
+        _infoLoading = false;
+        admissionLoading = false;
+      });
       // 不 rethrow，保证 Future.wait 能继续走到收口逻辑
     }
   }
 
   Future<void> _fetchPlaceDetails() async {
-  try {
-    final landmarkLat = _result.lat;
-    final landmarkLng = _result.lng;
+    try {
+      final landmarkLat = _result.lat;
+      final landmarkLng = _result.lng;
 
-    if (landmarkLat == null || landmarkLng == null) {
-      debugPrint(
-        '⚠️ _fetchPlaceDetails: no landmark coordinates for "$_name"',
+      if (landmarkLat == null || landmarkLng == null) {
+        debugPrint(
+          '⚠️ _fetchPlaceDetails: no landmark coordinates for "$_name"',
+        );
+
+        if (mounted) {
+          setState(() => placeLoading = false);
+        }
+        return;
+      }
+
+      final results = await PlacesApiService.searchNearbyWithKeyword(
+        lat: landmarkLat,
+        lng: landmarkLng,
+        keyword: _name,
+        radius: 500,
+        maxResultCount: 1,
       );
+
+      if (results.isEmpty) {
+        debugPrint(
+          '⚠️ _fetchPlaceDetails: no nearby place matched "$_name"',
+        );
+
+        if (mounted) {
+          setState(() => placeLoading = false);
+        }
+        return;
+      }
+
+      final placeId = results[0]['id'] as String?;
+
+      if (placeId == null) {
+        debugPrint(
+          '⚠️ _fetchPlaceDetails: matched place has no id',
+        );
+
+        if (mounted) {
+          setState(() => placeLoading = false);
+        }
+        return;
+      }
+
+      final details = await PlacesApiService.getPlaceDetails(placeId);
+
+      final photosRaw = details['photos'] as List?;
+
+      final placePhotos = photosRaw
+              ?.map(
+                (p) => (p as Map<String, dynamic>)['photoUri'] as String?,
+              )
+              .whereType<String>()
+              .toList() ??
+          <String>[];
+
+      if (!mounted) return;
+
+      setState(() {
+        placeDetails = details;
+        placeLoading = false;
+
+        if (placePhotos.isNotEmpty) {
+          displayImages = placePhotos;
+        }
+
+        _reviewFilterStars = null;
+        _reviewSort = 'relevant';
+      });
+    } catch (e) {
+      debugPrint('⚠️ _fetchPlaceDetails error: $e');
 
       if (mounted) {
         setState(() => placeLoading = false);
       }
-      return;
-    }
-
-    final results = await PlacesApiService.searchNearbyWithKeyword(
-      lat: landmarkLat,
-      lng: landmarkLng,
-      keyword: _name,
-      radius: 500,
-      maxResultCount: 1,
-    );
-
-    if (results.isEmpty) {
-      debugPrint(
-        '⚠️ _fetchPlaceDetails: no nearby place matched "$_name"',
-      );
-
-      if (mounted) {
-        setState(() => placeLoading = false);
-      }
-      return;
-    }
-
-    final placeId = results[0]['id'] as String?;
-
-    if (placeId == null) {
-      debugPrint(
-        '⚠️ _fetchPlaceDetails: matched place has no id',
-      );
-
-      if (mounted) {
-        setState(() => placeLoading = false);
-      }
-      return;
-    }
-
-    final details =
-        await PlacesApiService.getPlaceDetails(placeId);
-
-    final photosRaw = details['photos'] as List?;
-
-    final placePhotos = photosRaw
-            ?.map(
-              (p) =>
-                  (p as Map<String, dynamic>)['photoUri'] as String?,
-            )
-            .whereType<String>()
-            .toList() ??
-        <String>[];
-
-    if (!mounted) return;
-
-    setState(() {
-      placeDetails = details;
-      placeLoading = false;
-
-      if (placePhotos.isNotEmpty) {
-        displayImages = placePhotos;
-      }
-
-      _reviewFilterStars = null;
-      _reviewSort = 'relevant';
-    });
-  } catch (e) {
-    debugPrint('⚠️ _fetchPlaceDetails error: $e');
-
-    if (mounted) {
-      setState(() => placeLoading = false);
     }
   }
-}
 
   // ── 统一收口：无论两个请求成功与否，扫一次就存一条记录 ──────
   void _maybeSaveHistory() {
-    if (widget.skipHistorySave) return; // opened from History page, don't create a duplicate entry
+    if (widget.skipHistorySave)
+      return; // opened from History page, don't create a duplicate entry
     if (!mounted) return;
     if (_historySaved) return;
     _historySaved = true;
@@ -343,15 +431,17 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
     );
 
     LandmarkHistoryService.save(
-      name:            _name,
-      lat:             _lat,
-      lng:             _lng,
-      wikiUrl:         _wikiUrl.isNotEmpty ? _wikiUrl : null,
-      address:         _placeAddress.isNotEmpty ? _placeAddress : null,
-      rating:          _placeRating,
-      photoUrl:        _placePhoto,
+      landmarkId: _stablePlaceId,
+      name: _name,
+      lat: _lat,
+      lng: _lng,
+      wikiUrl: _wikiUrl.isNotEmpty ? _wikiUrl : null,
+      address: _placeAddress.isNotEmpty ? _placeAddress : null,
+      rating: _placeRating,
+      photoUrl: _placePhoto,
       detectionMethod: _result.method == DetectionMethod.visionLandmark
-          ? 'vision' : 'gemini',
+          ? 'vision'
+          : 'gemini',
     );
   }
 
@@ -397,22 +487,27 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
       setState(() {
         _selectedLangCode = 'en';
         _translatedExtract = null;
-        _translatedTitle   = null;
-        _isTranslated      = false;
+        _translatedTitle = null;
+        _isTranslated = false;
       });
       return;
     }
-    setState(() { _translating = true; _selectedLangCode = langCode; });
+    setState(() {
+      _translating = true;
+      _selectedLangCode = langCode;
+    });
     try {
       final result = await WikipediaService.fetchSummaryInLanguage(
-        _name, langCode, _displayExtract,
+        _name,
+        langCode,
+        _displayExtract,
       );
       if (!mounted) return;
       setState(() {
-        _translatedTitle   = result['title'] as String?;
+        _translatedTitle = result['title'] as String?;
         _translatedExtract = result['extract'] as String?;
-        _isTranslated      = result['source'] == 'translated';
-        _translating       = false;
+        _isTranslated = result['source'] == 'translated';
+        _translating = false;
       });
     } catch (e) {
       if (!mounted) return;
@@ -421,7 +516,8 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
         SnackBar(
           content: const Text('Translation failed for this landmark.'),
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           margin: const EdgeInsets.all(16),
         ),
       );
@@ -433,228 +529,154 @@ class _ResultPageState extends State<ResultPage> with TickerProviderStateMixin {
   // ============================================================
 
   @override
-Widget build(BuildContext context) {
-  final screenHeight = MediaQuery.of(context).size.height;
-  final pos = LocationService.instance.currentPosition;
+  Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
+    final pos = LocationService.instance.currentPosition;
 
-  // Opened from History → no original photo to show, skip the hero
-  // image section entirely and let the sheet content fill the screen.
-  final bool showHeroImage = !widget.skipHistorySave;
+    // Opened from History → no original photo to show, skip the hero
+    // image section entirely and let the sheet content fill the screen.
+    final bool showHeroImage = !widget.skipHistorySave;
 
-  // Only allow favourite after Google Place Details has resolved.
-  // This guarantees FavouriteService always receives the canonical
-  // Google Place ID instead of the temporary landmark-name slug.
-  final String? resolvedGooglePlaceId =
-      placeDetails?['id'] as String?;
+    return Scaffold(
+      extendBodyBehindAppBar: showHeroImage,
+      appBar: AppBar(
+        backgroundColor: showHeroImage ? Colors.transparent : Colors.white,
+        foregroundColor: showHeroImage ? null : Colors.black,
+        elevation: 0,
 
-  final bool canFavourite =
-      !placeLoading &&
-      resolvedGooglePlaceId != null &&
-      resolvedGooglePlaceId.isNotEmpty;
-
-  return Scaffold(
-    extendBodyBehindAppBar: showHeroImage,
-
-    appBar: AppBar(
-      backgroundColor:
-          showHeroImage ? Colors.transparent : Colors.white,
-      foregroundColor:
-          showHeroImage ? null : Colors.black,
-      elevation: 0,
-
-      leading: showHeroImage
-          ? Padding(
-              padding: const EdgeInsets.only(
-                left: 12,
-                top: 8,
-              ),
-              child: CircleAvatar(
-                backgroundColor: Colors.white.withAlpha(200),
-                child: IconButton(
-                  icon: const Icon(
-                    Icons.arrow_back_ios_new,
-                    color: Colors.black,
-                    size: 18,
+        leading: showHeroImage
+            ? Padding(
+                padding: const EdgeInsets.only(
+                  left: 12,
+                  top: 8,
+                ),
+                child: CircleAvatar(
+                  backgroundColor: Colors.white.withAlpha(200),
+                  child: IconButton(
+                    icon: const Icon(
+                      Icons.arrow_back_ios_new,
+                      color: Colors.black,
+                      size: 18,
+                    ),
+                    onPressed: () => Navigator.pop(context),
                   ),
-                  onPressed: () => Navigator.pop(context),
                 ),
+              )
+            : IconButton(
+                icon: const Icon(
+                  Icons.arrow_back_ios_new,
+                  size: 18,
+                ),
+                onPressed: () => Navigator.pop(context),
               ),
-            )
-          : IconButton(
-              icon: const Icon(
-                Icons.arrow_back_ios_new,
-                size: 18,
-              ),
-              onPressed: () => Navigator.pop(context),
-            ),
 
-      // ── Action buttons: Share + Favourite ────────────────
-      actions: _isDetected
-          ? [
-              // ── Share ─────────────────────────────────────
-              Padding(
-                padding: EdgeInsets.only(
-                  top: showHeroImage ? 8 : 0,
-                ),
-                child: showHeroImage
-                    ? CircleAvatar(
-                        backgroundColor:
-                            Colors.white.withAlpha(200),
-                        child: IconButton(
+        // ── Action buttons: Share + Favourite ────────────────
+        actions: _isDetected
+            ? [
+                // ── Share ─────────────────────────────────────
+                Padding(
+                  padding: EdgeInsets.only(
+                    top: showHeroImage ? 8 : 0,
+                  ),
+                  child: showHeroImage
+                      ? CircleAvatar(
+                          backgroundColor: Colors.white.withAlpha(200),
+                          child: IconButton(
+                            icon: const Icon(
+                              Icons.share_rounded,
+                              color: Colors.black,
+                              size: 20,
+                            ),
+                            onPressed: _shareLandmark,
+                            tooltip: 'Share',
+                          ),
+                        )
+                      : IconButton(
                           icon: const Icon(
                             Icons.share_rounded,
-                            color: Colors.black,
-                            size: 20,
+                            size: 22,
                           ),
                           onPressed: _shareLandmark,
                           tooltip: 'Share',
                         ),
-                      )
-                    : IconButton(
-                        icon: const Icon(
-                          Icons.share_rounded,
-                          size: 22,
-                        ),
-                        onPressed: _shareLandmark,
-                        tooltip: 'Share',
-                      ),
-              ),
-
-              const SizedBox(width: 8),
-
-              // ── Favourite ─────────────────────────────────
-              Padding(
-                padding: EdgeInsets.only(
-                  top: showHeroImage ? 8 : 0,
-                  right: showHeroImage ? 12 : 4,
                 ),
-                child: showHeroImage
-                    ? CircleAvatar(
-                        backgroundColor:
-                            Colors.white.withAlpha(200),
 
-                        // Do not allow favourite until the
-                        // canonical Google Place ID is ready.
-                        child: canFavourite
-                            ? FavouriteButton(
-                                placeId:
-                                    resolvedGooglePlaceId ?? '',
-                                name: _name,
-                                address: _placeAddress,
-                                rating: _placeRating,
-                                photoUrl: _placePhoto ??
-                                    displayImages.firstOrNull,
-                                lat: _lat,
-                                lng: _lng,
-                                types: const [
-                                  'tourist_attraction'
-                                ],
-                                iconSize: 20,
-                                activeColor: Colors.red,
-                                inactiveColor: Colors.black,
-                              )
-                            : const Icon(
-                                Icons.favorite_border,
-                                size: 20,
-                                color: Colors.black38,
-                              ),
-                      )
+                const SizedBox(width: 8),
 
-                    // ── History style AppBar ────────────────
-                    : canFavourite
-                        ? FavouriteButton(
-                            placeId:
-                                resolvedGooglePlaceId ?? '',
-                            name: _name,
-                            address: _placeAddress,
-                            rating: _placeRating,
-                            photoUrl: _placePhoto ??
-                                displayImages.firstOrNull,
-                            lat: _lat,
-                            lng: _lng,
-                            types: const [
-                              'tourist_attraction'
-                            ],
-                            iconSize: 24,
-                            activeColor: Colors.red,
-                            inactiveColor: Colors.black,
-                          )
-                        : const IconButton(
-                            onPressed: null,
-                            icon: Icon(
-                              Icons.favorite_border,
-                              color: Colors.black38,
-                            ),
-                          ),
-              ),
-            ]
-          : null,
-    ),
+                // ── Favourite ─────────────────────────────────
+                Padding(
+                  padding: EdgeInsets.only(
+                    top: showHeroImage ? 8 : 0,
+                    right: showHeroImage ? 12 : 4,
+                  ),
+                  child: _buildFavouriteButton(isHeroMode: showHeroImage),
+                ),
+              ]
+            : null,
+      ),
+      body: showHeroImage
+          ? Stack(
+              children: [
+                // ── Hero image ────────────────────────────────
+                SizedBox(
+                  height: screenHeight * 0.45,
+                  width: double.infinity,
+                  child: _buildHeroImage(),
+                ),
 
-    body: showHeroImage
-        ? Stack(
-            children: [
-              // ── Hero image ────────────────────────────────
-              SizedBox(
-                height: screenHeight * 0.45,
-                width: double.infinity,
-                child: _buildHeroImage(),
-              ),
-
-              // ── Top gradient ──────────────────────────────
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: Container(
-                  height: 100,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.black.withOpacity(0.3),
-                        Colors.transparent,
-                      ],
+                // ── Top gradient ──────────────────────────────
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: Container(
+                    height: 100,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.black.withOpacity(0.3),
+                          Colors.transparent,
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ),
 
-              // ── Draggable content sheet ───────────────────
-              DraggableScrollableSheet(
-                initialChildSize: 0.55,
-                minChildSize: 0.55,
-                maxChildSize: 0.95,
-                snap: true,
-                snapSizes: const [
-                  0.55,
-                  0.95,
-                ],
-                builder: (
-                  context,
-                  scrollController,
-                ) =>
-                    _buildSheetContent(
-                  scrollController,
-                  pos,
+                // ── Draggable content sheet ───────────────────
+                DraggableScrollableSheet(
+                  initialChildSize: 0.55,
+                  minChildSize: 0.55,
+                  maxChildSize: 0.95,
+                  snap: true,
+                  snapSizes: const [
+                    0.55,
+                    0.95,
+                  ],
+                  builder: (
+                    context,
+                    scrollController,
+                  ) =>
+                      _buildSheetContent(
+                    scrollController,
+                    pos,
+                  ),
                 ),
-              ),
-            ],
-          )
+              ],
+            )
 
-        // Opened from History → no hero image.
-        : SafeArea(
-            child: _buildSheetContent(
-              _fallbackScrollController,
-              pos,
-              showDragHandle: false,
+          // Opened from History → no hero image.
+          : SafeArea(
+              child: _buildSheetContent(
+                _fallbackScrollController,
+                pos,
+                showDragHandle: false,
+              ),
             ),
-          ),
-  );
-}
-  
-  
+    );
+  }
+
   // ── Shared sheet content, used both with and without the hero image ──
   Widget _buildSheetContent(
     ScrollController scrollController,
@@ -668,7 +690,8 @@ Widget build(BuildContext context) {
               borderRadius:
                   const BorderRadius.vertical(top: Radius.circular(30)),
               boxShadow: [
-                BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10),
+                BoxShadow(
+                    color: Colors.black.withOpacity(0.05), blurRadius: 10),
               ],
             )
           : const BoxDecoration(color: Colors.white),
@@ -677,7 +700,8 @@ Widget build(BuildContext context) {
           if (showDragHandle)
             Container(
               margin: const EdgeInsets.symmetric(vertical: 12),
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               decoration: BoxDecoration(
                 color: Colors.grey[300],
                 borderRadius: BorderRadius.circular(10),
@@ -694,8 +718,8 @@ Widget build(BuildContext context) {
               indicatorColor: Colors.black,
               indicatorWeight: 3,
               indicatorSize: TabBarIndicatorSize.label,
-              labelStyle: const TextStyle(
-                  fontWeight: FontWeight.bold, fontSize: 16),
+              labelStyle:
+                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
               tabs: const [
                 Tab(text: 'Overview'),
                 Tab(text: 'Info'),
@@ -727,7 +751,8 @@ Widget build(BuildContext context) {
     if (widget.imageBytes != null) {
       return Image.memory(widget.imageBytes!, fit: BoxFit.cover);
     }
-    if (widget.fallbackImageUrl != null && widget.fallbackImageUrl!.isNotEmpty) {
+    if (widget.fallbackImageUrl != null &&
+        widget.fallbackImageUrl!.isNotEmpty) {
       return CachedNetworkImage(
         imageUrl: widget.fallbackImageUrl!,
         fit: BoxFit.cover,
@@ -741,8 +766,8 @@ Widget build(BuildContext context) {
     return Container(
       color: const Color(0xFFEDE7F6),
       child: const Center(
-        child: Icon(Icons.location_on_rounded,
-            size: 64, color: Color(0xFF7C4DFF)),
+        child:
+            Icon(Icons.location_on_rounded, size: 64, color: Color(0xFF7C4DFF)),
       ),
     );
   }
@@ -761,9 +786,7 @@ Widget build(BuildContext context) {
           if (!_isDetected)
             _noLandmarkMessage()
           else ...[
-            _infoLoading
-                ? _buildLoadingPlaceholder()
-                : _buildSummaryContent(),
+            _infoLoading ? _buildLoadingPlaceholder() : _buildSummaryContent(),
             const SizedBox(height: 24),
             if (!_infoLoading) _buildMapSection(pos),
             const SizedBox(height: 24),
@@ -804,14 +827,11 @@ Widget build(BuildContext context) {
         child: Text(
           'No landmark detected in this image.',
           style: TextStyle(
-              fontSize: 14,
-              color: Colors.grey,
-              fontStyle: FontStyle.italic),
+              fontSize: 14, color: Colors.grey, fontStyle: FontStyle.italic),
         ),
       ),
     );
   }
-
 
   Widget _buildImagePlaceholder() {
     return Container(
@@ -824,7 +844,6 @@ Widget build(BuildContext context) {
       child: const Center(child: TravelLoadingIndicator()),
     );
   }
-
 
   // ============================================================
   // Overview: Summary Content
@@ -853,65 +872,63 @@ Widget build(BuildContext context) {
               child: PopupMenuButton<String>(
                 initialValue: _selectedLangCode,
                 onSelected: _translateTo,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
-              itemBuilder: (_) => _languages
-                  .map((lang) => PopupMenuItem<String>(
-                        value: lang['code'],
-                        child: Text(lang['label']!,
-                            style: TextStyle(
-                              fontWeight: lang['code'] == _selectedLangCode
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                            )),
-                      ))
-                  .toList(),
-              child: _translating
-                  ? const SizedBox(
-                      width: 20, height: 20,
-                      child: TravelLoadingIndicator(size: 22))
-                  : Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.blue[50],
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.translate,
-                              size: 14, color: Colors.blue[700]),
-                          const SizedBox(width: 4),
-                          Text(_selectedLangCode.toUpperCase(),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16)),
+                itemBuilder: (_) => _languages
+                    .map((lang) => PopupMenuItem<String>(
+                          value: lang['code'],
+                          child: Text(lang['label']!,
                               style: TextStyle(
-                                  color: Colors.blue[700],
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold)),
-                        ],
+                                fontWeight: lang['code'] == _selectedLangCode
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                              )),
+                        ))
+                    .toList(),
+                child: _translating
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: TravelLoadingIndicator(size: 22))
+                    : Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.blue[50],
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.translate,
+                                size: 14, color: Colors.blue[700]),
+                            const SizedBox(width: 4),
+                            Text(_selectedLangCode.toUpperCase(),
+                                style: TextStyle(
+                                    color: Colors.blue[700],
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold)),
+                          ],
+                        ),
                       ),
-                    ),
               ),
             ),
 
             const SizedBox(width: 8),
             // Detection method badge
-  
           ],
-          
         ),
         const SizedBox(height: 16),
         if (_imagesLoading)
           _buildImagePlaceholder()
         else if (displayImages.isNotEmpty)
           _buildImageCarousel(),
-          
         if (_displayExtract.isNotEmpty || _translating)
           Container(
             padding: const EdgeInsets.only(left: 16),
             decoration: BoxDecoration(
-              border: Border(
-                  left: BorderSide(color: Colors.grey[300]!, width: 3)),
+              border:
+                  Border(left: BorderSide(color: Colors.grey[300]!, width: 3)),
             ),
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 200),
@@ -939,8 +956,7 @@ Widget build(BuildContext context) {
               label: const Text('Read More on Wikipedia'),
               style: TextButton.styleFrom(
                 foregroundColor: Colors.blue[800],
-                textStyle:
-                    const TextStyle(fontWeight: FontWeight.bold),
+                textStyle: const TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
           ),
@@ -948,32 +964,30 @@ Widget build(BuildContext context) {
     );
   }
 
-
-Widget _buildTranslatingPlaceholder() {
-  return Padding(
-    key: const ValueKey('translating'),
-    padding: const EdgeInsets.symmetric(vertical: 4),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const SizedBox(
-          width: 16,
-          height: 16,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-        const SizedBox(width: 10),
-        Text(
-          'Translating…',
-          style: TextStyle(
-              fontSize: 14,
-              color: Colors.grey[500],
-              fontStyle: FontStyle.italic),
-        ),
-      ],
-    ),
-  );
-}
-
+  Widget _buildTranslatingPlaceholder() {
+    return Padding(
+      key: const ValueKey('translating'),
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            'Translating…',
+            style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[500],
+                fontStyle: FontStyle.italic),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildImageCarousel() {
     final visible =
@@ -1003,19 +1017,19 @@ Widget _buildTranslatingPlaceholder() {
                   ],
                 ),
                 child: CachedNetworkImage(
-                    imageUrl: url,
-                    fit: BoxFit.cover,
-                    errorWidget: (_, __, ___) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) setState(() => _failedImageUrls.add(url));
-                      });
-                      return Container(
-                          color: Colors.grey[200],
-                          child: const Center(
-                              child: Icon(Icons.broken_image,
-                                  size: 40, color: Colors.grey)));
-                    },
-                  ),
+                  imageUrl: url,
+                  fit: BoxFit.cover,
+                  errorWidget: (_, __, ___) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) setState(() => _failedImageUrls.add(url));
+                    });
+                    return Container(
+                        color: Colors.grey[200],
+                        child: const Center(
+                            child: Icon(Icons.broken_image,
+                                size: 40, color: Colors.grey)));
+                  },
+                ),
               );
             },
           ),
@@ -1030,9 +1044,8 @@ Widget _buildTranslatingPlaceholder() {
                 width: _currentImageIndex == i ? 24 : 8,
                 height: 8,
                 decoration: BoxDecoration(
-                  color: _currentImageIndex == i
-                      ? Colors.black
-                      : Colors.grey[300],
+                  color:
+                      _currentImageIndex == i ? Colors.black : Colors.grey[300],
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),
@@ -1115,21 +1128,20 @@ Widget _buildTranslatingPlaceholder() {
       );
     }
 
-    final d            = placeDetails!;
+    final d = placeDetails!;
     final openingHours = d['regularOpeningHours'] as Map<String, dynamic>?;
-    final openNow      = openingHours?['openNow'] as bool?;
-    final weekdayRaw   = openingHours?['weekdayDescriptions'] as List?;
-    final phoneNumber  = d['internationalPhoneNumber'] as String?;
-    final website      = d['websiteUri'] as String?;
+    final openNow = openingHours?['openNow'] as bool?;
+    final weekdayRaw = openingHours?['weekdayDescriptions'] as List?;
+    final phoneNumber = d['internationalPhoneNumber'] as String?;
+    final website = d['websiteUri'] as String?;
     final googleMapsUrl = d['googleMapsUri'] as String?;
-    final address      = d['formattedAddress'] as String?;
-    final rating       = (d['rating'] as num?)?.toDouble();
+    final address = d['formattedAddress'] as String?;
+    final rating = (d['rating'] as num?)?.toDouble();
 
     final weekdays = weekdayRaw?.map((e) {
           final parts = (e as String).split(': ');
           return _OpeningDay(
-              day: parts[0],
-              hours: parts.length > 1 ? parts[1] : 'Closed');
+              day: parts[0], hours: parts.length > 1 ? parts[1] : 'Closed');
         }).toList() ??
         <_OpeningDay>[];
 
@@ -1140,28 +1152,21 @@ Widget _buildTranslatingPlaceholder() {
         if (openNow != null)
           Container(
             margin: const EdgeInsets.only(bottom: 20),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
               color: openNow ? Colors.green[50] : Colors.red[50],
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(
-                  openNow
-                      ? Icons.check_circle_rounded
-                      : Icons.cancel_rounded,
+              Icon(openNow ? Icons.check_circle_rounded : Icons.cancel_rounded,
                   size: 16,
-                  color:
-                      openNow ? Colors.green[700] : Colors.red[700]),
+                  color: openNow ? Colors.green[700] : Colors.red[700]),
               const SizedBox(width: 6),
               Text(openNow ? 'Open Now' : 'Closed Now',
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.bold,
-                      color: openNow
-                          ? Colors.green[700]
-                          : Colors.red[700])),
+                      color: openNow ? Colors.green[700] : Colors.red[700])),
             ]),
           ),
         if (address != null) ...[
@@ -1170,9 +1175,7 @@ Widget _buildTranslatingPlaceholder() {
           _infoBox(
               child: Text(address,
                   style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[700],
-                      height: 1.5))),
+                      fontSize: 14, color: Colors.grey[700], height: 1.5))),
           const SizedBox(height: 24),
         ],
         if (rating != null) ...[
@@ -1182,23 +1185,17 @@ Widget _buildTranslatingPlaceholder() {
               child: Row(children: [
             ...List.generate(5, (i) {
               final filled = i < rating.floor();
-              final half   = !filled && i < rating;
-              return Icon(
-                  half
-                      ? Icons.star_half_rounded
-                      : Icons.star_rounded,
+              final half = !filled && i < rating;
+              return Icon(half ? Icons.star_half_rounded : Icons.star_rounded,
                   size: 20,
-                  color: filled || half
-                      ? Colors.amber[600]
-                      : Colors.grey[300]);
+                  color: filled || half ? Colors.amber[600] : Colors.grey[300]);
             }),
             const SizedBox(width: 10),
             Text(rating.toStringAsFixed(1),
-                style: const TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w700)),
+                style:
+                    const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
             Text(' / 5.0',
-                style: TextStyle(
-                    fontSize: 13, color: Colors.grey[500])),
+                style: TextStyle(fontSize: 13, color: Colors.grey[500])),
           ])),
           const SizedBox(height: 24),
         ],
@@ -1212,8 +1209,7 @@ Widget _buildTranslatingPlaceholder() {
             const SizedBox(width: 12),
             Expanded(
                 child: Text(admissionInfo!,
-                    style: TextStyle(
-                        fontSize: 14, color: Colors.grey[700]))),
+                    style: TextStyle(fontSize: 14, color: Colors.grey[700]))),
           ])),
           const SizedBox(height: 24),
         ],
@@ -1232,8 +1228,7 @@ Widget _buildTranslatingPlaceholder() {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 16, vertical: 12),
                     child: Row(
-                      mainAxisAlignment:
-                          MainAxisAlignment.spaceBetween,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(entry.value.day,
                             style: const TextStyle(
@@ -1242,8 +1237,7 @@ Widget _buildTranslatingPlaceholder() {
                                 color: Colors.black87)),
                         Text(entry.value.hours,
                             style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.grey[600])),
+                                fontSize: 13, color: Colors.grey[600])),
                       ],
                     ),
                   ),
@@ -1271,8 +1265,7 @@ Widget _buildTranslatingPlaceholder() {
                 _tappableRow(
                     icon: Icons.phone_rounded,
                     label: phoneNumber,
-                    onTap: () => launchUrl(
-                        Uri.parse('tel:$phoneNumber'),
+                    onTap: () => launchUrl(Uri.parse('tel:$phoneNumber'),
                         mode: LaunchMode.externalApplication),
                     showDivider: website != null),
               if (website != null)
@@ -1320,12 +1313,12 @@ Widget _buildTranslatingPlaceholder() {
       return _buildEmptyReviews();
     }
 
-    final d               = placeDetails!;
-    final rating          = (d['rating'] as num?)?.toDouble() ?? 0.0;
+    final d = placeDetails!;
+    final rating = (d['rating'] as num?)?.toDouble() ?? 0.0;
     final userRatingCount = d['userRatingCount'] as int? ?? 0;
-    final counts          = _ratingCounts;
-    final sampleTotal     = _allReviews.length;
-    final filtered        = _filteredReviews;
+    final counts = _ratingCounts;
+    final sampleTotal = _allReviews.length;
+    final filtered = _filteredReviews;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1353,8 +1346,7 @@ Widget _buildTranslatingPlaceholder() {
               _buildStarRating(rating),
               const SizedBox(height: 8),
               Text('${_formatCount(userRatingCount)} reviews',
-                  style:
-                      TextStyle(fontSize: 12, color: Colors.grey[500])),
+                  style: TextStyle(fontSize: 12, color: Colors.grey[500])),
             ]),
             const SizedBox(width: 32),
             Expanded(
@@ -1381,8 +1373,8 @@ Widget _buildTranslatingPlaceholder() {
                     SizedBox(
                       width: 16,
                       child: Text('$count',
-                          style: TextStyle(
-                              fontSize: 10, color: Colors.grey[500])),
+                          style:
+                              TextStyle(fontSize: 10, color: Colors.grey[500])),
                     ),
                   ]),
                 );
@@ -1403,18 +1395,14 @@ Widget _buildTranslatingPlaceholder() {
             ),
           ),
         const SizedBox(height: 24),
-
-        _sectionHeader(
-            Icons.chat_bubble_outline_rounded, 'Community Voice'),
+        _sectionHeader(Icons.chat_bubble_outline_rounded, 'Community Voice'),
         const SizedBox(height: 12),
-
         if (sampleTotal > 0) ...[
           _buildReviewFilterChips(counts, sampleTotal),
           const SizedBox(height: 12),
           _buildReviewSortButton(),
           const SizedBox(height: 16),
         ],
-
         if (filtered.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 24),
@@ -1429,7 +1417,6 @@ Widget _buildTranslatingPlaceholder() {
           )
         else
           ...filtered.map((r) => _buildReviewCard(r as Map<String, dynamic>)),
-
         const SizedBox(height: 20),
       ],
     );
@@ -1479,8 +1466,8 @@ Widget _buildTranslatingPlaceholder() {
   Widget _buildReviewSortButton() {
     const labels = {
       'relevant': 'Most relevant',
-      'highest':  'Highest rated',
-      'lowest':   'Lowest rated',
+      'highest': 'Highest rated',
+      'lowest': 'Lowest rated',
     };
     return Align(
       alignment: Alignment.centerLeft,
@@ -1509,11 +1496,13 @@ Widget _buildTranslatingPlaceholder() {
   }
 
   Widget _buildReviewCard(Map<String, dynamic> review) {
-    final authorName  = review['authorAttribution']?['displayName'] as String? ?? 'Traveler';
+    final authorName =
+        review['authorAttribution']?['displayName'] as String? ?? 'Traveler';
     final authorPhoto = review['authorAttribution']?['photoUri'] as String?;
     final reviewRating = (review['rating'] as num?)?.toInt() ?? 0;
-    final text        = review['text']?['text'] as String? ?? '';
-    final relativeTime = review['relativePublishTimeDescription'] as String? ?? '';
+    final text = review['text']?['text'] as String? ?? '';
+    final relativeTime =
+        review['relativePublishTimeDescription'] as String? ?? '';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
@@ -1535,18 +1524,15 @@ Widget _buildTranslatingPlaceholder() {
                     style: const TextStyle(
                         fontWeight: FontWeight.bold, fontSize: 15)),
                 Text(relativeTime,
-                    style:
-                        TextStyle(color: Colors.grey[500], fontSize: 12)),
+                    style: TextStyle(color: Colors.grey[500], fontSize: 12)),
               ])),
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
                 color: Colors.amber[50],
                 borderRadius: BorderRadius.circular(8)),
             child: Row(children: [
-              Icon(Icons.star_rounded,
-                  size: 14, color: Colors.amber[700]),
+              Icon(Icons.star_rounded, size: 14, color: Colors.amber[700]),
               const SizedBox(width: 2),
               Text('$reviewRating',
                   style: TextStyle(
@@ -1561,9 +1547,7 @@ Widget _buildTranslatingPlaceholder() {
             padding: const EdgeInsets.only(top: 12, left: 2),
             child: Text(text,
                 style: TextStyle(
-                    color: Colors.grey[800],
-                    height: 1.6,
-                    fontSize: 14),
+                    color: Colors.grey[800], height: 1.6, fontSize: 14),
                 maxLines: 5,
                 overflow: TextOverflow.ellipsis),
           ),
@@ -1579,9 +1563,7 @@ Widget _buildTranslatingPlaceholder() {
       children: List.generate(
           5,
           (i) => Icon(
-              i < rating.floor()
-                  ? Icons.star_rounded
-                  : Icons.star_half_rounded,
+              i < rating.floor() ? Icons.star_rounded : Icons.star_half_rounded,
               size: 20,
               color: i < rating ? Colors.amber[600] : Colors.grey[300])),
     );
@@ -1609,34 +1591,32 @@ Widget _buildTranslatingPlaceholder() {
       animation: _shimmerAnimation,
       builder: (_, __) => Opacity(
         opacity: _shimmerAnimation.value,
-        child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                  height: 32,
-                  width: 200,
-                  decoration: BoxDecoration(
-                      color: Colors.grey[200],
-                      borderRadius: BorderRadius.circular(8))),
-              const SizedBox(height: 16),
-              Container(
-                  height: 220,
-                  decoration: BoxDecoration(
-                      color: Colors.grey[200],
-                      borderRadius: BorderRadius.circular(20))),
-              const SizedBox(height: 16),
-              ...List.generate(
-                  4,
-                  (i) => Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Container(
-                            height: 14,
-                            width: i == 3 ? 180 : double.infinity,
-                            decoration: BoxDecoration(
-                                color: Colors.grey[200],
-                                borderRadius: BorderRadius.circular(6))),
-                      )),
-            ]),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Container(
+              height: 32,
+              width: 200,
+              decoration: BoxDecoration(
+                  color: Colors.grey[200],
+                  borderRadius: BorderRadius.circular(8))),
+          const SizedBox(height: 16),
+          Container(
+              height: 220,
+              decoration: BoxDecoration(
+                  color: Colors.grey[200],
+                  borderRadius: BorderRadius.circular(20))),
+          const SizedBox(height: 16),
+          ...List.generate(
+              4,
+              (i) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Container(
+                        height: 14,
+                        width: i == 3 ? 180 : double.infinity,
+                        decoration: BoxDecoration(
+                            color: Colors.grey[200],
+                            borderRadius: BorderRadius.circular(6))),
+                  )),
+        ]),
       ),
     );
   }
@@ -1647,20 +1627,16 @@ Widget _buildTranslatingPlaceholder() {
       const SizedBox(width: 8),
       Text(title,
           style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -0.3)),
+              fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: -0.3)),
     ]);
   }
 
   Widget _infoBox({required Widget child}) {
     return Container(
       width: double.infinity,
-      padding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-          color: Colors.grey[50],
-          borderRadius: BorderRadius.circular(16)),
+          color: Colors.grey[50], borderRadius: BorderRadius.circular(16)),
       child: child,
     );
   }
@@ -1676,8 +1652,7 @@ Widget _buildTranslatingPlaceholder() {
         onTap: onTap,
         borderRadius: BorderRadius.circular(16),
         child: Padding(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(children: [
             Icon(icon, size: 18, color: Colors.grey[600]),
             const SizedBox(width: 12),
@@ -1694,17 +1669,13 @@ Widget _buildTranslatingPlaceholder() {
         ),
       ),
       if (showDivider)
-        Divider(
-            height: 1,
-            color: Colors.grey[200],
-            indent: 16,
-            endIndent: 16),
+        Divider(height: 1, color: Colors.grey[200], indent: 16, endIndent: 16),
     ]);
   }
 
   String _formatCount(int count) {
     if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
-    if (count >= 1000)    return '${(count / 1000).toStringAsFixed(1)}K';
+    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
     return count.toString();
   }
 
@@ -1717,9 +1688,6 @@ Widget _buildTranslatingPlaceholder() {
           .showSnackBar(const SnackBar(content: Text('Cannot open URL')));
     }
   }
-
-  
-  
 }
 
 class _OpeningDay {

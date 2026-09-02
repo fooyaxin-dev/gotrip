@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -82,6 +83,8 @@ class FavouriteService {
     double? lat,
     double? lng,
     List<String>? types,
+    String source = 'place',
+    String? googlePlaceId,
   }) async {
     final uid = _userId;
 
@@ -121,8 +124,19 @@ class FavouriteService {
 
           final favouriteSnapshot = await transaction.get(favouriteDoc);
 
-          // Already saved → don't double increment count.
+          // Already saved → update source/googlePlaceId without double incrementing count.
           if (favouriteSnapshot.exists) {
+            final updateData = <String, dynamic>{
+              'source': source,
+            };
+            if (googlePlaceId != null && googlePlaceId.isNotEmpty) {
+              updateData['googlePlaceId'] = googlePlaceId;
+            }
+            transaction.set(
+              favouriteDoc,
+              updateData,
+              SetOptions(merge: true),
+            );
             return;
           }
 
@@ -141,19 +155,26 @@ class FavouriteService {
             );
           }
 
+          final favouriteData = <String, dynamic>{
+            'placeId': placeId,
+            'source': source,
+            'name': name,
+            'address': address,
+            'rating': rating,
+            'photoUrl': photoUrl,
+            'lat': lat,
+            'lng': lng,
+            'types': finalTypes,
+            'savedAt': FieldValue.serverTimestamp(),
+          };
+
+          if (googlePlaceId != null && googlePlaceId.isNotEmpty) {
+            favouriteData['googlePlaceId'] = googlePlaceId;
+          }
+
           transaction.set(
             favouriteDoc,
-            {
-              'placeId': placeId,
-              'name': name,
-              'address': address,
-              'rating': rating,
-              'photoUrl': photoUrl,
-              'lat': lat,
-              'lng': lng,
-              'types': finalTypes,
-              'savedAt': FieldValue.serverTimestamp(),
-            },
+            favouriteData,
           );
 
           transaction.update(
@@ -337,6 +358,161 @@ class FavouriteService {
         (snapshot) => snapshot.docs
             .map((doc) => doc.data() as Map<String, dynamic>)
             .toList());
+  }
+
+  /// Calculates geodesic distance between two points in metres using Haversine formula.
+  static double _haversineDistance(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
+    const double earthRadiusMeters = 6371000.0;
+    final dLat = (lat2 - lat1) * (math.pi / 180.0);
+    final dLon = (lon2 - lon1) * (math.pi / 180.0);
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1 * (math.pi / 180.0)) *
+            math.cos(lat2 * (math.pi / 180.0)) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return earthRadiusMeters * c;
+  }
+
+  /// Pure matcher used for selecting legacy landmark favourite ID among user's favourites.
+  /// Considers ONLY candidates with source == 'landmark'.
+  /// Priority:
+  /// 1. googlePlaceId match (if both non-empty)
+  /// 2. exact normalized stored name match (case-insensitive trimmed)
+  /// 3. conservative coordinate proximity <= 30 metres
+  /// Tie-breaker for multiple duplicate candidates: earliest savedAt timestamp.
+  static String? selectMatchingLandmarkFavouriteId(
+    List<Map<String, dynamic>> favourites, {
+    String? googlePlaceId,
+    String? name,
+    double? lat,
+    double? lng,
+  }) {
+    final validGpid = googlePlaceId?.trim();
+    final hasValidGpid = validGpid != null && validGpid.isNotEmpty;
+
+    final normName = name?.trim().toLowerCase();
+    final hasValidName = normName != null && normName.isNotEmpty;
+
+    final hasValidCoords = lat != null && lng != null;
+
+    // Filter strictly for source == 'landmark' documents
+    final landmarkCandidates = favourites.where((fav) {
+      final source = (fav['source'] as String?)?.trim().toLowerCase();
+      return source == 'landmark';
+    }).toList();
+
+    if (landmarkCandidates.isEmpty) return null;
+
+    // Sort candidates by savedAt ascending (earliest first) for deterministic tie-breaking
+    int compareSavedAt(Map<String, dynamic> a, Map<String, dynamic> b) {
+      DateTime extractDate(dynamic raw) {
+        if (raw is Timestamp) return raw.toDate();
+        if (raw is DateTime) return raw;
+        if (raw is String) {
+          try {
+            return DateTime.parse(raw);
+          } catch (_) {}
+        }
+        return DateTime.fromMillisecondsSinceEpoch(0);
+      }
+
+      final dateA = extractDate(a['savedAt']);
+      final dateB = extractDate(b['savedAt']);
+      return dateA.compareTo(dateB);
+    }
+
+    landmarkCandidates.sort(compareSavedAt);
+
+    // 1. Google Place ID match
+    if (hasValidGpid) {
+      for (final fav in landmarkCandidates) {
+        final favGpid = (fav['googlePlaceId'] as String?)?.trim();
+        final favPlaceId = (fav['placeId'] as String?)?.trim();
+        if (favGpid == validGpid || favPlaceId == validGpid) {
+          final matchedId = (fav['placeId'] as String?)?.trim();
+          if (matchedId != null && matchedId.isNotEmpty) {
+            return matchedId;
+          }
+        }
+      }
+    }
+
+    // 2. Exact normalized name match
+    if (hasValidName) {
+      for (final fav in landmarkCandidates) {
+        final favName = (fav['name'] as String?)?.trim().toLowerCase();
+        if (favName != null && favName.isNotEmpty && favName == normName) {
+          final matchedId = (fav['placeId'] as String?)?.trim();
+          if (matchedId != null && matchedId.isNotEmpty) {
+            return matchedId;
+          }
+        }
+      }
+    }
+
+    // 3. Conservative coordinate match (distance <= 30m)
+    if (hasValidCoords) {
+      for (final fav in landmarkCandidates) {
+        final favLat = (fav['lat'] as num?)?.toDouble();
+        final favLng = (fav['lng'] as num?)?.toDouble();
+        if (favLat != null && favLng != null) {
+          final dist = _haversineDistance(lat, lng, favLat, favLng);
+          if (dist <= 30.0) {
+            final matchedId = (fav['placeId'] as String?)?.trim();
+            if (matchedId != null && matchedId.isNotEmpty) {
+              return matchedId;
+            }
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /// Narrowly scoped, read-only method to find an existing Favourite document ID
+  /// for a legacy Landmark History entry.
+  static Future<String?> findMatchingLandmarkFavouriteId({
+    String? googlePlaceId,
+    String? name,
+    double? lat,
+    double? lng,
+  }) async {
+    final uid = _userId;
+    if (uid == null) return null;
+
+    final collection = _favouritesCollection;
+    if (collection == null) return null;
+
+    try {
+      final snapshot = await collection.get();
+      if (_userId != uid) return null;
+
+      final favourites = snapshot.docs.map((d) {
+        final data = d.data() as Map<String, dynamic>? ?? {};
+        if (!data.containsKey('placeId')) {
+          data['placeId'] = d.id;
+        }
+        return data;
+      }).toList();
+
+      return selectMatchingLandmarkFavouriteId(
+        favourites,
+        googlePlaceId: googlePlaceId,
+        name: name,
+        lat: lat,
+        lng: lng,
+      );
+    } catch (e) {
+      debugPrint('⚠️ findMatchingLandmarkFavouriteId error: $e');
+      return null;
+    }
   }
 
   /// 📡 实时监听某个 place 的收藏状态

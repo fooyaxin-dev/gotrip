@@ -79,6 +79,8 @@ class _NavigationDebugOverlayState extends State<NavigationDebugOverlay> {
         return Colors.lightBlueAccent;
       case 'OFFLINE':
         return Colors.cyanAccent;
+      case 'GPS RECOVER':
+        return Colors.purpleAccent;
       case 'REROUTE':
         return Colors.redAccent;
       case 'WAIT GPS':
@@ -158,6 +160,9 @@ class _NavigationDebugOverlayState extends State<NavigationDebugOverlay> {
               ),
               Text(
                 'GPS age   ${_fmtAge(nav.debugGpsAgeSeconds)}',
+              ),
+              Text(
+                'Fix age   ${_fmtAge(nav.debugNavigationFixAgeSeconds)}',
               ),
               Text(
                 'Accept age ${_fmtAge(nav.debugAcceptedProgressAgeSeconds)}',
