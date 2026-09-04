@@ -58,7 +58,71 @@ class LocationService extends ChangeNotifier {
   // ── Significant move detection ──
   double? _lastFetchLat;
   double? _lastFetchLng;
-  static const double _refetchThresholdMetres = 10000; // 10km
+  static const double _refetchThresholdMetres = 3000; // 3km
+
+  bool _isMovementRefreshPending = false;
+  bool get isMovementRefreshPending => _isMovementRefreshPending;
+  double? get baselineLat => _lastFetchLat;
+  double? get baselineLng => _lastFetchLng;
+
+  @visibleForTesting
+  Future<Position> Function(
+      {LocationAccuracy desiredAccuracy,
+      Duration? timeLimit})? testPositionProvider;
+
+  @visibleForTesting
+  Future<bool> Function()? testServiceEnabledChecker;
+
+  @visibleForTesting
+  Future<LocationPermission> Function()? testPermissionChecker;
+
+  @visibleForTesting
+  Future<LocationPermission> Function()? testPermissionRequester;
+
+  @visibleForTesting
+  Stream<Position>? testPositionStream;
+
+  @visibleForTesting
+  void simulatePositionChange(Position newPos) {
+    currentPosition = newPos;
+    _checkProximity(newPos);
+    _checkSignificantMove(newPos);
+  }
+
+  @visibleForTesting
+  void resetForTesting() {
+    _positionStream?.cancel();
+    _positionStream = null;
+    _watcherCount = 0;
+    currentPosition = null;
+    _lastFetchLat = null;
+    _lastFetchLng = null;
+    _isMovementRefreshPending = false;
+    _watchedPlaces.clear();
+    _alreadyArrived.clear();
+    _watchedItineraryId = null;
+    testPositionProvider = null;
+    testServiceEnabledChecker = null;
+    testPermissionChecker = null;
+    testPermissionRequester = null;
+    testPositionStream = null;
+  }
+
+  /// Updates movement baseline coordinates and clears pending refresh flag.
+  /// Called by MainPage and RealTimeDetectPage only after nearby places have been
+  /// successfully loaded for lat/lng.
+  void updateMovementBaseline(double lat, double lng) {
+    _lastFetchLat = lat;
+    _lastFetchLng = lng;
+    _isMovementRefreshPending = false;
+  }
+
+  /// Releases the pending movement refresh state without advancing the baseline.
+  /// Called when a nearby-place reload fails, so that the location refresh can
+  /// be retried without requiring the user to move another 3 km.
+  void releaseMovementPending() {
+    _isMovementRefreshPending = false;
+  }
 
   // ── Proximity tracking ──
   static const double _arrivalRadiusMetres = 50;
@@ -134,7 +198,6 @@ class LocationService extends ChangeNotifier {
     _watchedPlaces = [];
   }
 
-
   void markArrived(String placeId) {
     _alreadyArrived.add(placeId);
     _watchedPlaces.removeWhere((w) => w.placeId == placeId);
@@ -144,37 +207,63 @@ class LocationService extends ChangeNotifier {
     _alreadyArrived.remove(placeId);
   }
 
-
   // ─────────────────────────────────────────────
-  // Init — 只负责权限检查 + 拿"这一次"的定位快照
-  //
-  // 🔧 CHANGED: 不再自动开启持续追踪的 GPS 流。之前这里直接
-  // Geolocator.getPositionStream(...).listen(...) 起了一条常驻订阅，
-  // 导致只要调用过 initLocation() 一次（比如 Home tab 一打开），
-  // GPS 就会以 high accuracy 持续跑到 app 被杀掉为止——这也是手机
-  // 发热的主因之一。现在持续追踪改成显式的 startTracking()/
-  // stopTracking()，由真正需要"实时位置"的页面自己申请。
+  // Init & Refresh — 显式 GPS 刷新
   // ─────────────────────────────────────────────
 
-  Future<LocationStatus> initLocation() async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+  Future<LocationStatus> initLocation({
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    return refreshCurrentLocation(timeout: timeout);
+  }
+
+  /// Explicitly requests a fresh GPS fix from the hardware/system.
+  /// Never uses cached or last-known positions.
+  /// Does not destroy existing [currentPosition] if acquisition fails.
+  Future<LocationStatus> refreshCurrentLocation({
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    final serviceChecker =
+        testServiceEnabledChecker ?? Geolocator.isLocationServiceEnabled;
+    bool serviceEnabled = await serviceChecker();
     if (!serviceEnabled) return LocationStatus.serviceDisabled;
 
-    LocationPermission permission = await Geolocator.checkPermission();
+    final permChecker = testPermissionChecker ?? Geolocator.checkPermission;
+    LocationPermission permission = await permChecker();
     if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) return LocationStatus.permissionDenied;
+      final permRequester =
+          testPermissionRequester ?? Geolocator.requestPermission;
+      permission = await permRequester();
+      if (permission == LocationPermission.denied) {
+        return LocationStatus.permissionDenied;
+      }
     }
-    if (permission == LocationPermission.deniedForever) return LocationStatus.permissionDeniedForever;
+    if (permission == LocationPermission.deniedForever) {
+      return LocationStatus.permissionDeniedForever;
+    }
 
-    currentPosition = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
+    try {
+      final posProvider = testPositionProvider;
+      final Position freshPos;
+      if (posProvider != null) {
+        freshPos = await posProvider(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: timeout,
+        );
+      } else {
+        freshPos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: timeout,
+        );
+      }
 
-    _lastFetchLat = currentPosition?.latitude;
-    _lastFetchLng = currentPosition?.longitude;
-
-    return LocationStatus.success;
+      currentPosition = freshPos;
+      _checkProximity(freshPos);
+      return LocationStatus.success;
+    } catch (e) {
+      debugPrint('📍 refreshCurrentLocation failed: $e');
+      return LocationStatus.serviceDisabled;
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -190,12 +279,15 @@ class LocationService extends ChangeNotifier {
     _watcherCount++;
     if (_positionStream != null) return; // 已经在跑，不用重复订阅
 
-    _positionStream = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 10,
-      ),
-    ).listen((Position pos) {
+    final stream = testPositionStream ??
+        Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 10,
+          ),
+        );
+
+    _positionStream = stream.listen((Position pos) {
       currentPosition = pos;
       _checkProximity(pos);
       _checkSignificantMove(pos);
@@ -218,16 +310,19 @@ class LocationService extends ChangeNotifier {
 
   void _checkSignificantMove(Position pos) {
     if (_lastFetchLat == null || _lastFetchLng == null) return;
+    if (_isMovementRefreshPending) return;
 
     final dist = _distanceMetres(
-      _lastFetchLat!, _lastFetchLng!,
-      pos.latitude, pos.longitude,
+      _lastFetchLat!,
+      _lastFetchLng!,
+      pos.latitude,
+      pos.longitude,
     );
 
-    if (dist >= _refetchThresholdMetres) {
-      debugPrint('📍 Moved ${dist.toStringAsFixed(0)}m — notifying all listeners');
-      _lastFetchLat = pos.latitude;
-      _lastFetchLng = pos.longitude;
+    if (dist >= _refetchThresholdMetres - 0.001) {
+      debugPrint(
+          '📍 Moved ${dist.toStringAsFixed(0)}m — notifying all listeners');
+      _isMovementRefreshPending = true;
       notifyListeners();
     }
   }
@@ -241,8 +336,10 @@ class LocationService extends ChangeNotifier {
       if (_alreadyArrived.contains(watched.placeId)) continue;
 
       final dist = _distanceMetres(
-        pos.latitude, pos.longitude,
-        watched.lat, watched.lng,
+        pos.latitude,
+        pos.longitude,
+        watched.lat,
+        watched.lng,
       );
 
       if (dist <= _arrivalRadiusMetres) {
@@ -293,4 +390,3 @@ class _WatchedPlace {
     required this.placeIndex,
   });
 }
-

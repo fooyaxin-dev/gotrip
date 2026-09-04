@@ -1625,22 +1625,15 @@ class ItineraryService {
       final timeStr =
           '${hh.toString().padLeft(2, '0')}:${mm.toString().padLeft(2, '0')}';
 
-      result.add(ItineraryPlace(
-        placeId: place.id,
-        name: place.name,
-        address: place.address ?? '',
-        photoUrl: place.photoUrl,
-        lat: place.lat,
-        lng: place.lng,
-        primaryType: CategoryMapper.resolvePrimaryType(
-          place.primaryType,
-          place.allTypes,
-        ),
-        allTypes: place.allTypes,
-        regularOpeningPeriods: place.regularOpeningPeriods,
+      result.add(ItineraryPlace.fromPlaceModel(
+        place,
         suggestedTime: timeStr,
         durationMinutes: duration,
         notes: _generateNote(place),
+        primaryTypeOverride: CategoryMapper.resolvePrimaryType(
+          place.primaryType,
+          place.allTypes,
+        ),
       ));
 
       cursorMinutes = startMinutes + duration;

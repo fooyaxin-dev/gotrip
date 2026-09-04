@@ -18,6 +18,11 @@ class ItineraryPlace {
   final bool isVisited; // ✅ 用户实际到访过
   final DateTime? visitedAt; // ✅ 实际到访时间
   final List<OpeningHoursPeriod>? regularOpeningPeriods; // 🆕 营业时间段
+  final double? rating;
+  final int? userRatingCount;
+  final String? phoneNumber;
+  final String? website;
+  final String? description;
 
   ItineraryPlace({
     required this.placeId,
@@ -34,6 +39,11 @@ class ItineraryPlace {
     this.isVisited = false,
     this.visitedAt,
     this.regularOpeningPeriods,
+    this.rating,
+    this.userRatingCount,
+    this.phoneNumber,
+    this.website,
+    this.description,
   });
 
   factory ItineraryPlace.fromMap(Map<String, dynamic> m) => ItineraryPlace(
@@ -59,6 +69,47 @@ class ItineraryPlace {
             ?.map((e) => OpeningHoursPeriod.fromJson(e))
             .whereType<OpeningHoursPeriod>()
             .toList(),
+        rating: (m['rating'] as num?)?.toDouble(),
+        userRatingCount: (m['userRatingCount'] as num?)?.toInt(),
+        phoneNumber: m['phoneNumber'] as String?,
+        website: m['website'] as String?,
+        description: m['description'] as String?,
+      );
+
+  /// Converts a production [PlaceModel] into an [ItineraryPlace], preserving
+  /// all genuinely available place metadata (rating, userRatingCount,
+  /// regularOpeningPeriods, allTypes, primaryType, photoUrl, address, lat, lng).
+  /// Fields not present in [PlaceModel] (phoneNumber, website, description)
+  /// remain null and are omitted from PDF export.
+  factory ItineraryPlace.fromPlaceModel(
+    PlaceModel place, {
+    required String suggestedTime,
+    required int durationMinutes,
+    String? notes,
+    bool isVisited = false,
+    DateTime? visitedAt,
+    String? primaryTypeOverride,
+  }) =>
+      ItineraryPlace(
+        placeId: place.id,
+        name: place.name,
+        address: place.address ?? '',
+        photoUrl: place.photoUrl,
+        lat: place.lat,
+        lng: place.lng,
+        primaryType: primaryTypeOverride ?? place.primaryType,
+        allTypes: place.allTypes,
+        suggestedTime: suggestedTime,
+        durationMinutes: durationMinutes,
+        notes: notes,
+        isVisited: isVisited,
+        visitedAt: visitedAt,
+        regularOpeningPeriods: place.regularOpeningPeriods,
+        rating: place.rating,
+        userRatingCount: place.userRatingCount,
+        phoneNumber: null,
+        website: null,
+        description: null,
       );
 
   Map<String, dynamic> toMap() => {
@@ -78,6 +129,11 @@ class ItineraryPlace {
         if (regularOpeningPeriods != null)
           'regularOpeningPeriods':
               regularOpeningPeriods!.map((p) => p.toJson()).toList(),
+        if (rating != null) 'rating': rating,
+        if (userRatingCount != null) 'userRatingCount': userRatingCount,
+        if (phoneNumber != null) 'phoneNumber': phoneNumber,
+        if (website != null) 'website': website,
+        if (description != null) 'description': description,
       };
 
   ItineraryPlace copyWith({
@@ -90,6 +146,11 @@ class ItineraryPlace {
     String? primaryType,
     List<String>? allTypes,
     List<OpeningHoursPeriod>? regularOpeningPeriods,
+    double? rating,
+    int? userRatingCount,
+    String? phoneNumber,
+    String? website,
+    String? description,
   }) =>
       ItineraryPlace(
         placeId: placeId,
@@ -107,6 +168,11 @@ class ItineraryPlace {
         visitedAt: visitedAt ?? this.visitedAt,
         regularOpeningPeriods:
             regularOpeningPeriods ?? this.regularOpeningPeriods,
+        rating: rating ?? this.rating,
+        userRatingCount: userRatingCount ?? this.userRatingCount,
+        phoneNumber: phoneNumber ?? this.phoneNumber,
+        website: website ?? this.website,
+        description: description ?? this.description,
       );
 }
 

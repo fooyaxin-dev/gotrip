@@ -1,4 +1,0 @@
- lib/modules/place/detectPlacePage.dart | 2794 ++++++++++++++++++++++----------
- lib/services/nearbyPlace_service.dart  |  844 ++++++----
- lib/services/placesAPI_service.dart    |   10 +-
- 3 files changed, 2448 insertions(+), 1200 deletions(-)

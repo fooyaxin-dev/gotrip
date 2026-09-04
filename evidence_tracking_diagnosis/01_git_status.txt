@@ -1,0 +1,53 @@
+﻿ D SHA256SUMS_v2_2.txt
+ D evidence/current_working_tree.diff
+ D evidence/detect_place_diff.txt
+ D evidence/flutter_analyze_output.txt
+ D evidence/git_diff_stat.txt
+ D evidence/git_log.txt
+ D evidence/git_status.txt
+ D evidence/nearby_service_diff.txt
+ D evidence/original_vs_current_summary.txt
+ D evidence/places_api_diff.txt
+ D evidence/popularity_git_history.txt
+ D evidence/realtime_detect_test_output.txt
+ D evidence_v2_1/01_dart_format.txt
+ D evidence_v2_1/02_flutter_analyze.txt
+ D evidence_v2_1/03_flutter_test_realtime.txt
+ D evidence_v2_1/04_flutter_test_all.txt
+ D evidence_v2_1/05_git_diff_check.txt
+ D evidence_v2_1/06_git_status.txt
+ D evidence_v2_1/07_git_diff_stat.txt
+ D evidence_v2_1/08_sha256_hashes.txt
+ D evidence_v2_2/01_dart_format.txt
+ D evidence_v2_2/02_flutter_analyze.txt
+ D evidence_v2_2/03_flutter_test_realtime.txt
+ D evidence_v2_2/04_flutter_test_all.txt
+ D evidence_v2_2/05_git_diff_check.txt
+ D evidence_v2_2/06_rg_prefetch_sites.txt
+ D evidence_v2_2/07_git_diff.txt
+ D evidence_v2_2/08_git_status.txt
+ D evidence_v2_2/09_git_diff_stat.txt
+ D gotrip_detect_place_modes_restore_v2_2_output.zip
+ D gotrip_detect_place_modes_restore_v2_2_report.md
+ D gotrip_task13c_rollback_output/gotrip_task13c_rollback_report.md
+ D gotrip_task13c_rollback_output/lib/modules/itinerary/itineraryGeneratePage.dart
+ D gotrip_task13c_rollback_output/lib/services/itinerary_service.dart
+ D gotrip_task13c_rollback_output/lib/services/nearbyPlace_service.dart
+ D gotrip_task13c_rollback_output/test/itinerary_rollback_regression_test.dart
+ M lib/models/itineraryModel.dart
+ M lib/modules/itinerary/itineraryDetail.dart
+ M lib/modules/main/mainpage.dart
+ M lib/modules/place/detectPlacePage.dart
+ M lib/services/itinerary_service.dart
+ M lib/services/location_service.dart
+ M lib/services/userPreference_service.dart
+ M pubspec.lock
+ M pubspec.yaml
+?? assets/fonts/
+?? evidence_tracking_diagnosis/
+?? gotrip_itinerary_tracking_diagnosis_report.md
+?? lib/services/for_you_recommendation_service.dart
+?? lib/services/itinerary_pdf_service.dart
+?? test/itinerary_pdf_export_test.dart
+?? test/location_refresh_test.dart
+?? test/shared_for_you_consistency_test.dart

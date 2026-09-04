@@ -22,6 +22,7 @@ import '../../models/itineraryModel.dart'; // ← 新加：ItineraryModel / Itin
 import 'package:intl/intl.dart'; // ← 新加：DateFormat
 import '../../services/dialog_helper.dart'; // ← 新加：AppDialogs
 import '../../services/category_mapper.dart';
+import '../../services/for_you_recommendation_service.dart';
 
 // ── Category-Aware Map Marker Presentation ──────────────────────────────────
 class CategoryMarkerVisual {
@@ -100,6 +101,9 @@ class RealTimeDetectPage extends StatefulWidget {
   final VoidCallback onBack;
   final bool autoFocusSearch;
   final NearbyPlacesService? nearbyService;
+  final SortMode? initialSortMode;
+  final ForYouSnapshot? initialSnapshot;
+  final TravelMode? initialTravelMode;
 
   const RealTimeDetectPage({
     super.key,
@@ -108,6 +112,9 @@ class RealTimeDetectPage extends StatefulWidget {
     required this.onBack,
     this.autoFocusSearch = false,
     this.nearbyService,
+    this.initialSortMode,
+    this.initialSnapshot,
+    this.initialTravelMode,
   });
 
   NearbyPlacesService get effectiveNearbyService =>
@@ -118,15 +125,10 @@ class RealTimeDetectPage extends StatefulWidget {
     required List<PlaceModel> distancePlaces,
     required List<PlaceModel> popularityPlaces,
   }) {
-    final seen = <String>{};
-    final combined = <PlaceModel>[];
-    for (final p in distancePlaces) {
-      if (seen.add(p.id)) combined.add(p);
-    }
-    for (final p in popularityPlaces) {
-      if (seen.add(p.id)) combined.add(p);
-    }
-    return combined;
+    return ForYouRecommendationService.combinePools(
+      distancePlaces: distancePlaces,
+      popularityPlaces: popularityPlaces,
+    );
   }
 
   /// Sorts candidates for the Nearest tab (DISTANCE only):
@@ -276,6 +278,133 @@ class RealTimeDetectPage extends StatefulWidget {
   /// Default sort mode across the application.
   static const SortMode defaultSortMode = SortMode.recommended;
 
+  /// Production seam for validating whether an [initialSnapshot] matches the active
+  /// normal user-GPS context (GPS coordinates, travel-mode radius, preference revision, and generation).
+  /// Landmark mode and null coordinates always return false.
+  @visibleForTesting
+  static bool isValidInitialSnapshot({
+    required ForYouSnapshot? snapshot,
+    required Position? currentPosition,
+    required int radiusMeters,
+    required int preferenceRevision,
+    required int generation,
+    bool isLandmark = false,
+  }) {
+    if (snapshot == null || isLandmark || currentPosition == null) {
+      return false;
+    }
+    return snapshot.matchesContext(
+      originType: RecommendationOriginType.gps,
+      lat: currentPosition.latitude,
+      lng: currentPosition.longitude,
+      radiusMeters: radiusMeters,
+      preferenceRevision: preferenceRevision,
+      generation: generation,
+    );
+  }
+
+  /// Production seam for resolving the effective initial travel-mode radius.
+  /// If [initialTravelMode] is provided, it takes precedence for that page session.
+  /// Otherwise, uses the saved user preference.
+  @visibleForTesting
+  static int resolveInitialTravelModeRadius({
+    TravelMode? initialTravelMode,
+    UserPreferences? preference,
+  }) {
+    if (initialTravelMode != null) {
+      return radiusForTravelMode(initialTravelMode);
+    }
+    final raw =
+        (preference ?? UserPreferenceService.instance.current).travelMode;
+    return radiusForTravelMode(travelModeFromString(raw));
+  }
+
+  /// Production seam for resolving the saved travel-mode radius from user preferences.
+  @visibleForTesting
+  static int resolveSavedTravelModeRadius([UserPreferences? pref]) {
+    return resolveInitialTravelModeRadius(
+      initialTravelMode: null,
+      preference: pref,
+    );
+  }
+
+  /// Production seam for validating whether an [initialSnapshot] matches the active
+  /// normal user-GPS context under the effective travel mode (initial or saved).
+  @visibleForTesting
+  static bool isValidInitialSnapshotForEffectiveTravelMode({
+    required ForYouSnapshot? snapshot,
+    required Position? currentPosition,
+    required int preferenceRevision,
+    required int generation,
+    TravelMode? initialTravelMode,
+    UserPreferences? preference,
+    bool isLandmark = false,
+  }) {
+    final expectedRadius = resolveInitialTravelModeRadius(
+      initialTravelMode: initialTravelMode,
+      preference: preference,
+    );
+    return isValidInitialSnapshot(
+      snapshot: snapshot,
+      currentPosition: currentPosition,
+      radiusMeters: expectedRadius,
+      preferenceRevision: preferenceRevision,
+      generation: generation,
+      isLandmark: isLandmark,
+    );
+  }
+
+  /// Production seam for validating whether an [initialSnapshot] matches the saved user travel-mode
+  /// radius and active context.
+  @visibleForTesting
+  static bool isValidInitialSnapshotForSavedPreference({
+    required ForYouSnapshot? snapshot,
+    required Position? currentPosition,
+    required int preferenceRevision,
+    required int generation,
+    UserPreferences? preference,
+    bool isLandmark = false,
+  }) {
+    return isValidInitialSnapshotForEffectiveTravelMode(
+      snapshot: snapshot,
+      currentPosition: currentPosition,
+      preferenceRevision: preferenceRevision,
+      generation: generation,
+      initialTravelMode: null,
+      preference: preference,
+      isLandmark: isLandmark,
+    );
+  }
+
+  /// Production seam for triggering background popularity prefetch at the end of bootstrap
+  /// when popularity places are not yet loaded (restoring Landmark and Search popularity acquisition).
+  @visibleForTesting
+  static bool executeBootstrapEndPopularitySeam({
+    required bool isPopularityEmpty,
+    required void Function() onTriggerPrefetch,
+  }) {
+    if (isPopularityEmpty) {
+      onTriggerPrefetch();
+      return true;
+    }
+    return false;
+  }
+
+  /// Production seam for fetching the popularity round in background prefetch.
+  @visibleForTesting
+  static Future<List<PlaceModel>> executePrefetchPopularitySeam({
+    required double lat,
+    required double lng,
+    required int radius,
+    required NearbyPlacesService nearbyService,
+  }) {
+    return nearbyService.ensurePopularityRound(
+      lat: lat,
+      lng: lng,
+      radius: radius,
+    );
+  }
+
   /// Production Rank-loading indicator component used by _buildPlaceListSheet.
   static Widget buildRankLoadingIndicator() {
     return Padding(
@@ -325,6 +454,87 @@ class RealTimeDetectPage extends StatefulWidget {
     );
   }
 
+  /// Production seam for acknowledging a completed place load.
+  /// Only normal user-GPS loads update LocationService's movement baseline.
+  /// Landmark and search-mode coordinates are strictly excluded from updating
+  /// the global user movement baseline.
+  @visibleForTesting
+  static void acknowledgeLoadedBaseline({
+    required double lat,
+    required double lng,
+    required bool isLandmarkMode,
+    required bool isSearchMode,
+  }) {
+    if (!isLandmarkMode && !isSearchMode) {
+      LocationService.instance.updateMovementBaseline(lat, lng);
+    }
+  }
+
+  /// Production seam for evaluating an incoming location stream movement event.
+  /// Returns true if an automatic reload was started; false if the event was ignored.
+  /// Search mode, Landmark mode, and sub-3000m movements simply ignore the event
+  /// and NEVER release LocationService's shared movement pending state.
+  @visibleForTesting
+  static bool handleLocationChangedMovementEvent({
+    required bool isSearchMode,
+    required bool isLandmarkMode,
+    required bool isBusy,
+    required Position? currentPos,
+    required double? lastLoadedLat,
+    required double? lastLoadedLng,
+    required Future<void> Function() onStartAutoReload,
+  }) {
+    if (isSearchMode || isLandmarkMode || isBusy) return false;
+    if (currentPos == null || lastLoadedLat == null || lastLoadedLng == null) {
+      return false;
+    }
+    final dist = Geolocator.distanceBetween(
+      lastLoadedLat,
+      lastLoadedLng,
+      currentPos.latitude,
+      currentPos.longitude,
+    );
+    if (dist < 3000) return false;
+    unawaited(onStartAutoReload());
+    return true;
+  }
+
+  /// Production seam for search-exit logic.
+  /// Checks fresh GPS fix, releases movement pending and shows dialog on failure,
+  /// and only clears search state and reloads places on success.
+  @visibleForTesting
+  static Future<bool> executeClearSearchSeam({
+    required bool acquireFreshGps,
+    required Future<LocationStatus> Function() refreshLocationFn,
+    required Position? Function() getCurrentPositionFn,
+    required void Function() onShowServiceDisabledDialog,
+    required void Function() onShowUnavailableDialog,
+    required void Function(Position? newPos) onClearSearchState,
+    required Future<void> Function() onBootstrap,
+  }) async {
+    if (acquireFreshGps) {
+      final status = await refreshLocationFn();
+      if (status != LocationStatus.success) {
+        if (status == LocationStatus.serviceDisabled) {
+          onShowServiceDisabledDialog();
+        } else {
+          onShowUnavailableDialog();
+        }
+        return false;
+      }
+    }
+
+    final realPos = getCurrentPositionFn();
+    if (acquireFreshGps && realPos == null) {
+      onShowUnavailableDialog();
+      return false;
+    }
+
+    onClearSearchState(realPos);
+    await onBootstrap();
+    return true;
+  }
+
   @override
   State<RealTimeDetectPage> createState() => _RealTimeDetectPageState();
 }
@@ -366,10 +576,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   String? _selectedPrimary;
   String _selectedSecondary = 'all';
 
-  void _syncDistance(PlaceModel place) {
+  void _syncDistance(PlaceModel place, {bool forceRecalculate = false}) {
     if (_currentPosition == null || place.lat == null || place.lng == null)
       return;
-    if (_routeResults.containsKey(place.id)) return;
+    if (!forceRecalculate && _routeResults.containsKey(place.id)) {
+      return;
+    }
     final dist = Geolocator.distanceBetween(
       _currentPosition!.latitude,
       _currentPosition!.longitude,
@@ -410,10 +622,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   ) async {
     _isPopularityLoading = true;
     try {
-      final popPlaces = await _nearbyService.ensurePopularityRound(
+      final popPlaces = await RealTimeDetectPage.executePrefetchPopularitySeam(
         lat: lat,
         lng: lng,
         radius: radius,
+        nearbyService: _nearbyService,
       );
       if (!mounted || generation != _detectGeneration) return;
 
@@ -441,9 +654,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
 
-  // ── New nearby badge ──────────────────────────────────────────────────────
-  bool _hasNewNearby = false;
-  static const double _badgeThresholdMetres = 500;
+  // ── Movement reload tracking ──
+  bool _isAutoReloading = false;
+  bool _isRefreshingLocation = false;
   double? _lastLoadedLat;
   double? _lastLoadedLng;
 
@@ -1079,8 +1292,37 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     _initialCameraPosition = CameraPosition(target: fallback, zoom: 14);
 
     // ... 原本其它 initState 逻辑不变
+    if (widget.initialSortMode != null) {
+      _sortMode = widget.initialSortMode!;
+    }
     _initCategoryMarkers();
     _syncTravelModeFromPreference();
+
+    final pos = LocationService.instance.currentPosition;
+    final prefRev = UserPreferenceService.instance.preferenceRevision;
+    final gen = ForYouRecommendationService.instance.currentGeneration;
+    final hasValidSnapshot = _sortMode == SortMode.recommended &&
+        RealTimeDetectPage.isValidInitialSnapshot(
+          snapshot: widget.initialSnapshot,
+          currentPosition: pos,
+          radiusMeters: _radiusFromTravelMode,
+          preferenceRevision: prefRev,
+          generation: gen,
+          isLandmark: widget.landmarkLat != null,
+        );
+
+    if (hasValidSnapshot) {
+      _rankedGooglePlaces = List.from(widget.initialSnapshot!.places);
+      _placeScores = Map.from(widget.initialSnapshot!.scores);
+      _routeResults.addAll(widget.initialSnapshot!.routeResults);
+      _displayedPlaces.clear();
+      _displayedPlaces.addAll(widget.initialSnapshot!.places);
+      for (final p in _displayedPlaces) {
+        _addMarkerAndPlace(p);
+      }
+      _isLoading = false;
+    }
+
     UserPreferenceService.instance.preferencesChanged
         .addListener(_onPreferencesChanged);
     WeatherService.instance.weatherChanged.addListener(_onWeatherChanged);
@@ -1098,6 +1340,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       });
     }
 
+    if (widget.landmarkLat == null) {
+      LocationService.instance.startTracking();
+    }
     LocationService.instance.addListener(_onLocationChanged);
   }
 
@@ -1106,6 +1351,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   }
 
   void _syncTravelModeFromPreference() {
+    if (widget.initialTravelMode != null) {
+      _travelMode = widget.initialTravelMode!;
+      print(
+          '🔍 _syncTravelModeFromPreference: using initialTravelMode=$_travelMode');
+      return;
+    }
     final raw = UserPreferenceService.instance.current.travelMode;
     print(
         '🔍 _syncTravelModeFromPreference: raw="$raw" → ${travelModeFromString(raw)}');
@@ -1113,7 +1364,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   }
 
   Future<void> _onPreferencesChanged() async {
-    if (!mounted || _travelModeManuallySet) return; // 用户手动选过 → 不再被外部覆盖
+    if (!mounted) return;
+
+    ForYouRecommendationService.instance.invalidateUserGpsSnapshot();
+
     final savedMode = UserPreferenceService.instance.current.travelMode;
     final newMode = savedMode == 'drive'
         ? TravelMode.drive
@@ -1121,41 +1375,104 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
             ? TravelMode.motor
             : TravelMode.walk;
 
-    if (newMode == _travelMode) return; // 没变化，不用重新加载
+    if (!_travelModeManuallySet && newMode != _travelMode) {
+      setState(() => _travelMode = newMode);
+      _nearbyService.clearCache();
+      _nearbyService.clearSearchCache();
+      await _bootstrap();
+      return;
+    }
 
-    setState(() => _travelMode = newMode);
-
-    // radius 跟着 travel mode 变了，跟手动切换一样要清 cache 重新拉数据
-    _nearbyService.clearCache();
-    _nearbyService.clearSearchCache();
-    await _bootstrap();
+    // Category/cuisine/budget preferences might have changed even if travel mode didn't
+    if (_sortMode == SortMode.recommended) {
+      if (widget.landmarkLat == null &&
+          _searchLocationName == null &&
+          _currentPosition != null) {
+        setState(() => _isLoading = true);
+        try {
+          final snapshot =
+              await ForYouRecommendationService.instance.ensureForYouSnapshot(
+            lat: _currentPosition!.latitude,
+            lng: _currentPosition!.longitude,
+            radiusMeters: _radiusFromTravelMode,
+            weather: WeatherService.instance.current,
+            nearbyService: _nearbyService,
+          );
+          if (mounted) {
+            setState(() {
+              _rankedGooglePlaces = List.from(snapshot.places);
+              _placeScores = Map.from(snapshot.scores);
+              _routeResults.addAll(snapshot.routeResults);
+              _isLoading = false;
+            });
+          }
+        } catch (e) {
+          if (mounted) {
+            _recomputeRanking();
+            setState(() => _isLoading = false);
+          }
+        }
+      } else {
+        _recomputeRanking();
+      }
+    } else {
+      _recomputeRanking();
+    }
   }
 
-  void _onLocationChanged() {
+  Future<void> _onLocationChanged() async {
     if (!mounted) return;
-    if (_searchLocationName != null) return;
-    if (widget.landmarkLat != null) return;
+    RealTimeDetectPage.handleLocationChangedMovementEvent(
+      isSearchMode: _searchLocationName != null,
+      isLandmarkMode: widget.landmarkLat != null,
+      isBusy: _isAutoReloading || _isLoading || _isRefreshingLocation,
+      currentPos: LocationService.instance.currentPosition,
+      lastLoadedLat: _lastLoadedLat,
+      lastLoadedLng: _lastLoadedLng,
+      onStartAutoReload: () async {
+        _isAutoReloading = true;
+        try {
+          final pos = LocationService.instance.currentPosition;
+          if (pos == null) return;
+          _currentPosition = pos;
+          _routeResults.clear();
+          _markers.removeWhere((m) => m.markerId.value == 'me');
+          _markers.add(Marker(
+            markerId: const MarkerId('me'),
+            position: LatLng(pos.latitude, pos.longitude),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueAzure),
+            infoWindow: const InfoWindow(title: 'My Location'),
+          ));
 
-    // Instead of auto-refreshing, show a badge on the refresh button
-    // so the user can decide when to update
-    final pos = LocationService.instance.currentPosition;
-    if (pos == null || _lastLoadedLat == null || _lastLoadedLng == null) return;
+          _nearbyService.clearCache();
+          _nearbyService.clearSearchCache();
+          _nearbyService.clearGoogleRawCache();
 
-    final dist = Geolocator.distanceBetween(
-      _lastLoadedLat!,
-      _lastLoadedLng!,
-      pos.latitude,
-      pos.longitude,
+          await _bootstrap();
+
+          if (_currentPosition != null) {
+            _mapController?.animateCamera(CameraUpdate.newLatLngZoom(
+              LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+              14,
+            ));
+          }
+        } catch (e) {
+          debugPrint('📍 Auto reload on location move failed: $e');
+          LocationService.instance.releaseMovementPending();
+        } finally {
+          _isAutoReloading = false;
+        }
+      },
     );
-
-    if (dist >= _badgeThresholdMetres && !_hasNewNearby) {
-      setState(() => _hasNewNearby = true);
-    }
   }
 
   @override
   void dispose() {
     LocationService.instance.removeListener(_onLocationChanged);
+    if (widget.landmarkLat == null) {
+      LocationService.instance.stopTracking();
+    }
     UserPreferenceService.instance.preferencesChanged
         .removeListener(_onPreferencesChanged); // 🆕
     WeatherService.instance.weatherChanged.removeListener(_onWeatherChanged);
@@ -1171,11 +1488,27 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
 
   Future<void> _bootstrap() async {
     final generation = ++_detectGeneration;
+    final posForInit = LocationService.instance.currentPosition;
+    final prefRevForInit = UserPreferenceService.instance.preferenceRevision;
+    final genForInit = ForYouRecommendationService.instance.currentGeneration;
+    final isInitialSnapshotValid = _sortMode == SortMode.recommended &&
+        RealTimeDetectPage.isValidInitialSnapshot(
+          snapshot: widget.initialSnapshot,
+          currentPosition: posForInit,
+          radiusMeters: _radiusFromTravelMode,
+          preferenceRevision: prefRevForInit,
+          generation: genForInit,
+          isLandmark: widget.landmarkLat != null,
+        );
+
     setState(() {
-      _isLoading = true;
-      _distancePlaces.clear();
-      _popularityPlaces.clear();
-      _popularityResponseOrder.clear();
+      _isLoading = !isInitialSnapshotValid;
+      if (!isInitialSnapshotValid) {
+        _distancePlaces.clear();
+        _popularityPlaces.clear();
+        _popularityResponseOrder.clear();
+        _routeResults.clear();
+      }
     });
 
     final double centerLat;
@@ -1202,6 +1535,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         zoom: 14,
       );
 
+      _markers.removeWhere((m) => m.markerId.value == 'me');
       _markers.add(Marker(
         markerId: const MarkerId('me'),
         position: LatLng(centerLat, centerLng),
@@ -1257,6 +1591,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       final pos = LocationService.instance.currentPosition;
       if (pos == null) {
         setState(() => _isLoading = false);
+        if (_isAutoReloading) {
+          LocationService.instance.releaseMovementPending();
+        }
         AppDialogs.showLocationUnavailable(context);
         return;
       }
@@ -1269,6 +1606,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         zoom: 14,
       );
 
+      _markers.removeWhere((m) => m.markerId.value == 'me');
       _markers.add(Marker(
         markerId: const MarkerId('me'),
         position: LatLng(pos.latitude, pos.longitude),
@@ -1279,16 +1617,76 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       setState(() {});
 
       try {
-        final distPlaces = await _nearbyService.ensureDistanceRound(
-          lat: centerLat,
-          lng: centerLng,
-          radius: _radiusFromTravelMode,
-        );
-        if (!mounted || generation != _detectGeneration) return;
+        if (_sortMode == SortMode.recommended) {
+          final prefRev =
+              UserPreferenceService.instance.preferencesChanged.value;
+          final gen = ForYouRecommendationService.instance.currentGeneration;
+          final snapMatches = widget.initialSnapshot?.matchesContext(
+                originType: RecommendationOriginType.gps,
+                lat: centerLat,
+                lng: centerLng,
+                radiusMeters: _radiusFromTravelMode,
+                preferenceRevision: prefRev,
+                generation: gen,
+              ) ==
+              true;
 
-        _distancePlaces = distPlaces;
-        for (final p in distPlaces) {
-          _syncDistance(p);
+          final ForYouSnapshot snapshot;
+          if (snapMatches) {
+            snapshot = widget.initialSnapshot!;
+          } else {
+            snapshot =
+                await ForYouRecommendationService.instance.ensureForYouSnapshot(
+              lat: centerLat,
+              lng: centerLng,
+              radiusMeters: _radiusFromTravelMode,
+              weather: WeatherService.instance.current,
+              nearbyService: _nearbyService,
+            );
+          }
+
+          final distPlaces = await _nearbyService.ensureDistanceRound(
+            lat: centerLat,
+            lng: centerLng,
+            radius: _radiusFromTravelMode,
+          );
+          final popPlaces = await _nearbyService.ensurePopularityRound(
+            lat: centerLat,
+            lng: centerLng,
+            radius: _radiusFromTravelMode,
+          );
+
+          if (!mounted || generation != _detectGeneration) return;
+
+          _distancePlaces = distPlaces;
+          _popularityPlaces = popPlaces;
+          _popularityResponseOrder.clear();
+          for (var i = 0; i < popPlaces.length; i++) {
+            _popularityResponseOrder[popPlaces[i].id] = i;
+          }
+          for (final p in distPlaces) {
+            _syncDistance(p);
+          }
+          for (final p in popPlaces) {
+            _syncDistance(p);
+          }
+
+          _rankedGooglePlaces = List.from(snapshot.places);
+          _placeScores = Map.from(snapshot.scores);
+          _routeResults.addAll(snapshot.routeResults);
+          _isLoading = false;
+        } else {
+          final distPlaces = await _nearbyService.ensureDistanceRound(
+            lat: centerLat,
+            lng: centerLng,
+            radius: _radiusFromTravelMode,
+          );
+          if (!mounted || generation != _detectGeneration) return;
+
+          _distancePlaces = distPlaces;
+          for (final p in distPlaces) {
+            _syncDistance(p);
+          }
         }
 
         // Trigger Geoapify enrichment in background
@@ -1316,6 +1714,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
         if (mounted && generation == _detectGeneration) {
           setState(() => _isLoading = false);
         }
+        if (_isAutoReloading) {
+          LocationService.instance.releaseMovementPending();
+        }
         return;
       }
     }
@@ -1328,17 +1729,29 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
       );
     }
 
-    // Record where we loaded from so _onLocationChanged can detect 500m+ moves
+    // Record where we loaded from so _onLocationChanged can detect 3km+ moves
     _lastLoadedLat = _currentPosition?.latitude;
     _lastLoadedLng = _currentPosition?.longitude;
+    RealTimeDetectPage.acknowledgeLoadedBaseline(
+      lat: centerLat,
+      lng: centerLng,
+      isLandmarkMode: widget.landmarkLat != null,
+      isSearchMode: _searchLocationName != null,
+    );
 
-    // Start POPULARITY retrieval automatically in the background
-    unawaited(_prefetchPopularityRound(
-      centerLat,
-      centerLng,
-      _radiusFromTravelMode,
-      generation,
-    ));
+    // Start POPULARITY retrieval automatically in the background if popularity places are not yet loaded
+    // (Restores Landmark and Search candidate behaviour to obtain both DISTANCE and POPULARITY)
+    RealTimeDetectPage.executeBootstrapEndPopularitySeam(
+      isPopularityEmpty: _popularityPlaces.isEmpty,
+      onTriggerPrefetch: () {
+        unawaited(_prefetchPopularityRound(
+          centerLat,
+          centerLng,
+          _radiusFromTravelMode,
+          generation,
+        ));
+      },
+    );
   }
 
   // ─────────────────────────────────────────────
@@ -1503,35 +1916,49 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     }
   }
 
-  void _clearSearch() {
-    _searchController.clear();
-    _selectedPlacesMap.clear();
-    _searchFocus.unfocus();
+  Future<void> _clearSearch({bool acquireFreshGps = true}) async {
+    await RealTimeDetectPage.executeClearSearchSeam(
+      acquireFreshGps: acquireFreshGps,
+      refreshLocationFn: () =>
+          LocationService.instance.refreshCurrentLocation(),
+      getCurrentPositionFn: () => LocationService.instance.currentPosition,
+      onShowServiceDisabledDialog: () {
+        if (mounted) _showLocationDisabledDialog();
+      },
+      onShowUnavailableDialog: () {
+        if (mounted) AppDialogs.showLocationUnavailable(context);
+      },
+      onClearSearchState: (realPos) {
+        _searchController.clear();
+        _selectedPlacesMap.clear();
+        _searchFocus.unfocus();
 
-    final realPos = LocationService.instance.currentPosition;
-
-    setState(() {
-      if (realPos != null) _currentPosition = realPos;
-      _isSearchMode = false;
-      _isSearchLoading = false;
-      _searchLocationName = null;
-      _searchPlaces = [];
-      _autocompleteSuggestions = [];
-      _selectedPlaceIds.clear();
-      if (realPos != null) {
-        _markers.removeWhere((m) => m.markerId.value == 'me');
-        _markers.removeWhere((m) => m.markerId.value == 'search_location');
-        _markers.add(Marker(
-          markerId: const MarkerId('me'),
-          position: LatLng(realPos.latitude, realPos.longitude),
-          icon:
-              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-          infoWindow: const InfoWindow(title: 'My Location'),
-        ));
-      }
-    });
-
-    _bootstrap();
+        setState(() {
+          if (realPos != null) _currentPosition = realPos;
+          _isSearchMode = false;
+          _isSearchLoading = false;
+          _searchLocationName = null;
+          _searchPlaces = [];
+          _autocompleteSuggestions = [];
+          _selectedPlaceIds.clear();
+          _routeResults.clear();
+          if (realPos != null) {
+            _markers.removeWhere((m) => m.markerId.value == 'me');
+            _markers.removeWhere((m) => m.markerId.value == 'search_location');
+            _markers.add(Marker(
+              markerId: const MarkerId('me'),
+              position: LatLng(realPos.latitude, realPos.longitude),
+              icon: BitmapDescriptor.defaultMarkerWithHue(
+                  BitmapDescriptor.hueAzure),
+              infoWindow: const InfoWindow(title: 'My Location'),
+            ));
+          }
+        });
+      },
+      onBootstrap: () async {
+        await _bootstrap();
+      },
+    );
 
     if (_currentPosition != null) {
       _mapController?.animateCamera(CameraUpdate.newLatLngZoom(
@@ -1649,25 +2076,89 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
   }
 
   Future<void> _onRefresh() async {
-    if (_searchLocationName != null) {
-      _clearSearch();
-      return;
+    if (_isRefreshingLocation || _isLoading) return;
+    _isRefreshingLocation = true;
+
+    try {
+      if (_searchLocationName != null) {
+        await _clearSearch(acquireFreshGps: true);
+        return;
+      }
+
+      // Landmark mode: retain landmark center coordinates, do not fetch user GPS
+      if (widget.landmarkLat != null && widget.landmarkLng != null) {
+        setState(() {
+          _selectedPrimary = null;
+          _selectedSecondary = 'all';
+          _isLoading = true;
+          _distancePlaces.clear();
+          _popularityPlaces.clear();
+          _popularityResponseOrder.clear();
+          _routeResults.clear();
+        });
+
+        _nearbyService.clearCache();
+        _nearbyService.clearSearchCache();
+        _nearbyService.clearGoogleRawCache();
+        await _bootstrap();
+        return;
+      }
+
+      // Normal GPS mode: acquire fresh GPS fix
+      setState(() => _isLoading = true);
+      final status = await LocationService.instance.refreshCurrentLocation();
+      if (!mounted) return;
+
+      if (status != LocationStatus.success) {
+        setState(() => _isLoading = false);
+        if (status == LocationStatus.serviceDisabled) {
+          _showLocationDisabledDialog();
+        } else {
+          AppDialogs.showLocationUnavailable(context);
+        }
+        return;
+      }
+
+      final freshPos = LocationService.instance.currentPosition;
+      if (freshPos == null) {
+        setState(() => _isLoading = false);
+        AppDialogs.showLocationUnavailable(context);
+        return;
+      }
+
+      setState(() {
+        _currentPosition = freshPos;
+        _selectedPrimary = null;
+        _selectedSecondary = 'all';
+        _distancePlaces.clear();
+        _popularityPlaces.clear();
+        _popularityResponseOrder.clear();
+        _routeResults.clear();
+        _markers.removeWhere((m) => m.markerId.value == 'me');
+        _markers.add(Marker(
+          markerId: const MarkerId('me'),
+          position: LatLng(freshPos.latitude, freshPos.longitude),
+          icon:
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          infoWindow: const InfoWindow(title: 'My Location'),
+        ));
+      });
+
+      _nearbyService.clearCache();
+      _nearbyService.clearSearchCache();
+      _nearbyService.clearGoogleRawCache();
+      ForYouRecommendationService.instance.invalidateUserGpsSnapshot();
+      await _bootstrap();
+
+      if (_currentPosition != null) {
+        _mapController?.animateCamera(CameraUpdate.newLatLngZoom(
+          LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+          14,
+        ));
+      }
+    } finally {
+      _isRefreshingLocation = false;
     }
-
-    setState(() {
-      _selectedPrimary = null;
-      _selectedSecondary = 'all';
-      _isLoading = true;
-      _hasNewNearby = false; // ← clear badge on manual refresh
-      _distancePlaces.clear();
-      _popularityPlaces.clear();
-      _popularityResponseOrder.clear();
-    });
-
-    _nearbyService.clearCache();
-    _nearbyService.clearSearchCache();
-    _nearbyService.clearGoogleRawCache();
-    await _bootstrap();
   }
 
   // ─────────────────────────────────────────────
@@ -2562,35 +3053,16 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
                           ),
                         ),
                         const SizedBox(width: 8),
-                        Stack(
-                          clipBehavior: Clip.none,
-                          children: [
-                            Material(
-                              elevation: 4,
-                              shape: const CircleBorder(),
-                              clipBehavior: Clip.antiAlias,
-                              color: Colors.white,
-                              child: IconButton(
-                                icon: const Icon(Icons.refresh_rounded,
-                                    size: 18, color: Colors.black87),
-                                onPressed: _isLoading ? null : _onRefresh,
-                              ),
-                            ),
-                            // ── Badge: shows when user moved 500m+ ──────────
-                            if (_hasNewNearby)
-                              Positioned(
-                                top: 0,
-                                right: 0,
-                                child: Container(
-                                  width: 12,
-                                  height: 12,
-                                  decoration: const BoxDecoration(
-                                    color: Color(0xFF7C4DFF),
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                              ),
-                          ],
+                        Material(
+                          elevation: 4,
+                          shape: const CircleBorder(),
+                          clipBehavior: Clip.antiAlias,
+                          color: Colors.white,
+                          child: IconButton(
+                            icon: const Icon(Icons.refresh_rounded,
+                                size: 18, color: Colors.black87),
+                            onPressed: _isLoading ? null : _onRefresh,
+                          ),
                         ),
                       ]),
 
@@ -3189,14 +3661,44 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
     Map<String, double> scores = {};
 
     if (_sortMode == SortMode.recommended) {
-      final result = UserPreferenceService.instance.buildForYouList(
-        candidates: googleAll,
-        routeResults: _routeResults,
-        weather: WeatherService.instance.current,
-        requirePhoto: false, // detect page 卡片有 asset fallback，不强求图
-      );
-      google = result.places;
-      scores = result.scores;
+      final isNormalGps =
+          widget.landmarkLat == null && _searchLocationName == null;
+      final cachedSnap = ForYouRecommendationService.instance.userGpsSnapshot;
+      if (isNormalGps &&
+          _selectedPrimary == null &&
+          _currentPosition != null &&
+          cachedSnap != null &&
+          cachedSnap.matchesContext(
+            originType: RecommendationOriginType.gps,
+            lat: _currentPosition!.latitude,
+            lng: _currentPosition!.longitude,
+            radiusMeters: _radiusFromTravelMode,
+            preferenceRevision:
+                UserPreferenceService.instance.preferencesChanged.value,
+            generation: ForYouRecommendationService.instance.currentGeneration,
+          )) {
+        google = cachedSnap.places;
+        scores = cachedSnap.scores;
+        _routeResults.addAll(cachedSnap.routeResults);
+      } else {
+        final result = UserPreferenceService.instance.buildForYouList(
+          candidates: googleAll,
+          routeResults: _routeResults,
+          distanceLimitMeters: _radiusFromTravelMode.toDouble(),
+          weather: WeatherService.instance.current,
+          requirePhoto:
+              true, // Authoritative photo requirement on both surfaces
+          originType: widget.landmarkLat != null
+              ? RecommendationOriginType.landmark
+              : _searchLocationName != null
+                  ? RecommendationOriginType.searched
+                  : RecommendationOriginType.gps,
+          originName:
+              widget.landmarkLat != null ? 'Landmark' : _searchLocationName,
+        );
+        google = result.places;
+        scores = result.scores;
+      }
     } else if (_sortMode == SortMode.distance) {
       google = RealTimeDetectPage.sortNearestPlaces(
         places: googleAll,
