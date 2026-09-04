@@ -50,7 +50,8 @@ class LocationService extends ChangeNotifier {
     if (pos == null) return false;
     if (!pos.latitude.isFinite || !pos.longitude.isFinite) return false;
     if (pos.latitude == 0.0 && pos.longitude == 0.0) return false;
-    final currentTime = now ?? DateTime.now();
+    final currentTime =
+        now ?? instance.testNowProvider?.call() ?? DateTime.now();
     final age = currentTime.difference(pos.timestamp);
     return age >= Duration.zero && age <= maxAge;
   }
@@ -64,6 +65,18 @@ class LocationService extends ChangeNotifier {
   bool get isMovementRefreshPending => _isMovementRefreshPending;
   double? get baselineLat => _lastFetchLat;
   double? get baselineLng => _lastFetchLng;
+
+  @visibleForTesting
+  DateTime Function()? testNowProvider;
+
+  @visibleForTesting
+  int get watcherCount => _watcherCount;
+
+  @visibleForTesting
+  int get watchedPlacesCount => _watchedPlaces.length;
+
+  @visibleForTesting
+  bool isPlaceArrived(String placeId) => _alreadyArrived.contains(placeId);
 
   @visibleForTesting
   Future<Position> Function(
@@ -106,6 +119,17 @@ class LocationService extends ChangeNotifier {
     testPermissionChecker = null;
     testPermissionRequester = null;
     testPositionStream = null;
+    testNowProvider = null;
+  }
+
+  /// Evaluates the current [currentPosition] against active itinerary watch places.
+  ///
+  /// Does not expose private mutable collections.
+  void evaluateCurrentPositionProximity() {
+    final pos = currentPosition;
+    if (pos != null) {
+      _checkProximity(pos);
+    }
   }
 
   /// Updates movement baseline coordinates and clears pending refresh flag.
@@ -152,7 +176,7 @@ class LocationService extends ChangeNotifier {
     // Only today's scheduled day may trigger proximity arrivals. Watching all
     // itinerary days allowed a Day 2/Day 3 place to trigger while travelling
     // on Day 1. Future and already-finished itineraries therefore watch none.
-    final now = DateTime.now();
+    final now = testNowProvider?.call() ?? DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
 
     final activeDayIndex = itinerary.days.indexWhere((day) {
@@ -287,11 +311,17 @@ class LocationService extends ChangeNotifier {
           ),
         );
 
-    _positionStream = stream.listen((Position pos) {
-      currentPosition = pos;
-      _checkProximity(pos);
-      _checkSignificantMove(pos);
-    });
+    _positionStream = stream.listen(
+      (Position pos) {
+        currentPosition = pos;
+        _checkProximity(pos);
+        _checkSignificantMove(pos);
+      },
+      onError: (err) {
+        debugPrint('📍 Location stream error: $err');
+      },
+      cancelOnError: false,
+    );
   }
 
   void stopTracking() {

@@ -147,6 +147,9 @@ class _NavigationDebugOverlayState extends State<NavigationDebugOverlay> {
                 'Lag       ${nav.debugVisualLagMeters.toStringAsFixed(1)} m',
               ),
               Text(
+                'Vis-Prog  ${nav.debugSignedVisualLeadMeters >= 0 ? "+" : ""}${nav.debugSignedVisualLeadMeters.toStringAsFixed(1)} m',
+              ),
+              Text(
                 'Predict   ${nav.debugPredictionLeadMeters.toStringAsFixed(1)} m',
               ),
               Text(

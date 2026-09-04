@@ -57,10 +57,12 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   @override
   void dispose() {
     _arrivalSub?.cancel();
+    _arrivalSub = null;
     if (_didStartLocationTracking) {
       LocationService.instance.stopTracking();
       _didStartLocationTracking = false;
     }
+    LocationService.instance.pauseItineraryProximity();
     _tabController.dispose();
     super.dispose();
   }
@@ -68,10 +70,17 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   void _refreshItineraryTracking() {
     final shouldTrack = LocationService.instance.watchItinerary(_itinerary);
 
-    if (shouldTrack && !_didStartLocationTracking) {
-      LocationService.instance.startTracking();
-      _didStartLocationTracking = true;
+    if (shouldTrack) {
       _arrivalSub ??= LocationService.instance.arrivalStream.listen(_onArrival);
+      final wasTracking = _didStartLocationTracking;
+      if (!_didStartLocationTracking) {
+        LocationService.instance.startTracking();
+        _didStartLocationTracking = true;
+      }
+
+      if (!wasTracking) {
+        _evaluateInitialPosition();
+      }
       return;
     }
 
@@ -80,6 +89,28 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       _didStartLocationTracking = false;
       _arrivalSub?.cancel();
       _arrivalSub = null;
+    }
+  }
+
+  void _evaluateInitialPosition() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_didStartLocationTracking) return;
+
+      final cached = LocationService.instance.currentPosition;
+      if (LocationService.isPositionFresh(cached)) {
+        LocationService.instance.evaluateCurrentPositionProximity();
+      } else {
+        _acquireInitialFreshPosition();
+      }
+    });
+  }
+
+  Future<void> _acquireInitialFreshPosition() async {
+    try {
+      await LocationService.instance.refreshCurrentLocation();
+      if (!mounted || !_didStartLocationTracking) return;
+    } catch (_) {
+      // Fail gracefully without crashing.
     }
   }
 
@@ -146,31 +177,39 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       );
     }
 
-    showDialog(
+    bool isConfirmed = false;
+    bool isRearmed = false;
+
+    void handleDismiss() {
+      if (isConfirmed || isRearmed) return;
+      isRearmed = true;
+      LocationService.instance.rearmArrival(event.placeId);
+    }
+
+    showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _ArrivedDialog(
+      builder: (dialogContext) => ArrivedDialog(
         placeName: resolvedPlace.name,
         onConfirm: () {
-          Navigator.pop(context);
-
+          isConfirmed = true;
+          Navigator.of(dialogContext).pop(true);
           _markVisited(
             resolvedDayIndex!,
             resolvedPlaceIndex!,
           );
         },
         onDismiss: () {
-          Navigator.pop(context);
-
-          // User says they are not ready to check in.
-          // Allow proximity detection for this place again.
-          LocationService.instance.rearmArrival(
-            event.placeId,
-          );
+          handleDismiss();
+          Navigator.of(dialogContext).pop(false);
         },
+        onPopInvoked: handleDismiss,
       ),
     ).whenComplete(() {
       _isArrivalDialogOpen = false;
+      if (!isConfirmed) {
+        handleDismiss();
+      }
     });
   }
 
@@ -230,16 +269,21 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         statsBefore,
       );
 
-      if (!mounted) return;
+      if (!mounted) {
+        LocationService.instance.rearmArrival(currentPlace.placeId);
+        return;
+      }
 
       // Re-check because the itinerary may have changed
       // while waiting for the achievement fetch.
       if (dayIndex < 0 || dayIndex >= _itinerary.days.length) {
+        LocationService.instance.rearmArrival(currentPlace.placeId);
         return;
       }
 
       if (placeIndex < 0 ||
           placeIndex >= _itinerary.days[dayIndex].places.length) {
+        LocationService.instance.rearmArrival(currentPlace.placeId);
         return;
       }
 
@@ -290,6 +334,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
           visitedPlace: visited,
         );
       } catch (e) {
+        LocationService.instance.rearmArrival(currentPlace.placeId);
+
         if (!mounted) return;
 
         ErrorHandler.showError(
@@ -365,6 +411,16 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       if (newUnlocks.isNotEmpty) {
         _showUnlockDialog(
           newUnlocks,
+        );
+      }
+    } catch (e) {
+      LocationService.instance.rearmArrival(currentPlace.placeId);
+
+      if (mounted) {
+        ErrorHandler.showError(
+          context,
+          message: 'Check-in could not be saved. '
+              'Please check your connection and try again.',
         );
       }
     } finally {
@@ -1479,86 +1535,98 @@ class _AchievementUnlockedDialog extends StatelessWidget {
 // Waze-style arrived dialog
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _ArrivedDialog extends StatelessWidget {
+@visibleForTesting
+class ArrivedDialog extends StatelessWidget {
   final String placeName;
   final VoidCallback onConfirm;
   final VoidCallback onDismiss;
+  final VoidCallback? onPopInvoked;
 
-  const _ArrivedDialog({
+  const ArrivedDialog({
+    super.key,
     required this.placeName,
     required this.onConfirm,
     required this.onDismiss,
+    this.onPopInvoked,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.location_on_rounded,
-                  size: 36, color: Color(0xFF7C4DFF)),
-            ),
-            const SizedBox(height: 16),
-            const Text("You've arrived! 🎉",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Text(
-              placeName,
-              style: const TextStyle(
-                  fontSize: 15,
-                  color: Color(0xFF7C4DFF),
-                  fontWeight: FontWeight.w600),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Are you visiting this place?',
-              style: TextStyle(fontSize: 13, color: Colors.grey[500]),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            Row(children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: onDismiss,
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: Colors.grey[300]!),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                  child: Text('Not yet',
-                      style: TextStyle(color: Colors.grey[600])),
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop && result != true) {
+          onPopInvoked?.call();
+        }
+      },
+      child: Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                  shape: BoxShape.circle,
                 ),
+                child: const Icon(Icons.location_on_rounded,
+                    size: 36, color: Color(0xFF7C4DFF)),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: onConfirm,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF7C4DFF),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
+              const SizedBox(height: 16),
+              const Text("You've arrived! 🎉",
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(
+                placeName,
+                style: const TextStyle(
+                    fontSize: 15,
+                    color: Color(0xFF7C4DFF),
+                    fontWeight: FontWeight.w600),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Are you visiting this place?',
+                style: TextStyle(fontSize: 13, color: Colors.grey[500]),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: onDismiss,
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: Colors.grey[300]!),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: Text('Not yet',
+                        style: TextStyle(color: Colors.grey[600])),
                   ),
-                  child: const Text("Yes, I'm here!",
-                      style: TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold)),
                 ),
-              ),
-            ]),
-          ],
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: onConfirm,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF7C4DFF),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text("Yes, I'm here!",
+                        style: TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ]),
+            ],
+          ),
         ),
       ),
     );

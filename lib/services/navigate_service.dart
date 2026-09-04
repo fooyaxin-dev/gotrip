@@ -121,28 +121,35 @@ class NavigationController extends ChangeNotifier {
   }
 
   double get debugSpeedKmh => (_debugSpeedMps * 3.6).clamp(0.0, 250.0);
+  double get debugSpeedMps => _debugSpeedMps;
   double get debugGpsAccuracy => _debugGpsAccuracy;
 
   double get debugGpsAgeSeconds {
     if (_lastGpsStreamEventAt == null) return double.infinity;
-    return DateTime.now().difference(_lastGpsStreamEventAt!).inMilliseconds /
+    return _currentTime.difference(_lastGpsStreamEventAt!).inMilliseconds /
         1000.0;
   }
 
   double get debugNavigationFixAgeSeconds {
     if (_lastNavigationFixAt == null) return double.infinity;
-    return DateTime.now().difference(_lastNavigationFixAt!).inMilliseconds /
+    return _currentTime.difference(_lastNavigationFixAt!).inMilliseconds /
         1000.0;
   }
 
   double get debugAcceptedProgressAgeSeconds {
     if (_lastAcceptedProgressAt == null) return double.infinity;
-    return DateTime.now().difference(_lastAcceptedProgressAt!).inMilliseconds /
+    return _currentTime.difference(_lastAcceptedProgressAt!).inMilliseconds /
         1000.0;
   }
 
   double get debugVisualLagMeters =>
       (_matchedDistAlongRoute - _displayDistAlongRoute).abs();
+
+  /// Signed visual lead over accepted route progress:
+  /// positive when Visual is ahead (e.g. dead reckoning),
+  /// negative when Visual is lagging behind accepted progress.
+  double get debugSignedVisualLeadMeters =>
+      _displayDistAlongRoute - _matchedDistAlongRoute;
 
   int get debugRouteVersion => _debugRouteVersion;
   int get debugRoutePointCount => polylinePoints.length;
@@ -243,7 +250,21 @@ class NavigationController extends ChangeNotifier {
   // period seen in the road-test video.
   DateTime? _lastGpsStreamEventAt;
   DateTime? _lastNavigationFixAt;
+  DateTime? _lastSpeedSampleAt;
   Timer? _startupGpsWatchdog;
+
+  /// Optional clock seam for deterministic unit testing.
+  @visibleForTesting
+  DateTime Function()? testClock;
+
+  DateTime get _currentTime => testClock?.call() ?? DateTime.now();
+
+  @visibleForTesting
+  double? get debugLastSpeedDtFix => _debugLastSpeedDtFix;
+  double? _debugLastSpeedDtFix;
+
+  @visibleForTesting
+  DateTime? get lastSpeedSampleAt => _lastSpeedSampleAt;
 
   // Continuous stream-health recovery. The old watchdog only protected
   // startup and cancelled itself permanently after the first live GPS fix.
@@ -353,6 +374,8 @@ class NavigationController extends ChangeNotifier {
     _navigationSessionId = DateTime.now().millisecondsSinceEpoch.toString();
     _lastSuccessfulRouteOrRefreshAt = DateTime.now();
     _routeSessionStartedAt = DateTime.now();
+    _lastSpeedSampleAt = null;
+    _lastNavigationFixAt = null;
     _ticker = vsync.createTicker(_onTick)..start();
 
     // GPS/navigation startup is the critical path.
@@ -380,6 +403,7 @@ class NavigationController extends ChangeNotifier {
     _isDisposed = true;
     _activeRouteGeneration++;
     _pendingReroutePosition = null;
+    _lastSpeedSampleAt = null;
     stopTrafficRefreshTimer();
     _cancelRouteUpdateFeedback();
     _ticker?.dispose();
@@ -437,31 +461,40 @@ class NavigationController extends ChangeNotifier {
     // matching or route progress; _matchedDistAlongRoute remains GPS-driven.
     final gpsAgeSeconds = _lastNavigationFixAt == null
         ? 0.0
-        : DateTime.now().difference(_lastNavigationFixAt!).inMilliseconds /
+        : _currentTime.difference(_lastNavigationFixAt!).inMilliseconds /
             1000.0;
 
-    final canDeadReckon = speed > 1.0 &&
+    // Conservative evidence-based dead-reckoning window:
+    // Active only when vehicle is clearly moving (speed > 1.2 m/s), GPS accuracy is good,
+    // and fix age is fresh (< 2.0s).
+    final canDeadReckon = speed > 1.2 &&
         _debugGpsAccuracy.isFinite &&
-        _debugGpsAccuracy <= 35.0 &&
-        gpsAgeSeconds < 4.0 &&
+        _debugGpsAccuracy <= 30.0 &&
+        gpsAgeSeconds < 2.0 &&
         (_debugTrackingState == 'MATCH' || _debugTrackingState == 'MATCH~');
 
-    // Up to ~4 seconds of route-constrained prediction. If Android delivers
-    // ~1 Hz fixes (the target after forcing LocationManager), this usually
-    // stays well below one second. The cap protects against running far ahead
-    // during a genuine GPS outage.
-    final predictionSeconds =
-        canDeadReckon ? gpsAgeSeconds.clamp(0.0, 4.0) : 0.0;
+    // Small evidence-based forward allowance ahead of accepted route progress:
+    // - Walk: at most 1.5 meters (~1 step).
+    // - Drive / Motor: at most 4.0 meters (~1 car length, well within GPS accuracy).
+    // During the inter-fix gap (<= 0.8s), provide subtle glide lead.
+    // If GPS silence exceeds 0.8s, confidence decays smoothly to avoid overshooting
+    // if the vehicle is slowing down or stopping.
+    final maxPredictionLead = travelMode == TravelMode.walk ? 1.5 : 4.0;
+    double predictionLead = 0.0;
 
-    // Small latency compensation plus time-based dead reckoning.
-    final latencyLead = canDeadReckon ? speed * 0.30 : 0.0;
-    final deadReckonLead = speed * predictionSeconds;
-
-    final predictionLead = (latencyLead + deadReckonLead).clamp(0.0, 50.0);
+    if (canDeadReckon) {
+      final latencyLead = speed * 0.15;
+      final deadReckonLead = speed * min(gpsAgeSeconds, 0.6) * 0.35;
+      final rawLead = latencyLead + deadReckonLead;
+      final decay = gpsAgeSeconds <= 0.8
+          ? 1.0
+          : max(0.0, 1.0 - (gpsAgeSeconds - 0.8) / 1.2);
+      predictionLead = (rawLead * decay).clamp(0.0, maxPredictionLead);
+    }
 
     _debugPredictionLeadMeters = predictionLead;
 
-    if (gpsAgeSeconds >= 4.0 &&
+    if (gpsAgeSeconds >= 3.0 &&
         _debugTrackingState != 'OFFLINE' &&
         _debugTrackingState != 'REROUTE') {
       _debugTrackingState = 'WAIT ACCURATE GPS';
@@ -471,20 +504,26 @@ class NavigationController extends ChangeNotifier {
         (_matchedDistAlongRoute + predictionLead).clamp(0.0, routeEnd);
 
     final error = desiredDist - _displayDistAlongRoute;
+    final previousVisual = _displayDistAlongRoute;
 
     if (error > 0.0) {
-      final baseVelocity = speed > 0.8 ? speed : 1.5;
-      final catchUpVelocity = (error / 0.70).clamp(0.0, 18.0);
-      final visualVelocity = (baseVelocity + catchUpVelocity).clamp(1.5, 42.0);
+      final baseVelocity = speed > 0.8 ? speed : 1.2;
+      // Proportional catch-up velocity smoothly glides towards desiredDist
+      final catchUpVelocity = (error / 0.8).clamp(0.0, 6.0);
+      final maxVisualVelocity = travelMode == TravelMode.walk ? 4.0 : 35.0;
+      final visualVelocity =
+          (baseVelocity + catchUpVelocity).clamp(0.5, maxVisualVelocity);
 
       final advance = (visualVelocity * dt).clamp(0.0, error);
       _displayDistAlongRoute += advance;
-    } else if (error < -3.0) {
-      // Only a gentle backwards correction (mainly for a real reroute).
-      _displayDistAlongRoute += error * (1 - exp(-dt / 0.8));
     }
-
-    _displayDistAlongRoute = _displayDistAlongRoute.clamp(0.0, routeEnd);
+    // When error <= 0.0, Visual holds its current progress.
+    // Because predictionLead is capped at <= 4.0m (Drive/Motor) and <= 1.5m (Walk),
+    // Visual never materially overshoots. When the vehicle stops, Visual settles
+    // within 0 to 4.0m of accepted fresh GPS (consistent with stop line) with
+    // ZERO backward movement.
+    _displayDistAlongRoute =
+        max(previousVisual, _displayDistAlongRoute).clamp(0.0, routeEnd);
 
     displayLatLng = _pointAtRouteDistance(_displayDistAlongRoute);
 
@@ -1066,7 +1105,7 @@ class NavigationController extends ChangeNotifier {
       ),
     ).listen(
       (raw) {
-        final now = DateTime.now();
+        final now = _currentTime;
         _lastGpsStreamEventAt = now;
         _lastNavigationFixAt = now;
 
@@ -1075,7 +1114,7 @@ class NavigationController extends ChangeNotifier {
         _startupGpsWatchdog?.cancel();
         _startupGpsWatchdog = null;
 
-        _handlePosition(raw);
+        _handlePosition(raw, customNow: now);
       },
       onError: (Object e) {
         debugPrint('NAV GPS STREAM ERROR: $e');
@@ -1125,13 +1164,13 @@ class NavigationController extends ChangeNotifier {
               desiredAccuracy: LocationAccuracy.bestForNavigation,
             ).timeout(const Duration(milliseconds: 1600));
 
-            _lastNavigationFixAt = DateTime.now();
+            _lastNavigationFixAt = _currentTime;
 
             // Do not pretend this came from the stream: GPS age continues to
             // expose the stream problem, while Fix age confirms recovery data
             // is still reaching navigation.
             _debugTrackingState = 'GPS RECOVER';
-            await _handlePosition(fresh);
+            await _handlePosition(fresh, customNow: _lastNavigationFixAt);
           } catch (_) {
             // Stream restart below is the next recovery layer.
           } finally {
@@ -1206,9 +1245,9 @@ class NavigationController extends ChangeNotifier {
           ).timeout(const Duration(milliseconds: 1500));
 
           if (_lastGpsStreamEventAt == null) {
-            _lastNavigationFixAt = DateTime.now();
+            _lastNavigationFixAt = _currentTime;
             _debugTrackingState = 'START FIX';
-            await _handlePosition(fresh);
+            await _handlePosition(fresh, customNow: _lastNavigationFixAt);
           }
         } catch (_) {
           // Continuous health recovery takes over after startup.
@@ -1219,25 +1258,28 @@ class NavigationController extends ChangeNotifier {
     );
   }
 
-  Future<void> _handlePosition(Position raw) async {
+  Future<void> _handlePosition(Position raw, {DateTime? customNow}) async {
     final handleWatch = Stopwatch()..start();
-    final now = DateTime.now();
+    final now = customNow ?? _currentTime;
     final rawLatLng = LatLng(raw.latitude, raw.longitude);
 
-    // Some Android devices briefly report speed=0 after the vehicle has
-    // already started moving. Use coordinate displacement as a fallback,
-    // but only when movement is clearly larger than ordinary GPS jitter.
+    // Conservative derived speed:
+    // Some Android devices briefly report speed=0 after moving. Use coordinate
+    // displacement only when the time interval is sufficient (>= 0.75s) and
+    // displacement clearly exceeds the GPS accuracy ellipse to prevent dividing
+    // short-interval jitter by small dt (which previously produced 45 m/s / 162 km/h spikes).
     double derivedSpeed = 0.0;
 
     if (_lastRawMotionFix != null && _lastRawMotionFixAt != null) {
       final dt = now.difference(_lastRawMotionFixAt!).inMilliseconds / 1000.0;
       final movedMeters = _dist(_lastRawMotionFix!, rawLatLng);
 
-      if (dt >= 0.15 &&
-          dt <= 3.0 &&
-          movedMeters >= 3.0 &&
+      if (dt >= 0.75 &&
+          dt <= 4.0 &&
+          movedMeters >= 4.0 &&
           raw.accuracy.isFinite &&
-          raw.accuracy <= 60.0) {
+          raw.accuracy <= 35.0 &&
+          movedMeters >= (raw.accuracy * 0.35)) {
         derivedSpeed = movedMeters / dt;
       }
     }
@@ -1246,7 +1288,47 @@ class NavigationController extends ChangeNotifier {
     _lastRawMotionFixAt = now;
 
     final rawSpeed = raw.speed.isFinite ? max(raw.speed, 0.0) : 0.0;
-    final effectiveSpeed = max(rawSpeed, derivedSpeed).clamp(0.0, 45.0);
+
+    // Physical travel-mode maximum speed ceiling:
+    // Walk: 4.0 m/s (~14.4 km/h)
+    // Drive/Motor: 35.0 m/s (~126 km/h)
+    final maxModeSpeed = travelMode == TravelMode.walk ? 4.0 : 35.0;
+
+    // Prefer device Doppler speed when it reports reliable motion (> 0.5 m/s).
+    // Use derivedSpeed only as a fallback when device speed is near-zero or absent.
+    double candidateSpeed;
+    if (rawSpeed > 0.5) {
+      candidateSpeed = rawSpeed;
+    } else {
+      candidateSpeed = max(rawSpeed, derivedSpeed);
+    }
+    candidateSpeed = candidateSpeed.clamp(0.0, maxModeSpeed);
+
+    // Rate-limit speed changes based on elapsed time to enforce physically realistic
+    // acceleration limits across varying fix cadences:
+    // Maximum physical acceleration: Walk 1.5 m/s^2, Drive/Motor 4.5 m/s^2.
+    // Maximum physical braking deceleration: Walk 3.0 m/s^2, Drive/Motor 9.0 m/s^2.
+    final dtFix = _lastSpeedSampleAt == null
+        ? 1.0
+        : (now.difference(_lastSpeedSampleAt!).inMilliseconds / 1000.0)
+            .clamp(0.2, 3.0);
+    _debugLastSpeedDtFix = dtFix;
+
+    final maxAccel = travelMode == TravelMode.walk ? 1.5 : 4.5;
+    final maxDecel = travelMode == TravelMode.walk ? 3.0 : 9.0;
+    final maxSpeedIncrease = maxAccel * dtFix;
+    final maxSpeedDecrease = maxDecel * dtFix;
+
+    // Prevent abnormal first-sample or single-sample spikes from jumping
+    // instantly to the mode ceiling from stopped/low speed:
+    final effectiveSpeed = (_debugSpeedMps +
+            (candidateSpeed - _debugSpeedMps)
+                .clamp(-maxSpeedDecrease, maxSpeedIncrease))
+        .clamp(0.0, maxModeSpeed);
+
+    _lastSpeedSampleAt = now;
+    _lastNavigationFixAt = now;
+
     final isMoving = effectiveSpeed > 0.8;
 
     // IMPORTANT: record every GPS fix before any quality decision.
@@ -2536,7 +2618,7 @@ class NavigationController extends ChangeNotifier {
 
   bool get isWaitingForAccurateLocation {
     if (_lastNavigationFixAt == null) return false;
-    return DateTime.now().difference(_lastNavigationFixAt!).inSeconds >= 4 &&
+    return _currentTime.difference(_lastNavigationFixAt!).inSeconds >= 4 &&
         !hasArrived &&
         !loading;
   }
@@ -2574,6 +2656,35 @@ class NavigationController extends ChangeNotifier {
     // Camera and arrow use the exact same rendered route heading.
     return displayBearing;
   }
+
+  @visibleForTesting
+  Future<void> handlePositionForTesting(Position raw, {DateTime? now}) =>
+      _handlePosition(raw, customNow: now);
+
+  @visibleForTesting
+  Future<void> simulateProductionGpsStreamEvent(Position raw,
+      {DateTime? eventTime}) async {
+    final now = eventTime ?? _currentTime;
+    _lastGpsStreamEventAt = now;
+    _lastNavigationFixAt = now;
+    _startupGpsWatchdog?.cancel();
+    _startupGpsWatchdog = null;
+    await _handlePosition(raw, customNow: now);
+  }
+
+  @visibleForTesting
+  void onTickForTesting(Duration elapsed) => _onTick(elapsed);
+
+  @visibleForTesting
+  void setDisplayDistForTesting(double dist) {
+    _displayDistAlongRoute = dist;
+    _displayRouteInitialised = true;
+  }
+
+  @visibleForTesting
+  Future<void> triggerRerouteForTesting(Position raw,
+          {required String reason}) =>
+      _triggerReroute(raw, reason: reason);
 }
 
 /// Result of a single map-match: which route segment a raw GPS fix landed

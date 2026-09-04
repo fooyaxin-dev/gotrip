@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'api_Keys.dart';
 import '../models/placeModel.dart';
 
@@ -10,6 +11,57 @@ class PlacesApiService {
 
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static const String _collectionName = 'place_details';
+
+  static const Duration placeDetailsTtl = Duration(days: 30);
+
+  @visibleForTesting
+  static DateTime Function()? customNow;
+
+  @visibleForTesting
+  static Future<Map<String, dynamic>?> Function(String placeId)?
+      customCacheReader;
+
+  @visibleForTesting
+  static Future<void> Function(
+    String placeId,
+    Map<String, dynamic> data, {
+    bool merge,
+  })? customCacheWriter;
+
+  @visibleForTesting
+  static Future<void> Function(String placeId)? customCacheDeleter;
+
+  @visibleForTesting
+  static void resetTestOverrides() {
+    customNow = null;
+    customCacheReader = null;
+    customCacheWriter = null;
+    customCacheDeleter = null;
+  }
+
+  static DateTime _getCurrentTime() =>
+      customNow != null ? customNow!() : DateTime.now();
+
+  static DateTime? _extractTimestamp(dynamic raw) {
+    if (raw is Timestamp) return raw.toDate();
+    if (raw is DateTime) return raw;
+    return null;
+  }
+
+  static bool _isStale(Map<String, dynamic> cachedData, DateTime now) {
+    final cachedAt = cachedData['cachedAt'];
+    final ts = _extractTimestamp(cachedAt);
+    if (ts == null) return true;
+    return now.difference(ts) >= placeDetailsTtl;
+  }
+
+  static bool _isCacheComplete(Map<String, dynamic> cachedData) {
+    final hasTypes = cachedData.containsKey('types') &&
+        (cachedData['types'] as List?)?.isNotEmpty == true;
+    final hasLocation =
+        cachedData.containsKey('location') && cachedData['location'] != null;
+    return hasTypes && hasLocation;
+  }
 
   // Cache for geo_ → Google Place ID lookups (in-memory, per session)
   // Key: 'geo_placeId', Value: Google Place ID e.g. 'ChIJ...'
@@ -346,37 +398,46 @@ class PlacesApiService {
   }
 
   /// 📄 Place Details (with Firebase cache)
-  static Future<Map<String, dynamic>> getPlaceDetails(String placeId) async {
+  static Future<Map<String, dynamic>> getPlaceDetails(
+    String placeId, {
+    http.Client? client,
+  }) async {
     final startTime = DateTime.now();
+    final now = _getCurrentTime();
     print('📄 getPlaceDetails: $placeId');
+
+    Map<String, dynamic>? cachedData;
+    bool hasUsableCache = false;
 
     try {
       print('💾 Checking Firebase cache...');
-      final docSnapshot =
-          await _firestore.collection(_collectionName).doc(placeId).get();
-
-      if (docSnapshot.exists) {
-        final cachedData = docSnapshot.data()!;
-
-        final cachedAt = cachedData['cachedAt'];
-        bool isExpired = true;
-        if (cachedAt != null && cachedAt is Timestamp) {
-          final age = DateTime.now().difference(cachedAt.toDate());
-          isExpired = age.inDays > 30;
+      if (customCacheReader != null) {
+        cachedData = await customCacheReader!(placeId);
+      } else {
+        final docSnapshot =
+            await _firestore.collection(_collectionName).doc(placeId).get();
+        if (docSnapshot.exists) {
+          cachedData = docSnapshot.data();
         }
+      }
 
-        final hasTypes = cachedData.containsKey('types') &&
-            (cachedData['types'] as List?)?.isNotEmpty == true;
-        final hasLocation = cachedData.containsKey('location');
+      if (cachedData != null) {
+        final complete = _isCacheComplete(cachedData);
+        final stale = _isStale(cachedData, now);
 
-        if (hasTypes && hasLocation && !isExpired) {
-          _cacheHits++;
-          print(
-              '✅ CACHE HIT (${DateTime.now().difference(startTime).inMilliseconds}ms)');
-          return cachedData;
+        if (complete) {
+          hasUsableCache = true;
+          if (!stale) {
+            _cacheHits++;
+            print(
+                '✅ CACHE HIT (${DateTime.now().difference(startTime).inMilliseconds}ms)');
+            return cachedData;
+          } else {
+            print('⚠️ Cache expired (>= 30 days), re-fetching from API...');
+            // Stale complete cache is preserved in memory for fallback without deletion.
+          }
         } else {
-          print('⚠️ Cache expired or outdated, re-fetching...');
-          await _firestore.collection(_collectionName).doc(placeId).delete();
+          print('⚠️ Incomplete cache stub found, fetching full details...');
         }
       }
 
@@ -386,34 +447,78 @@ class PlacesApiService {
       print('🌐 Fetching from Google Places API...');
 
       final url = Uri.parse('$_baseUrl/places/$placeId');
-      final response = await http.get(
-        url,
-        headers: _headers(
-          'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,primaryType,location,utcOffsetMinutes',
-        ),
+      final headers = _headers(
+        'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,primaryType,location,utcOffsetMinutes',
       );
+
+      final http.Response response;
+      try {
+        response = await (client != null
+            ? client.get(url, headers: headers)
+            : http.get(url, headers: headers));
+      } catch (networkError) {
+        if (hasUsableCache && cachedData != null) {
+          print(
+              '⚠️ Network error during refresh ($networkError), returning stale cache for $placeId');
+          return cachedData;
+        }
+        rethrow;
+      }
 
       if (response.statusCode == 404) {
         print('⚠️ Place ID invalid (404): $placeId');
-        await _firestore.collection(_collectionName).doc(placeId).delete();
+        if (hasUsableCache && cachedData != null) {
+          print('⚠️ Returning stale cache despite 404 for $placeId');
+          return cachedData;
+        }
         throw Exception('Place ID no longer valid: $placeId');
       }
 
       if (response.statusCode != 200) {
+        if (hasUsableCache && cachedData != null) {
+          print(
+              '⚠️ API error ${response.statusCode}, returning stale cache for $placeId');
+          return cachedData;
+        }
         throw Exception('getPlaceDetails failed: ${response.body}');
       }
 
-      final data = json.decode(response.body);
+      final data = json.decode(response.body) as Map<String, dynamic>;
 
-      await _firestore.collection(_collectionName).doc(placeId).set({
-        ...data,
-        'cachedAt': FieldValue.serverTimestamp(),
-      });
+      try {
+        final writePayload = <String, dynamic>{
+          ...data,
+          'cachedAt': customCacheWriter != null && customNow != null
+              ? Timestamp.fromDate(now)
+              : FieldValue.serverTimestamp(),
+        };
+
+        if (customCacheWriter != null) {
+          await customCacheWriter!(placeId, writePayload, merge: true);
+        } else {
+          await _firestore.collection(_collectionName).doc(placeId).set(
+                writePayload,
+                SetOptions(merge: true),
+              );
+        }
+      } catch (writeError) {
+        print('⚠️ Firestore write failed after API success: $writeError');
+        if (hasUsableCache && cachedData != null) {
+          print(
+              '⚠️ Returning previous complete cache due to write failure for $placeId');
+          return cachedData;
+        }
+        rethrow;
+      }
 
       print(
           '✅ Fetched & cached (${DateTime.now().difference(startTime).inMilliseconds}ms)');
       return data;
     } catch (e) {
+      if (hasUsableCache && cachedData != null) {
+        print('⚠️ Unexpected error ($e), returning stale cache for $placeId');
+        return cachedData;
+      }
       print('❌ Error in getPlaceDetails: $e');
       rethrow;
     }
