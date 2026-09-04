@@ -1,0 +1,21 @@
+diff --git a/lib/services/placesAPI_service.dart b/lib/services/placesAPI_service.dart
+index 4555143..354179a 100644
+--- a/lib/services/placesAPI_service.dart
++++ b/lib/services/placesAPI_service.dart
+@@ -496,10 +496,12 @@ class PlacesApiService {
+       'id': p['id'],
+       'displayName': p['displayName'],
+       'formattedAddress': p['formattedAddress'] ?? '',
+-      'location': {
+-        'latitude': p['location']['latitude'],
+-        'longitude': p['location']['longitude'],
+-      },
++      'location': p['location'] != null
++          ? {
++              'latitude': (p['location']['latitude'] as num?)?.toDouble(),
++              'longitude': (p['location']['longitude'] as num?)?.toDouble(),
++            }
++          : null,
+       'types': (p['types'] as List?) ?? [],
+       'rating': (p['rating'] as num?)?.toDouble(),
+       'userRatingCount': (p['userRatingCount'] as num?)?.toInt(),

@@ -1,5 +1,5 @@
-// services/route_service.dart
 import 'dart:convert';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'api_Keys.dart';
@@ -71,6 +71,8 @@ class RouteResult {
   final int durationSeconds;
   final LatLngBounds bounds;
   final int? walkDurationSeconds; 
+  final bool isFallback;
+  final String? fallbackNotice;
 
   const RouteResult({
     required this.polylinePoints,
@@ -79,6 +81,8 @@ class RouteResult {
     required this.durationSeconds,
     required this.bounds,
     this.walkDurationSeconds,
+    this.isFallback = false,
+    this.fallbackNotice,
   });
 }
 
@@ -145,6 +149,56 @@ class RouteService {
     required double toLng,
     required TravelMode mode,
   }) async {
+    if (!fromLat.isFinite || !fromLng.isFinite || !toLat.isFinite || !toLng.isFinite ||
+        (fromLat == 0.0 && fromLng == 0.0) || (toLat == 0.0 && toLng == 0.0)) {
+      throw ArgumentError('Invalid route coordinates: ($fromLat, $fromLng) -> ($toLat, $toLng)');
+    }
+
+    try {
+      final result = await _fetchNavigationRouteInternal(
+        fromLat: fromLat, fromLng: fromLng,
+        toLat: toLat, toLng: toLng,
+        mode: mode,
+      );
+      _logRouteMetric(result, mode);
+      return result;
+    } catch (e) {
+      // If Motorcycle mode failed because TWO_WHEELER routing is unavailable in this region (e.g. HTTP 400),
+      // gracefully fall back to DRIVE and explicitly flag the fallback.
+      if (mode == TravelMode.motor &&
+          (e.toString().contains('400') ||
+           e.toString().toLowerCase().contains('two-wheeler') ||
+           e.toString().toLowerCase().contains('not supported'))) {
+        print('⚠️ TWO_WHEELER route unavailable. Falling back to DRIVE with notice.');
+        final driveResult = await _fetchNavigationRouteInternal(
+          fromLat: fromLat, fromLng: fromLng,
+          toLat: toLat, toLng: toLng,
+          mode: TravelMode.drive,
+        );
+        final fallbackResult = RouteResult(
+          polylinePoints: driveResult.polylinePoints,
+          steps: driveResult.steps,
+          distanceMeters: driveResult.distanceMeters,
+          durationSeconds: driveResult.durationSeconds,
+          bounds: driveResult.bounds,
+          walkDurationSeconds: driveResult.walkDurationSeconds,
+          isFallback: true,
+          fallbackNotice: 'Motorcycle routing is unavailable here. A driving route will be used.',
+        );
+        _logRouteMetric(fallbackResult, mode, isFallback: true);
+        return fallbackResult;
+      }
+      rethrow;
+    }
+  }
+
+  Future<RouteResult> _fetchNavigationRouteInternal({
+    required double fromLat,
+    required double fromLng,
+    required double toLat,
+    required double toLng,
+    required TravelMode mode,
+  }) async {
     final resp = await _post(
       fromLat: fromLat, fromLng: fromLng,
       toLat: toLat,     toLng: toLng,
@@ -202,6 +256,25 @@ class RouteService {
       durationSeconds: _parseSecs(route['duration'] as String? ?? '0s'),
       bounds:          _parseBounds(route['viewport']),
     );
+  }
+
+  void _logRouteMetric(RouteResult result, TravelMode mode, {bool isFallback = false}) {
+    double polylineMeters = 0.0;
+    for (int i = 1; i < result.polylinePoints.length; i++) {
+      polylineMeters += Geolocator.distanceBetween(
+        result.polylinePoints[i - 1].latitude,
+        result.polylinePoints[i - 1].longitude,
+        result.polylinePoints[i].latitude,
+        result.polylinePoints[i].longitude,
+      );
+    }
+    print('[NAV_METRIC][ROUTE]\n'
+        'mode=${travelModeToString(mode)}\n'
+        'source=${isFallback ? 'google_drive_fallback' : 'google_routes_api'}\n'
+        'totalRoadMeters=${result.distanceMeters.toStringAsFixed(1)}\n'
+        'totalDurationSec=${result.durationSeconds}\n'
+        'polylineMeters=${polylineMeters.toStringAsFixed(1)}\n'
+        'stepCount=${result.steps.length}');
   }
 
   /// Lightweight summary for the preview screen — no step polylines needed.
@@ -388,6 +461,11 @@ class RouteService {
     required TravelMode mode,
     required List<String> fieldMask,
   }) async {
+    if (!fromLat.isFinite || !fromLng.isFinite || !toLat.isFinite || !toLng.isFinite ||
+        (fromLat == 0.0 && fromLng == 0.0) || (toLat == 0.0 && toLng == 0.0)) {
+      throw ArgumentError('Invalid route coordinates: ($fromLat, $fromLng) -> ($toLat, $toLng)');
+    }
+
     final body = jsonEncode({
       'origin':      {'location': {'latLng': {'latitude': fromLat, 'longitude': fromLng}}},
       'destination': {'location': {'latLng': {'latitude': toLat,   'longitude': toLng}}},

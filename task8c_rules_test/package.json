@@ -1,0 +1,13 @@
+{
+  "name": "task8c-firestore-rules-test",
+  "version": "1.0.0",
+  "description": "Firestore Security Rules Unit Tests for GoTrip Task 8C",
+  "scripts": {
+    "test": "mocha rules.test.js --timeout 10000"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.1",
+    "firebase-admin": "^12.0.0",
+    "mocha": "^10.2.0"
+  }
+}

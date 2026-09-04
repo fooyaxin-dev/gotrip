@@ -1,0 +1,483 @@
+﻿diff --git a/lib/modules/place/detectPlacePage.dart b/lib/modules/place/detectPlacePage.dart
+index f25961c..0ece6ef 100644
+--- a/lib/modules/place/detectPlacePage.dart
++++ b/lib/modules/place/detectPlacePage.dart
+@@ -1,5 +1,6 @@
+ import 'dart:async';
+ import 'dart:math';
++import 'dart:ui' as ui;
+ import 'package:flutter/material.dart';
+ import 'package:geolocator/geolocator.dart';
+ import 'package:google_maps_flutter/google_maps_flutter.dart';
+@@ -20,11 +21,80 @@ import '../../services/apps_Loading.dart';
+ import '../../models/itineraryModel.dart';   // ΓåÉ µû░σèá∩╝ÜItineraryModel / ItineraryDay / ItineraryPlace
+ import 'package:intl/intl.dart';             // ΓåÉ µû░σèá∩╝ÜDateFormat
+ import '../../services/dialog_helper.dart';  // ΓåÉ µû░σèá∩╝ÜAppDialogs
++import '../../services/category_mapper.dart';
++
++// ΓöÇΓöÇ Category-Aware Map Marker Presentation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++class CategoryMarkerVisual {
++  final Color color;
++  final IconData icon;
++  final double hue;
++
++  const CategoryMarkerVisual({
++    required this.color,
++    required this.icon,
++    required this.hue,
++  });
++}
++
++CategoryMarkerVisual resolveCategoryMarkerVisual(String? category) {
++  switch (category) {
++    case 'restaurant':
++      return const CategoryMarkerVisual(
++        color: Colors.orange,
++        icon: Icons.restaurant,
++        hue: BitmapDescriptor.hueOrange,
++      );
++    case 'entertainment':
++      return const CategoryMarkerVisual(
++        color: Colors.deepPurple,
++        icon: Icons.local_activity_rounded,
++        hue: BitmapDescriptor.hueViolet,
++      );
++    case 'shopping_mall':
++      return const CategoryMarkerVisual(
++        color: Colors.teal,
++        icon: Icons.shopping_bag,
++        hue: BitmapDescriptor.hueCyan,
++      );
++    case 'park':
++      return const CategoryMarkerVisual(
++        color: Colors.green,
++        icon: Icons.park,
++        hue: BitmapDescriptor.hueGreen,
++      );
++    case 'tourist_attraction':
++      return const CategoryMarkerVisual(
++        color: Color(0xFF1976D2),
++        icon: Icons.museum_rounded,
++        hue: BitmapDescriptor.hueBlue,
++      );
++    case 'transit':
++      return const CategoryMarkerVisual(
++        color: Colors.indigo,
++        icon: Icons.directions_transit,
++        hue: BitmapDescriptor.hueMagenta,
++      );
++    case 'service':
++      return const CategoryMarkerVisual(
++        color: Color(0xFF0097A7),
++        icon: Icons.miscellaneous_services,
++        hue: BitmapDescriptor.hueRose,
++      );
++    default:
++      return const CategoryMarkerVisual(
++        color: Color(0xFF757575),
++        icon: Icons.place,
++        hue: 0.0,
++      );
++  }
++}
+ 
+ // ΓöÇΓöÇ CHANGE 1: added 'recommended' sort mode ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+ enum SortMode { distance, rating, recommended }
+ 
+ class RealTimeDetectPage extends StatefulWidget {
++  static final Map<String, BitmapDescriptor> categoryMarkerCache = {};
++
+   final double? landmarkLat;
+   final double? landmarkLng;
+   final VoidCallback onBack;
+@@ -49,6 +119,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   Position? _currentPosition;
+ 
+   final Set<Marker> _markers = {};
++  Map<String, BitmapDescriptor> get categoryMarkerCache => RealTimeDetectPage.categoryMarkerCache;
+   // ΓöÇΓöÇ CHANGE 2: default sort = recommended ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+   SortMode _sortMode = SortMode.recommended;
+   TravelMode _travelMode = TravelMode.walk; // will be overridden in initState
+@@ -190,6 +261,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     _initialCameraPosition = CameraPosition(target: fallback, zoom: 14);
+ 
+     // ... σÄƒµ£¼σà╢σ«â initState ΘÇ╗Φ╛æΣ╕ìσÅÿ
++    _initCategoryMarkers();
+     _syncTravelModeFromPreference();
+     UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged);
+     WeatherService.instance.weatherChanged.addListener(_onWeatherChanged);
+@@ -663,13 +735,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+   void _togglePlaceSelection(PlaceModel place) {
+     setState(() {
+-      if (_selectedPlaceIds.contains(place.id)) {
+-        _selectedPlaceIds.remove(place.id);
+-        _selectedPlacesMap.remove(place.id);
+-      } else {
++      final willBeSelected = !_selectedPlaceIds.contains(place.id);
++      if (willBeSelected) {
+         _selectedPlaceIds.add(place.id);
+         _selectedPlacesMap[place.id] = place;
++      } else {
++        _selectedPlaceIds.remove(place.id);
++        _selectedPlacesMap.remove(place.id);
+       }
++      _updateSinglePlaceMarker(place, isSelected: willBeSelected);
+     });
+   }
+ 
+@@ -745,6 +819,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         setState(() {
+           _selectedPlaceIds.clear();
+           _selectedPlacesMap.clear();
++          _refreshAllPlaceMarkers();
+         });
+       }
+     });
+@@ -754,14 +829,197 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   // Markers & Routes
+   // ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+ 
++  Future<void> _initCategoryMarkers() async {
++    const categories = [
++      'restaurant',
++      'entertainment',
++      'shopping_mall',
++      'park',
++      'tourist_attraction',
++      'transit',
++      'service',
++      'other',
++    ];
++    for (final cat in categories) {
++      for (final isSel in [false, true]) {
++        final key = '${cat}_${isSel ? "1" : "0"}';
++        if (!categoryMarkerCache.containsKey(key)) {
++          try {
++            final desc = await _createCategoryMarkerBitmap(cat, isSelected: isSel);
++            categoryMarkerCache[key] = desc;
++          } catch (_) {
++            categoryMarkerCache[key] =
++                BitmapDescriptor.defaultMarkerWithHue(resolveCategoryMarkerVisual(cat).hue);
++          }
++        }
++      }
++    }
++    if (mounted) {
++      _refreshAllPlaceMarkers();
++    }
++  }
++
++  static Future<BitmapDescriptor> _createCategoryMarkerBitmap(
++    String category, {
++    required bool isSelected,
++  }) async {
++    final visual = resolveCategoryMarkerVisual(category);
++    const dpr = 2.5;
++    const baseW = 38.0;
++    const baseH = 48.0;
++    final scale = isSelected ? 1.15 : 1.0;
++
++    final w = baseW * scale * dpr;
++    final h = baseH * scale * dpr;
++
++    final recorder = ui.PictureRecorder();
++    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, w, h));
++
++    final pinPath = Path();
++    final center = Offset(w / 2, (w / 2) * 0.95);
++    final radius = (w / 2) - (isSelected ? 5 * dpr : 4 * dpr);
++
++    pinPath.addArc(
++      Rect.fromCircle(center: center, radius: radius),
++      pi * 0.75,
++      pi * 1.5,
++    );
++    pinPath.lineTo(w / 2, h - (3 * dpr));
++    pinPath.close();
++
++    // Shadow
++    canvas.drawPath(
++      pinPath.shift(const Offset(0, 2 * dpr)),
++      Paint()
++        ..color = Colors.black.withOpacity(0.25)
++        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2 * dpr),
++    );
++
++    // Selected highlight ring
++    if (isSelected) {
++      canvas.drawPath(
++        pinPath,
++        Paint()
++          ..color = const Color(0xFFFFD700)
++          ..style = PaintingStyle.stroke
++          ..strokeWidth = 3.5 * dpr,
++      );
++    }
++
++    // Main fill
++    canvas.drawPath(
++      pinPath,
++      Paint()
++        ..color = visual.color
++        ..style = PaintingStyle.fill,
++    );
++
++    // White inner border
++    canvas.drawPath(
++      pinPath,
++      Paint()
++        ..color = Colors.white
++        ..style = PaintingStyle.stroke
++        ..strokeWidth = (isSelected ? 2.5 : 2.0) * dpr,
++    );
++
++    // Inner icon
++    final iconPainter = TextPainter(
++      textDirection: ui.TextDirection.ltr,
++      text: TextSpan(
++        text: String.fromCharCode(visual.icon.codePoint),
++        style: TextStyle(
++          fontSize: radius * 1.05,
++          fontFamily: visual.icon.fontFamily,
++          package: visual.icon.fontPackage,
++          color: Colors.white,
++        ),
++      ),
++    );
++    iconPainter.layout();
++    iconPainter.paint(
++      canvas,
++      Offset(
++        center.dx - (iconPainter.width / 2),
++        center.dy - (iconPainter.height / 2),
++      ),
++    );
++
++    final picture = recorder.endRecording();
++    final image = await picture.toImage(w.toInt(), h.toInt());
++    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
++
++    if (byteData == null) {
++      return BitmapDescriptor.defaultMarkerWithHue(visual.hue);
++    }
++    return BitmapDescriptor.fromBytes(byteData.buffer.asUint8List());
++  }
++
++  BitmapDescriptor _getMarkerIcon(PlaceModel place, {required bool isSelected}) {
++    final cat = CategoryMapper.resolvePrimaryType(place.primaryType, place.allTypes);
++    final key = '${cat}_${isSelected ? "1" : "0"}';
++    final cached = categoryMarkerCache[key];
++    if (cached != null) return cached;
++    return BitmapDescriptor.defaultMarkerWithHue(resolveCategoryMarkerVisual(cat).hue);
++  }
++
++  void _updateSinglePlaceMarker(PlaceModel place, {required bool isSelected}) {
++    if (place.lat == null || place.lng == null) return;
++    final markerId = MarkerId(place.id);
++    _markers.removeWhere((m) => m.markerId == markerId);
++    _markers.add(Marker(
++      markerId: markerId,
++      position: LatLng(place.lat!, place.lng!),
++      icon: _getMarkerIcon(place, isSelected: isSelected),
++      anchor: const Offset(0.5, 0.95),
++      infoWindow: InfoWindow(
++        title: place.name,
++        snippet: place.address,
++        onTap: () => _showPlaceDetails(place),
++      ),
++      onTap: () => _showPlaceDetails(place),
++    ));
++  }
++
++  void _refreshAllPlaceMarkers() {
++    if (!mounted || _displayedPlaces.isEmpty) return;
++    setState(() {
++      final existingPlaceMarkers = Map<String, PlaceModel>.fromEntries(
++        _displayedPlaces
++            .where((p) => p.lat != null && p.lng != null)
++            .map((p) => MapEntry(p.id, p)),
++      );
++      _markers.removeWhere((m) =>
++          m.markerId.value != 'me' && m.markerId.value != 'search_location');
++      for (final place in existingPlaceMarkers.values) {
++        final isSelected = _selectedPlaceIds.contains(place.id);
++        _markers.add(Marker(
++          markerId: MarkerId(place.id),
++          position: LatLng(place.lat!, place.lng!),
++          icon: _getMarkerIcon(place, isSelected: isSelected),
++          anchor: const Offset(0.5, 0.95),
++          infoWindow: InfoWindow(
++            title: place.name,
++            snippet: place.address,
++            onTap: () => _showPlaceDetails(place),
++          ),
++          onTap: () => _showPlaceDetails(place),
++        ));
++      }
++    });
++  }
++
+   void _addMarkerAndPlace(PlaceModel place) {
+     if (place.lat == null || place.lng == null) return;
+ 
+     final markerId = MarkerId(place.id);
+     if (!_markers.any((m) => m.markerId == markerId)) {
++      final isSelected = _selectedPlaceIds.contains(place.id);
+       _markers.add(Marker(
+         markerId: markerId,
+         position: LatLng(place.lat!, place.lng!),
++        icon: _getMarkerIcon(place, isSelected: isSelected),
++        anchor: const Offset(0.5, 0.95),
+         infoWindow: InfoWindow(
+           title: place.name,
+           snippet: place.address,
+diff --git a/lib/services/location_service.dart b/lib/services/location_service.dart
+index c0d0fb0..fde027d 100644
+--- a/lib/services/location_service.dart
++++ b/lib/services/location_service.dart
+@@ -41,6 +41,20 @@ class LocationService extends ChangeNotifier {
+   double? get currentLat => currentPosition?.latitude;
+   double? get currentLng => currentPosition?.longitude;
+ 
++  /// Pure production check to verify if a cached Position is fresh and valid.
++  static bool isPositionFresh(
++    Position? pos, {
++    Duration maxAge = const Duration(seconds: 10),
++    DateTime? now,
++  }) {
++    if (pos == null) return false;
++    if (!pos.latitude.isFinite || !pos.longitude.isFinite) return false;
++    if (pos.latitude == 0.0 && pos.longitude == 0.0) return false;
++    final currentTime = now ?? DateTime.now();
++    final age = currentTime.difference(pos.timestamp);
++    return age >= Duration.zero && age <= maxAge;
++  }
++
+   // ΓöÇΓöÇ Significant move detection ΓöÇΓöÇ
+   double? _lastFetchLat;
+   double? _lastFetchLng;
+diff --git a/lib/services/route_service.dart b/lib/services/route_service.dart
+index dca2a8f..1925f7d 100644
+--- a/lib/services/route_service.dart
++++ b/lib/services/route_service.dart
+@@ -1,5 +1,5 @@
+-// services/route_service.dart
+ import 'dart:convert';
++import 'package:geolocator/geolocator.dart';
+ import 'package:google_maps_flutter/google_maps_flutter.dart';
+ import 'package:http/http.dart' as http;
+ import 'api_Keys.dart';
+@@ -71,6 +71,8 @@ class RouteResult {
+   final int durationSeconds;
+   final LatLngBounds bounds;
+   final int? walkDurationSeconds; 
++  final bool isFallback;
++  final String? fallbackNotice;
+ 
+   const RouteResult({
+     required this.polylinePoints,
+@@ -79,6 +81,8 @@ class RouteResult {
+     required this.durationSeconds,
+     required this.bounds,
+     this.walkDurationSeconds,
++    this.isFallback = false,
++    this.fallbackNotice,
+   });
+ }
+ 
+@@ -144,6 +148,56 @@ class RouteService {
+     required double toLat,
+     required double toLng,
+     required TravelMode mode,
++  }) async {
++    if (!fromLat.isFinite || !fromLng.isFinite || !toLat.isFinite || !toLng.isFinite ||
++        (fromLat == 0.0 && fromLng == 0.0) || (toLat == 0.0 && toLng == 0.0)) {
++      throw ArgumentError('Invalid route coordinates: ($fromLat, $fromLng) -> ($toLat, $toLng)');
++    }
++
++    try {
++      final result = await _fetchNavigationRouteInternal(
++        fromLat: fromLat, fromLng: fromLng,
++        toLat: toLat, toLng: toLng,
++        mode: mode,
++      );
++      _logRouteMetric(result, mode);
++      return result;
++    } catch (e) {
++      // If Motorcycle mode failed because TWO_WHEELER routing is unavailable in this region (e.g. HTTP 400),
++      // gracefully fall back to DRIVE and explicitly flag the fallback.
++      if (mode == TravelMode.motor &&
++          (e.toString().contains('400') ||
++           e.toString().toLowerCase().contains('two-wheeler') ||
++           e.toString().toLowerCase().contains('not supported'))) {
++        print('ΓÜá∩╕Å TWO_WHEELER route unavailable. Falling back to DRIVE with notice.');
++        final driveResult = await _fetchNavigationRouteInternal(
++          fromLat: fromLat, fromLng: fromLng,
++          toLat: toLat, toLng: toLng,
++          mode: TravelMode.drive,
++        );
++        final fallbackResult = RouteResult(
++          polylinePoints: driveResult.polylinePoints,
++          steps: driveResult.steps,
++          distanceMeters: driveResult.distanceMeters,
++          durationSeconds: driveResult.durationSeconds,
++          bounds: driveResult.bounds,
++          walkDurationSeconds: driveResult.walkDurationSeconds,
++          isFallback: true,
++          fallbackNotice: 'Motorcycle routing is unavailable here. A driving route will be used.',
++        );
++        _logRouteMetric(fallbackResult, mode, isFallback: true);
++        return fallbackResult;
++      }
++      rethrow;
++    }
++  }
++
++  Future<RouteResult> _fetchNavigationRouteInternal({
++    required double fromLat,
++    required double fromLng,
++    required double toLat,
++    required double toLng,
++    required TravelMode mode,
+   }) async {
+     final resp = await _post(
+       fromLat: fromLat, fromLng: fromLng,
+@@ -204,6 +258,25 @@ class RouteService {
+     );
+   }
+ 
++  void _logRouteMetric(RouteResult result, TravelMode mode, {bool isFallback = false}) {
++    double polylineMeters = 0.0;
++    for (int i = 1; i < result.polylinePoints.length; i++) {
++      polylineMeters += Geolocator.distanceBetween(
++        result.polylinePoints[i - 1].latitude,
++        result.polylinePoints[i - 1].longitude,
++        result.polylinePoints[i].latitude,
++        result.polylinePoints[i].longitude,
++      );
++    }
++    print('[NAV_METRIC][ROUTE]\n'
++        'mode=${travelModeToString(mode)}\n'
++        'source=${isFallback ? 'google_drive_fallback' : 'google_routes_api'}\n'
++        'totalRoadMeters=${result.distanceMeters.toStringAsFixed(1)}\n'
++        'totalDurationSec=${result.durationSeconds}\n'
++        'polylineMeters=${polylineMeters.toStringAsFixed(1)}\n'
++        'stepCount=${result.steps.length}');
++  }
++
+   /// Lightweight summary for the preview screen ΓÇö no step polylines needed.
+   Future<RouteSummary> fetchRouteSummary({
+     required double fromLat,
+@@ -388,6 +461,11 @@ class RouteService {
+     required TravelMode mode,
+     required List<String> fieldMask,
+   }) async {
++    if (!fromLat.isFinite || !fromLng.isFinite || !toLat.isFinite || !toLng.isFinite ||
++        (fromLat == 0.0 && fromLng == 0.0) || (toLat == 0.0 && toLng == 0.0)) {
++      throw ArgumentError('Invalid route coordinates: ($fromLat, $fromLng) -> ($toLat, $toLng)');
++    }
++
+     final body = jsonEncode({
+       'origin':      {'location': {'latLng': {'latitude': fromLat, 'longitude': fromLng}}},
+       'destination': {'location': {'latLng': {'latitude': toLat,   'longitude': toLng}}},

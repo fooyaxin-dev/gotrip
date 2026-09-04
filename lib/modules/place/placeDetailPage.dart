@@ -12,6 +12,7 @@ import '../../services/apps_Loading.dart';
 import '../../services/error_handler.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/userPreference_service.dart';
+import '../../services/location_service.dart';
 
 
 class PlaceDetailPage extends StatefulWidget {
@@ -243,24 +244,54 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
   void _navigateToGuide(String name) async {
     if (widget.lat == null || widget.lng == null) return;
 
-    double? startLat = widget.userLat;
-    double? startLng = widget.userLng;
+    double? startLat;
+    double? startLng;
 
-    if (startLat == null || startLng == null) {
+    // Prefer fresh live position from LocationService if active and recent (within 10s)
+    final livePos = LocationService.instance.currentPosition;
+    final isCachedFresh = LocationService.isPositionFresh(livePos);
+
+    if (isCachedFresh && livePos != null) {
+      startLat = livePos.latitude;
+      startLng = livePos.longitude;
+    } else {
       try {
         final pos = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high,
-        );
-        startLat = pos.latitude;
-        startLng = pos.longitude;
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unable to get current location.')),
-          );
+        ).timeout(const Duration(seconds: 3));
+        if (pos.latitude.isFinite &&
+            pos.longitude.isFinite &&
+            (pos.latitude != 0.0 || pos.longitude != 0.0)) {
+          startLat = pos.latitude;
+          startLng = pos.longitude;
         }
-        return;
+      } catch (_) {
+        // Fall back to passed coordinates only after fresh location retrieval fails
       }
+
+      if (startLat == null &&
+          widget.userLat != null &&
+          widget.userLng != null &&
+          widget.userLat != 0.0 &&
+          widget.userLng != 0.0 &&
+          widget.userLat!.isFinite &&
+          widget.userLng!.isFinite) {
+        startLat = widget.userLat;
+        startLng = widget.userLng;
+      }
+    }
+
+    if (startLat == null ||
+        startLng == null ||
+        !startLat.isFinite ||
+        !startLng.isFinite ||
+        (startLat == 0.0 && startLng == 0.0)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to get current location.')),
+        );
+      }
+      return;
     }
 
     if (!mounted) return;

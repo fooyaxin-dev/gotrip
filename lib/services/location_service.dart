@@ -41,6 +41,20 @@ class LocationService extends ChangeNotifier {
   double? get currentLat => currentPosition?.latitude;
   double? get currentLng => currentPosition?.longitude;
 
+  /// Pure production check to verify if a cached Position is fresh and valid.
+  static bool isPositionFresh(
+    Position? pos, {
+    Duration maxAge = const Duration(seconds: 10),
+    DateTime? now,
+  }) {
+    if (pos == null) return false;
+    if (!pos.latitude.isFinite || !pos.longitude.isFinite) return false;
+    if (pos.latitude == 0.0 && pos.longitude == 0.0) return false;
+    final currentTime = now ?? DateTime.now();
+    final age = currentTime.difference(pos.timestamp);
+    return age >= Duration.zero && age <= maxAge;
+  }
+
   // ── Significant move detection ──
   double? _lastFetchLat;
   double? _lastFetchLng;

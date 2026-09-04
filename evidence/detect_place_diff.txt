@@ -1,0 +1,3762 @@
+diff --git a/lib/modules/place/detectPlacePage.dart b/lib/modules/place/detectPlacePage.dart
+index f25961c..224acd8 100644
+--- a/lib/modules/place/detectPlacePage.dart
++++ b/lib/modules/place/detectPlacePage.dart
+@@ -1,5 +1,6 @@
+ import 'dart:async';
+ import 'dart:math';
++import 'dart:ui' as ui;
+ import 'package:flutter/material.dart';
+ import 'package:geolocator/geolocator.dart';
+ import 'package:google_maps_flutter/google_maps_flutter.dart';
+@@ -13,18 +14,87 @@ import 'routePreviewPage.dart';
+ import '../../services/placesAPI_service.dart';
+ import 'favouriteButton.dart';
+ import 'routeOptimizerPage.dart';
+-import '../../services/userPreference_service.dart'; 
++import '../../services/userPreference_service.dart';
+ import '../../services/categoryImage_Helper.dart';
+ import '../../services/weather_service.dart';
+ import '../../services/apps_Loading.dart';
+-import '../../models/itineraryModel.dart';   // ← 新加：ItineraryModel / ItineraryDay / ItineraryPlace
+-import 'package:intl/intl.dart';             // ← 新加：DateFormat
+-import '../../services/dialog_helper.dart';  // ← 新加：AppDialogs
++import '../../models/itineraryModel.dart'; // ← 新加：ItineraryModel / ItineraryDay / ItineraryPlace
++import 'package:intl/intl.dart'; // ← 新加：DateFormat
++import '../../services/dialog_helper.dart'; // ← 新加：AppDialogs
++import '../../services/category_mapper.dart';
++
++// ── Category-Aware Map Marker Presentation ──────────────────────────────────
++class CategoryMarkerVisual {
++  final Color color;
++  final IconData icon;
++  final double hue;
++
++  const CategoryMarkerVisual({
++    required this.color,
++    required this.icon,
++    required this.hue,
++  });
++}
++
++CategoryMarkerVisual resolveCategoryMarkerVisual(String? category) {
++  switch (category) {
++    case 'restaurant':
++      return const CategoryMarkerVisual(
++        color: Colors.orange,
++        icon: Icons.restaurant,
++        hue: BitmapDescriptor.hueOrange,
++      );
++    case 'entertainment':
++      return const CategoryMarkerVisual(
++        color: Colors.deepPurple,
++        icon: Icons.local_activity_rounded,
++        hue: BitmapDescriptor.hueViolet,
++      );
++    case 'shopping_mall':
++      return const CategoryMarkerVisual(
++        color: Colors.teal,
++        icon: Icons.shopping_bag,
++        hue: BitmapDescriptor.hueCyan,
++      );
++    case 'park':
++      return const CategoryMarkerVisual(
++        color: Colors.green,
++        icon: Icons.park,
++        hue: BitmapDescriptor.hueGreen,
++      );
++    case 'tourist_attraction':
++      return const CategoryMarkerVisual(
++        color: Color(0xFF1976D2),
++        icon: Icons.museum_rounded,
++        hue: BitmapDescriptor.hueBlue,
++      );
++    case 'transit':
++      return const CategoryMarkerVisual(
++        color: Colors.indigo,
++        icon: Icons.directions_transit,
++        hue: BitmapDescriptor.hueMagenta,
++      );
++    case 'service':
++      return const CategoryMarkerVisual(
++        color: Color(0xFF0097A7),
++        icon: Icons.miscellaneous_services,
++        hue: BitmapDescriptor.hueRose,
++      );
++    default:
++      return const CategoryMarkerVisual(
++        color: Color(0xFF757575),
++        icon: Icons.place,
++        hue: 0.0,
++      );
++  }
++}
+ 
+ // ── CHANGE 1: added 'recommended' sort mode ──────────────────────────────────
+ enum SortMode { distance, rating, recommended }
+ 
+ class RealTimeDetectPage extends StatefulWidget {
++  static final Map<String, BitmapDescriptor> categoryMarkerCache = {};
++
+   final double? landmarkLat;
+   final double? landmarkLng;
+   final VoidCallback onBack;
+@@ -43,22 +113,30 @@ class RealTimeDetectPage extends StatefulWidget {
+ }
+ 
+ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+-
+   GoogleMapController? _mapController;
+   bool _mapReady = false;
+   Position? _currentPosition;
+ 
+   final Set<Marker> _markers = {};
++  Map<String, BitmapDescriptor> get categoryMarkerCache =>
++      RealTimeDetectPage.categoryMarkerCache;
+   // ── CHANGE 2: default sort = recommended ────────────────────────────────────
+   SortMode _sortMode = SortMode.recommended;
+   TravelMode _travelMode = TravelMode.walk; // will be overridden in initState
+   bool _isTravelModeExpanded = false;
+-  bool _travelModeManuallySet = false;  
++  bool _travelModeManuallySet = false;
+ 
+   final List<PlaceModel> _displayedPlaces = [];
+   List<PlaceModel> _landmarkPlaces = [];
+   Map<String, RouteResult> _routeResults = {};
+ 
++  // ── Three-Tab Place Retrieval Pools ─────────────────────────────────────────
++  List<PlaceModel> _distancePlaces = [];
++  List<PlaceModel> _popularityPlaces = [];
++  final Map<String, int> _popularityResponseOrder = {};
++  bool _isPopularityLoading = false;
++  int _detectGeneration = 0;
++
+   // 🆕 单一数据源 — build()/precache/卡片徽章 都读这里，不再各自重算
+   List<PlaceModel> _rankedGooglePlaces = [];
+   List<PlaceModel> _rankedGeoapifyPlaces = [];
+@@ -69,6 +147,93 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   String? _selectedPrimary;
+   String _selectedSecondary = 'all';
+ 
++  void _syncDistance(PlaceModel place) {
++    if (_currentPosition == null || place.lat == null || place.lng == null)
++      return;
++    if (_routeResults.containsKey(place.id)) return;
++    final dist = Geolocator.distanceBetween(
++      _currentPosition!.latitude,
++      _currentPosition!.longitude,
++      place.lat!,
++      place.lng!,
++    );
++    _routeResults[place.id] = RouteResult(
++      polylinePoints: const [],
++      steps: const [],
++      bounds: LatLngBounds(
++        southwest: LatLng(
++          min(_currentPosition!.latitude, place.lat!),
++          min(_currentPosition!.longitude, place.lng!),
++        ),
++        northeast: LatLng(
++          max(_currentPosition!.latitude, place.lat!),
++          max(_currentPosition!.longitude, place.lng!),
++        ),
++      ),
++      distanceMeters: dist,
++      durationSeconds: (dist / _getSpeedMeterPerSecond()).round(),
++    );
++  }
++
++  List<PlaceModel> _getCandidatesForTab(SortMode mode) {
++    switch (mode) {
++      case SortMode.distance: // Nearest
++        return List<PlaceModel>.from(_distancePlaces);
++      case SortMode.rating: // Rank
++        return List<PlaceModel>.from(_popularityPlaces);
++      case SortMode.recommended: // For You
++        final seen = <String>{};
++        final combined = <PlaceModel>[];
++        for (final p in _distancePlaces) {
++          if (seen.add(p.id)) combined.add(p);
++        }
++        for (final p in _popularityPlaces) {
++          if (seen.add(p.id)) combined.add(p);
++        }
++        return combined;
++    }
++  }
++
++  Future<void> _prefetchPopularityRound(
++    double lat,
++    double lng,
++    int radius,
++    int generation,
++  ) async {
++    _isPopularityLoading = true;
++    try {
++      final popPlaces =
++          await NearbyPlacesService.instance.ensurePopularityRound(
++        lat: lat,
++        lng: lng,
++        radius: radius,
++      );
++      if (!mounted || generation != _detectGeneration) return;
++
++      setState(() {
++        _popularityPlaces = popPlaces;
++        _popularityResponseOrder.clear();
++        for (var i = 0; i < popPlaces.length; i++) {
++          _popularityResponseOrder[popPlaces[i].id] = i;
++        }
++        _isPopularityLoading = false;
++      });
++
++      for (final place in popPlaces) {
++        _syncDistance(place);
++      }
++
++      if (_sortMode == SortMode.recommended || _sortMode == SortMode.rating) {
++        _applyFilter(preserveScroll: true);
++      }
++    } catch (e) {
++      print('⚠️ _prefetchPopularityRound error: $e');
++      if (mounted && generation == _detectGeneration) {
++        setState(() => _isPopularityLoading = false);
++      }
++    }
++  }
++
+   // ── New nearby badge ──────────────────────────────────────────────────────
+   bool _hasNewNearby = false;
+   static const double _badgeThresholdMetres = 500;
+@@ -95,75 +260,592 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   List<PlaceModel> _searchPlaces = [];
+ 
+   final List<Map<String, dynamic>> categories = [
+-    {'name': 'All',        'icon': Icons.all_inclusive,          'type': 'all',           'color': Colors.black},
+-    {'name': 'Food',       'icon': Icons.restaurant,             'type': 'restaurant',    'color': Colors.orange},
+-    {'name': 'Nature',     'icon': Icons.park,                   'type': 'park',          'color': Colors.green},
+-    {'name': 'Attraction', 'icon': Icons.museum_rounded,          'type': 'tourist_attraction',  'color': Colors.brown},
+-    {'name': 'Entertain',  'icon': Icons.local_activity_rounded, 'type': 'entertainment', 'color': Colors.deepPurple},
+-    {'name': 'Shopping',   'icon': Icons.shopping_bag,           'type': 'shopping_mall', 'color': Colors.pink},
+-    {'name': 'Transport',  'icon': Icons.directions_transit,     'type': 'transit',       'color': Colors.blue},
+-    {'name': 'Service',    'icon': Icons.miscellaneous_services, 'type': 'service',       'color': Colors.teal},
++    {
++      'name': 'All',
++      'icon': Icons.all_inclusive,
++      'type': 'all',
++      'color': Colors.black
++    },
++    {
++      'name': 'Food',
++      'icon': Icons.restaurant,
++      'type': 'restaurant',
++      'color': Colors.orange
++    },
++    {
++      'name': 'Nature',
++      'icon': Icons.park,
++      'type': 'park',
++      'color': Colors.green
++    },
++    {
++      'name': 'Attraction',
++      'icon': Icons.museum_rounded,
++      'type': 'tourist_attraction',
++      'color': Colors.brown
++    },
++    {
++      'name': 'Entertain',
++      'icon': Icons.local_activity_rounded,
++      'type': 'entertainment',
++      'color': Colors.deepPurple
++    },
++    {
++      'name': 'Shopping',
++      'icon': Icons.shopping_bag,
++      'type': 'shopping_mall',
++      'color': Colors.pink
++    },
++    {
++      'name': 'Transport',
++      'icon': Icons.directions_transit,
++      'type': 'transit',
++      'color': Colors.blue
++    },
++    {
++      'name': 'Service',
++      'icon': Icons.miscellaneous_services,
++      'type': 'service',
++      'color': Colors.teal
++    },
+   ];
+ 
+   final Map<String, List<Map<String, dynamic>>> subCategories = {
+     'restaurant': [
+-      {'key': 'all',      'label': 'All',      'allowTypes': <String>[],                                                            'nameKeywords': <String>[]},
+-      {'key': 'korean',   'label': 'Korean',   'allowTypes': <String>['korean_restaurant'],                                         'nameKeywords': <String>['korea', 'korean', '한국', 'kimchi', 'bbq korean']},
+-      {'key': 'chinese',  'label': 'Chinese',  'allowTypes': <String>['chinese_restaurant'],                                        'nameKeywords': <String>['chinese', 'canton', 'dim sum', 'claypot', 'clay pot', '中', '华', '粤', '龙', '金', '福', '记', 'seafood', 'wonton', 'bak kut']},
+-      {'key': 'japanese', 'label': 'Japanese', 'allowTypes': <String>['japanese_restaurant'],                                       'nameKeywords': <String>['japanese', 'japan', 'sushi', 'ramen', 'mentai', 'yakitori', 'tempura', 'udon', 'tonkatsu', 'izakaya']},
+-      {'key': 'malay',    'label': 'Malay',    'allowTypes': <String>['malaysian_restaurant'],                                      'nameKeywords': <String>['nasi', 'mee', 'laksa', 'satay', 'rendang', 'malay', 'warung', 'lemak', 'kampung', 'sup', 'ayam', 'ikan bakar']},
+-      {'key': 'indian',   'label': 'Indian',   'allowTypes': <String>['indian_restaurant'],                                         'nameKeywords': <String>['indian', 'india', 'naan', 'curry', 'briyani', 'biryani', 'tandoor', 'mamak', 'kandar', 'roti canai', 'banana leaf', 'thali']},
+-      {'key': 'western',  'label': 'Western',  'allowTypes': <String>['western_restaurant', 'american_restaurant', 'steak_house'],  'nameKeywords': <String>['western', 'steak', 'burger', 'pizza', 'pasta', 'grill', 'bistro', 'secret recipe', 'mcdonalds', 'kfc', 'subway']},
+-      {'key': 'dessert',  'label': 'Dessert',  'allowTypes': <String>['dessert_shop', 'ice_cream_shop', 'bakery'],                  'nameKeywords': <String>['dessert', 'ice cream', 'gelato', 'cake', 'bakery', 'pastry', 'sweet', 'bubble tea', 'boba', 'cendol', 'waffle', 'crepe']},
+-      {'key': 'cafe',     'label': 'Cafe',     'allowTypes': <String>['cafe', 'coffee_shop'],                                       'nameKeywords': <String>['cafe', 'coffee', 'kopitiam', 'kopi', 'espresso', 'latte', 'brew', 'roast']},
++      {
++        'key': 'all',
++        'label': 'All',
++        'allowTypes': <String>[],
++        'nameKeywords': <String>[]
++      },
++      {
++        'key': 'korean',
++        'label': 'Korean',
++        'allowTypes': <String>['korean_restaurant'],
++        'nameKeywords': <String>[
++          'korea',
++          'korean',
++          '한국',
++          'kimchi',
++          'bbq korean'
++        ]
++      },
++      {
++        'key': 'chinese',
++        'label': 'Chinese',
++        'allowTypes': <String>['chinese_restaurant'],
++        'nameKeywords': <String>[
++          'chinese',
++          'canton',
++          'dim sum',
++          'claypot',
++          'clay pot',
++          '中',
++          '华',
++          '粤',
++          '龙',
++          '金',
++          '福',
++          '记',
++          'seafood',
++          'wonton',
++          'bak kut'
++        ]
++      },
++      {
++        'key': 'japanese',
++        'label': 'Japanese',
++        'allowTypes': <String>['japanese_restaurant'],
++        'nameKeywords': <String>[
++          'japanese',
++          'japan',
++          'sushi',
++          'ramen',
++          'mentai',
++          'yakitori',
++          'tempura',
++          'udon',
++          'tonkatsu',
++          'izakaya'
++        ]
++      },
++      {
++        'key': 'malay',
++        'label': 'Malay',
++        'allowTypes': <String>['malaysian_restaurant'],
++        'nameKeywords': <String>[
++          'nasi',
++          'mee',
++          'laksa',
++          'satay',
++          'rendang',
++          'malay',
++          'warung',
++          'lemak',
++          'kampung',
++          'sup',
++          'ayam',
++          'ikan bakar'
++        ]
++      },
++      {
++        'key': 'indian',
++        'label': 'Indian',
++        'allowTypes': <String>['indian_restaurant'],
++        'nameKeywords': <String>[
++          'indian',
++          'india',
++          'naan',
++          'curry',
++          'briyani',
++          'biryani',
++          'tandoor',
++          'mamak',
++          'kandar',
++          'roti canai',
++          'banana leaf',
++          'thali'
++        ]
++      },
++      {
++        'key': 'western',
++        'label': 'Western',
++        'allowTypes': <String>[
++          'western_restaurant',
++          'american_restaurant',
++          'steak_house'
++        ],
++        'nameKeywords': <String>[
++          'western',
++          'steak',
++          'burger',
++          'pizza',
++          'pasta',
++          'grill',
++          'bistro',
++          'secret recipe',
++          'mcdonalds',
++          'kfc',
++          'subway'
++        ]
++      },
++      {
++        'key': 'dessert',
++        'label': 'Dessert',
++        'allowTypes': <String>['dessert_shop', 'ice_cream_shop', 'bakery'],
++        'nameKeywords': <String>[
++          'dessert',
++          'ice cream',
++          'gelato',
++          'cake',
++          'bakery',
++          'pastry',
++          'sweet',
++          'bubble tea',
++          'boba',
++          'cendol',
++          'waffle',
++          'crepe'
++        ]
++      },
++      {
++        'key': 'cafe',
++        'label': 'Cafe',
++        'allowTypes': <String>['cafe', 'coffee_shop'],
++        'nameKeywords': <String>[
++          'cafe',
++          'coffee',
++          'kopitiam',
++          'kopi',
++          'espresso',
++          'latte',
++          'brew',
++          'roast'
++        ]
++      },
+     ],
+     'park': [
+-      {'key': 'all',      'label': 'All',       'allowTypes': <String>[],                                                                               'nameKeywords': <String>[]},
+-      {'key': 'park',     'label': 'Park',       'allowTypes': <String>['park', 'national_park'],                                                        'nameKeywords': <String>['park', 'taman', 'recreational']},
+-      {'key': 'garden',   'label': 'Garden',     'allowTypes': <String>['botanical_garden'],                                                             'nameKeywords': <String>['garden', 'botanical', 'bunga']},
+-      {'key': 'beach',    'label': 'Beach',      'allowTypes': <String>['beach'],                                                                        'nameKeywords': <String>['beach', 'pantai']},
+-      {'key': 'trail',    'label': 'Hiking',     'allowTypes': <String>['hiking_area'],                                                                  'nameKeywords': <String>['trail', 'hiking', 'bukit', 'hill', 'forest', 'hutan']},
+-      {'key': 'landmark', 'label': 'Landmark',   'allowTypes': <String>['tourist_attraction', 'historical_landmark', 'cultural_landmark', 'monument'],   'nameKeywords': <String>['heritage', 'historic', 'monument', 'memorial', 'fort', 'landmark']},
+-      {'key': 'museum',   'label': 'Museum',     'allowTypes': <String>['museum', 'art_gallery'],                                                        'nameKeywords': <String>['museum', 'gallery', 'muzium']},
+-      {'key': 'temple',   'label': 'Temple',     'allowTypes': <String>['hindu_temple', 'buddhist_temple', 'shrine'],                                    'nameKeywords': <String>['temple', 'tokong', 'kuil', 'shrine', '庙', '寺']},
+-      {'key': 'mosque',   'label': 'Mosque',     'allowTypes': <String>['mosque'],                                                                       'nameKeywords': <String>['mosque', 'masjid', 'surau']},
+-      {'key': 'church',   'label': 'Church',     'allowTypes': <String>['church'],                                                                       'nameKeywords': <String>['church', 'gereja', 'cathedral', 'chapel']},
++      {
++        'key': 'all',
++        'label': 'All',
++        'allowTypes': <String>[],
++        'nameKeywords': <String>[]
++      },
++      {
++        'key': 'park',
++        'label': 'Park',
++        'allowTypes': <String>['park', 'national_park'],
++        'nameKeywords': <String>['park', 'taman', 'recreational']
++      },
++      {
++        'key': 'garden',
++        'label': 'Garden',
++        'allowTypes': <String>['botanical_garden'],
++        'nameKeywords': <String>['garden', 'botanical', 'bunga']
++      },
++      {
++        'key': 'beach',
++        'label': 'Beach',
++        'allowTypes': <String>['beach'],
++        'nameKeywords': <String>['beach', 'pantai']
++      },
++      {
++        'key': 'trail',
++        'label': 'Hiking',
++        'allowTypes': <String>['hiking_area'],
++        'nameKeywords': <String>[
++          'trail',
++          'hiking',
++          'bukit',
++          'hill',
++          'forest',
++          'hutan'
++        ]
++      },
++      {
++        'key': 'landmark',
++        'label': 'Landmark',
++        'allowTypes': <String>[
++          'tourist_attraction',
++          'historical_landmark',
++          'cultural_landmark',
++          'monument'
++        ],
++        'nameKeywords': <String>[
++          'heritage',
++          'historic',
++          'monument',
++          'memorial',
++          'fort',
++          'landmark'
++        ]
++      },
++      {
++        'key': 'museum',
++        'label': 'Museum',
++        'allowTypes': <String>['museum', 'art_gallery'],
++        'nameKeywords': <String>['museum', 'gallery', 'muzium']
++      },
++      {
++        'key': 'temple',
++        'label': 'Temple',
++        'allowTypes': <String>['hindu_temple', 'buddhist_temple', 'shrine'],
++        'nameKeywords': <String>['temple', 'tokong', 'kuil', 'shrine', '庙', '寺']
++      },
++      {
++        'key': 'mosque',
++        'label': 'Mosque',
++        'allowTypes': <String>['mosque'],
++        'nameKeywords': <String>['mosque', 'masjid', 'surau']
++      },
++      {
++        'key': 'church',
++        'label': 'Church',
++        'allowTypes': <String>['church'],
++        'nameKeywords': <String>['church', 'gereja', 'cathedral', 'chapel']
++      },
+     ],
+     'tourist_attraction': [
+-      {'key': 'all',      'label': 'All',       'allowTypes': <String>[],                                                                              'nameKeywords': <String>[]},
+-      {'key': 'landmark', 'label': 'Landmark',   'allowTypes': <String>['tourist_attraction', 'historical_landmark', 'cultural_landmark', 'monument'],  'nameKeywords': <String>['heritage', 'historic', 'monument', 'memorial', 'fort', 'landmark']},
+-      {'key': 'museum',   'label': 'Museum',     'allowTypes': <String>['museum', 'art_gallery'],                                                       'nameKeywords': <String>['museum', 'gallery', 'muzium']},
++      {
++        'key': 'all',
++        'label': 'All',
++        'allowTypes': <String>[],
++        'nameKeywords': <String>[]
++      },
++      {
++        'key': 'landmark',
++        'label': 'Landmark',
++        'allowTypes': <String>[
++          'tourist_attraction',
++          'historical_landmark',
++          'cultural_landmark',
++          'monument'
++        ],
++        'nameKeywords': <String>[
++          'heritage',
++          'historic',
++          'monument',
++          'memorial',
++          'fort',
++          'landmark'
++        ]
++      },
++      {
++        'key': 'museum',
++        'label': 'Museum',
++        'allowTypes': <String>['museum', 'art_gallery'],
++        'nameKeywords': <String>['museum', 'gallery', 'muzium']
++      },
+     ],
+     'entertainment': [
+-      {'key': 'all',     'label': 'All',        'allowTypes': <String>[],                                                              'nameKeywords': <String>[]},
+-      {'key': 'cinema',  'label': 'Cinema',     'allowTypes': <String>['movie_theater'],                                               'nameKeywords': <String>['cinema', 'gsc', 'tgv', 'mbo', 'movie', 'theatre']},
+-      {'key': 'karaoke', 'label': 'Karaoke',    'allowTypes': <String>['karaoke'],                                                     'nameKeywords': <String>['karaoke', 'neway', 'redsun', 'red box']},
+-      {'key': 'bowling', 'label': 'Bowling',    'allowTypes': <String>['bowling_alley'],                                               'nameKeywords': <String>['bowling']},
+-      {'key': 'gaming',  'label': 'Gaming',     'allowTypes': <String>['amusement_center', 'video_arcade'],                            'nameKeywords': <String>['arcade', 'esport', 'gaming', 'lan', 'timezone']},
+-      {'key': 'theme',   'label': 'Theme Park', 'allowTypes': <String>['amusement_park', 'theme_park'],                               'nameKeywords': <String>['theme park', 'sunway', 'genting', 'waterpark', 'legoland']},
+-      {'key': 'sport',   'label': 'Sports',     'allowTypes': <String>['sports_complex', 'stadium', 'gym', 'fitness_center'],          'nameKeywords': <String>['stadium', 'sport', 'badminton', 'futsal', 'swimming', 'gym', 'fitness']},
+-      {'key': 'spa',     'label': 'Spa',        'allowTypes': <String>['spa', 'beauty_salon'],                                         'nameKeywords': <String>['spa', 'massage', 'wellness', 'relax', 'beauty']},
++      {
++        'key': 'all',
++        'label': 'All',
++        'allowTypes': <String>[],
++        'nameKeywords': <String>[]
++      },
++      {
++        'key': 'cinema',
++        'label': 'Cinema',
++        'allowTypes': <String>['movie_theater'],
++        'nameKeywords': <String>[
++          'cinema',
++          'gsc',
++          'tgv',
++          'mbo',
++          'movie',
++          'theatre'
++        ]
++      },
++      {
++        'key': 'karaoke',
++        'label': 'Karaoke',
++        'allowTypes': <String>['karaoke'],
++        'nameKeywords': <String>['karaoke', 'neway', 'redsun', 'red box']
++      },
++      {
++        'key': 'bowling',
++        'label': 'Bowling',
++        'allowTypes': <String>['bowling_alley'],
++        'nameKeywords': <String>['bowling']
++      },
++      {
++        'key': 'gaming',
++        'label': 'Gaming',
++        'allowTypes': <String>['amusement_center', 'video_arcade'],
++        'nameKeywords': <String>[
++          'arcade',
++          'esport',
++          'gaming',
++          'lan',
++          'timezone'
++        ]
++      },
++      {
++        'key': 'theme',
++        'label': 'Theme Park',
++        'allowTypes': <String>['amusement_park', 'theme_park'],
++        'nameKeywords': <String>[
++          'theme park',
++          'sunway',
++          'genting',
++          'waterpark',
++          'legoland'
++        ]
++      },
++      {
++        'key': 'sport',
++        'label': 'Sports',
++        'allowTypes': <String>[
++          'sports_complex',
++          'stadium',
++          'gym',
++          'fitness_center'
++        ],
++        'nameKeywords': <String>[
++          'stadium',
++          'sport',
++          'badminton',
++          'futsal',
++          'swimming',
++          'gym',
++          'fitness'
++        ]
++      },
++      {
++        'key': 'spa',
++        'label': 'Spa',
++        'allowTypes': <String>['spa', 'beauty_salon'],
++        'nameKeywords': <String>[
++          'spa',
++          'massage',
++          'wellness',
++          'relax',
++          'beauty'
++        ]
++      },
+     ],
+     'shopping_mall': [
+-      {'key': 'all',         'label': 'All',         'allowTypes': <String>[],                                                  'nameKeywords': <String>[]},
+-      {'key': 'mall',        'label': 'Mall',         'allowTypes': <String>['shopping_mall'],                                   'nameKeywords': <String>['mall', 'plaza', 'square', 'kompleks', 'pavilion', 'mid valley']},
+-      {'key': 'supermarket', 'label': 'Supermarket',  'allowTypes': <String>['supermarket', 'grocery_store'],                   'nameKeywords': <String>['supermarket', 'grocery', 'mydin', 'aeon', 'tesco', 'giant', 'econsave', 'jaya grocer']},
+-      {'key': 'fashion',     'label': 'Fashion',      'allowTypes': <String>['clothing_store', 'shoe_store'],                   'nameKeywords': <String>['fashion', 'clothing', 'apparel', 'boutique', 'shoe', 'zara', 'h&m', 'uniqlo']},
+-      {'key': 'electronics', 'label': 'Electronics',  'allowTypes': <String>['electronics_store', 'cell_phone_store'],          'nameKeywords': <String>['electronics', 'phone', 'computer', 'digital', 'harvey', 'senheng', 'courts']},
+-      {'key': 'pharmacy',    'label': 'Pharmacy',     'allowTypes': <String>['pharmacy', 'drugstore'],                          'nameKeywords': <String>['pharmacy', 'farmasi', 'guardian', 'watsons', 'caring', 'alpro']},
+-      {'key': 'market',      'label': 'Market',       'allowTypes': <String>['market', 'flea_market'],                          'nameKeywords': <String>['market', 'bazaar', 'pasar', 'night market', 'ramadan', 'flea']},
++      {
++        'key': 'all',
++        'label': 'All',
++        'allowTypes': <String>[],
++        'nameKeywords': <String>[]
++      },
++      {
++        'key': 'mall',
++        'label': 'Mall',
++        'allowTypes': <String>['shopping_mall'],
++        'nameKeywords': <String>[
++          'mall',
++          'plaza',
++          'square',
++          'kompleks',
++          'pavilion',
++          'mid valley'
++        ]
++      },
++      {
++        'key': 'supermarket',
++        'label': 'Supermarket',
++        'allowTypes': <String>['supermarket', 'grocery_store'],
++        'nameKeywords': <String>[
++          'supermarket',
++          'grocery',
++          'mydin',
++          'aeon',
++          'tesco',
++          'giant',
++          'econsave',
++          'jaya grocer'
++        ]
++      },
++      {
++        'key': 'fashion',
++        'label': 'Fashion',
++        'allowTypes': <String>['clothing_store', 'shoe_store'],
++        'nameKeywords': <String>[
++          'fashion',
++          'clothing',
++          'apparel',
++          'boutique',
++          'shoe',
++          'zara',
++          'h&m',
++          'uniqlo'
++        ]
++      },
++      {
++        'key': 'electronics',
++        'label': 'Electronics',
++        'allowTypes': <String>['electronics_store', 'cell_phone_store'],
++        'nameKeywords': <String>[
++          'electronics',
++          'phone',
++          'computer',
++          'digital',
++          'harvey',
++          'senheng',
++          'courts'
++        ]
++      },
++      {
++        'key': 'pharmacy',
++        'label': 'Pharmacy',
++        'allowTypes': <String>['pharmacy', 'drugstore'],
++        'nameKeywords': <String>[
++          'pharmacy',
++          'farmasi',
++          'guardian',
++          'watsons',
++          'caring',
++          'alpro'
++        ]
++      },
++      {
++        'key': 'market',
++        'label': 'Market',
++        'allowTypes': <String>['market', 'flea_market'],
++        'nameKeywords': <String>[
++          'market',
++          'bazaar',
++          'pasar',
++          'night market',
++          'ramadan',
++          'flea'
++        ]
++      },
+     ],
+     'transit': [
+-      {'key': 'all',     'label': 'All',       'allowTypes': <String>[],                                                                          'nameKeywords': <String>[]},
+-      {'key': 'lrt_mrt', 'label': 'LRT / MRT', 'allowTypes': <String>['subway_station', 'light_rail_station', 'transit_station'],                 'nameKeywords': <String>['lrt', 'mrt', 'ktm', 'monorail', 'rapidkl', 'station', 'stesen']},
+-      {'key': 'bus',     'label': 'Bus',        'allowTypes': <String>['bus_station', 'bus_stop'],                                                 'nameKeywords': <String>['bus', 'rapid', 'terminal', 'hentian', 'express']},
+-      {'key': 'taxi',    'label': 'Taxi / Grab','allowTypes': <String>['taxi_stand'],                                                              'nameKeywords': <String>['taxi', 'grab', 'cab', 'teksi']},
++      {
++        'key': 'all',
++        'label': 'All',
++        'allowTypes': <String>[],
++        'nameKeywords': <String>[]
++      },
++      {
++        'key': 'lrt_mrt',
++        'label': 'LRT / MRT',
++        'allowTypes': <String>[
++          'subway_station',
++          'light_rail_station',
++          'transit_station'
++        ],
++        'nameKeywords': <String>[
++          'lrt',
++          'mrt',
++          'ktm',
++          'monorail',
++          'rapidkl',
++          'station',
++          'stesen'
++        ]
++      },
++      {
++        'key': 'bus',
++        'label': 'Bus',
++        'allowTypes': <String>['bus_station', 'bus_stop'],
++        'nameKeywords': <String>[
++          'bus',
++          'rapid',
++          'terminal',
++          'hentian',
++          'express'
++        ]
++      },
++      {
++        'key': 'taxi',
++        'label': 'Taxi / Grab',
++        'allowTypes': <String>['taxi_stand'],
++        'nameKeywords': <String>['taxi', 'grab', 'cab', 'teksi']
++      },
+     ],
+     'service': [
+-      {'key': 'all',      'label': 'All',        'allowTypes': <String>[],                                                         'nameKeywords': <String>[]},
+-      {'key': 'hospital', 'label': 'Hospital',   'allowTypes': <String>['hospital', 'medical_clinic', 'doctor'],                  'nameKeywords': <String>['hospital', 'clinic', 'klinik', 'medical', 'health', 'healthcare']},
+-      {'key': 'bank',     'label': 'Bank / ATM', 'allowTypes': <String>['bank', 'atm'],                                           'nameKeywords': <String>['bank', 'maybank', 'cimb', 'public bank', 'rhb', 'hong leong', 'ambank', 'atm']},
+-      {'key': 'post',     'label': 'Post Office','allowTypes': <String>['post_office'],                                            'nameKeywords': <String>['post office', 'pos malaysia', 'poslaju', 'pos laju']},
++      {
++        'key': 'all',
++        'label': 'All',
++        'allowTypes': <String>[],
++        'nameKeywords': <String>[]
++      },
++      {
++        'key': 'hospital',
++        'label': 'Hospital',
++        'allowTypes': <String>['hospital', 'medical_clinic', 'doctor'],
++        'nameKeywords': <String>[
++          'hospital',
++          'clinic',
++          'klinik',
++          'medical',
++          'health',
++          'healthcare'
++        ]
++      },
++      {
++        'key': 'bank',
++        'label': 'Bank / ATM',
++        'allowTypes': <String>['bank', 'atm'],
++        'nameKeywords': <String>[
++          'bank',
++          'maybank',
++          'cimb',
++          'public bank',
++          'rhb',
++          'hong leong',
++          'ambank',
++          'atm'
++        ]
++      },
++      {
++        'key': 'post',
++        'label': 'Post Office',
++        'allowTypes': <String>['post_office'],
++        'nameKeywords': <String>[
++          'post office',
++          'pos malaysia',
++          'poslaju',
++          'pos laju'
++        ]
++      },
+     ],
+   };
+ 
+@@ -190,8 +872,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     _initialCameraPosition = CameraPosition(target: fallback, zoom: 14);
+ 
+     // ... 原本其它 initState 逻辑不变
++    _initCategoryMarkers();
+     _syncTravelModeFromPreference();
+-    UserPreferenceService.instance.preferencesChanged.addListener(_onPreferencesChanged);
++    UserPreferenceService.instance.preferencesChanged
++        .addListener(_onPreferencesChanged);
+     WeatherService.instance.weatherChanged.addListener(_onWeatherChanged);
+     _bootstrap();
+ 
+@@ -214,11 +898,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     if (mounted) _recomputeRanking();
+   }
+ 
+-
+-
+   void _syncTravelModeFromPreference() {
+     final raw = UserPreferenceService.instance.current.travelMode;
+-    print('🔍 _syncTravelModeFromPreference: raw="$raw" → ${travelModeFromString(raw)}');
++    print(
++        '🔍 _syncTravelModeFromPreference: raw="$raw" → ${travelModeFromString(raw)}');
+     _travelMode = travelModeFromString(raw);
+   }
+ 
+@@ -252,8 +935,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     if (pos == null || _lastLoadedLat == null || _lastLoadedLng == null) return;
+ 
+     final dist = Geolocator.distanceBetween(
+-      _lastLoadedLat!, _lastLoadedLng!,
+-      pos.latitude, pos.longitude,
++      _lastLoadedLat!,
++      _lastLoadedLng!,
++      pos.latitude,
++      pos.longitude,
+     );
+ 
+     if (dist >= _badgeThresholdMetres && !_hasNewNearby) {
+@@ -261,12 +946,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     }
+   }
+ 
+-
+   @override
+   void dispose() {
+     LocationService.instance.removeListener(_onLocationChanged);
+-    UserPreferenceService.instance.preferencesChanged.removeListener(_onPreferencesChanged); // 🆕
+-    WeatherService.instance.weatherChanged.removeListener(_onWeatherChanged); 
++    UserPreferenceService.instance.preferencesChanged
++        .removeListener(_onPreferencesChanged); // 🆕
++    WeatherService.instance.weatherChanged.removeListener(_onWeatherChanged);
+     _searchController.dispose();
+     _searchFocus.dispose();
+     _debounce?.cancel();
+@@ -278,25 +963,41 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   // ─────────────────────────────────────────────
+ 
+   Future<void> _bootstrap() async {
+-    setState(() => _isLoading = true);
++    final generation = ++_detectGeneration;
++    setState(() {
++      _isLoading = true;
++      _distancePlaces.clear();
++      _popularityPlaces.clear();
++      _popularityResponseOrder.clear();
++    });
++
++    final double centerLat;
++    final double centerLng;
+ 
+     if (widget.landmarkLat != null && widget.landmarkLng != null) {
++      centerLat = widget.landmarkLat!;
++      centerLng = widget.landmarkLng!;
+       _currentPosition = Position(
+-        latitude: widget.landmarkLat!,
+-        longitude: widget.landmarkLng!,
+-        timestamp: DateTime.now(), accuracy: 1, altitude: 0,
+-        heading: 0, speed: 0, speedAccuracy: 0,
+-        altitudeAccuracy: 0.0, headingAccuracy: 0.0,
++        latitude: centerLat,
++        longitude: centerLng,
++        timestamp: DateTime.now(),
++        accuracy: 1,
++        altitude: 0,
++        heading: 0,
++        speed: 0,
++        speedAccuracy: 0,
++        altitudeAccuracy: 0.0,
++        headingAccuracy: 0.0,
+       );
+ 
+       _initialCameraPosition = CameraPosition(
+-        target: LatLng(widget.landmarkLat!, widget.landmarkLng!),
++        target: LatLng(centerLat, centerLng),
+         zoom: 14,
+       );
+ 
+       _markers.add(Marker(
+         markerId: const MarkerId('me'),
+-        position: LatLng(widget.landmarkLat!, widget.landmarkLng!),
++        position: LatLng(centerLat, centerLng),
+         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+         infoWindow: const InfoWindow(title: 'Landmark Location'),
+       ));
+@@ -304,26 +1005,49 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       setState(() {});
+ 
+       try {
+-        _landmarkPlaces = await NearbyPlacesService.instance.loadNearbyPlacesAt(
+-          lat: widget.landmarkLat!,
+-          lng: widget.landmarkLng!,
++        final distPlaces =
++            await NearbyPlacesService.instance.ensureDistanceRound(
++          lat: centerLat,
++          lng: centerLng,
++          radius: _radiusFromTravelMode,
++        );
++        if (!mounted || generation != _detectGeneration) return;
++
++        _landmarkPlaces = distPlaces;
++        _distancePlaces = distPlaces;
++        for (final p in distPlaces) {
++          _syncDistance(p);
++        }
++
++        // Trigger Geoapify enrichment in background for landmark
++        unawaited(NearbyPlacesService.instance.loadNearbyPlacesAt(
++          lat: centerLat,
++          lng: centerLng,
+           categories: categories,
+           context: context,
+           radius: _radiusFromTravelMode,
+-        );
++          onGeoapifyDone: () {
++            if (mounted && generation == _detectGeneration) {
++              _recomputeRanking();
++            }
++          },
++        ));
+       } catch (e) {
+-        setState(() => _isLoading = false);
++        if (mounted && generation == _detectGeneration) {
++          setState(() => _isLoading = false);
++        }
+         return;
+       }
+-
+     } else {
+-    final pos = LocationService.instance.currentPosition;
+-    if (pos == null) {
+-      setState(() => _isLoading = false);
+-      AppDialogs.showLocationUnavailable(context);
+-      return;
+-    }
++      final pos = LocationService.instance.currentPosition;
++      if (pos == null) {
++        setState(() => _isLoading = false);
++        AppDialogs.showLocationUnavailable(context);
++        return;
++      }
+       _currentPosition = pos;
++      centerLat = pos.latitude;
++      centerLng = pos.longitude;
+ 
+       _initialCameraPosition = CameraPosition(
+         target: LatLng(pos.latitude, pos.longitude),
+@@ -340,10 +1064,36 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       setState(() {});
+ 
+       try {
+-        await NearbyPlacesService.instance.loadNearbyPlacesOnce(
+-            categories, context, radius: _radiusFromTravelMode);
++        final distPlaces =
++            await NearbyPlacesService.instance.ensureDistanceRound(
++          lat: centerLat,
++          lng: centerLng,
++          radius: _radiusFromTravelMode,
++        );
++        if (!mounted || generation != _detectGeneration) return;
++
++        _distancePlaces = distPlaces;
++        for (final p in distPlaces) {
++          _syncDistance(p);
++        }
++
++        // Trigger Geoapify enrichment in background
++        unawaited(NearbyPlacesService.instance.loadNearbyPlacesOnce(
++          categories,
++          context,
++          lat: centerLat,
++          lng: centerLng,
++          radius: _radiusFromTravelMode,
++          onGeoapifyDone: () {
++            if (mounted && generation == _detectGeneration) {
++              _recomputeRanking();
++            }
++          },
++        ));
+       } catch (e) {
+-        setState(() => _isLoading = false);
++        if (mounted && generation == _detectGeneration) {
++          setState(() => _isLoading = false);
++        }
+         return;
+       }
+     }
+@@ -359,6 +1109,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     // Record where we loaded from so _onLocationChanged can detect 500m+ moves
+     _lastLoadedLat = _currentPosition?.latitude;
+     _lastLoadedLng = _currentPosition?.longitude;
++
++    // Start POPULARITY retrieval automatically in the background
++    unawaited(_prefetchPopularityRound(
++      centerLat,
++      centerLng,
++      _radiusFromTravelMode,
++      generation,
++    ));
+   }
+ 
+   // ─────────────────────────────────────────────
+@@ -393,42 +1151,61 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   }
+ 
+   Future<void> _onSuggestionSelected(Map<String, dynamic> suggestion) async {
++    final generation = ++_detectGeneration;
+     _searchFocus.unfocus();
+     setState(() {
+-      _isSearchMode        = false;
+-      _isSearchLoading     = true;
++      _isSearchMode = false;
++      _isSearchLoading = true;
+       _autocompleteSuggestions = [];
+       _searchController.text = suggestion['mainText'] ?? '';
++      _distancePlaces.clear();
++      _popularityPlaces.clear();
++      _popularityResponseOrder.clear();
+     });
+ 
+     final detail = await PlacesApiService.getPlaceLatLng(suggestion['placeId']);
+     if (detail == null || detail['lat'] == null) {
+-      setState(() => _isSearchLoading = false);
++      if (mounted && generation == _detectGeneration) {
++        setState(() => _isSearchLoading = false);
++      }
+       return;
+     }
+ 
+-    final lat  = detail['lat'] as double;
+-    final lng  = detail['lng'] as double;
++    final lat = detail['lat'] as double;
++    final lng = detail['lng'] as double;
+     final name = detail['name'] as String;
+ 
+     _currentPosition = Position(
+-      latitude: lat, longitude: lng,
+-      timestamp: DateTime.now(), accuracy: 1, altitude: 0,
+-      heading: 0, speed: 0, speedAccuracy: 0,
+-      altitudeAccuracy: 0.0, headingAccuracy: 0.0,
++      latitude: lat,
++      longitude: lng,
++      timestamp: DateTime.now(),
++      accuracy: 1,
++      altitude: 0,
++      heading: 0,
++      speed: 0,
++      speedAccuracy: 0,
++      altitudeAccuracy: 0.0,
++      headingAccuracy: 0.0,
+     );
+ 
+     try {
+-      final places = await NearbyPlacesService.instance.loadNearbyPlacesAt(
+-        lat: lat, lng: lng, categories: categories, context: context,
++      final distPlaces = await NearbyPlacesService.instance.ensureDistanceRound(
++        lat: lat,
++        lng: lng,
+         radius: _radiusFromTravelMode,
+       );
+ 
+-      if (!mounted) return;
++      if (!mounted || generation != _detectGeneration) return;
++
++      _searchPlaces = distPlaces;
++      _distancePlaces = distPlaces;
++      for (final p in distPlaces) {
++        _syncDistance(p);
++      }
+ 
+       // Save to search history
+       final historyEntry = {
+-        'placeId':  suggestion['placeId'],
++        'placeId': suggestion['placeId'],
+         'mainText': suggestion['mainText'] ?? name,
+         'secondaryText': suggestion['secondaryText'] ?? '',
+         'lat': lat,
+@@ -436,7 +1213,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         'name': name,
+       };
+       setState(() {
+-        _searchHistory.removeWhere((h) => h['placeId'] == suggestion['placeId']);
++        _searchHistory
++            .removeWhere((h) => h['placeId'] == suggestion['placeId']);
+         _searchHistory.insert(0, historyEntry);
+         if (_searchHistory.length > _maxSearchHistory) {
+           _searchHistory.removeLast();
+@@ -444,15 +1222,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       });
+ 
+       setState(() {
+-        _isSearchLoading    = false;
++        _isSearchLoading = false;
+         _searchLocationName = name;
+-        _searchPlaces       = places;
+         _selectedPlaceIds.clear();
+         _markers.removeWhere((m) => m.markerId.value == 'search_location');
+         _markers.add(Marker(
+           markerId: const MarkerId('search_location'),
+           position: LatLng(lat, lng),
+-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
++          icon:
++              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+           infoWindow: InfoWindow(title: name),
+         ));
+       });
+@@ -466,8 +1244,31 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       }
+       _animateToFitMarkers(keepZoom: false);
+ 
++      // Trigger Geoapify enrichment in background for search location
++      unawaited(NearbyPlacesService.instance.loadNearbyPlacesAt(
++        lat: lat,
++        lng: lng,
++        categories: categories,
++        context: context,
++        radius: _radiusFromTravelMode,
++        onGeoapifyDone: () {
++          if (mounted && generation == _detectGeneration) {
++            _recomputeRanking();
++          }
++        },
++      ));
++
++      // Trigger background POPULARITY retrieval for search location
++      unawaited(_prefetchPopularityRound(
++        lat,
++        lng,
++        _radiusFromTravelMode,
++        generation,
++      ));
+     } catch (e) {
+-      setState(() => _isSearchLoading = false);
++      if (mounted && generation == _detectGeneration) {
++        setState(() => _isSearchLoading = false);
++      }
+     }
+   }
+ 
+@@ -480,10 +1281,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+     setState(() {
+       if (realPos != null) _currentPosition = realPos;
+-      _isSearchMode        = false;
+-      _isSearchLoading     = false;
+-      _searchLocationName  = null;
+-      _searchPlaces        = [];
++      _isSearchMode = false;
++      _isSearchLoading = false;
++      _searchLocationName = null;
++      _searchPlaces = [];
+       _autocompleteSuggestions = [];
+       _selectedPlaceIds.clear();
+       if (realPos != null) {
+@@ -492,17 +1293,19 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         _markers.add(Marker(
+           markerId: const MarkerId('me'),
+           position: LatLng(realPos.latitude, realPos.longitude),
+-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
++          icon:
++              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+           infoWindow: const InfoWindow(title: 'My Location'),
+         ));
+       }
+     });
+ 
+-    _applyFilter();
++    _bootstrap();
+ 
+     if (_currentPosition != null) {
+       _mapController?.animateCamera(CameraUpdate.newLatLngZoom(
+-        LatLng(_currentPosition!.latitude, _currentPosition!.longitude), 14,
++        LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
++        14,
+       ));
+     }
+   }
+@@ -524,33 +1327,45 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     });
+   }
+ 
+-
+   // ─────────────────────────────────────────────
+   // Filter
+   // ─────────────────────────────────────────────
+ 
+-  void _applyFilter() {
+-    final List<PlaceModel> sourcePlaces = _searchLocationName != null
+-        ? _searchPlaces
+-        : _getRealtimePlaces();
++  void _applyFilter({bool preserveScroll = false}) {
++    final tabCandidates = _getCandidatesForTab(_sortMode);
++    final geoapifyCandidates = (_searchLocationName != null
++            ? _searchPlaces
++            : (widget.landmarkLat != null
++                ? _landmarkPlaces
++                : NearbyPlacesService.instance.getByPrimary(null)))
++        .where((p) => p.isGeoapify)
++        .toList();
++
++    final List<PlaceModel> sourcePlaces = [
++      ...tabCandidates,
++      ...geoapifyCandidates
++    ];
+ 
+     List<PlaceModel> places;
+-    if (_selectedPrimary == null || _selectedSecondary == 'all' && _selectedPrimary == null) {
++    if (_selectedPrimary == null ||
++        (_selectedSecondary == 'all' && _selectedPrimary == null)) {
+       places = sourcePlaces;
+     } else if (_selectedSecondary == 'all') {
+-      places = sourcePlaces.where((p) => p.primaryType == _selectedPrimary).toList();
++      places =
++          sourcePlaces.where((p) => p.primaryType == _selectedPrimary).toList();
+     } else {
+       final subs = subCategories[_selectedPrimary] ?? [];
+-      final cfg  = subs.firstWhere(
++      final cfg = subs.firstWhere(
+         (e) => e['key'] == _selectedSecondary,
+         orElse: () => {'allowTypes': <String>[], 'nameKeywords': <String>[]},
+       );
+-      final allowTypes       = (cfg['allowTypes']   as List?)?.cast<String>() ?? [];
+-      final nameKeywords     = (cfg['nameKeywords'] as List?)?.cast<String>() ?? [];
++      final allowTypes = (cfg['allowTypes'] as List?)?.cast<String>() ?? [];
++      final nameKeywords = (cfg['nameKeywords'] as List?)?.cast<String>() ?? [];
+       final allSpecificTypes = _allSpecificTypesFor(_selectedPrimary!);
+ 
+       places = sourcePlaces.where((place) {
+-        if (_selectedPrimary != null && place.primaryType != _selectedPrimary) return false;
++        if (_selectedPrimary != null && place.primaryType != _selectedPrimary)
++          return false;
+         if (allowTypes.isEmpty && nameKeywords.isEmpty) return true;
+ 
+         // 该地点是否已经有明确的具体类型(来自 Google types 或 enrichment)？
+@@ -559,7 +1374,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+         if (hasResolvedSpecificType) {
+           // 已经有权威类型 → 只信 typeMatch,不用名字关键词猜测
+-          return allowTypes.isNotEmpty && place.allTypes.any((t) => allowTypes.contains(t));
++          return allowTypes.isNotEmpty &&
++              place.allTypes.any((t) => allowTypes.contains(t));
+         }
+ 
+         // 还没有具体类型（未 enrich 的原始数据）→ 才 fallback 用名字关键词
+@@ -569,29 +1385,30 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       }).toList();
+     }
+ 
+-  // 🆕 加这一行——地图 marker 和列表用同一份 "开着的" 数据源
+-  places = places.where((p) => p.isOpenNow != false).toList();
++    // 🆕 地图 marker 和列表用同一份 "开着的" 数据源
++    places = places.where((p) => p.isOpenNow != false).toList();
+ 
+     setState(() {
+       _isLoading = false;
+       _displayedPlaces.clear();
+       _markers.removeWhere((m) =>
+           m.markerId.value != 'me' && m.markerId.value != 'search_location');
+-      _routeResults.clear();
+       for (final place in places) {
+         _addMarkerAndPlace(place);
+       }
+     });
+ 
+-    _animateToFitMarkers(keepZoom: false);
++    if (!preserveScroll) {
++      _animateToFitMarkers(keepZoom: false);
++    }
+     _recomputeRanking();
+   }
+ 
+   List<PlaceModel> _getRealtimePlaces() {
+-   final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
+-    final source = isLandmarkMode
+-        ? _landmarkPlaces
+-        : NearbyPlacesService.instance.getByPrimary(null);
++    final isLandmarkMode =
++        widget.landmarkLat != null && widget.landmarkLng != null;
++    final source =
++        isLandmarkMode ? _landmarkPlaces : _getCandidatesForTab(_sortMode);
+ 
+     final open = source.where((p) => p.isOpenNow != false);
+ 
+@@ -601,7 +1418,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+   void _onPrimaryTap(String type) {
+     setState(() {
+-      _selectedPrimary   = type == 'all' ? null : type;
++      _selectedPrimary = type == 'all' ? null : type;
+       _selectedSecondary = 'all';
+     });
+     _applyFilter();
+@@ -613,48 +1430,25 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   }
+ 
+   Future<void> _onRefresh() async {
+-    if (_searchLocationName != null) { _clearSearch(); return; }
+-
+-    final isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
++    if (_searchLocationName != null) {
++      _clearSearch();
++      return;
++    }
+ 
+     setState(() {
+-      _selectedPrimary   = null;
++      _selectedPrimary = null;
+       _selectedSecondary = 'all';
+-      _isLoading         = true;
+-      _hasNewNearby      = false; // ← clear badge on manual refresh
++      _isLoading = true;
++      _hasNewNearby = false; // ← clear badge on manual refresh
++      _distancePlaces.clear();
++      _popularityPlaces.clear();
++      _popularityResponseOrder.clear();
+     });
+ 
+-    try {
+-      if (isLandmarkMode) {
+-        _landmarkPlaces = await NearbyPlacesService.instance.loadNearbyPlacesAt(
+-          lat: widget.landmarkLat!,
+-          lng: widget.landmarkLng!,
+-          categories: categories,
+-          context: context,
+-          radius: _radiusFromTravelMode,
+-        );
+-      } else {
+-        NearbyPlacesService.instance.clearCache();
+-        NearbyPlacesService.instance.clearSearchCache(); // ← also clear search cache
+-        await NearbyPlacesService.instance.loadNearbyPlacesOnce(
+-            categories, context, radius: _radiusFromTravelMode);
+-      }
+-    } catch (e) {
+-      setState(() => _isLoading = false);
+-      return;
+-    }
+-
+-    _applyFilter();
+-    if (_currentPosition != null) {
+-    WeatherService.instance.getCurrentCondition(
+-      lat: _currentPosition!.latitude,
+-      lng: _currentPosition!.longitude,
+-    );
+-  }
+-
+-    // Update last loaded position so badge resets correctly
+-    _lastLoadedLat = _currentPosition?.latitude;
+-    _lastLoadedLng = _currentPosition?.longitude;
++    NearbyPlacesService.instance.clearCache();
++    NearbyPlacesService.instance.clearSearchCache();
++    NearbyPlacesService.instance.clearGoogleRawCache();
++    await _bootstrap();
+   }
+ 
+   // ─────────────────────────────────────────────
+@@ -663,13 +1457,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+   void _togglePlaceSelection(PlaceModel place) {
+     setState(() {
+-      if (_selectedPlaceIds.contains(place.id)) {
+-        _selectedPlaceIds.remove(place.id);
+-        _selectedPlacesMap.remove(place.id);
+-      } else {
++      final willBeSelected = !_selectedPlaceIds.contains(place.id);
++      if (willBeSelected) {
+         _selectedPlaceIds.add(place.id);
+         _selectedPlacesMap[place.id] = place;
++      } else {
++        _selectedPlaceIds.remove(place.id);
++        _selectedPlacesMap.remove(place.id);
+       }
++      _updateSinglePlaceMarker(place, isSelected: willBeSelected);
+     });
+   }
+ 
+@@ -678,66 +1474,74 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+     final selectedPlaces = _selectedPlacesMap.values.toList();
+ 
+-    final now     = DateTime.now();
++    final now = DateTime.now();
+     final dateStr = DateFormat('yyyy-MM-dd').format(now);
+ 
+     var curHour = 9;
+-    var curMin  = 0;
++    var curMin = 0;
+     final itineraryPlaces = <ItineraryPlace>[];
+     for (final p in selectedPlaces) {
+-      final timeStr = '${curHour.toString().padLeft(2, '0')}:${curMin.toString().padLeft(2, '0')}';
++      final timeStr =
++          '${curHour.toString().padLeft(2, '0')}:${curMin.toString().padLeft(2, '0')}';
+       final duration = p.primaryType == 'restaurant' ? 60 : 90;
+       itineraryPlaces.add(ItineraryPlace(
+-        placeId:         p.id,
+-        name:            p.name,
+-        address:         p.address ?? '',
+-        photoUrl:        p.photoUrl,
+-        lat:             p.lat,
+-        lng:             p.lng,
+-        primaryType:     p.primaryType,
+-        suggestedTime:   timeStr,
++        placeId: p.id,
++        name: p.name,
++        address: p.address ?? '',
++        photoUrl: p.photoUrl,
++        lat: p.lat,
++        lng: p.lng,
++        primaryType: p.primaryType,
++        suggestedTime: timeStr,
+         durationMinutes: duration,
+-        notes:           'Added by you',
++        notes: 'Added by you',
+       ));
+       curMin += duration;
+       curHour += curMin ~/ 60;
+       curMin = curMin % 60;
+-      if (curHour >= 21) { curHour = 21; curMin = 0; }
++      if (curHour >= 21) {
++        curHour = 21;
++        curMin = 0;
++      }
+     }
+ 
+     // 🆕 判断这次的 origin 到底来自哪里：
+     // - landmark 模式（从别的页面带着固定坐标跳进来）→ 固定地点，不是实时定位
+     // - 搜索模式（用户搜了别的地方）→ 固定地点，不是实时定位
+     // - 都不是 → 用的就是设备的实时 GPS 定位
+-    final bool isLandmarkMode = widget.landmarkLat != null && widget.landmarkLng != null;
+-    final bool useCurrentLocation = !isLandmarkMode && _searchLocationName == null;
++    final bool isLandmarkMode =
++        widget.landmarkLat != null && widget.landmarkLng != null;
++    final bool useCurrentLocation =
++        !isLandmarkMode && _searchLocationName == null;
+     final String? originName = useCurrentLocation
+         ? null
+         : (_searchLocationName ?? 'Landmark Location');
+ 
+     final draftItinerary = ItineraryModel(
+-      id:        '',
+-      title:     'My Custom Trip',
++      id: '',
++      title: 'My Custom Trip',
+       startDate: dateStr,
+       totalDays: 1,
+-      days: [ItineraryDay(dayNumber: 1, date: dateStr, places: itineraryPlaces)],
++      days: [
++        ItineraryDay(dayNumber: 1, date: dateStr, places: itineraryPlaces)
++      ],
+       createdAt: now,
+-      isOriginCurrentLocation: useCurrentLocation,       // 🆕
+-      originLat:  _currentPosition!.latitude,             // 🆕 _currentPosition 已经对应正确来源的坐标
+-      originLng:  _currentPosition!.longitude,            // 🆕
+-      originName: originName,        
+-      travelMode: travelModeToString(_travelMode),                      // 🆕
++      isOriginCurrentLocation: useCurrentLocation, // 🆕
++      originLat: _currentPosition!.latitude, // 🆕 _currentPosition 已经对应正确来源的坐标
++      originLng: _currentPosition!.longitude, // 🆕
++      originName: originName,
++      travelMode: travelModeToString(_travelMode), // 🆕
+     );
+ 
+     Navigator.push(
+       context,
+       MaterialPageRoute(
+         builder: (_) => RouteOptimizerPage(
+-          itinerary:         draftItinerary,
+-          startLat:          _currentPosition!.latitude,
+-          startLng:          _currentPosition!.longitude,
++          itinerary: draftItinerary,
++          startLat: _currentPosition!.latitude,
++          startLng: _currentPosition!.longitude,
+           startLocationName: _searchLocationName,
+-          travelMode:        _travelMode,
++          travelMode: _travelMode,
+         ),
+       ),
+     ).then((_) {
+@@ -745,23 +1549,211 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         setState(() {
+           _selectedPlaceIds.clear();
+           _selectedPlacesMap.clear();
++          _refreshAllPlaceMarkers();
+         });
+       }
+     });
+   }
+-  
++
+   // ─────────────────────────────────────────────
+   // Markers & Routes
+   // ─────────────────────────────────────────────
+ 
++  Future<void> _initCategoryMarkers() async {
++    const categories = [
++      'restaurant',
++      'entertainment',
++      'shopping_mall',
++      'park',
++      'tourist_attraction',
++      'transit',
++      'service',
++      'other',
++    ];
++    for (final cat in categories) {
++      for (final isSel in [false, true]) {
++        final key = '${cat}_${isSel ? "1" : "0"}';
++        if (!categoryMarkerCache.containsKey(key)) {
++          try {
++            final desc =
++                await _createCategoryMarkerBitmap(cat, isSelected: isSel);
++            categoryMarkerCache[key] = desc;
++          } catch (_) {
++            categoryMarkerCache[key] = BitmapDescriptor.defaultMarkerWithHue(
++                resolveCategoryMarkerVisual(cat).hue);
++          }
++        }
++      }
++    }
++    if (mounted) {
++      _refreshAllPlaceMarkers();
++    }
++  }
++
++  static Future<BitmapDescriptor> _createCategoryMarkerBitmap(
++    String category, {
++    required bool isSelected,
++  }) async {
++    final visual = resolveCategoryMarkerVisual(category);
++    const dpr = 2.5;
++    const baseW = 38.0;
++    const baseH = 48.0;
++    final scale = isSelected ? 1.15 : 1.0;
++
++    final w = baseW * scale * dpr;
++    final h = baseH * scale * dpr;
++
++    final recorder = ui.PictureRecorder();
++    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, w, h));
++
++    final pinPath = Path();
++    final center = Offset(w / 2, (w / 2) * 0.95);
++    final radius = (w / 2) - (isSelected ? 5 * dpr : 4 * dpr);
++
++    pinPath.addArc(
++      Rect.fromCircle(center: center, radius: radius),
++      pi * 0.75,
++      pi * 1.5,
++    );
++    pinPath.lineTo(w / 2, h - (3 * dpr));
++    pinPath.close();
++
++    // Shadow
++    canvas.drawPath(
++      pinPath.shift(const Offset(0, 2 * dpr)),
++      Paint()
++        ..color = Colors.black.withOpacity(0.25)
++        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2 * dpr),
++    );
++
++    // Selected highlight ring
++    if (isSelected) {
++      canvas.drawPath(
++        pinPath,
++        Paint()
++          ..color = const Color(0xFFFFD700)
++          ..style = PaintingStyle.stroke
++          ..strokeWidth = 3.5 * dpr,
++      );
++    }
++
++    // Main fill
++    canvas.drawPath(
++      pinPath,
++      Paint()
++        ..color = visual.color
++        ..style = PaintingStyle.fill,
++    );
++
++    // White inner border
++    canvas.drawPath(
++      pinPath,
++      Paint()
++        ..color = Colors.white
++        ..style = PaintingStyle.stroke
++        ..strokeWidth = (isSelected ? 2.5 : 2.0) * dpr,
++    );
++
++    // Inner icon
++    final iconPainter = TextPainter(
++      textDirection: ui.TextDirection.ltr,
++      text: TextSpan(
++        text: String.fromCharCode(visual.icon.codePoint),
++        style: TextStyle(
++          fontSize: radius * 1.05,
++          fontFamily: visual.icon.fontFamily,
++          package: visual.icon.fontPackage,
++          color: Colors.white,
++        ),
++      ),
++    );
++    iconPainter.layout();
++    iconPainter.paint(
++      canvas,
++      Offset(
++        center.dx - (iconPainter.width / 2),
++        center.dy - (iconPainter.height / 2),
++      ),
++    );
++
++    final picture = recorder.endRecording();
++    final image = await picture.toImage(w.toInt(), h.toInt());
++    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
++
++    if (byteData == null) {
++      return BitmapDescriptor.defaultMarkerWithHue(visual.hue);
++    }
++    return BitmapDescriptor.fromBytes(byteData.buffer.asUint8List());
++  }
++
++  BitmapDescriptor _getMarkerIcon(PlaceModel place,
++      {required bool isSelected}) {
++    final cat =
++        CategoryMapper.resolvePrimaryType(place.primaryType, place.allTypes);
++    final key = '${cat}_${isSelected ? "1" : "0"}';
++    final cached = categoryMarkerCache[key];
++    if (cached != null) return cached;
++    return BitmapDescriptor.defaultMarkerWithHue(
++        resolveCategoryMarkerVisual(cat).hue);
++  }
++
++  void _updateSinglePlaceMarker(PlaceModel place, {required bool isSelected}) {
++    if (place.lat == null || place.lng == null) return;
++    final markerId = MarkerId(place.id);
++    _markers.removeWhere((m) => m.markerId == markerId);
++    _markers.add(Marker(
++      markerId: markerId,
++      position: LatLng(place.lat!, place.lng!),
++      icon: _getMarkerIcon(place, isSelected: isSelected),
++      anchor: const Offset(0.5, 0.95),
++      infoWindow: InfoWindow(
++        title: place.name,
++        snippet: place.address,
++        onTap: () => _showPlaceDetails(place),
++      ),
++      onTap: () => _showPlaceDetails(place),
++    ));
++  }
++
++  void _refreshAllPlaceMarkers() {
++    if (!mounted || _displayedPlaces.isEmpty) return;
++    setState(() {
++      final existingPlaceMarkers = Map<String, PlaceModel>.fromEntries(
++        _displayedPlaces
++            .where((p) => p.lat != null && p.lng != null)
++            .map((p) => MapEntry(p.id, p)),
++      );
++      _markers.removeWhere((m) =>
++          m.markerId.value != 'me' && m.markerId.value != 'search_location');
++      for (final place in existingPlaceMarkers.values) {
++        final isSelected = _selectedPlaceIds.contains(place.id);
++        _markers.add(Marker(
++          markerId: MarkerId(place.id),
++          position: LatLng(place.lat!, place.lng!),
++          icon: _getMarkerIcon(place, isSelected: isSelected),
++          anchor: const Offset(0.5, 0.95),
++          infoWindow: InfoWindow(
++            title: place.name,
++            snippet: place.address,
++            onTap: () => _showPlaceDetails(place),
++          ),
++          onTap: () => _showPlaceDetails(place),
++        ));
++      }
++    });
++  }
++
+   void _addMarkerAndPlace(PlaceModel place) {
+     if (place.lat == null || place.lng == null) return;
+ 
+     final markerId = MarkerId(place.id);
+     if (!_markers.any((m) => m.markerId == markerId)) {
++      final isSelected = _selectedPlaceIds.contains(place.id);
+       _markers.add(Marker(
+         markerId: markerId,
+         position: LatLng(place.lat!, place.lng!),
++        icon: _getMarkerIcon(place, isSelected: isSelected),
++        anchor: const Offset(0.5, 0.95),
+         infoWindow: InfoWindow(
+           title: place.name,
+           snippet: place.address,
+@@ -771,12 +1763,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       ));
+     }
+ 
+-    if (!_displayedPlaces.any((p) => p.id == place.id)) _displayedPlaces.add(place);
++    if (!_displayedPlaces.any((p) => p.id == place.id))
++      _displayedPlaces.add(place);
+ 
+     if (_currentPosition != null) {
+       final dist = Geolocator.distanceBetween(
+-        _currentPosition!.latitude, _currentPosition!.longitude,
+-        place.lat!, place.lng!,
++        _currentPosition!.latitude,
++        _currentPosition!.longitude,
++        place.lat!,
++        place.lng!,
+       );
+       _routeResults[place.id] = RouteResult(
+         polylinePoints: [],
+@@ -791,7 +1786,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+             max(_currentPosition!.longitude, place.lng!),
+           ),
+         ),
+-        distanceMeters:  dist,
++        distanceMeters: dist,
+         durationSeconds: (dist / _getSpeedMeterPerSecond()).round(),
+       );
+     }
+@@ -799,9 +1794,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+   double _getSpeedMeterPerSecond() {
+     switch (_travelMode) {
+-      case TravelMode.walk:  return 1.4;
+-      case TravelMode.motor: return 6.0;
+-      case TravelMode.drive: return 12.0;
++      case TravelMode.walk:
++        return 1.4;
++      case TravelMode.motor:
++        return 6.0;
++      case TravelMode.drive:
++        return 12.0;
+     }
+   }
+ 
+@@ -815,10 +1813,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       if (route == null) continue;
+       _routeResults[place.id] = RouteResult(
+         polylinePoints: route.polylinePoints,
+-        steps:          route.steps,
+-        bounds:         route.bounds,
++        steps: route.steps,
++        bounds: route.bounds,
+         distanceMeters: route.distanceMeters,
+-        durationSeconds: (route.distanceMeters / _getSpeedMeterPerSecond()).round(),
++        durationSeconds:
++            (route.distanceMeters / _getSpeedMeterPerSecond()).round(),
+       );
+     }
+   }
+@@ -833,14 +1832,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     if (relevantMarkers.isEmpty) return;
+     if (relevantMarkers.length == 1) {
+       _mapController!.animateCamera(
+-        CameraUpdate.newLatLngZoom(relevantMarkers.first.position, 15));
++          CameraUpdate.newLatLngZoom(relevantMarkers.first.position, 15));
+       return;
+     }
+ 
+     double minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+     for (final m in relevantMarkers) {
+-      if (m.position.latitude  < minLat) minLat = m.position.latitude;
+-      if (m.position.latitude  > maxLat) maxLat = m.position.latitude;
++      if (m.position.latitude < minLat) minLat = m.position.latitude;
++      if (m.position.latitude > maxLat) maxLat = m.position.latitude;
+       if (m.position.longitude < minLng) minLng = m.position.longitude;
+       if (m.position.longitude > maxLng) maxLng = m.position.longitude;
+     }
+@@ -852,7 +1851,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         LatLngBounds(
+           southwest: LatLng(minLat, minLng),
+           northeast: LatLng(maxLat, maxLng),
+-        ), 80,
++        ),
++        80,
+       ));
+     }
+   }
+@@ -861,57 +1861,62 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   // Navigation
+   // ─────────────────────────────────────────────
+ 
+- Future<void> _navigateTo(PlaceModel place) async {
+-  if (place.lat == null || place.lng == null) {
+-    if (mounted) {
+-      ScaffoldMessenger.of(context).showSnackBar(
+-        const SnackBar(
+-          content: Text('Destination location is unavailable'),
+-          behavior: SnackBarBehavior.floating,
+-        ),
+-      );
++  Future<void> _navigateTo(PlaceModel place) async {
++    if (place.lat == null || place.lng == null) {
++      if (mounted) {
++        ScaffoldMessenger.of(context).showSnackBar(
++          const SnackBar(
++            content: Text('Destination location is unavailable'),
++            behavior: SnackBarBehavior.floating,
++          ),
++        );
++      }
++      return;
+     }
+-    return;
+-  }
+ 
+-  // Navigation must always start from the user's REAL current GPS,
+-  // not from the landmark/search location used as the exploration centre.
+-  final realPosition = LocationService.instance.currentPosition;
++    // Navigation must always start from the user's REAL current GPS,
++    // not from the landmark/search location used as the exploration centre.
++    final realPosition = LocationService.instance.currentPosition;
+ 
+-  if (realPosition == null) {
+-    if (mounted) {
+-      AppDialogs.showLocationUnavailable(context);
++    if (realPosition == null) {
++      if (mounted) {
++        AppDialogs.showLocationUnavailable(context);
++      }
++      return;
+     }
+-    return;
+-  }
+ 
+-  await Navigator.push(
+-    context,
+-    MaterialPageRoute(
+-      builder: (_) => RoutePreviewPage(
+-        startLat: realPosition.latitude,
+-        startLng: realPosition.longitude,
+-        endLat: place.lat!,
+-        endLng: place.lng!,
+-        destinationName: place.name,
+-        startLocationName: 'My Location',
++    await Navigator.push(
++      context,
++      MaterialPageRoute(
++        builder: (_) => RoutePreviewPage(
++          startLat: realPosition.latitude,
++          startLng: realPosition.longitude,
++          endLat: place.lat!,
++          endLng: place.lng!,
++          destinationName: place.name,
++          startLocationName: 'My Location',
++        ),
+       ),
+-    ),
+-  );
+-}
++    );
++  }
+ 
+   // ─────────────────────────────────────────────
+   // UI Helpers
+   // ─────────────────────────────────────────────
+ 
+   void _showErrorDialog(String title, String message) {
+-    showDialog(context: context, builder: (_) => AlertDialog(
+-      title: Text(title), content: Text(message),
+-      actions: [TextButton(
+-        onPressed: () => Navigator.pop(context),
+-        child: const Text('OK'),
+-      )],
+-    ));
++    showDialog(
++        context: context,
++        builder: (_) => AlertDialog(
++              title: Text(title),
++              content: Text(message),
++              actions: [
++                TextButton(
++                  onPressed: () => Navigator.pop(context),
++                  child: const Text('OK'),
++                )
++              ],
++            ));
+   }
+ 
+   Future<void> _showLocationDisabledDialog() async {
+@@ -930,7 +1935,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+             crossAxisAlignment: CrossAxisAlignment.start,
+             children: [
+               Container(
+-                width: 48, height: 48,
++                width: 48,
++                height: 48,
+                 decoration: BoxDecoration(
+                   color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                   shape: BoxShape.circle,
+@@ -944,7 +1950,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+               const SizedBox(height: 8),
+               Text(
+                 'Please enable location services to see nearby places.',
+-                style: TextStyle(fontSize: 14, color: Colors.grey[600], height: 1.4),
++                style: TextStyle(
++                    fontSize: 14, color: Colors.grey[600], height: 1.4),
+               ),
+               const SizedBox(height: 24),
+               Row(
+@@ -983,7 +1990,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     );
+   }
+ 
+-
+   // ── CHANGE 3: FavouriteButton shows immediately, resolves Google ID in background
+   void _showPlaceDetails(PlaceModel place) {
+     showModalBottomSheet(
+@@ -1011,9 +2017,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                   if (!context.mounted) return;
+                   final googleId = await PlacesApiService.findGooglePlaceId(
+                     geoInternalId: place.id,
+-                    placeName:     place.name,
+-                    lat:           place.lat!,
+-                    lng:           place.lng!,
++                    placeName: place.name,
++                    lat: place.lat!,
++                    lng: place.lng!,
+                   );
+                   if (googleId != null && context.mounted) {
+                     setModalState(() => resolvedFavId = googleId);
+@@ -1024,8 +2030,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+               return Column(
+                 crossAxisAlignment: CrossAxisAlignment.start,
+                 children: [
+-                  Center(child: Container(
+-                    width: 48, height: 5,
++                  Center(
++                      child: Container(
++                    width: 48,
++                    height: 5,
+                     decoration: BoxDecoration(
+                       color: Colors.grey[300],
+                       borderRadius: BorderRadius.circular(10),
+@@ -1035,41 +2043,46 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                   Row(
+                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                     children: [
+-                      Expanded(child: Text(
++                      Expanded(
++                          child: Text(
+                         place.name,
+-                        style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
++                        style: const TextStyle(
++                            fontSize: 22, fontWeight: FontWeight.bold),
+                         overflow: TextOverflow.ellipsis,
+                       )),
+                       Row(mainAxisSize: MainAxisSize.min, children: [
+                         if (place.rating != null)
+                           Container(
+-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
++                            padding: const EdgeInsets.symmetric(
++                                horizontal: 8, vertical: 4),
+                             decoration: BoxDecoration(
+                               color: Colors.orange.withOpacity(0.1),
+                               borderRadius: BorderRadius.circular(8),
+                             ),
+                             child: Row(children: [
+-                              const Icon(Icons.star_rounded, color: Colors.orange, size: 20),
++                              const Icon(Icons.star_rounded,
++                                  color: Colors.orange, size: 20),
+                               const SizedBox(width: 2),
+                               Text(place.rating.toString(),
+                                   style: const TextStyle(
+-                                      fontWeight: FontWeight.bold, color: Colors.orange)),
++                                      fontWeight: FontWeight.bold,
++                                      color: Colors.orange)),
+                             ]),
+                           ),
+                         const SizedBox(width: 4),
+                         // Always show immediately — no spinner, no isResolvingId check
+                         FavouriteButton(
+-                          placeId:  resolvedFavId,
+-                          name:     place.name,
+-                          address:  place.address ?? '',
+-                          rating:   place.rating?.toDouble(),
++                          placeId: resolvedFavId,
++                          name: place.name,
++                          address: place.address ?? '',
++                          rating: place.rating?.toDouble(),
+                           photoUrl: place.photoUrl,
+-                          lat:      place.lat,
+-                          lng:      place.lng,
+-                          types:    place.allTypes,
++                          lat: place.lat,
++                          lng: place.lng,
++                          types: place.allTypes,
+                           showBackground: false,
+                           iconSize: 24,
+-                          activeColor:   Colors.red,
++                          activeColor: Colors.red,
+                           inactiveColor: Colors.grey,
+                         ),
+                       ]),
+@@ -1077,10 +2090,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                   ),
+                   const SizedBox(height: 12),
+                   Row(children: [
+-                    Icon(Icons.location_on_rounded, size: 18,
+-                        color: Theme.of(context).primaryColor),
++                    Icon(Icons.location_on_rounded,
++                        size: 18, color: Theme.of(context).primaryColor),
+                     const SizedBox(width: 6),
+-                    Expanded(child: Text(
++                    Expanded(
++                        child: Text(
+                       place.address ?? 'Unknown address',
+                       style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                     )),
+@@ -1101,51 +2115,59 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                     ]),
+                   const Spacer(),
+                   Row(children: [
+-                    Expanded(flex: 2, child: OutlinedButton(
+-                      onPressed: () async {
+-                        Navigator.of(context).pop();
+-                        await Navigator.push(context, MaterialPageRoute(
+-                          builder: (_) => PlaceDetailPage(
+-                            placeId:   place.id,
+-                            placeName: place.name,
+-                            source:    place.source,
+-                            lat:       place.lat,
+-                            lng:       place.lng,
+-                            userLat:   _currentPosition?.latitude,
+-                            userLng:   _currentPosition?.longitude,
++                    Expanded(
++                        flex: 2,
++                        child: OutlinedButton(
++                          onPressed: () async {
++                            Navigator.of(context).pop();
++                            await Navigator.push(
++                                context,
++                                MaterialPageRoute(
++                                  builder: (_) => PlaceDetailPage(
++                                    placeId: place.id,
++                                    placeName: place.name,
++                                    source: place.source,
++                                    lat: place.lat,
++                                    lng: place.lng,
++                                    userLat: _currentPosition?.latitude,
++                                    userLng: _currentPosition?.longitude,
++                                  ),
++                                ));
++                          },
++                          style: OutlinedButton.styleFrom(
++                            padding: const EdgeInsets.symmetric(vertical: 16),
++                            side: BorderSide(color: Colors.grey[300]!),
++                            shape: RoundedRectangleBorder(
++                                borderRadius: BorderRadius.circular(16)),
+                           ),
+-                        ));
+-                      },
+-                      style: OutlinedButton.styleFrom(
+-                        padding: const EdgeInsets.symmetric(vertical: 16),
+-                        side: BorderSide(color: Colors.grey[300]!),
+-                        shape: RoundedRectangleBorder(
+-                            borderRadius: BorderRadius.circular(16)),
+-                      ),
+-                      child: const Text('Details',
+-                          style: TextStyle(
+-                              color: Colors.black87, fontWeight: FontWeight.w600)),
+-                    )),
++                          child: const Text('Details',
++                              style: TextStyle(
++                                  color: Colors.black87,
++                                  fontWeight: FontWeight.w600)),
++                        )),
+                     const SizedBox(width: 12),
+-                    Expanded(flex: 3, child: ElevatedButton.icon(
+-                      onPressed: () {
+-                        Navigator.of(context).pop();
+-                        _navigateTo(place);
+-                      },
+-                      icon: const Icon(Icons.near_me_rounded, color: Colors.white),
+-                      label: const Text('Navigate',
+-                          style: TextStyle(
+-                              color: Colors.white,
+-                              fontSize: 16,
+-                              fontWeight: FontWeight.bold)),
+-                      style: ElevatedButton.styleFrom(
+-                        backgroundColor: Theme.of(context).primaryColor,
+-                        elevation: 0,
+-                        padding: const EdgeInsets.symmetric(vertical: 16),
+-                        shape: RoundedRectangleBorder(
+-                            borderRadius: BorderRadius.circular(16)),
+-                      ),
+-                    )),
++                    Expanded(
++                        flex: 3,
++                        child: ElevatedButton.icon(
++                          onPressed: () {
++                            Navigator.of(context).pop();
++                            _navigateTo(place);
++                          },
++                          icon: const Icon(Icons.near_me_rounded,
++                              color: Colors.white),
++                          label: const Text('Navigate',
++                              style: TextStyle(
++                                  color: Colors.white,
++                                  fontSize: 16,
++                                  fontWeight: FontWeight.bold)),
++                          style: ElevatedButton.styleFrom(
++                            backgroundColor: Theme.of(context).primaryColor,
++                            elevation: 0,
++                            padding: const EdgeInsets.symmetric(vertical: 16),
++                            shape: RoundedRectangleBorder(
++                                borderRadius: BorderRadius.circular(16)),
++                          ),
++                        )),
+                   ]),
+                 ],
+               );
+@@ -1166,8 +2188,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       child: Row(mainAxisSize: MainAxisSize.min, children: [
+         Icon(icon, size: 16, color: color),
+         const SizedBox(width: 4),
+-        Text(label, style: TextStyle(
+-            color: color, fontSize: 13, fontWeight: FontWeight.bold)),
++        Text(label,
++            style: TextStyle(
++                color: color, fontSize: 13, fontWeight: FontWeight.bold)),
+       ]),
+     );
+   }
+@@ -1179,7 +2202,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   final ValueNotifier<double> _bottomPaddingNotifier = ValueNotifier(0.4);
+   double _lastAppliedExtent = 0.4;
+ 
+-@override
++  @override
+   Widget build(BuildContext context) {
+     final screenHeight = MediaQuery.of(context).size.height;
+ 
+@@ -1187,7 +2210,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     final List<PlaceModel> sortedGeoapifyPlaces = _rankedGeoapifyPlaces;
+ 
+     if (_initialCameraPosition == null) {
+-      return const Scaffold(body: Center(child: TravelLoadingIndicator(size: 22)));
++      return const Scaffold(
++          body: Center(child: TravelLoadingIndicator(size: 22)));
+     }
+ 
+     return Scaffold(
+@@ -1223,8 +2247,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                       });
+                     }
+                   },
+-                  padding: EdgeInsets.only(
+-                      bottom: screenHeight * extent, top: 60),
++                  padding:
++                      EdgeInsets.only(bottom: screenHeight * extent, top: 60),
+                 );
+               },
+             ),
+@@ -1247,7 +2271,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+             // ── Search bar + Back button ──
+             Positioned(
+-              top: 0, left: 0, right: 0,
++              top: 0,
++              left: 0,
++              right: 0,
+               child: SafeArea(
+                 child: Padding(
+                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+@@ -1255,18 +2281,22 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                     children: [
+                       Row(children: [
+                         Material(
+-                          elevation: 4, shape: const CircleBorder(),
+-                          clipBehavior: Clip.antiAlias, color: Colors.white,
++                          elevation: 4,
++                          shape: const CircleBorder(),
++                          clipBehavior: Clip.antiAlias,
++                          color: Colors.white,
+                           child: IconButton(
+                             icon: const Icon(Icons.arrow_back_ios_new,
+                                 size: 18, color: Colors.black87),
+-                            onPressed: _isSearchMode ? () {
+-                              setState(() {
+-                                _isSearchMode = false;
+-                                _autocompleteSuggestions = [];
+-                              });
+-                              _searchFocus.unfocus();
+-                            } : widget.onBack,
++                            onPressed: _isSearchMode
++                                ? () {
++                                    setState(() {
++                                      _isSearchMode = false;
++                                      _autocompleteSuggestions = [];
++                                    });
++                                    _searchFocus.unfocus();
++                                  }
++                                : widget.onBack,
+                           ),
+                         ),
+                         const SizedBox(width: 8),
+@@ -1317,8 +2347,10 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                           clipBehavior: Clip.none,
+                           children: [
+                             Material(
+-                              elevation: 4, shape: const CircleBorder(),
+-                              clipBehavior: Clip.antiAlias, color: Colors.white,
++                              elevation: 4,
++                              shape: const CircleBorder(),
++                              clipBehavior: Clip.antiAlias,
++                              color: Colors.white,
+                               child: IconButton(
+                                 icon: const Icon(Icons.refresh_rounded,
+                                     size: 18, color: Colors.black87),
+@@ -1328,9 +2360,11 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                             // ── Badge: shows when user moved 500m+ ──────────
+                             if (_hasNewNearby)
+                               Positioned(
+-                                top: 0, right: 0,
++                                top: 0,
++                                right: 0,
+                                 child: Container(
+-                                  width: 12, height: 12,
++                                  width: 12,
++                                  height: 12,
+                                   decoration: const BoxDecoration(
+                                     color: Color(0xFF7C4DFF),
+                                     shape: BoxShape.circle,
+@@ -1343,42 +2377,51 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+                       // Search history (shown when search bar focused + no query yet)
+                       // OR autocomplete results (shown when user is typing)
+-                      if (_isSearchMode && (_autocompleteSuggestions.isNotEmpty ||
+-                          (_searchController.text.isEmpty && _searchHistory.isNotEmpty)))
++                      if (_isSearchMode &&
++                          (_autocompleteSuggestions.isNotEmpty ||
++                              (_searchController.text.isEmpty &&
++                                  _searchHistory.isNotEmpty)))
+                         Container(
+                           margin: const EdgeInsets.only(
+                               top: 4, left: 44, right: 44),
+                           decoration: BoxDecoration(
+                             color: Colors.white,
+                             borderRadius: BorderRadius.circular(16),
+-                            boxShadow: [BoxShadow(
+-                              color: Colors.black.withOpacity(0.1),
+-                              blurRadius: 12,
+-                              offset: const Offset(0, 4),
+-                            )],
++                            boxShadow: [
++                              BoxShadow(
++                                color: Colors.black.withOpacity(0.1),
++                                blurRadius: 12,
++                                offset: const Offset(0, 4),
++                              )
++                            ],
+                           ),
+                           child: _autocompleteSuggestions.isNotEmpty
+                               // ── Autocomplete results ──────────────────────
+                               ? ListView.separated(
+                                   shrinkWrap: true,
+-                                  padding: const EdgeInsets.symmetric(vertical: 8),
++                                  padding:
++                                      const EdgeInsets.symmetric(vertical: 8),
+                                   physics: const NeverScrollableScrollPhysics(),
+-                                  itemCount: _autocompleteSuggestions.length.clamp(0, 5),
++                                  itemCount: _autocompleteSuggestions.length
++                                      .clamp(0, 5),
+                                   separatorBuilder: (_, __) => const Divider(
+                                       height: 1, indent: 16, endIndent: 16),
+                                   itemBuilder: (context, index) {
+                                     final s = _autocompleteSuggestions[index];
+                                     return ListTile(
+                                       dense: true,
+-                                      leading: const Icon(Icons.location_on_outlined,
+-                                          color: Color(0xFF1A73E8), size: 20),
++                                      leading: const Icon(
++                                          Icons.location_on_outlined,
++                                          color: Color(0xFF1A73E8),
++                                          size: 20),
+                                       title: Text(s['mainText'] ?? '',
+                                           style: const TextStyle(
+                                               fontSize: 14,
+                                               fontWeight: FontWeight.w500)),
+                                       subtitle: Text(s['secondaryText'] ?? '',
+                                           style: TextStyle(
+-                                              fontSize: 12, color: Colors.grey[500]),
++                                              fontSize: 12,
++                                              color: Colors.grey[500]),
+                                           maxLines: 1,
+                                           overflow: TextOverflow.ellipsis),
+                                       onTap: () => _onSuggestionSelected(s),
+@@ -1391,7 +2434,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                                   mainAxisSize: MainAxisSize.min,
+                                   children: [
+                                     Padding(
+-                                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
++                                      padding: const EdgeInsets.fromLTRB(
++                                          16, 12, 16, 4),
+                                       child: Row(children: [
+                                         Icon(Icons.history_rounded,
+                                             size: 14, color: Colors.grey[500]),
+@@ -1403,7 +2447,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                                                 fontWeight: FontWeight.w500)),
+                                         const Spacer(),
+                                         GestureDetector(
+-                                          onTap: () => setState(() => _searchHistory.clear()),
++                                          onTap: () => setState(
++                                              () => _searchHistory.clear()),
+                                           child: Text('Clear',
+                                               style: TextStyle(
+                                                   fontSize: 12,
+@@ -1414,27 +2459,37 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                                     ListView.separated(
+                                       shrinkWrap: true,
+                                       padding: const EdgeInsets.only(bottom: 8),
+-                                      physics: const NeverScrollableScrollPhysics(),
++                                      physics:
++                                          const NeverScrollableScrollPhysics(),
+                                       itemCount: _searchHistory.length,
+-                                      separatorBuilder: (_, __) => const Divider(
+-                                          height: 1, indent: 16, endIndent: 16),
++                                      separatorBuilder: (_, __) =>
++                                          const Divider(
++                                              height: 1,
++                                              indent: 16,
++                                              endIndent: 16),
+                                       itemBuilder: (context, index) {
+                                         final h = _searchHistory[index];
+                                         return ListTile(
+                                           dense: true,
+-                                          leading: const Icon(Icons.history_rounded,
+-                                              color: Colors.grey, size: 20),
++                                          leading: const Icon(
++                                              Icons.history_rounded,
++                                              color: Colors.grey,
++                                              size: 20),
+                                           title: Text(h['mainText'] ?? '',
+                                               style: const TextStyle(
+                                                   fontSize: 14,
+                                                   fontWeight: FontWeight.w500)),
+-                                          subtitle: Text(h['secondaryText'] ?? '',
++                                          subtitle: Text(
++                                              h['secondaryText'] ?? '',
+                                               style: TextStyle(
+-                                                  fontSize: 12, color: Colors.grey[500]),
++                                                  fontSize: 12,
++                                                  color: Colors.grey[500]),
+                                               maxLines: 1,
+                                               overflow: TextOverflow.ellipsis),
+-                                          trailing: Icon(Icons.north_west_rounded,
+-                                              size: 14, color: Colors.grey[400]),
++                                          trailing: Icon(
++                                              Icons.north_west_rounded,
++                                              size: 14,
++                                              color: Colors.grey[400]),
+                                           onTap: () => _onSuggestionSelected(h),
+                                         );
+                                       },
+@@ -1452,22 +2507,24 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                           decoration: BoxDecoration(
+                             color: Colors.white,
+                             borderRadius: BorderRadius.circular(12),
+-                            boxShadow: [BoxShadow(
+-                                color: Colors.black.withOpacity(0.08),
+-                                blurRadius: 8)],
++                            boxShadow: [
++                              BoxShadow(
++                                  color: Colors.black.withOpacity(0.08),
++                                  blurRadius: 8)
++                            ],
+                           ),
+                           child: const Row(
+                               mainAxisSize: MainAxisSize.min,
+                               children: [
+                                 SizedBox(
+-                                  width: 16, height: 16,
++                                  width: 16,
++                                  height: 16,
+                                   child: TravelLoadingIndicator(size: 22),
+                                 ),
+                                 SizedBox(width: 10),
+                                 Text('Searching nearby...',
+                                     style: TextStyle(
+-                                        fontSize: 13,
+-                                        color: Colors.black54)),
++                                        fontSize: 13, color: Colors.black54)),
+                               ]),
+                         ),
+                     ],
+@@ -1497,11 +2554,13 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                   return Container(
+                     decoration: BoxDecoration(
+                       color: Colors.white,
+-                      borderRadius: const BorderRadius.vertical(
+-                          top: Radius.circular(28)),
+-                      boxShadow: [BoxShadow(
+-                          color: Colors.black.withOpacity(0.1),
+-                          blurRadius: 15)],
++                      borderRadius:
++                          const BorderRadius.vertical(top: Radius.circular(28)),
++                      boxShadow: [
++                        BoxShadow(
++                            color: Colors.black.withOpacity(0.1),
++                            blurRadius: 15)
++                      ],
+                     ),
+                     child: _buildPlaceListSheet(
+                         scrollController, sortedPlaces, sortedGeoapifyPlaces),
+@@ -1510,16 +2569,13 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+               ),
+             ),
+ 
+-            if (_isLoading)
+-              const Center(
+-                  child: TravelLoadingIndicator()),
++            if (_isLoading) const Center(child: TravelLoadingIndicator()),
+           ],
+         ),
+       ),
+     );
+   }
+-  
+-  
++
+   // ─────────────────────────────────────────────
+   // Place List Sheet
+   // ─────────────────────────────────────────────
+@@ -1532,146 +2588,152 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   // before, but the (potentially long) place list is no longer built
+   // eagerly in one go.
+ 
+-  Widget _buildPlaceListSheet(
+-    ScrollController scrollController,
+-    List<PlaceModel> sortedPlaces,
+-    List<PlaceModel> sortedGeoapifyPlaces) {
+-  return Stack(
+-    children: [
+-      CustomScrollView(
+-        controller: scrollController,
+-        slivers: [
+-          SliverToBoxAdapter(child: _buildSheetHeader()),
+-
+-          // ── 主列表 + Other nearby places 区块 ──────────────────────────
+-          if (sortedPlaces.isEmpty && sortedGeoapifyPlaces.isEmpty && !_isLoading)
+-            SliverToBoxAdapter(
+-              child: SizedBox(height: 300, child: _buildEmptyState()),
+-            )
+-          else ...[
+-            // ── Google 地点：主推荐列表（懒加载） ─────────────────────────
+-            if (sortedPlaces.isEmpty && !_isLoading)
++  Widget _buildPlaceListSheet(ScrollController scrollController,
++      List<PlaceModel> sortedPlaces, List<PlaceModel> sortedGeoapifyPlaces) {
++    return Stack(
++      children: [
++        CustomScrollView(
++          controller: scrollController,
++          slivers: [
++            SliverToBoxAdapter(child: _buildSheetHeader()),
++
++            // ── 主列表 + Other nearby places 区块 ──────────────────────────
++            if (sortedPlaces.isEmpty &&
++                sortedGeoapifyPlaces.isEmpty &&
++                !_isLoading)
+               SliverToBoxAdapter(
+-                child: _sortMode == SortMode.recommended
+-                    ? _buildForYouEmptyState()
+-                    : Padding(
+-                        padding: const EdgeInsets.symmetric(vertical: 24),
+-                        child: Center(
+-                          child: Text(
+-                            'No main results — check "Other nearby places" below',
+-                            style: TextStyle(fontSize: 13, color: Colors.grey[400]),
++                child: SizedBox(height: 300, child: _buildEmptyState()),
++              )
++            else ...[
++              // ── Google 地点：主推荐列表（懒加载） ─────────────────────────
++              if (sortedPlaces.isEmpty && !_isLoading)
++                SliverToBoxAdapter(
++                  child: _sortMode == SortMode.recommended
++                      ? _buildForYouEmptyState()
++                      : Padding(
++                          padding: const EdgeInsets.symmetric(vertical: 24),
++                          child: Center(
++                            child: Text(
++                              'No main results — check "Other nearby places" below',
++                              style: TextStyle(
++                                  fontSize: 13, color: Colors.grey[400]),
++                            ),
+                           ),
+                         ),
+-                      ),
+-              )
+-            else
+-              SliverList(
+-                delegate: SliverChildBuilderDelegate(
+-                  (context, index) => Padding(
+-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+-                    child: _buildPlaceCard(sortedPlaces[index]),
++                )
++              else
++                SliverList(
++                  delegate: SliverChildBuilderDelegate(
++                    (context, index) => Padding(
++                      padding: const EdgeInsets.symmetric(
++                          horizontal: 16, vertical: 8),
++                      child: _buildPlaceCard(sortedPlaces[index]),
++                    ),
++                    childCount: sortedPlaces.length,
+                   ),
+-                  childCount: sortedPlaces.length,
+                 ),
+-              ),
+ 
+-            // ── Geoapify 地点：单独区块，信息不全，仅作补充（懒加载） ────────
+-            if (sortedGeoapifyPlaces.isNotEmpty) ...[
+-              SliverToBoxAdapter(
+-                child: Column(
+-                  children: [
+-                    const Divider(height: 1, thickness: 0.5),
+-                    Padding(
+-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+-                      child: Row(children: [
+-                        Icon(Icons.info_outline_rounded,
+-                            size: 14, color: Colors.grey[500]),
+-                        const SizedBox(width: 6),
+-                        Text('Other nearby places',
+-                            style: TextStyle(
+-                                fontSize: 13,
+-                                color: Colors.grey[500],
+-                                fontWeight: FontWeight.w600)),
+-                        const SizedBox(width: 6),
+-                        Text('(limited info)',
+-                            style: TextStyle(fontSize: 11, color: Colors.grey[400])),
+-                      ]),
+-                    ),
+-                  ],
++              // ── Geoapify 地点：单独区块，信息不全，仅作补充（懒加载） ────────
++              if (sortedGeoapifyPlaces.isNotEmpty) ...[
++                SliverToBoxAdapter(
++                  child: Column(
++                    children: [
++                      const Divider(height: 1, thickness: 0.5),
++                      Padding(
++                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
++                        child: Row(children: [
++                          Icon(Icons.info_outline_rounded,
++                              size: 14, color: Colors.grey[500]),
++                          const SizedBox(width: 6),
++                          Text('Other nearby places',
++                              style: TextStyle(
++                                  fontSize: 13,
++                                  color: Colors.grey[500],
++                                  fontWeight: FontWeight.w600)),
++                          const SizedBox(width: 6),
++                          Text('(limited info)',
++                              style: TextStyle(
++                                  fontSize: 11, color: Colors.grey[400])),
++                        ]),
++                      ),
++                    ],
++                  ),
+                 ),
+-              ),
+-              SliverList(
+-                delegate: SliverChildBuilderDelegate(
+-                  (context, index) => Padding(
+-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+-                    child: _buildPlaceCard(
+-                      sortedGeoapifyPlaces[index],
+-                      allowForYouBadge: false,
++                SliverList(
++                  delegate: SliverChildBuilderDelegate(
++                    (context, index) => Padding(
++                      padding: const EdgeInsets.symmetric(
++                          horizontal: 16, vertical: 8),
++                      child: _buildPlaceCard(
++                        sortedGeoapifyPlaces[index],
++                        allowForYouBadge: false,
++                      ),
+                     ),
++                    childCount: sortedGeoapifyPlaces.length,
+                   ),
+-                  childCount: sortedGeoapifyPlaces.length,
+                 ),
+-              ),
++              ],
+             ],
+-          ],
+ 
+-          SliverToBoxAdapter(
+-            child: SizedBox(
+-              height: 24 +
+-                  MediaQuery.of(context).padding.bottom +
+-                  kBottomNavigationBarHeight,
++            SliverToBoxAdapter(
++              child: SizedBox(
++                height: 24 +
++                    MediaQuery.of(context).padding.bottom +
++                    kBottomNavigationBarHeight,
++              ),
+             ),
+-          ),
+-        ],
+-      ),
++          ],
++        ),
+ 
+-      // ── 悬浮的 Plan Route 按钮 ──────────────────────────────
+-      if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
+-        Positioned(
+-          left: 16,
+-          right: 16,
+-          bottom: 16 + MediaQuery.of(context).padding.bottom,
+-          child: GestureDetector(
+-            onTap: _viewSelectedItinerary,
+-            child: Container(
+-              padding: const EdgeInsets.symmetric(
+-                  horizontal: 24, vertical: 16),
+-              decoration: BoxDecoration(
+-                gradient: const LinearGradient(
+-                  colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
+-                  begin: Alignment.centerLeft,
+-                  end: Alignment.centerRight,
+-                ),
+-                borderRadius: BorderRadius.circular(20),
+-                boxShadow: [BoxShadow(
+-                  color: const Color(0xFF7C4DFF).withOpacity(0.4),
+-                  blurRadius: 16,
+-                  offset: const Offset(0, 8),
+-                )],
+-              ),
+-              child: Row(
+-                mainAxisAlignment: MainAxisAlignment.center,
+-                children: [
+-                  const Icon(Icons.map_rounded,
+-                      color: Colors.white, size: 20),
+-                  const SizedBox(width: 10),
+-                  Text(
+-                    'Plan Route (${_selectedPlaceIds.length})',
+-                    style: const TextStyle(
+-                        color: Colors.white,
+-                        fontSize: 16,
+-                        fontWeight: FontWeight.bold),
++        // ── 悬浮的 Plan Route 按钮 ──────────────────────────────
++        if (_selectedPlaceIds.isNotEmpty && !_searchFocus.hasFocus)
++          Positioned(
++            left: 16,
++            right: 16,
++            bottom: 16 + MediaQuery.of(context).padding.bottom,
++            child: GestureDetector(
++              onTap: _viewSelectedItinerary,
++              child: Container(
++                padding:
++                    const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
++                decoration: BoxDecoration(
++                  gradient: const LinearGradient(
++                    colors: [Color(0xFF5E35B1), Color(0xFF7C4DFF)],
++                    begin: Alignment.centerLeft,
++                    end: Alignment.centerRight,
+                   ),
+-                  const SizedBox(width: 10),
+-                  const Icon(Icons.arrow_forward_rounded,
+-                      color: Colors.white70, size: 18),
+-                ],
++                  borderRadius: BorderRadius.circular(20),
++                  boxShadow: [
++                    BoxShadow(
++                      color: const Color(0xFF7C4DFF).withOpacity(0.4),
++                      blurRadius: 16,
++                      offset: const Offset(0, 8),
++                    )
++                  ],
++                ),
++                child: Row(
++                  mainAxisAlignment: MainAxisAlignment.center,
++                  children: [
++                    const Icon(Icons.map_rounded,
++                        color: Colors.white, size: 20),
++                    const SizedBox(width: 10),
++                    Text(
++                      'Plan Route (${_selectedPlaceIds.length})',
++                      style: const TextStyle(
++                          color: Colors.white,
++                          fontSize: 16,
++                          fontWeight: FontWeight.bold),
++                    ),
++                    const SizedBox(width: 10),
++                    const Icon(Icons.arrow_forward_rounded,
++                        color: Colors.white70, size: 18),
++                  ],
++                ),
+               ),
+             ),
+           ),
+-        ),
+-    ],
+-  );
++      ],
++    );
+   }
+ 
+   // ── Everything above the place list: drag handle, search banner,
+@@ -1680,10 +2742,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   Widget _buildSheetHeader() {
+     return Column(
+       children: [
+-        Center(child: Column(children: [
++        Center(
++            child: Column(children: [
+           const SizedBox(height: 8),
+           Container(
+-            width: 45, height: 5,
++            width: 45,
++            height: 5,
+             decoration: BoxDecoration(
+               color: Colors.grey[300],
+               borderRadius: BorderRadius.circular(10),
+@@ -1695,199 +2759,196 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         if (_searchLocationName != null)
+           Padding(
+             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+-              child: Row(children: [
+-                const Icon(Icons.location_on_rounded,
+-                    size: 14, color: Color(0xFF1A73E8)),
+-                const SizedBox(width: 4),
+-                Text(
+-                  'Showing results near: $_searchLocationName',
+-                  style: const TextStyle(
+-                    fontSize: 13,
+-                    color: Color(0xFF1A73E8),
+-                    fontWeight: FontWeight.w500,
+-                  ),
+-                ),
+-                const Spacer(),
+-                GestureDetector(
+-                  onTap: _clearSearch,
+-                  child: const Icon(Icons.close_rounded,
+-                      size: 16, color: Color(0xFF1A73E8)),
+-                ),
+-              ]),
+-            ),
+-
+-          // Primary categories
+-          SizedBox(
+-            height: 95,
+-            child: ListView.builder(
+-              scrollDirection: Axis.horizontal,
+-              padding: const EdgeInsets.symmetric(horizontal: 16),
+-              itemCount: categories.length,
+-              itemBuilder: (context, index) {
+-                final cat = categories[index];
+-                final isSelected = cat['type'] == 'all'
+-                    ? _selectedPrimary == null
+-                    : _selectedPrimary == cat['type'];
+-                return Padding(
+-                  padding: const EdgeInsets.only(right: 12),
+-                  child: GestureDetector(
+-                    onTap: () => _onPrimaryTap(cat['type']),
+-                    child: Column(children: [
+-                      AnimatedContainer(
+-                        duration: const Duration(milliseconds: 200),
+-                        padding: const EdgeInsets.all(12),
+-                        decoration: BoxDecoration(
+-                          color: isSelected
+-                              ? cat['color']
+-                              : Colors.grey[100],
+-                          shape: BoxShape.circle,
+-                        ),
+-                        child: Icon(cat['icon'],
+-                            color: isSelected
+-                                ? Colors.white
+-                                : Colors.grey[600],
+-                            size: 26),
+-                      ),
+-                      const SizedBox(height: 6),
+-                      Text(cat['name'], style: TextStyle(
+-                        fontSize: 11,
+-                        fontWeight: isSelected
+-                            ? FontWeight.bold
+-                            : FontWeight.normal,
+-                        color: isSelected
+-                            ? cat['color']
+-                            : Colors.grey[700],
+-                      )),
+-                    ]),
+-                  ),
+-                );
+-              },
+-            ),
+-          ),
+-
+-          const Divider(height: 1, thickness: 0.5),
+-
+-          // Travel mode + radius picker on same row
+-          Padding(
+-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+             child: Row(children: [
+-              Text('Travel By:',
+-                  style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+-              const SizedBox(width: 12),
+-              AnimatedContainer(
+-                duration: const Duration(milliseconds: 300),
+-                curve: Curves.easeInOut,
+-                padding:
+-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+-                decoration: BoxDecoration(
+-                  color: Colors.blue[50],
+-                  borderRadius: BorderRadius.circular(20),
+-                  border: Border.all(color: Colors.blue[200]!),
++              const Icon(Icons.location_on_rounded,
++                  size: 14, color: Color(0xFF1A73E8)),
++              const SizedBox(width: 4),
++              Text(
++                'Showing results near: $_searchLocationName',
++                style: const TextStyle(
++                  fontSize: 13,
++                  color: Color(0xFF1A73E8),
++                  fontWeight: FontWeight.w500,
+                 ),
+-                child: Row(mainAxisSize: MainAxisSize.min, children: [
+-                  GestureDetector(
+-                    onTap: () => setState(
+-                        () => _isTravelModeExpanded = !_isTravelModeExpanded),
+-                    child: Row(children: [
+-                      Icon(_getTravelIcon(_travelMode),
+-                          color: Colors.blue[800], size: 20),
+-                      const SizedBox(width: 4),
+-                      Text(
+-                        _radiusFromTravelMode >= 1000
+-                            ? '${_radiusFromTravelMode ~/ 1000} km'
+-                            : '${_radiusFromTravelMode} m',
+-                        style: TextStyle(
+-                            fontSize: 11, color: Colors.blue[700],
+-                            fontWeight: FontWeight.w600),
+-                      ),
+-                      Icon(
+-                        _isTravelModeExpanded
+-                            ? Icons.arrow_left
+-                            : Icons.arrow_drop_down,
+-                        color: Colors.blue[800],
+-                      ),
+-                    ]),
+-                  ),
+-                  if (_isTravelModeExpanded)
+-                    Row(children: [
+-                      const VerticalDivider(width: 16),
+-                      _buildMiniIconWithReload(TravelMode.walk, Icons.directions_walk),
+-                      _buildMiniIconWithReload(TravelMode.motor, Icons.motorcycle),
+-                      _buildMiniIconWithReload(TravelMode.drive, Icons.directions_car),
+-                    ]),
+-                ]),
++              ),
++              const Spacer(),
++              GestureDetector(
++                onTap: _clearSearch,
++                child: const Icon(Icons.close_rounded,
++                    size: 16, color: Color(0xFF1A73E8)),
+               ),
+             ]),
+           ),
+ 
+-          // Sort + selected count
+-          Padding(
+-            padding: const EdgeInsets.symmetric(vertical: 8),
+-            child: SingleChildScrollView(
+-              scrollDirection: Axis.horizontal,
+-              padding: const EdgeInsets.symmetric(horizontal: 16),
+-              child: Row(children: [
+-                _buildStyledFilterChip(
+-                  label: 'For You',
+-                  isSelected: _sortMode == SortMode.recommended,
+-                 onTap: () {
+-                    setState(() => _sortMode = SortMode.recommended);
+-                    _recomputeRanking();
+-                  },
+-                  icon: Icons.auto_awesome_rounded,
+-                ),
+-                const SizedBox(width: 5),
+-                _buildStyledFilterChip(
+-                  label: 'Nearest',
+-                  isSelected: _sortMode == SortMode.distance,
+-                  onTap: () {
+-                    setState(() => _sortMode = SortMode.distance);
+-                    _recomputeRanking();
+-                  },
+-                  icon: Icons.near_me_outlined,
+-                ),
+-                const SizedBox(width: 5),
+-                _buildStyledFilterChip(
+-                  label: 'High Rated',
+-                  isSelected: _sortMode == SortMode.rating,
+-                  onTap: () {
+-                    setState(() => _sortMode = SortMode.rating);
+-                    _recomputeRanking();
+-                  },
+-                  icon: Icons.star_outline_rounded,
++        // Primary categories
++        SizedBox(
++          height: 95,
++          child: ListView.builder(
++            scrollDirection: Axis.horizontal,
++            padding: const EdgeInsets.symmetric(horizontal: 16),
++            itemCount: categories.length,
++            itemBuilder: (context, index) {
++              final cat = categories[index];
++              final isSelected = cat['type'] == 'all'
++                  ? _selectedPrimary == null
++                  : _selectedPrimary == cat['type'];
++              return Padding(
++                padding: const EdgeInsets.only(right: 12),
++                child: GestureDetector(
++                  onTap: () => _onPrimaryTap(cat['type']),
++                  child: Column(children: [
++                    AnimatedContainer(
++                      duration: const Duration(milliseconds: 200),
++                      padding: const EdgeInsets.all(12),
++                      decoration: BoxDecoration(
++                        color: isSelected ? cat['color'] : Colors.grey[100],
++                        shape: BoxShape.circle,
++                      ),
++                      child: Icon(cat['icon'],
++                          color: isSelected ? Colors.white : Colors.grey[600],
++                          size: 26),
++                    ),
++                    const SizedBox(height: 6),
++                    Text(cat['name'],
++                        style: TextStyle(
++                          fontSize: 11,
++                          fontWeight:
++                              isSelected ? FontWeight.bold : FontWeight.normal,
++                          color: isSelected ? cat['color'] : Colors.grey[700],
++                        )),
++                  ]),
+                 ),
+-                if (_selectedPlaceIds.isNotEmpty) ...[
+-                  const SizedBox(width: 8),
+-                  Container(
+-                    padding: const EdgeInsets.symmetric(
+-                        horizontal: 8, vertical: 6),
+-                    decoration: BoxDecoration(
+-                      color: const Color(0xFF7C4DFF).withOpacity(0.1),
+-                      borderRadius: BorderRadius.circular(20),
+-                      border: Border.all(
+-                          color: const Color(0xFF7C4DFF).withOpacity(0.3)),
++              );
++            },
++          ),
++        ),
++
++        const Divider(height: 1, thickness: 0.5),
++
++        // Travel mode + radius picker on same row
++        Padding(
++          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
++          child: Row(children: [
++            Text('Travel By:',
++                style: TextStyle(color: Colors.grey[600], fontSize: 13)),
++            const SizedBox(width: 12),
++            AnimatedContainer(
++              duration: const Duration(milliseconds: 300),
++              curve: Curves.easeInOut,
++              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
++              decoration: BoxDecoration(
++                color: Colors.blue[50],
++                borderRadius: BorderRadius.circular(20),
++                border: Border.all(color: Colors.blue[200]!),
++              ),
++              child: Row(mainAxisSize: MainAxisSize.min, children: [
++                GestureDetector(
++                  onTap: () => setState(
++                      () => _isTravelModeExpanded = !_isTravelModeExpanded),
++                  child: Row(children: [
++                    Icon(_getTravelIcon(_travelMode),
++                        color: Colors.blue[800], size: 20),
++                    const SizedBox(width: 4),
++                    Text(
++                      _radiusFromTravelMode >= 1000
++                          ? '${_radiusFromTravelMode ~/ 1000} km'
++                          : '${_radiusFromTravelMode} m',
++                      style: TextStyle(
++                          fontSize: 11,
++                          color: Colors.blue[700],
++                          fontWeight: FontWeight.w600),
+                     ),
+-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+-                      const Icon(Icons.check_circle_rounded,
+-                          size: 14, color: Color(0xFF7C4DFF)),
+-                      const SizedBox(width: 4),
+-                      Text('${_selectedPlaceIds.length}',
+-                          style: const TextStyle(
+-                              fontSize: 12,
+-                              color: Color(0xFF7C4DFF),
+-                              fontWeight: FontWeight.w600)),
+-                    ]),
+-                  ),
+-                ],
++                    Icon(
++                      _isTravelModeExpanded
++                          ? Icons.arrow_left
++                          : Icons.arrow_drop_down,
++                      color: Colors.blue[800],
++                    ),
++                  ]),
++                ),
++                if (_isTravelModeExpanded)
++                  Row(children: [
++                    const VerticalDivider(width: 16),
++                    _buildMiniIconWithReload(
++                        TravelMode.walk, Icons.directions_walk),
++                    _buildMiniIconWithReload(
++                        TravelMode.motor, Icons.motorcycle),
++                    _buildMiniIconWithReload(
++                        TravelMode.drive, Icons.directions_car),
++                  ]),
+               ]),
+             ),
++          ]),
++        ),
++
++        // Sort + selected count
++        Padding(
++          padding: const EdgeInsets.symmetric(vertical: 8),
++          child: SingleChildScrollView(
++            scrollDirection: Axis.horizontal,
++            padding: const EdgeInsets.symmetric(horizontal: 16),
++            child: Row(children: [
++              _buildStyledFilterChip(
++                label: 'For You',
++                isSelected: _sortMode == SortMode.recommended,
++                onTap: () {
++                  setState(() => _sortMode = SortMode.recommended);
++                  _applyFilter(preserveScroll: true);
++                },
++                icon: Icons.auto_awesome_rounded,
++              ),
++              const SizedBox(width: 5),
++              _buildStyledFilterChip(
++                label: 'Nearest',
++                isSelected: _sortMode == SortMode.distance,
++                onTap: () {
++                  setState(() => _sortMode = SortMode.distance);
++                  _applyFilter(preserveScroll: true);
++                },
++                icon: Icons.near_me_outlined,
++              ),
++              const SizedBox(width: 5),
++              _buildStyledFilterChip(
++                label: 'Rank',
++                isSelected: _sortMode == SortMode.rating,
++                onTap: () {
++                  setState(() => _sortMode = SortMode.rating);
++                  _applyFilter(preserveScroll: true);
++                },
++                icon: Icons.star_outline_rounded,
++              ),
++              if (_selectedPlaceIds.isNotEmpty) ...[
++                const SizedBox(width: 8),
++                Container(
++                  padding:
++                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
++                  decoration: BoxDecoration(
++                    color: const Color(0xFF7C4DFF).withOpacity(0.1),
++                    borderRadius: BorderRadius.circular(20),
++                    border: Border.all(
++                        color: const Color(0xFF7C4DFF).withOpacity(0.3)),
++                  ),
++                  child: Row(mainAxisSize: MainAxisSize.min, children: [
++                    const Icon(Icons.check_circle_rounded,
++                        size: 14, color: Color(0xFF7C4DFF)),
++                    const SizedBox(width: 4),
++                    Text('${_selectedPlaceIds.length}',
++                        style: const TextStyle(
++                            fontSize: 12,
++                            color: Color(0xFF7C4DFF),
++                            fontWeight: FontWeight.w600)),
++                  ]),
++                ),
++              ],
++            ]),
+           ),
++        ),
+ 
+-          if (_selectedPrimary != null &&
+-              subCategories.containsKey(_selectedPrimary))
+-            _buildSecondaryBar(),
++        if (_selectedPrimary != null &&
++            subCategories.containsKey(_selectedPrimary))
++          _buildSecondaryBar(),
+ 
+-          const Divider(height: 1, thickness: 0.5),
++        const Divider(height: 1, thickness: 0.5),
+       ],
+     );
+   }
+@@ -1895,35 +2956,69 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+   void _recomputeRanking() {
+     if (!mounted) return;
+ 
+-    final openPlaces = _displayedPlaces.where((p) => p.isOpenNow != false).toList();
+-    final googleAll  = openPlaces.where((p) => !p.isGeoapify).toList();
+-    final geoapify   = openPlaces.where((p) => p.isGeoapify).toList();
++    final openPlaces =
++        _displayedPlaces.where((p) => p.isOpenNow != false).toList();
++    final googleAll = openPlaces.where((p) => !p.isGeoapify).toList();
++    final geoapify = openPlaces.where((p) => p.isGeoapify).toList();
+ 
+     List<PlaceModel> google;
+     Map<String, double> scores = {};
+ 
+     if (_sortMode == SortMode.recommended) {
+       final result = UserPreferenceService.instance.buildForYouList(
+-        candidates:   googleAll,
++        candidates: googleAll,
+         routeResults: _routeResults,
+         weather: WeatherService.instance.current,
+-        requirePhoto: false,   // detect page 卡片有 asset fallback，不强求图
++        requirePhoto: false, // detect page 卡片有 asset fallback，不强求图
+       );
+       google = result.places;
+       scores = result.scores;
++    } else if (_sortMode == SortMode.distance) {
++      google = List<PlaceModel>.from(googleAll);
++      google.sort((a, b) {
++        final aD = _routeResults[a.id]?.distanceMeters;
++        final bD = _routeResults[b.id]?.distanceMeters;
++        if (aD == null && bD == null) return 0;
++        if (aD == null) return 1;
++        if (bD == null) return -1;
++        return aD.compareTo(bD);
++      });
+     } else {
+       google = List<PlaceModel>.from(googleAll);
+       google.sort((a, b) {
+-        switch (_sortMode) {
+-          case SortMode.distance:
+-            final aD = _routeResults[a.id]?.distanceMeters ?? double.infinity;
+-            final bD = _routeResults[b.id]?.distanceMeters ?? double.infinity;
+-            return aD.compareTo(bD);
+-          case SortMode.rating:
+-            return (b.rating ?? 0.0).compareTo(a.rating ?? 0.0);
+-          default:
+-            return 0;
++        final aRating = a.rating;
++        final bRating = b.rating;
++        // 1. Rated places highest to lowest; missing rating appears last
++        if (aRating == null && bRating == null) {
++          // Both null: tie-break
++        } else if (aRating == null) {
++          return 1;
++        } else if (bRating == null) {
++          return -1;
++        } else {
++          final cmp = bRating.compareTo(aRating);
++          if (cmp != 0) return cmp;
++        }
++
++        // 2. Tie-break: preserve Google POPULARITY response order
++        final aOrder = _popularityResponseOrder[a.id];
++        final bOrder = _popularityResponseOrder[b.id];
++        if (aOrder != null && bOrder != null) {
++          final orderCmp = aOrder.compareTo(bOrder);
++          if (orderCmp != 0) return orderCmp;
++        } else if (aOrder != null) {
++          return -1;
++        } else if (bOrder != null) {
++          return 1;
+         }
++
++        // 3. Fallback tie-break: distance ascending
++        final aD = _routeResults[a.id]?.distanceMeters;
++        final bD = _routeResults[b.id]?.distanceMeters;
++        if (aD == null && bD == null) return 0;
++        if (aD == null) return 1;
++        if (bD == null) return -1;
++        return aD.compareTo(bD);
+       });
+     }
+ 
+@@ -1934,9 +3029,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     });
+ 
+     setState(() {
+-      _rankedGooglePlaces   = google;
++      _rankedGooglePlaces = google;
+       _rankedGeoapifyPlaces = geoapify;
+-      _placeScores          = scores;
++      _placeScores = scores;
+     });
+ 
+     NearbyPlacesService.instance.precacheOrderedImages(
+@@ -1944,22 +3039,22 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       orderedPlaces: google,
+     );
+   }
+-  
++
+   // ─────────────────────────────────────────────
+   // Place Card
+   // ─────────────────────────────────────────────
+ 
+   Widget _buildPlaceCard(PlaceModel place, {bool allowForYouBadge = true}) {
+-    final routeInfo  = _routeResults[place.id];
++    final routeInfo = _routeResults[place.id];
+     final isSelected = _selectedPlaceIds.contains(place.id);
+ 
+     // Compute score + reason for "For You" badge
+     final isForYouMode = allowForYouBadge && _sortMode == SortMode.recommended;
+- 
++
+     final reason = isForYouMode
+         ? UserPreferenceService.instance.getRecommendReason(
+             primaryType: place.primaryType,
+-            allTypes:    place.allTypes,
++            allTypes: place.allTypes,
+             distanceMeters: routeInfo?.distanceMeters,
+             rating: place.rating,
+             priceLevel: place.priceLevel,
+@@ -1982,10 +3077,12 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                   ? const Color(0xFF7C4DFF).withOpacity(0.05)
+                   : Colors.white,
+               borderRadius: BorderRadius.circular(15),
+-              boxShadow: [BoxShadow(
+-                  color: Colors.black.withOpacity(0.05),
+-                  blurRadius: 10,
+-                  offset: const Offset(0, 4))],
++              boxShadow: [
++                BoxShadow(
++                    color: Colors.black.withOpacity(0.05),
++                    blurRadius: 10,
++                    offset: const Offset(0, 4))
++              ],
+               border: Border.all(
+                 color: isSelected
+                     ? const Color(0xFF7C4DFF).withOpacity(0.4)
+@@ -1997,7 +3094,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+               crossAxisAlignment: CrossAxisAlignment.center,
+               children: [
+                 Container(
+-                  width: 56, height: 56,
++                  width: 56,
++                  height: 56,
+                   decoration: BoxDecoration(
+                     borderRadius: BorderRadius.circular(12),
+                     color: Colors.blue[50],
+@@ -2005,28 +3103,28 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                   child: ClipRRect(
+                     borderRadius: BorderRadius.circular(12),
+                     child: place.photoUrl != null
+-                      ? CachedNetworkImage(
+-                          imageUrl: place.photoUrl!,
+-                          fit: BoxFit.cover,
+-                          // 卡片头像只有 56x56 —— 限制解码尺寸，避免每张
+-                          // 滚入视口的卡片都去解码一张原始分辨率的网络图。
+-                          memCacheWidth: 112,
+-                          memCacheHeight: 112,
+-                          errorWidget: (c, e, s) => Image.asset(
++                        ? CachedNetworkImage(
++                            imageUrl: place.photoUrl!,
++                            fit: BoxFit.cover,
++                            // 卡片头像只有 56x56 —— 限制解码尺寸，避免每张
++                            // 滚入视口的卡片都去解码一张原始分辨率的网络图。
++                            memCacheWidth: 112,
++                            memCacheHeight: 112,
++                            errorWidget: (c, e, s) => Image.asset(
++                              CategoryImageHelper.getAssetPath(
++                                place.primaryType,
++                                place.allTypes,
++                              ),
++                              fit: BoxFit.cover,
++                            ),
++                          )
++                        : Image.asset(
+                             CategoryImageHelper.getAssetPath(
+                               place.primaryType,
+                               place.allTypes,
+                             ),
+                             fit: BoxFit.cover,
+                           ),
+-                        )
+-                      : Image.asset(
+-                          CategoryImageHelper.getAssetPath(
+-                            place.primaryType,
+-                            place.allTypes,
+-                          ),
+-                          fit: BoxFit.cover,
+-                        ),
+                   ),
+                 ),
+                 const SizedBox(width: 12),
+@@ -2086,16 +3184,18 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                               color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                               borderRadius: BorderRadius.circular(6),
+                             ),
+-                            child: const Row(mainAxisSize: MainAxisSize.min, children: [
+-                              Icon(Icons.auto_awesome_rounded,
+-                                  size: 10, color: Color(0xFF7C4DFF)),
+-                              SizedBox(width: 3),
+-                              Text('For You',
+-                                  style: TextStyle(
+-                                      fontSize: 10,
+-                                      color: Color(0xFF7C4DFF),
+-                                      fontWeight: FontWeight.bold)),
+-                            ]),
++                            child: const Row(
++                                mainAxisSize: MainAxisSize.min,
++                                children: [
++                                  Icon(Icons.auto_awesome_rounded,
++                                      size: 10, color: Color(0xFF7C4DFF)),
++                                  SizedBox(width: 3),
++                                  Text('For You',
++                                      style: TextStyle(
++                                          fontSize: 10,
++                                          color: Color(0xFF7C4DFF),
++                                          fontWeight: FontWeight.bold)),
++                                ]),
+                           ),
+                           if (reason != null) ...[
+                             const SizedBox(width: 6),
+@@ -2116,7 +3216,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                   onTap: () => _togglePlaceSelection(place),
+                   child: AnimatedContainer(
+                     duration: const Duration(milliseconds: 200),
+-                    width: 36, height: 36,
++                    width: 36,
++                    height: 36,
+                     decoration: BoxDecoration(
+                       color: isSelected
+                           ? const Color(0xFF7C4DFF)
+@@ -2124,9 +3225,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+                       shape: BoxShape.circle,
+                     ),
+                     child: Icon(
+-                      isSelected
+-                          ? Icons.check_rounded
+-                          : Icons.add_rounded,
++                      isSelected ? Icons.check_rounded : Icons.add_rounded,
+                       color: isSelected ? Colors.white : Colors.grey[600],
+                       size: 20,
+                     ),
+@@ -2140,8 +3239,6 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+     );
+   }
+ 
+- 
+- 
+   Widget _buildDotSeparator() {
+     return Padding(
+       padding: const EdgeInsets.symmetric(horizontal: 5),
+@@ -2163,9 +3260,9 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+           return;
+         }
+         setState(() {
+-          _travelMode           = mode;
++          _travelMode = mode;
+           _isTravelModeExpanded = false;
+-          _travelModeManuallySet = true;  
++          _travelModeManuallySet = true;
+         });
+         // Radius changed with travel mode — clear cache and reload
+         NearbyPlacesService.instance.clearCache();
+@@ -2173,27 +3270,26 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         await _bootstrap();
+       },
+       child: Container(
+-        padding:
+-            const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
++        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+         margin: const EdgeInsets.only(left: 4),
+         decoration: BoxDecoration(
+           color: isSelected ? Colors.blue[200] : Colors.transparent,
+           borderRadius: BorderRadius.circular(12),
+         ),
+         child: Icon(icon,
+-            size: 18,
+-            color: isSelected ? Colors.blue[900] : Colors.blue[400]),
++            size: 18, color: isSelected ? Colors.blue[900] : Colors.blue[400]),
+       ),
+     );
+   }
+ 
+-  
+-  
+   IconData _getTravelIcon(TravelMode mode) {
+     switch (mode) {
+-      case TravelMode.walk:  return Icons.directions_walk;
+-      case TravelMode.motor: return Icons.motorcycle;
+-      case TravelMode.drive: return Icons.directions_car;
++      case TravelMode.walk:
++        return Icons.directions_walk;
++      case TravelMode.motor:
++        return Icons.motorcycle;
++      case TravelMode.drive:
++        return Icons.directions_car;
+     }
+   }
+ 
+@@ -2211,7 +3307,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+     return subs.where((sub) {
+       if (sub['key'] == 'all') return true;
+-      final allowTypes   = (sub['allowTypes']   as List?)?.cast<String>() ?? [];
++      final allowTypes = (sub['allowTypes'] as List?)?.cast<String>() ?? [];
+       final nameKeywords = (sub['nameKeywords'] as List?)?.cast<String>() ?? [];
+ 
+       return sourcePlaces.any((place) {
+@@ -2220,7 +3316,8 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+ 
+         if (hasResolvedSpecificType) {
+           // 已经有权威类型 → 只信 typeMatch,不用名字关键词
+-          return allowTypes.isNotEmpty && place.allTypes.any((t) => allowTypes.contains(t));
++          return allowTypes.isNotEmpty &&
++              place.allTypes.any((t) => allowTypes.contains(t));
+         }
+ 
+         // 还没有具体类型 → fallback 用名字关键词
+@@ -2230,7 +3327,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       });
+     }).toList();
+   }
+-    
++
+   Widget _buildSecondaryBar() {
+     final subs = _getAvailableSubCategories();
+     return Container(
+@@ -2242,7 +3339,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         itemCount: subs.length,
+         itemBuilder: (context, index) {
+           final item = subs[index];
+-          final key  = item['key'] as String;
++          final key = item['key'] as String;
+           return Padding(
+             padding: const EdgeInsets.only(right: 8),
+             child: _buildStyledFilterChip(
+@@ -2266,8 +3363,7 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       onTap: onTap,
+       child: AnimatedContainer(
+         duration: const Duration(milliseconds: 200),
+-        padding:
+-            const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
++        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+         decoration: BoxDecoration(
+           color: isSelected ? Colors.blue[600] : Colors.grey[100],
+           borderRadius: BorderRadius.circular(20),
+@@ -2279,19 +3375,14 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         child: Row(mainAxisSize: MainAxisSize.min, children: [
+           if (icon != null) ...[
+             Icon(icon,
+-                size: 16,
+-                color:
+-                    isSelected ? Colors.white : Colors.grey[600]),
++                size: 16, color: isSelected ? Colors.white : Colors.grey[600]),
+             const SizedBox(width: 4),
+           ],
+           Text(label,
+               style: TextStyle(
+                 fontSize: 13,
+-                fontWeight: isSelected
+-                    ? FontWeight.w600
+-                    : FontWeight.normal,
+-                color:
+-                    isSelected ? Colors.white : Colors.grey[700],
++                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
++                color: isSelected ? Colors.white : Colors.grey[700],
+               )),
+         ]),
+       ),
+@@ -2306,17 +3397,15 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+             ? TravelMode.drive
+             : null;
+ 
+-    final nextRadius = nextMode != null
+-      ? (nextMode == TravelMode.motor ? 8000 : 12000)
+-      : null;
++    final nextRadius =
++        nextMode != null ? (nextMode == TravelMode.motor ? 8000 : 12000) : null;
+ 
+-    final nextLabel = nextRadius != null
+-        ? '${nextRadius ~/ 1000} km'
+-        : null;
++    final nextLabel = nextRadius != null ? '${nextRadius ~/ 1000} km' : null;
+ 
+-    final bool isForYouMode = _sortMode == SortMode.recommended;   // 🆕
++    final bool isForYouMode = _sortMode == SortMode.recommended; // 🆕
+ 
+-    return Center(child: Column(
++    return Center(
++        child: Column(
+       mainAxisAlignment: MainAxisAlignment.center,
+       children: [
+         const Icon(Icons.search_off, size: 48, color: Colors.grey),
+@@ -2332,26 +3421,29 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+           OutlinedButton(
+             onPressed: () {
+-              if (isForYouMode) {                     // 🔧 CHANGED
++              if (isForYouMode) {
++                // 🔧 CHANGED
+                 setState(() => _sortMode = SortMode.distance);
+                 _recomputeRanking();
+               } else {
+                 setState(() {
+-                  _selectedPrimary   = null;
++                  _selectedPrimary = null;
+                   _selectedSecondary = 'all';
+                   _travelModeManuallySet = true;
+                 });
+                 _applyFilter();
+               }
+             },
+-            child: Text(isForYouMode ? 'Show Nearest instead' : 'Show All'),   // 🔧 CHANGED
++            child: Text(isForYouMode
++                ? 'Show Nearest instead'
++                : 'Show All'), // 🔧 CHANGED
+           ),
+           if (nextMode != null) ...[
+             const SizedBox(width: 12),
+             ElevatedButton.icon(
+               onPressed: () async {
+                 setState(() {
+-                  _travelMode           = nextMode;
++                  _travelMode = nextMode;
+                   _isTravelModeExpanded = false;
+                   _travelModeManuallySet = true;
+                 });
+@@ -2372,76 +3464,76 @@ class _RealTimeDetectPageState extends State<RealTimeDetectPage> {
+       ],
+     ));
+   }
+-  
++
+   Widget _buildForYouEmptyState() {
+-  final nextMode = _travelMode == TravelMode.walk
+-      ? TravelMode.motor
+-      : _travelMode == TravelMode.motor
+-          ? TravelMode.drive
+-          : null;
+-  final nextRadius = nextMode != null
+-      ? (nextMode == TravelMode.motor ? 8000 : 12000)
+-      : null;
+-  final nextLabel = nextRadius != null ? '${nextRadius ~/ 1000} km' : null;
+-
+-  return Padding(
+-    padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+-    child: Center(
+-      child: Column(
+-        mainAxisSize: MainAxisSize.min,
+-        children: [
+-          Icon(Icons.auto_awesome_rounded, size: 32, color: Colors.grey[400]),
+-          const SizedBox(height: 10),
+-          Text(
+-            'No places nearby match your preferences',
+-            textAlign: TextAlign.center,
+-            style: TextStyle(
+-                fontSize: 13, color: Colors.grey[600], fontWeight: FontWeight.w500),
+-          ),
+-          const SizedBox(height: 4),
+-          Text(
+-            'Try widening your search, or browse all nearby places instead',
+-            textAlign: TextAlign.center,
+-            style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+-          ),
+-          const SizedBox(height: 14),
+-          Wrap(
+-            alignment: WrapAlignment.center,
+-            spacing: 10,
+-            runSpacing: 8,
+-            children: [
+-              if (nextMode != null)
+-                ElevatedButton.icon(
+-                  onPressed: () async {
+-                    setState(() {
+-                      _travelMode = nextMode;
+-                      _travelModeManuallySet = true;
+-                    });
+-                    NearbyPlacesService.instance.clearCache();
+-                    NearbyPlacesService.instance.clearSearchCache();
+-                    await _bootstrap();
+-                  },
+-                  icon: const Icon(Icons.radar_rounded, size: 16),
+-                  label: Text('Try $nextLabel'),
+-                  style: ElevatedButton.styleFrom(
+-                    backgroundColor: const Color(0xFF7C4DFF),
+-                    foregroundColor: Colors.white,
+-                    elevation: 0,
++    final nextMode = _travelMode == TravelMode.walk
++        ? TravelMode.motor
++        : _travelMode == TravelMode.motor
++            ? TravelMode.drive
++            : null;
++    final nextRadius =
++        nextMode != null ? (nextMode == TravelMode.motor ? 8000 : 12000) : null;
++    final nextLabel = nextRadius != null ? '${nextRadius ~/ 1000} km' : null;
++
++    return Padding(
++      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
++      child: Center(
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          children: [
++            Icon(Icons.auto_awesome_rounded, size: 32, color: Colors.grey[400]),
++            const SizedBox(height: 10),
++            Text(
++              'No places nearby match your preferences',
++              textAlign: TextAlign.center,
++              style: TextStyle(
++                  fontSize: 13,
++                  color: Colors.grey[600],
++                  fontWeight: FontWeight.w500),
++            ),
++            const SizedBox(height: 4),
++            Text(
++              'Try widening your search, or browse all nearby places instead',
++              textAlign: TextAlign.center,
++              style: TextStyle(fontSize: 11, color: Colors.grey[400]),
++            ),
++            const SizedBox(height: 14),
++            Wrap(
++              alignment: WrapAlignment.center,
++              spacing: 10,
++              runSpacing: 8,
++              children: [
++                if (nextMode != null)
++                  ElevatedButton.icon(
++                    onPressed: () async {
++                      setState(() {
++                        _travelMode = nextMode;
++                        _travelModeManuallySet = true;
++                      });
++                      NearbyPlacesService.instance.clearCache();
++                      NearbyPlacesService.instance.clearSearchCache();
++                      await _bootstrap();
++                    },
++                    icon: const Icon(Icons.radar_rounded, size: 16),
++                    label: Text('Try $nextLabel'),
++                    style: ElevatedButton.styleFrom(
++                      backgroundColor: const Color(0xFF7C4DFF),
++                      foregroundColor: Colors.white,
++                      elevation: 0,
++                    ),
+                   ),
++                OutlinedButton(
++                  onPressed: () {
++                    setState(() => _sortMode = SortMode.distance);
++                    _recomputeRanking();
++                  },
++                  child: const Text('Show Nearest instead'),
+                 ),
+-              OutlinedButton(
+-                onPressed: () {
+-                  setState(() => _sortMode = SortMode.distance);
+-                  _recomputeRanking();
+-                },
+-                child: const Text('Show Nearest instead'),
+-              ),
+-            ],
+-          ),
+-        ],
++              ],
++            ),
++          ],
++        ),
+       ),
+-    ),
+-  );
++    );
++  }
+ }
+-
+-}
+\ No newline at end of file

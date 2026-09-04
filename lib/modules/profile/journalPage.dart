@@ -38,6 +38,13 @@ class JournalPage extends StatefulWidget {
   // trip's own journal, so nothing here writes to Firestore in that view.
   final bool editable;
 
+  // Controls whether this page actively requests network images.
+  // Pages outside the active window (current ± 1) receive false so their
+  // CachedNetworkImage widgets are replaced by warm placeholders, preventing
+  // off-screen pages from competing for bandwidth with the visible page.
+  // Default true for backward-compatibility when used outside JournalBookPage.
+  final bool photoLoadingEnabled;
+
   const JournalPage({
     super.key,
     required this.itineraryId,
@@ -50,6 +57,7 @@ class JournalPage extends StatefulWidget {
     this.initialPhotos,
     this.initialNotes,
     this.editable = true,
+    this.photoLoadingEnabled = true,
   });
 
   @override
@@ -59,6 +67,10 @@ class JournalPage extends StatefulWidget {
 class _JournalPageState extends State<JournalPage> {
   // Seeded directly from the props — journalBook.dart already did the
   // (single, batched) Firestore read before building this widget.
+  //
+  // _customPhotos == null  → user never set photos → show auto fallback
+  // _customPhotos == []    → user intentionally cleared photos → show empty state
+  // _customPhotos == [...]  → user curated list → show curated photos
   late List<String>? _customPhotos;
   late String? _customNotes;
 
@@ -69,11 +81,50 @@ class _JournalPageState extends State<JournalPage> {
     _customNotes = widget.initialNotes;
   }
 
+  /// Apply incoming metadata only when it belongs to the same day-identity
+  /// and doesn't overwrite an active local user edit.
+  @override
+  void didUpdateWidget(JournalPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    // Guard: only act when the identity (itineraryId + date) is the same.
+    // A key change would remount the widget entirely, so this guard is a
+    // safety net for potential future parent restructuring.
+    final sameIdentity = oldWidget.itineraryId == widget.itineraryId &&
+        oldWidget.date == widget.date;
+    if (!sameIdentity) return;
+
+    // Apply new photo metadata only when:
+    //   1. Parent's value actually changed AND
+    //   2. The user has not performed a local edit since build
+    //      (i.e., _customPhotos still mirrors the old initial value).
+    final parentPhotosChanged = oldWidget.initialPhotos != widget.initialPhotos;
+    if (parentPhotosChanged) {
+      final userHasLocalEdit = _customPhotos != oldWidget.initialPhotos;
+      if (!userHasLocalEdit) {
+        // Safe to apply the freshly fetched metadata.
+        setState(() => _customPhotos = widget.initialPhotos);
+      }
+    }
+
+    // Same logic for notes.
+    final parentNotesChanged = oldWidget.initialNotes != widget.initialNotes;
+    if (parentNotesChanged) {
+      final userHasLocalNoteEdit = _customNotes != oldWidget.initialNotes;
+      if (!userHasLocalNoteEdit) {
+        setState(() => _customNotes = widget.initialNotes);
+      }
+    }
+  }
+
   List<String> _autoPhotoUrls() {
     final urls = <String>[];
-    if (widget.autoCoverPhoto != null && widget.autoCoverPhoto!.isNotEmpty) urls.add(widget.autoCoverPhoto!);
+    if (widget.autoCoverPhoto != null && widget.autoCoverPhoto!.isNotEmpty)
+      urls.add(widget.autoCoverPhoto!);
     for (final p in widget.places) {
-      if (p.photoUrl != null && p.photoUrl!.isNotEmpty && !urls.contains(p.photoUrl)) urls.add(p.photoUrl!);
+      if (p.photoUrl != null &&
+          p.photoUrl!.isNotEmpty &&
+          !urls.contains(p.photoUrl)) urls.add(p.photoUrl!);
     }
     return urls.take(5).toList();
   }
@@ -113,7 +164,8 @@ class _JournalPageState extends State<JournalPage> {
 
   @override
   Widget build(BuildContext context) {
-    final sortedPlaces = [...widget.places]..sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
+    final sortedPlaces = [...widget.places]
+      ..sort((a, b) => a.visitedAt.compareTo(b.visitedAt));
     final dateFmt = DateFormat('d');
     final monthFmt = DateFormat('MMM').format(widget.date).toUpperCase();
     final weekdayFmt = DateFormat('EEE').format(widget.date).toUpperCase();
@@ -122,9 +174,13 @@ class _JournalPageState extends State<JournalPage> {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFFF6EEDD), // kraft/cream paper
-        border: Border(left: BorderSide(color: Colors.brown.shade300, width: 1)),
+        border:
+            Border(left: BorderSide(color: Colors.brown.shade300, width: 1)),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 14, offset: const Offset(4, 0)),
+          BoxShadow(
+              color: Colors.black.withOpacity(0.15),
+              blurRadius: 14,
+              offset: const Offset(4, 0)),
         ],
       ),
       child: Stack(
@@ -141,7 +197,8 @@ class _JournalPageState extends State<JournalPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildDateHeader(dateFmt.format(widget.date), monthFmt, weekdayFmt),
+                  _buildDateHeader(
+                      dateFmt.format(widget.date), monthFmt, weekdayFmt),
                   const SizedBox(height: 6),
                   _buildTitleRow(sortedPlaces.length),
                   const SizedBox(height: 20),
@@ -149,7 +206,10 @@ class _JournalPageState extends State<JournalPage> {
                   const SizedBox(height: 14),
                   _buildPhotoSectionHeader(),
                   const SizedBox(height: 8),
-                  if (photos.isNotEmpty) _buildPhotoStrip(photos) else _buildEmptyPhotoState(),
+                  if (photos.isNotEmpty)
+                    _buildPhotoStrip(photos)
+                  else
+                    _buildEmptyPhotoState(),
                   const SizedBox(height: 18),
                   _buildRuledJournalText(sortedPlaces),
                 ],
@@ -169,7 +229,8 @@ class _JournalPageState extends State<JournalPage> {
     }
     return Column(
       children: [
-        for (int i = 0; i < places.length; i++) _buildTimelineRow(places[i], i, i == places.length - 1),
+        for (int i = 0; i < places.length; i++)
+          _buildTimelineRow(places[i], i, i == places.length - 1),
       ],
     );
   }
@@ -188,7 +249,10 @@ class _JournalPageState extends State<JournalPage> {
               padding: const EdgeInsets.only(top: 3),
               child: Text(
                 timeStr,
-                style: GoogleFonts.kalam(fontSize: 10, color: Colors.brown.shade400, fontWeight: FontWeight.w600),
+                style: GoogleFonts.kalam(
+                    fontSize: 10,
+                    color: Colors.brown.shade400,
+                    fontWeight: FontWeight.w600),
               ),
             ),
           ),
@@ -222,7 +286,10 @@ class _JournalPageState extends State<JournalPage> {
                 place.placeName,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.kalam(fontSize: 14, fontWeight: FontWeight.w700, color: const Color(0xFF2B2118)),
+                style: GoogleFonts.kalam(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: const Color(0xFF2B2118)),
               ),
             ),
           ),
@@ -253,9 +320,12 @@ class _JournalPageState extends State<JournalPage> {
             children: [
               Text(month,
                   style: GoogleFonts.kalam(
-                      fontSize: 14, fontWeight: FontWeight.w700, color: Colors.brown.shade700)),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.brown.shade700)),
               Text(weekday,
-                  style: GoogleFonts.kalam(fontSize: 11, color: Colors.brown.shade400)),
+                  style: GoogleFonts.kalam(
+                      fontSize: 11, color: Colors.brown.shade400)),
             ],
           ),
         ),
@@ -271,7 +341,8 @@ class _JournalPageState extends State<JournalPage> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          border: Border.all(color: widget.accent.first.withOpacity(0.6), width: 1.4),
+          border: Border.all(
+              color: widget.accent.first.withOpacity(0.6), width: 1.4),
           borderRadius: BorderRadius.circular(6),
         ),
         child: Text(
@@ -312,13 +383,19 @@ class _JournalPageState extends State<JournalPage> {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Text(widget.dayBadge!,
-                style: GoogleFonts.kalam(fontSize: 10, fontWeight: FontWeight.w700, color: widget.accent.first)),
+                style: GoogleFonts.kalam(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: widget.accent.first)),
           ),
           const SizedBox(width: 6),
         ],
         Text(
           '$stopCount STOP${stopCount == 1 ? '' : 'S'}',
-          style: GoogleFonts.kalam(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.brown.shade400),
+          style: GoogleFonts.kalam(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Colors.brown.shade400),
         ),
       ],
     );
@@ -328,10 +405,15 @@ class _JournalPageState extends State<JournalPage> {
     return Row(
       children: [
         Text('Photos',
-            style: GoogleFonts.kalam(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.brown.shade600)),
+            style: GoogleFonts.kalam(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: Colors.brown.shade600)),
         const SizedBox(width: 6),
         if (_customPhotos == null)
-          Text('(auto)', style: GoogleFonts.kalam(fontSize: 11, color: Colors.brown.shade300)),
+          Text('(auto)',
+              style: GoogleFonts.kalam(
+                  fontSize: 11, color: Colors.brown.shade300)),
         const Spacer(),
         if (widget.editable)
           InkWell(
@@ -355,17 +437,22 @@ class _JournalPageState extends State<JournalPage> {
       height: 90,
       width: double.infinity,
       decoration: BoxDecoration(
-        border: Border.all(color: Colors.brown.withOpacity(0.25), style: BorderStyle.solid),
+        border: Border.all(
+            color: Colors.brown.withOpacity(0.25), style: BorderStyle.solid),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Center(
         child: Text(
-          widget.editable ? '+ add photos from this day' : 'No photos for this day',
+          widget.editable
+              ? '+ add photos from this day'
+              : 'No photos for this day',
           style: GoogleFonts.kalam(fontSize: 12, color: Colors.brown.shade400),
         ),
       ),
     );
-    return widget.editable ? InkWell(onTap: _openPhotoEditor, child: content) : content;
+    return widget.editable
+        ? InkWell(onTap: _openPhotoEditor, child: content)
+        : content;
   }
 
   Widget _buildPhotoStrip(List<String> urls) {
@@ -375,44 +462,54 @@ class _JournalPageState extends State<JournalPage> {
         scrollDirection: Axis.horizontal,
         itemCount: urls.length,
         itemBuilder: (_, i) {
-          final angle = (i.isEven ? -1 : 1) * (0.05 + Random(i).nextDouble() * 0.05);
-          return GestureDetector(
-            onTap: () => Navigator.of(context).push(
-              PageRouteBuilder(
-                opaque: false,
-                barrierColor: Colors.black.withOpacity(0.95),
-                pageBuilder: (_, __, ___) => _PhotoViewerPage(urls: urls, initialIndex: i),
+          final angle =
+              (i.isEven ? -1 : 1) * (0.05 + Random(i).nextDouble() * 0.05);
+          return Transform.rotate(
+            angle: angle,
+            // Stable key per URL so rebuilds from photoLoadingEnabled toggling
+            // do not restart the same download.
+            key: ValueKey(urls[i]),
+            child: Container(
+              margin: const EdgeInsets.only(right: 14),
+              padding: const EdgeInsets.fromLTRB(6, 6, 6, 18),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 8,
+                      offset: const Offset(1, 4))
+                ],
               ),
-            ),
-            child: Transform.rotate(
-              angle: angle,
-              child: Container(
-                margin: const EdgeInsets.only(right: 14),
-                padding: const EdgeInsets.fromLTRB(6, 6, 6, 18),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 8, offset: const Offset(1, 4))],
-                ),
-                child: SizedBox(
-                  width: 130,
-                  height: 130,
-                  child: CachedNetworkImage(
-                    imageUrl: urls[i],
-                    fit: BoxFit.cover,
-                    // decode at ~display size (x2 for retina) instead of the full
-                    // upload resolution — this is what was making page-flip janky,
-                    // decoding a 1600px image just to show it at 130px costs real
-                    // CPU/GPU time on every frame of the flip animation.
-                    memCacheWidth: 260,
-                    memCacheHeight: 260,
-                    placeholder: (_, __) => Container(color: Colors.grey[200]),
-                    errorWidget: (_, __, ___) => Container(color: Colors.grey[300]),
-                  ),
-                ),
+              child: SizedBox(
+                width: 130,
+                height: 130,
+                child: widget.photoLoadingEnabled
+                    ? _buildPhotoCell(urls, i)
+                    : const _JournalPhotoSkeleton(),
               ),
             ),
           );
         },
+      ),
+    );
+  }
+
+  /// Builds the actual CachedNetworkImage cell with fade-in and retry support.
+  Widget _buildPhotoCell(List<String> urls, int i) {
+    return GestureDetector(
+      onTap: () => Navigator.of(context).push(
+        PageRouteBuilder(
+          opaque: false,
+          barrierColor: Colors.black.withOpacity(0.95),
+          pageBuilder: (_, __, ___) =>
+              _PhotoViewerPage(urls: urls, initialIndex: i),
+        ),
+      ),
+      child: _RetryablePhoto(
+        url: urls[i],
+        width: 130,
+        height: 130,
       ),
     );
   }
@@ -428,10 +525,14 @@ class _JournalPageState extends State<JournalPage> {
             children: [
               Text('Today.',
                   style: GoogleFonts.kalam(
-                      fontSize: 14, fontWeight: FontWeight.w700, color: Colors.brown.shade700)),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.brown.shade700)),
               const SizedBox(width: 6),
               if (_customNotes == null)
-                Text('(auto)', style: GoogleFonts.kalam(fontSize: 11, color: Colors.brown.shade300)),
+                Text('(auto)',
+                    style: GoogleFonts.kalam(
+                        fontSize: 11, color: Colors.brown.shade300)),
               const Spacer(),
               if (widget.editable)
                 InkWell(
@@ -443,7 +544,8 @@ class _JournalPageState extends State<JournalPage> {
                       color: widget.accent.first.withOpacity(0.12),
                       shape: BoxShape.circle,
                     ),
-                    child: Icon(Icons.edit, size: 14, color: widget.accent.first),
+                    child:
+                        Icon(Icons.edit, size: 14, color: widget.accent.first),
                   ),
                 ),
             ],
@@ -451,7 +553,8 @@ class _JournalPageState extends State<JournalPage> {
           const SizedBox(height: 6),
           Text(
             caption,
-            style: GoogleFonts.kalam(fontSize: 14, height: 1.7, color: const Color(0xFF3A2E22)),
+            style: GoogleFonts.kalam(
+                fontSize: 14, height: 1.7, color: const Color(0xFF3A2E22)),
           ),
         ],
       ),
@@ -465,6 +568,143 @@ class _JournalPageState extends State<JournalPage> {
     final last = names.removeLast();
     return 'Wandered through ${names.join(', ')} and ended up at $last. '
         '${places.length} places, one good day.';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WARM PAPER-STYLE LOADING SKELETON
+// Replaces the flat grey placeholder while images load.
+// Uses TweenAnimationBuilder for a subtle pulse — no external package needed.
+// ═══════════════════════════════════════════════════════════════════════════
+class _JournalPhotoSkeleton extends StatelessWidget {
+  const _JournalPhotoSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 900),
+      // Ping-pong by rebuilding at the end of the first half.
+      builder: (context, t, _) {
+        // Map t (0→1) to a ping-pong opacity 0.55 ↔ 1.0
+        final opacity = 0.55 + 0.45 * (t <= 0.5 ? t * 2 : (1.0 - t) * 2);
+        return Opacity(
+          opacity: opacity,
+          child: Container(
+            width: 130,
+            height: 130,
+            color: const Color(0xFFEADDC8),
+            child: Center(
+              child: Icon(
+                Icons.photo_camera_outlined,
+                size: 32,
+                color: const Color(0xFF8B6E4E).withOpacity(0.45),
+              ),
+            ),
+          ),
+        );
+      },
+      onEnd: () {
+        // TweenAnimationBuilder is not stateful so we can't loop directly;
+        // the slight fade is enough — it pulses once and holds. For continuous
+        // animation, a stateful wrapper would be needed; for a thumbnail
+        // placeholder that is typically shown for only 1–3 seconds, a single
+        // fade-in pulse is sufficient and avoids the cost of a looping
+        // AnimationController.
+      },
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RETRYABLE PHOTO CELL
+// Wraps CachedNetworkImage with a warm placeholder, fade-in, and a
+// per-image retry mechanism that does not affect other photos or the journal.
+// ═══════════════════════════════════════════════════════════════════════════
+class _RetryablePhoto extends StatefulWidget {
+  final String url;
+  final double width;
+  final double height;
+
+  const _RetryablePhoto(
+      {required this.url, required this.width, required this.height});
+
+  @override
+  State<_RetryablePhoto> createState() => _RetryablePhotoState();
+}
+
+class _RetryablePhotoState extends State<_RetryablePhoto> {
+  // Incrementing this key forces CachedNetworkImage to restart the request
+  // for this URL only. It is only incremented when the user explicitly taps
+  // "Retry", never automatically.
+  int _retryGeneration = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return CachedNetworkImage(
+      // Stable cache key = url + retry generation.
+      key: ValueKey('${widget.url}_$_retryGeneration'),
+      imageUrl: widget.url,
+      fit: BoxFit.cover,
+      width: widget.width,
+      height: widget.height,
+      // decode at ~display size (×2 for retina) — avoids decoding the full
+      // 1600px upload for a 130px display, which was causing page-flip jank.
+      memCacheWidth: 260,
+      memCacheHeight: 260,
+      // Smooth appearance once loaded.
+      fadeInDuration: const Duration(milliseconds: 250),
+      fadeOutDuration: const Duration(milliseconds: 150),
+      // Warm paper-tone skeleton while loading.
+      placeholder: (_, __) => const _JournalPhotoSkeleton(),
+      // Accessible error state with explicit Retry action.
+      errorWidget: (_, __, ___) => Semantics(
+        label: 'Photo unavailable',
+        child: Container(
+          width: widget.width,
+          height: widget.height,
+          color: const Color(0xFFEADDC8),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.broken_image_outlined,
+                  size: 28, color: Colors.brown.shade300),
+              const SizedBox(height: 4),
+              Text('Photo unavailable',
+                  style: TextStyle(fontSize: 9, color: Colors.brown.shade400),
+                  textAlign: TextAlign.center),
+              const SizedBox(height: 6),
+              Semantics(
+                label: 'Retry photo',
+                button: true,
+                child: GestureDetector(
+                  onTap: () => setState(() => _retryGeneration++),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.brown.shade200,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.refresh,
+                            size: 11, color: Colors.brown.shade700),
+                        const SizedBox(width: 3),
+                        Text('Retry',
+                            style: TextStyle(
+                                fontSize: 9, color: Colors.brown.shade700)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -506,11 +746,13 @@ class _NotesEditSheetState extends State<_NotesEditSheet> {
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
-      await JournalMetaService.instance.saveNotes(widget.itineraryId, widget.date, _controller.text.trim());
+      await JournalMetaService.instance
+          .saveNotes(widget.itineraryId, widget.date, _controller.text.trim());
       if (mounted) Navigator.of(context).pop(_controller.text.trim());
     } catch (e) {
       if (mounted) {
-        ErrorHandler.showError(context, error: e, message: 'Failed to save note. Please try again.');
+        ErrorHandler.showError(context,
+            error: e, message: 'Failed to save note. Please try again.');
         setState(() => _saving = false);
       }
     }
@@ -521,12 +763,17 @@ class _NotesEditSheetState extends State<_NotesEditSheet> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Edit journal entry'),
-        leading: IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.of(context).pop()),
+        leading: IconButton(
+            icon: const Icon(Icons.close),
+            onPressed: () => Navigator.of(context).pop()),
         actions: [
           TextButton(
             onPressed: _saving ? null : _save,
             child: _saving
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
                 : const Text('Save'),
           ),
         ],
@@ -585,7 +832,8 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
 
     try {
       final picker = ImagePicker();
-      final picked = await picker.pickMultiImage(imageQuality: 80, maxWidth: 1600, maxHeight: 1600);
+      final picked = await picker.pickMultiImage(
+          imageQuality: 80, maxWidth: 1600, maxHeight: 1600);
       if (picked.isEmpty) return;
 
       setState(() {
@@ -647,7 +895,10 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
       }
     } catch (e) {
       if (mounted) {
-        ErrorHandler.showError(context, error: e, message: 'Upload failed. Please check your connection and try again.');
+        ErrorHandler.showError(context,
+            error: e,
+            message:
+                'Upload failed. Please check your connection and try again.');
       }
     } finally {
       if (mounted) {
@@ -663,11 +914,13 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
     if (_saving || _uploading) return;
     setState(() => _saving = true);
     try {
-      await JournalMetaService.instance.savePhotos(widget.itineraryId, widget.date, _photos);
+      await JournalMetaService.instance
+          .savePhotos(widget.itineraryId, widget.date, _photos);
       if (mounted) Navigator.of(context).pop(_photos);
     } catch (e) {
       if (mounted) {
-        ErrorHandler.showError(context, error: e, message: 'Failed to save photos. Please try again.');
+        ErrorHandler.showError(context,
+            error: e, message: 'Failed to save photos. Please try again.');
         setState(() => _saving = false);
       }
     }
@@ -687,7 +940,10 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
           TextButton(
             onPressed: (_saving || _uploading) ? null : _save,
             child: _saving
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
                 : const Text('Save'),
           ),
         ],
@@ -696,11 +952,13 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
         padding: const EdgeInsets.all(16),
         child: GridView.builder(
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3, crossAxisSpacing: 8, mainAxisSpacing: 8,
+            crossAxisCount: 3,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
           ),
           itemCount: totalCount,
           itemBuilder: (_, i) {
-            // Existing uploaded remote photos
+            // Existing uploaded remote photos — bounded decode for grid tiles.
             if (i < _photos.length) {
               final url = _photos[i];
               return Stack(
@@ -708,7 +966,13 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
                   ClipRRect(
                     borderRadius: BorderRadius.circular(10),
                     child: SizedBox.expand(
-                      child: CachedNetworkImage(imageUrl: url, fit: BoxFit.cover),
+                      child: CachedNetworkImage(
+                        imageUrl: url,
+                        fit: BoxFit.cover,
+                        // Decode at grid-cell size to avoid holding 10MB per photo.
+                        memCacheWidth: 300,
+                        memCacheHeight: 300,
+                      ),
                     ),
                   ),
                   Positioned(
@@ -720,8 +984,10 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
                           : () => setState(() => _photos.removeAt(i)),
                       child: Container(
                         padding: const EdgeInsets.all(3),
-                        decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
-                        child: const Icon(Icons.close, size: 14, color: Colors.white),
+                        decoration: const BoxDecoration(
+                            color: Colors.black54, shape: BoxShape.circle),
+                        child: const Icon(Icons.close,
+                            size: 14, color: Colors.white),
                       ),
                     ),
                   ),
@@ -752,7 +1018,8 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
                         height: 22,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(Colors.white),
                         ),
                       ),
                     ),
@@ -771,8 +1038,12 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
                 ),
                 child: Center(
                   child: _uploading
-                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.add_photo_alternate_outlined, color: Colors.grey),
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.add_photo_alternate_outlined,
+                          color: Colors.grey),
                 ),
               ),
             );
@@ -785,6 +1056,7 @@ class _PhotoEditSheetState extends State<_PhotoEditSheet> {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FULL-SCREEN PHOTO VIEWER — pinch to zoom, swipe between the page's photos.
+// No memCacheWidth/Height here — full resolution is intentional for zoom.
 // ═══════════════════════════════════════════════════════════════════════════
 class _PhotoViewerPage extends StatefulWidget {
   final List<String> urls;
@@ -832,7 +1104,9 @@ class _PhotoViewerPageState extends State<_PhotoViewerPage> {
                   child: CachedNetworkImage(
                     imageUrl: widget.urls[i],
                     fit: BoxFit.contain,
-                    errorWidget: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white38, size: 48),
+                    // No memCacheWidth/Height — full resolution for pinch-zoom.
+                    errorWidget: (_, __, ___) => const Icon(Icons.broken_image,
+                        color: Colors.white38, size: 48),
                   ),
                 ),
               ),
@@ -846,14 +1120,18 @@ class _PhotoViewerPageState extends State<_PhotoViewerPage> {
                     _RoundCloseButton(onTap: () => Navigator.of(context).pop()),
                     if (widget.urls.length > 1)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.15),
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
                           '${_index + 1} / ${widget.urls.length}',
-                          style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                          style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600),
                         ),
                       ),
                   ],
@@ -879,7 +1157,8 @@ class _RoundCloseButton extends StatelessWidget {
       child: Container(
         width: 36,
         height: 36,
-        decoration: BoxDecoration(color: Colors.white.withOpacity(0.15), shape: BoxShape.circle),
+        decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.15), shape: BoxShape.circle),
         child: const Icon(Icons.close, color: Colors.white70, size: 18),
       ),
     );

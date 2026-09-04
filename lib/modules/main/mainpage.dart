@@ -676,18 +676,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 20),
 
-              // ── 3. Nearby Trending ───────────────
-              _buildSectionHeader("Nearby Trending"),  
-              const SizedBox(height: 20),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 25),
-                child: (_loadingNearby && _nearbyPlaces.isEmpty)
-                    ? const Center(child: TravelLoadingIndicator())
-                    : Column(
-                        children: List.generate(_nearbyTrending.length, (i) =>
-                            _buildSpecialAsymmetricCard(_nearbyTrending[i], i)),
-                      ),
-              ),
+              // ── 3. Nearby Trending / Nearby Places ───────────────
+              _buildSectionHeader(
+                "Nearby Places",
+                onSeeAll: _nearbyPlaces.isNotEmpty ? _openNearbySeeAll : null,
+              ),  
+              const SizedBox(height: 12),
+              _buildNearbySection(),
 
               SizedBox(height: 10 + MediaQuery.of(context).padding.bottom + kBottomNavigationBarHeight),
             ],
@@ -1537,79 +1532,313 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildSpecialAsymmetricCard(PlaceModel place, int index) {
-    final route  = _routeResults[place.id];
-    final dist   = route != null ? (route.distanceMeters / 1000).toStringAsFixed(1) : "--";
-    final isEven = index % 2 == 0;
+  void _openNearbySeeAll() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RealTimeDetectPage(
+          onBack: () => Navigator.pop(context),
+        ),
+      ),
+    );
+  }
+
+  List<PlaceModel> get _nearbyPreviewPlaces {
+    if (_nearbyTrending.isNotEmpty) return _nearbyTrending;
+    if (_openNearbyPlaces.isNotEmpty) return _openNearbyPlaces.take(6).toList();
+    return _nearbyPlaces.take(6).toList();
+  }
+
+  Widget _buildNearbySection() {
+    if (_loadingNearby && _nearbyPlaces.isEmpty) {
+      return _buildNearbySkeleton();
+    }
+
+    final previewPlaces = _nearbyPreviewPlaces;
+    if (previewPlaces.isEmpty) {
+      return _buildNearbyEmptyState();
+    }
+
+    return SizedBox(
+      height: 205,
+      child: ListView.separated(
+        padding: const EdgeInsets.symmetric(horizontal: 25),
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        itemCount: previewPlaces.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        itemBuilder: (context, index) {
+          return _buildCompactNearbyCard(previewPlaces[index]);
+        },
+      ),
+    );
+  }
+
+  Widget _buildCompactNearbyCard(PlaceModel place) {
+    final route = _routeResults[place.id];
+    final distStr = route != null ? '${(route.distanceMeters / 1000).toStringAsFixed(1)} km' : null;
+    final rating = place.rating;
+    final isOpen = place.isOpenNow;
+    final categoryInfo = _getCategoryInfo(place.primaryType);
 
     return GestureDetector(
       onTap: () => _openPlaceDetail(place),
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: 40),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
+      child: Container(
+        width: 165,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            if (isEven) _buildImage(place),
-            Expanded(
-              child: Padding(
-                padding: EdgeInsets.only(
-                    left: isEven ? 20 : 0, right: isEven ? 0 : 20, bottom: 10),
-                child: Column(
-                  crossAxisAlignment: isEven ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+            // ── Place Image ──
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+              child: SizedBox(
+                height: 105,
+                width: double.infinity,
+                child: Stack(
+                  fit: StackFit.expand,
                   children: [
-                    Text("$dist KM", style: TextStyle(
-                        fontFamily: 'Courier', fontSize: 24,
-                        fontWeight: FontWeight.w900,
-                        color: const Color(0xFF6366F1).withOpacity(0.2))),
-                    Text(place.name,
-                        textAlign: isEven ? TextAlign.left : TextAlign.right,
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
-                            color: Color(0xFF1E293B), height: 1.2)),
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                          color: Colors.black, borderRadius: BorderRadius.circular(5)),
-                      child: Text('~$dist KM AWAY',
-                          style: const TextStyle(color: Colors.white, fontSize: 10,
-                              fontWeight: FontWeight.bold)),
-                    ),
+                    (place.photoUrl != null && place.photoUrl!.isNotEmpty)
+                        ? CachedNetworkImage(
+                            imageUrl: place.photoUrl!,
+                            fit: BoxFit.cover,
+                            memCacheWidth: 350,
+                            errorWidget: (_, __, ___) => _buildPlaceholderBg(place),
+                          )
+                        : _buildPlaceholderBg(place),
+                    if (isOpen != null)
+                      Positioned(
+                        top: 8,
+                        left: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: isOpen
+                                ? const Color(0xFF10B981).withOpacity(0.9)
+                                : Colors.black.withOpacity(0.6),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            isOpen ? 'Open' : 'Closed',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
             ),
-            if (!isEven) _buildImage(place),
+
+            // ── Place Details ──
+            Padding(
+              padding: const EdgeInsets.all(10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    height: 34,
+                    child: Text(
+                      place.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E293B),
+                        height: 1.2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Icon(categoryInfo.icon, size: 12, color: categoryInfo.color),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          categoryInfo.label,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey[600],
+                            fontWeight: FontWeight.w500,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (distStr != null) ...[
+                        const SizedBox(width: 4),
+                        Text(
+                          distStr,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey[500],
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  if (rating != null && rating > 0)
+                    Row(
+                      children: [
+                        const Icon(Icons.star_rounded, size: 14, color: Colors.amber),
+                        const SizedBox(width: 3),
+                        Text(
+                          rating.toStringAsFixed(1),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1E293B),
+                          ),
+                        ),
+                      ],
+                    )
+                  else
+                    const SizedBox(height: 14),
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildImage(PlaceModel place) {
-    return Hero(
-      tag: 'place-img-${place.id}',
-      child: Container(
-        width: 140, height: 180,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [BoxShadow(
-            color: const Color(0xFF6366F1).withOpacity(0.15),
-            blurRadius: 20, offset: const Offset(5, 10),
-          )],
-        ),
-        child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: (place.photoUrl != null && place.photoUrl!.isNotEmpty)
-        ? CachedNetworkImage(
-            imageUrl: place.photoUrl!,
-            fit: BoxFit.cover,
-            memCacheWidth: 350,
-            errorWidget: (_, __, ___) => _buildPlaceholderBg(place),
-          )
-        : _buildPlaceholderBg(place),
+  Widget _buildNearbySkeleton() {
+    return SizedBox(
+      height: 205,
+      child: ListView.separated(
+        padding: const EdgeInsets.symmetric(horizontal: 25),
+        scrollDirection: Axis.horizontal,
+        itemCount: 4,
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        itemBuilder: (_, __) => Container(
+          width: 165,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.shade100),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                height: 105,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade200,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(height: 12, width: 120, color: Colors.grey.shade200),
+                    const SizedBox(height: 6),
+                    Container(height: 10, width: 80, color: Colors.grey.shade100),
+                    const SizedBox(height: 12),
+                    Container(height: 10, width: 50, color: Colors.grey.shade100),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
+  Widget _buildNearbyEmptyState() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 25),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.grey[50],
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.grey[200]!),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.location_off_outlined, size: 28, color: Colors.grey[400]),
+            const SizedBox(height: 8),
+            Text(
+              'No nearby places found.',
+              style: TextStyle(color: Colors.grey[600], fontSize: 13, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Try exploring places on the map or refreshing.',
+              style: TextStyle(color: Colors.grey[400], fontSize: 11),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _openNearbySeeAll,
+              icon: const Icon(Icons.map_outlined, size: 14),
+              label: const Text('Explore Nearby on Map', style: TextStyle(fontSize: 12)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF7C4DFF),
+                side: const BorderSide(color: Color(0xFF7C4DFF)),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  _CategoryBadgeInfo _getCategoryInfo(String? type) {
+    switch (type) {
+      case 'restaurant':
+        return const _CategoryBadgeInfo(label: 'Food', icon: Icons.restaurant_rounded, color: Colors.orange);
+      case 'park':
+        return const _CategoryBadgeInfo(label: 'Nature', icon: Icons.park_rounded, color: Colors.green);
+      case 'entertainment':
+        return const _CategoryBadgeInfo(label: 'Entertainment', icon: Icons.local_activity_rounded, color: Colors.deepPurple);
+      case 'shopping_mall':
+        return const _CategoryBadgeInfo(label: 'Shopping', icon: Icons.shopping_bag_rounded, color: Colors.teal);
+      case 'tourist_attraction':
+        return const _CategoryBadgeInfo(label: 'Attraction', icon: Icons.museum_rounded, color: Color(0xFF1976D2));
+      case 'transit':
+        return const _CategoryBadgeInfo(label: 'Transport', icon: Icons.directions_transit, color: Colors.indigo);
+      case 'service':
+        return const _CategoryBadgeInfo(label: 'Service', icon: Icons.miscellaneous_services, color: Color(0xFF0097A7));
+      default:
+        return const _CategoryBadgeInfo(label: 'Place', icon: Icons.place_rounded, color: Colors.grey);
+    }
+  }
+
+}
+
+class _CategoryBadgeInfo {
+  final String label;
+  final IconData icon;
+  final Color color;
+
+  const _CategoryBadgeInfo({
+    required this.label,
+    required this.icon,
+    required this.color,
+  });
 }

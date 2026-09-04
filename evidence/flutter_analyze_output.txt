@@ -1,0 +1,136 @@
+Analyzing 4 items...                                            
+
+   info - The private field _routeResults could be 'final' - lib\modules\place\detectplacepage.dart:131:28 - prefer_final_fields
+warning - The value of the field '_isPopularityLoading' isn't used - lib\modules\place\detectplacepage.dart:137:8 - unused_field
+warning - The value of the field '_placeScores' isn't used - lib\modules\place\detectplacepage.dart:143:23 - unused_field
+   info - Statements in an if should be enclosed in a block - lib\modules\place\detectplacepage.dart:152:7 - curly_braces_in_flow_control_structures
+   info - Don't invoke 'print' in production code - lib\modules\place\detectplacepage.dart:230:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\modules\place\detectplacepage.dart:903:5 - avoid_print
+   info - Statements in an if should be enclosed in a block - lib\modules\place\detectplacepage.dart:1368:11 - curly_braces_in_flow_control_structures
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:1625:32 - deprecated_member_use
+   info - 'fromBytes' is deprecated and shouldn't be used. Use BitmapDescriptor.bytes method instead - lib\modules\place\detectplacepage.dart:1686:29 - deprecated_member_use
+   info - Statements in an if should be enclosed in a block - lib\modules\place\detectplacepage.dart:1767:7 - curly_braces_in_flow_control_structures
+warning - The declaration '_updateRouteTimesForTravelMode' isn't referenced - lib\modules\place\detectplacepage.dart:1809:8 - unused_element
+warning - The declaration '_showErrorDialog' isn't referenced - lib\modules\place\detectplacepage.dart:1907:8 - unused_element
+warning - The declaration '_showLocationDisabledDialog' isn't referenced - lib\modules\place\detectplacepage.dart:1922:16 - unused_element
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:1941:50 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:2059:52 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:2185:22 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:2264:39 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:2392:53 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:2512:55 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:2561:49 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:2708:54 - deprecated_member_use
+   info - Unnecessary braces in a string interpolation - lib\modules\place\detectplacepage.dart:2855:30 - unnecessary_brace_in_string_interps
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:2926:52 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:2929:56 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:3077:45 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:3082:41 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:3088:47 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\modules\place\detectplacepage.dart:3184:62 - deprecated_member_use
+   info - Unnecessary braces in a string interpolation - lib\modules\place\detectplacepage.dart:3417:114 - unnecessary_brace_in_string_interps
+warning - Unused import: 'route_service.dart' - lib\services\nearbyplace_service.dart:9:8 - unused_import
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:117:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:126:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:135:7 - avoid_print
+warning - The value of the field '_geoapifyLru' isn't used - lib\services\nearbyplace_service.dart:139:26 - unused_field
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:144:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:153:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:186:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:192:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:272:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:280:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:317:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:397:24 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:400:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:419:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:432:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:447:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:454:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:466:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:479:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:483:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:499:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:505:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:535:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:592:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:597:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:607:11 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:648:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:652:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:673:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:675:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:681:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:688:11 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:715:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:716:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:719:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:745:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:769:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:804:11 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:819:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:844:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:849:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:857:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:880:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:914:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:928:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:947:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:956:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:967:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:985:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:998:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:1012:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:1056:11 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:1059:11 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:1079:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:1138:13 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\nearbyplace_service.dart:1142:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:35:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:36:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:37:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:38:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:39:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:40:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:41:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:42:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:43:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:44:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:45:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:49:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:51:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:53:7 - avoid_print
+   info - The parameter name 'count' matches a visible type name - lib\services\placesapi_service.dart:54:35 - avoid_types_as_parameter_names
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:55:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:58:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:69:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:84:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:98:11 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:105:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:109:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:130:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:137:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:144:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:158:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:186:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:219:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:236:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:265:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:299:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:331:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:348:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:351:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:371:11 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:375:11 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:383:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:394:9 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:410:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:414:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:463:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:465:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:477:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\services\placesapi_service.dart:479:7 - avoid_print
+
+
+Flutter assets will be downloaded from https://storage.flutter-io.cn. Make sure you trust this source!
+130 issues found. (ran in 2.2s)

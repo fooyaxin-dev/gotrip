@@ -355,10 +355,15 @@ class _LandmarkHistoryPageState extends State<LandmarkHistoryPage> {
     if (entry.imageBase64 != null && entry.imageBase64!.isNotEmpty) {
       try {
         final bytes = base64Decode(entry.imageBase64!);
-        return CachedNetworkImage(
-          imageUrl: 'data:image/jpeg;base64,$bytes',
+        // Use Image.memory directly — converting bytes back into a data URI
+        // produces '[255, 216, ...]' which is not valid and always fails.
+        return Image.memory(
+          bytes,
           fit: BoxFit.cover,
-          errorWidget: (_, __, ___) => _placeholder(),
+          // Decode at a bounded size appropriate for the history thumbnail.
+          cacheWidth: 200,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => _placeholder(),
         );
       } catch (_) {}
     }
