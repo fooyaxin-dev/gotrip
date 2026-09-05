@@ -8,6 +8,7 @@ import 'geoapify_service.dart';
 import 'location_service.dart';
 import 'geoapifyEnrichment_service.dart';
 import 'category_mapper.dart';
+import 'recommendation_eligibility_policy.dart';
 
 class _LruTracker {
   final int capacity;
@@ -335,6 +336,12 @@ class NearbyPlacesService {
       // Reject out-of-radius results
       final dist = _haversineMetres(lat, lng, place.lat!, place.lng!);
       if (dist > fetchRadius) continue;
+
+      // Reject corporate places without authoritative visitor types
+      if (!RecommendationEligibilityPolicy.isEligibleForAutomaticRecommendation(
+          place)) {
+        continue;
+      }
 
       seenIds.add(id);
       places.add(place);
@@ -732,6 +739,10 @@ class NearbyPlacesService {
 
         final place = PlaceModel.fromGoogle(p, primary: primaryType);
         if (place.lat == null || place.lng == null) continue;
+        if (!RecommendationEligibilityPolicy
+            .isEligibleForAutomaticRecommendation(place)) {
+          continue;
+        }
 
         targetList.add(place);
         targetByType.putIfAbsent(primaryType, () => []);
@@ -1061,6 +1072,7 @@ class NearbyPlacesService {
             maxResultCount: 20,
             radius: radius,
             rankPreference: 'POPULARITY',
+            client: httpClient,
           );
           final seen = <String>{};
           final places = <PlaceModel>[];
@@ -1077,6 +1089,10 @@ class NearbyPlacesService {
                       ) !=
                       primary ||
                   !seen.add(place.id)) {
+                continue;
+              }
+              if (!RecommendationEligibilityPolicy
+                  .isEligibleForAutomaticRecommendation(place)) {
                 continue;
               }
               places.add(place);
@@ -1148,6 +1164,7 @@ class NearbyPlacesService {
               maxResultCount: 20,
               radius: radius,
               rankPreference: 'POPULARITY',
+              client: httpClient,
             );
 
             for (final item in raw) {
@@ -1161,6 +1178,10 @@ class NearbyPlacesService {
                       ) !=
                       category ||
                   !localSeen.add(place.id)) {
+                continue;
+              }
+              if (!RecommendationEligibilityPolicy
+                  .isEligibleForAutomaticRecommendation(place)) {
                 continue;
               }
               additional.add(place);

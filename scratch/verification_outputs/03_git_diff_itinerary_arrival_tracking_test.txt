@@ -1,0 +1,375 @@
+warning: in the working copy of 'test/itinerary_arrival_tracking_test.dart', LF will be replaced by CRLF the next time Git touches it
+diff --git a/test/itinerary_arrival_tracking_test.dart b/test/itinerary_arrival_tracking_test.dart
+index e3cf871..5fa4869 100644
+--- a/test/itinerary_arrival_tracking_test.dart
++++ b/test/itinerary_arrival_tracking_test.dart
+@@ -167,7 +167,8 @@ void main() {
+       expect(service.watchedPlacesCount, equals(0));
+     });
+ 
+-    test('4. Position just inside the 50m boundary triggers', () async {
++    test('4. Position just inside the 15m boundary triggers after 2 fixes',
++        () async {
+       // Place at lat: 5.4164, lng: 100.3327
+       final p = createPlace(
+           id: 'p_border',
+@@ -185,11 +186,17 @@ void main() {
+       final events = <PlaceArrivalEvent>[];
+       final sub = service.arrivalStream.listen(events.add);
+ 
+-      // ~39m away: delta lat = 0.00035 deg (~38.9m)
++      // ~10m away: delta lat = 0.00009 deg (~10.0m)
+       final insidePos =
+-          makePosition(latitude: 5.4164 + 0.00035, longitude: 100.3327);
++          makePosition(latitude: 5.4164 + 0.00009, longitude: 100.3327);
+       service.simulatePositionChange(insidePos);
+ 
++      await pumpEventQueue();
++      // Single qualifying fix must NOT trigger arrival
++      expect(events.isEmpty, isTrue);
++
++      // Second consecutive qualifying fix triggers arrival
++      service.simulatePositionChange(insidePos);
+       await pumpEventQueue();
+       expect(events.length, equals(1));
+       expect(events.first.placeId, equals('p_border'));
+@@ -197,7 +204,8 @@ void main() {
+       await sub.cancel();
+     });
+ 
+-    test('5. Position just outside the 50m boundary does not trigger',
++    test(
++        '5. Position outside the 15m boundary (e.g. 26m) does not trigger even after multiple fixes',
+         () async {
+       final p = createPlace(
+           id: 'p_outside',
+@@ -215,11 +223,14 @@ void main() {
+       final events = <PlaceArrivalEvent>[];
+       final sub = service.arrivalStream.listen(events.add);
+ 
+-      // ~61m away: delta lat = 0.00055 deg (~61.1m)
++      // ~26m away: delta lat = 0.000234 deg (~26.0m)
+       final outsidePos =
+-          makePosition(latitude: 5.4164 + 0.00055, longitude: 100.3327);
++          makePosition(latitude: 5.4164 + 0.000234, longitude: 100.3327);
+       service.simulatePositionChange(outsidePos);
++      await pumpEventQueue();
++      expect(events.isEmpty, isTrue);
+ 
++      service.simulatePositionChange(outsidePos);
+       await pumpEventQueue();
+       expect(events.isEmpty, isTrue);
+ 
+@@ -285,7 +296,7 @@ void main() {
+     });
+ 
+     testWidgets(
+-        '8. A fresh existing currentPosition already within 50m is evaluated immediately',
++        '8. A fresh existing currentPosition evaluated on startup plus a second fix triggers arrival',
+         (tester) async {
+       final p1 = createPlace(
+           id: 'p_fresh',
+@@ -299,20 +310,30 @@ void main() {
+           date: fixedDateStr,
+           places: [p1]);
+ 
+-      // Seed fresh position within 20m of the place
+-      service.currentPosition = makePosition(
+-        latitude: 5.4164 + 0.0001,
++      final pos = makePosition(
++        latitude: 5.4164 + 0.00005,
+         longitude: 100.3327,
+         timestamp: fixedToday,
+       );
+ 
++      // Seed fresh position within 15m of the place (Fix 1)
++      service.currentPosition = pos;
++
+       await tester.pumpWidget(MaterialApp(
+         home: ItineraryDetailPage(itinerary: itin),
+       ));
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+ 
+-      // Arrival dialog should appear immediately without user movement
++      // Isolated single fix must NOT trigger arrival
++      expect(find.text("You've arrived! 🎉"), findsNothing);
++
++      // Second qualifying fix arrives
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++
++      // Arrival dialog should appear after 2 consecutive qualifying fixes
+       expect(find.text("You've arrived! 🎉"), findsOneWidget);
+       expect(
+           find.descendant(
+@@ -343,6 +364,9 @@ void main() {
+         timestamp: fixedToday.subtract(const Duration(hours: 1)),
+       );
+ 
++      final freshPos = makePosition(
++          latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday);
++
+       int refreshCount = 0;
+       service.testServiceEnabledChecker = () async => true;
+       service.testPermissionChecker = () async => LocationPermission.always;
+@@ -350,8 +374,7 @@ void main() {
+           {LocationAccuracy desiredAccuracy = LocationAccuracy.high,
+           Duration? timeLimit}) async {
+         refreshCount++;
+-        return makePosition(
+-            latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday);
++        return freshPos;
+       };
+ 
+       await tester.pumpWidget(MaterialApp(
+@@ -361,6 +384,14 @@ void main() {
+       await tester.pump(const Duration(milliseconds: 100));
+ 
+       expect(refreshCount, equals(1));
++      // First fix from refresh does not trigger alone
++      expect(find.text("You've arrived! 🎉"), findsNothing);
++
++      // Second qualifying fix confirms arrival
++      service.simulatePositionChange(freshPos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++
+       expect(find.text("You've arrived! 🎉"), findsOneWidget);
+       expect(
+           find.descendant(
+@@ -383,11 +414,12 @@ void main() {
+           date: fixedDateStr,
+           places: [p1]);
+ 
+-      service.currentPosition = makePosition(
++      final pos = makePosition(
+         latitude: 5.4164,
+         longitude: 100.3327,
+         timestamp: fixedToday,
+       );
++      service.currentPosition = pos;
+ 
+       await tester.pumpWidget(MaterialApp(
+         home: ItineraryDetailPage(itinerary: itin),
+@@ -395,6 +427,11 @@ void main() {
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 50));
+ 
++      // Deliver second qualifying fix
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 50));
++
+       expect(find.text("You've arrived! 🎉"), findsOneWidget);
+     });
+ 
+@@ -413,11 +450,12 @@ void main() {
+           date: fixedDateStr,
+           places: [p1]);
+ 
+-      service.currentPosition = makePosition(
++      final pos = makePosition(
+         latitude: 5.4164,
+         longitude: 100.3327,
+         timestamp: fixedToday,
+       );
++      service.currentPosition = pos;
+ 
+       await tester.pumpWidget(MaterialApp(
+         home: ItineraryDetailPage(itinerary: itin),
+@@ -425,10 +463,19 @@ void main() {
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+ 
+-      // Simulate a stream event with the same position
+-      service.simulatePositionChange(makePosition(
+-          latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday));
++      // First fix does not pop dialog yet
++      expect(find.text("You've arrived! 🎉"), findsNothing);
++
++      // Simulate second fix to trigger arrival
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++      expect(find.text("You've arrived! 🎉"), findsOneWidget);
++
++      // Simulate a third stream event with the same position
++      service.simulatePositionChange(pos);
+       await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
+ 
+       expect(find.text("You've arrived! 🎉"), findsOneWidget);
+     });
+@@ -595,14 +642,20 @@ void main() {
+           const MaterialApp(home: Scaffold(body: Text('MainPage'))));
+       await tester.pump();
+ 
+-      // Reopen the itinerary with fresh position at the venue
+-      service.currentPosition = makePosition(
++      // Reopen the itinerary with fresh position at the venue (Fix 1)
++      final pos = makePosition(
+           latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday);
++      service.currentPosition = pos;
+       await tester
+           .pumpWidget(MaterialApp(home: ItineraryDetailPage(itinerary: itin)));
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+ 
++      // Deliver 2nd qualifying fix
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++
+       expect(find.text("You've arrived! 🎉"), findsOneWidget);
+       expect(
+           find.descendant(
+@@ -631,14 +684,20 @@ void main() {
+           date: fixedDateStr,
+           places: [p1]);
+ 
+-      service.currentPosition = makePosition(
++      final pos = makePosition(
+           latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday);
++      service.currentPosition = pos;
+ 
+       await tester
+           .pumpWidget(MaterialApp(home: ItineraryDetailPage(itinerary: itin)));
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+ 
++      // Deliver 2nd qualifying fix to confirm arrival
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++
+       expect(find.text("You've arrived! 🎉"), findsOneWidget);
+       expect(service.isPlaceArrived('p_not_yet'), isTrue);
+ 
+@@ -664,14 +723,20 @@ void main() {
+           date: fixedDateStr,
+           places: [p1]);
+ 
+-      service.currentPosition = makePosition(
++      final pos = makePosition(
+           latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday);
++      service.currentPosition = pos;
+ 
+       await tester
+           .pumpWidget(MaterialApp(home: ItineraryDetailPage(itinerary: itin)));
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+ 
++      // Deliver 2nd qualifying fix to confirm arrival
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++
+       expect(find.text("You've arrived! 🎉"), findsOneWidget);
+       expect(service.isPlaceArrived('p_back_rearm'), isTrue);
+ 
+@@ -747,14 +812,20 @@ void main() {
+           date: fixedDateStr,
+           places: [p1]);
+ 
+-      service.currentPosition = makePosition(
++      final pos = makePosition(
+           latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday);
++      service.currentPosition = pos;
+ 
+       await tester
+           .pumpWidget(MaterialApp(home: ItineraryDetailPage(itinerary: itin)));
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+ 
++      // Deliver 2nd qualifying fix to confirm arrival
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++
+       // Tap Not yet
+       await tester.tap(find.text('Not yet'));
+       await tester.pumpAndSettle();
+@@ -783,14 +854,20 @@ void main() {
+           date: fixedDateStr,
+           places: [p1]);
+ 
+-      service.currentPosition = makePosition(
++      final pos = makePosition(
+           latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday);
++      service.currentPosition = pos;
+ 
+       await tester
+           .pumpWidget(MaterialApp(home: ItineraryDetailPage(itinerary: itin)));
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+ 
++      // Deliver 2nd qualifying fix to confirm arrival
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++
+       expect(find.text("You've arrived! 🎉"), findsOneWidget);
+ 
+       await tester.tap(find.text("Yes, I'm here!"));
+@@ -821,14 +898,20 @@ void main() {
+           date: fixedDateStr,
+           places: [p1]);
+ 
+-      service.currentPosition = makePosition(
++      final pos = makePosition(
+           latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday);
++      service.currentPosition = pos;
+ 
+       await tester
+           .pumpWidget(MaterialApp(home: ItineraryDetailPage(itinerary: itin)));
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+ 
++      // Deliver 2nd qualifying fix to confirm arrival
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++
+       await tester.tap(find.text("Yes, I'm here!"));
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+@@ -851,23 +934,33 @@ void main() {
+           date: fixedDateStr,
+           places: [p1]);
+ 
+-      service.currentPosition = makePosition(
++      final pos = makePosition(
+           latitude: 5.4164, longitude: 100.3327, timestamp: fixedToday);
++      service.currentPosition = pos;
+ 
+       await tester
+           .pumpWidget(MaterialApp(home: ItineraryDetailPage(itinerary: itin)));
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 100));
+ 
++      // Deliver 2nd qualifying fix to confirm arrival
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 100));
++
+       // Tap Not yet
+       await tester.tap(find.text('Not yet'));
+       await tester.pumpAndSettle();
+ 
+       expect(service.isPlaceArrived('p_retry'), isFalse);
+ 
+-      // Next position arrives within 50m
+-      service.simulatePositionChange(
+-          makePosition(latitude: 5.4164, longitude: 100.3327));
++      // Next position arrives within 15m (first fix after re-arm does not trigger alone)
++      service.simulatePositionChange(pos);
++      await tester.pump();
++      expect(find.text("You've arrived! 🎉"), findsNothing);
++
++      // Second qualifying fix after re-arm confirms arrival again
++      service.simulatePositionChange(pos);
+       await tester.pump();
+       await tester.pump(const Duration(milliseconds: 50));
+ 

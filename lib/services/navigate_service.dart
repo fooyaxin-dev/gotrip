@@ -9,6 +9,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'route_service.dart';
 import 'api_Keys.dart';
+import 'arrival_policy.dart';
 
 typedef RouteFetcher = Future<RouteResult> Function({
   required double fromLat,
@@ -16,6 +17,14 @@ typedef RouteFetcher = Future<RouteResult> Function({
   required double toLat,
   required double toLng,
   required TravelMode mode,
+});
+
+typedef CurrentPositionProvider = Future<Position> Function({
+  LocationAccuracy? desiredAccuracy,
+});
+
+typedef PositionStreamProvider = Stream<Position> Function({
+  LocationSettings? locationSettings,
 });
 
 enum NavigationRouteUpdateState {
@@ -35,6 +44,8 @@ class NavigationController extends ChangeNotifier {
   final TravelMode travelMode;
   final RouteResult? initialRoute;
   final RouteFetcher? routeFetcher;
+  final CurrentPositionProvider? currentPositionProvider;
+  final PositionStreamProvider? positionStreamProvider;
 
   NavigationController({
     required this.startLat,
@@ -45,12 +56,14 @@ class NavigationController extends ChangeNotifier {
     this.travelMode = TravelMode.drive,
     this.initialRoute,
     this.routeFetcher,
+    this.currentPositionProvider,
+    this.positionStreamProvider,
   });
 
   static const String _apiKey = ApiKeys.googleMaps;
 
   static const double _offRouteThresh = 50.0;
-  static const double _arrivedThresh = 30.0;
+  static double get arrivedThresh => ArrivalPolicy.arrivalRadiusMetres;
   static const int _offRouteConfirm = 4;
   static const int _stepConfirm = 2;
 
@@ -230,6 +243,10 @@ class NavigationController extends ChangeNotifier {
   String? networkNotice;
   bool hasArrived = false;
   int _offRouteCount = 0;
+  int _consecutiveArrivalFixes = 0;
+
+  @visibleForTesting
+  int get consecutiveArrivalFixes => _consecutiveArrivalFixes;
 
   // Route-joining state:
   // A user may intentionally use a familiar road at the beginning and only
@@ -266,19 +283,35 @@ class NavigationController extends ChangeNotifier {
   @visibleForTesting
   DateTime? get lastSpeedSampleAt => _lastSpeedSampleAt;
 
-  // Continuous stream-health recovery. The old watchdog only protected
-  // startup and cancelled itself permanently after the first live GPS fix.
-  // If the Android stream later stalled, navigation could remain frozen
-  // indefinitely. This watchdog stays alive for the entire navigation session.
+  @visibleForTesting
+  DateTime? get lastGpsStreamEventAt => _lastGpsStreamEventAt;
+
+  @visibleForTesting
+  DateTime? get lastNavigationFixAt => _lastNavigationFixAt;
+
+  @visibleForTesting
+  DateTime? get lastAcceptedProgressAt => _lastAcceptedProgressAt;
+
+  @visibleForTesting
+  bool get isFallbackInFlight => _isFallbackInFlight;
+
+  @visibleForTesting
+  int get fallbackRequestGeneration => _fallbackRequestGeneration;
+
+  @visibleForTesting
+  double get matchedDistAlongRoute => _matchedDistAlongRoute;
+
+  // Continuous stream-health recovery. The single watchdog handles both
+  // pre-stream acquisition (replacing the old 4-attempt dead zone)
+  // and continuous stream-stall recovery (>2.2s fallback, >5s restart).
   Timer? _gpsHealthWatchdog;
-  bool _gpsHealthFallbackBusy = false;
+  bool _isFallbackInFlight = false;
+  int _fallbackRequestGeneration = 0;
+  DateTime? _lastFallbackAttemptAt;
   bool _gpsStreamRestarting = false;
-  DateTime? _lastHealthFallbackAt;
 
   LatLng? _lastRawMotionFix;
   DateTime? _lastRawMotionFixAt;
-  bool _startupFallbackBusy = false;
-  int _startupFallbackAttempts = 0;
   StreamSubscription<CompassXEvent>? _compassSub;
   Ticker? _ticker;
   VoidCallback? onArrived;
@@ -371,11 +404,13 @@ class NavigationController extends ChangeNotifier {
       return;
     }
 
-    _navigationSessionId = DateTime.now().millisecondsSinceEpoch.toString();
-    _lastSuccessfulRouteOrRefreshAt = DateTime.now();
-    _routeSessionStartedAt = DateTime.now();
+    _navigationSessionId = _currentTime.millisecondsSinceEpoch.toString();
+    _lastSuccessfulRouteOrRefreshAt = _currentTime;
+    _routeSessionStartedAt = _currentTime;
     _lastSpeedSampleAt = null;
     _lastNavigationFixAt = null;
+    _lastGpsStreamEventAt = null;
+    _consecutiveArrivalFixes = 0;
     _ticker = vsync.createTicker(_onTick)..start();
 
     // GPS/navigation startup is the critical path.
@@ -402,14 +437,19 @@ class NavigationController extends ChangeNotifier {
   void dispose() {
     _isDisposed = true;
     _activeRouteGeneration++;
+    _fallbackRequestGeneration++;
     _pendingReroutePosition = null;
     _lastSpeedSampleAt = null;
+    _consecutiveArrivalFixes = 0;
     stopTrafficRefreshTimer();
     _cancelRouteUpdateFeedback();
     _ticker?.dispose();
     _positionSub?.cancel();
+    _positionSub = null;
     _startupGpsWatchdog?.cancel();
+    _startupGpsWatchdog = null;
     _gpsHealthWatchdog?.cancel();
+    _gpsHealthWatchdog = null;
     _compassSub?.cancel();
     try {
       _tts.stop().catchError((_) => null);
@@ -546,12 +586,23 @@ class NavigationController extends ChangeNotifier {
   // GPS init
   // ─────────────────────────────────────────────
 
+  Future<Position> _fetchCurrentPosition({
+    LocationAccuracy desiredAccuracy = LocationAccuracy.bestForNavigation,
+  }) {
+    if (currentPositionProvider != null) {
+      return currentPositionProvider!(desiredAccuracy: desiredAccuracy);
+    }
+    return Geolocator.getCurrentPosition(desiredAccuracy: desiredAccuracy);
+  }
+
   Future<void> _initWithRealLocation() async {
     try {
-      var perm = await Geolocator.checkPermission();
+      if (currentPositionProvider == null) {
+        var perm = await Geolocator.checkPermission();
 
-      if (perm == LocationPermission.denied) {
-        perm = await Geolocator.requestPermission();
+        if (perm == LocationPermission.denied) {
+          perm = await Geolocator.requestPermission();
+        }
       }
 
       // Start the live stream BEFORE waiting for getCurrentPosition().
@@ -562,7 +613,7 @@ class NavigationController extends ChangeNotifier {
       Position? seedPosition;
 
       try {
-        seedPosition = await Geolocator.getCurrentPosition(
+        seedPosition = await _fetchCurrentPosition(
           desiredAccuracy: LocationAccuracy.bestForNavigation,
         ).timeout(const Duration(milliseconds: 1200));
       } catch (_) {
@@ -620,7 +671,7 @@ class NavigationController extends ChangeNotifier {
         if (canReuse && initialRoute != null) {
           _resetRouteState();
           notifyListeners();
-          _lastSuccessfulRouteOrRefreshAt = DateTime.now();
+          _lastSuccessfulRouteOrRefreshAt = _currentTime;
           await applyRouteResult(initialRoute!);
         } else {
           if (initialRoute != null) {
@@ -632,6 +683,8 @@ class NavigationController extends ChangeNotifier {
             routeSeed.longitude,
           );
         }
+
+        _maybeApplySeedPositionAfterRoute(bestPosition);
 
         return;
       }
@@ -646,7 +699,7 @@ class NavigationController extends ChangeNotifier {
       if (initialRoute != null) {
         _resetRouteState();
         notifyListeners();
-        _lastSuccessfulRouteOrRefreshAt = DateTime.now();
+        _lastSuccessfulRouteOrRefreshAt = _currentTime;
         await applyRouteResult(initialRoute!);
       } else {
         await _loadRoute(startLat, startLng);
@@ -664,12 +717,33 @@ class NavigationController extends ChangeNotifier {
       if (initialRoute != null) {
         _resetRouteState();
         notifyListeners();
-        _lastSuccessfulRouteOrRefreshAt = DateTime.now();
+        _lastSuccessfulRouteOrRefreshAt = _currentTime;
         await applyRouteResult(initialRoute!);
       } else {
         await _loadRoute(startLat, startLng);
       }
     }
+  }
+
+  void _maybeApplySeedPositionAfterRoute(Position? seed) {
+    if (seed == null || _isDisposed || hasArrived) return;
+    if (_lastGpsStreamEventAt != null || _lastNavigationFixAt != null) return;
+    if (!seed.latitude.isFinite || !seed.longitude.isFinite) return;
+
+    final now = _currentTime;
+    final ageSec = now.difference(seed.timestamp).inSeconds.abs();
+    if (ageSec > 15) {
+      print('[NAV_GPS][SEED] Seed rejected: age ${ageSec}s > 15s');
+      return;
+    }
+
+    print('[NAV_GPS][SEED]\n'
+        'action=apply_seed\n'
+        'ageSeconds=$ageSec\n'
+        'accuracy=${seed.accuracy.toStringAsFixed(1)}');
+    _lastNavigationFixAt = now;
+    _debugTrackingState = 'SEED FIX';
+    _handlePosition(seed, customNow: now);
   }
 
   // ─────────────────────────────────────────────
@@ -695,7 +769,7 @@ class NavigationController extends ChangeNotifier {
     c.drawPath(arrow, Paint()..color = Colors.white);
     final img = await rec.endRecording().toImage(size.toInt(), size.toInt());
     final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
-    if (bytes != null) {
+    if (bytes != null && !_isDisposed) {
       arrowIcon = BitmapDescriptor.fromBytes(bytes.buffer.asUint8List());
       notifyListeners();
     }
@@ -908,6 +982,7 @@ class NavigationController extends ChangeNotifier {
 
     if (!isReroute) {
       _offRouteCount = 0;
+      _consecutiveArrivalFixes = 0;
       loading = true;
       isRerouting = false;
       walkedPoints = [];
@@ -939,6 +1014,7 @@ class NavigationController extends ChangeNotifier {
     isRerouting = false;
     _offRouteCount = 0;
     _offRouteSince = null;
+    _consecutiveArrivalFixes = 0;
 
     // A reroute may return fewer steps than the previous route.
     // Reset old step indexes before rebuilding the new route arrays.
@@ -1051,10 +1127,12 @@ class NavigationController extends ChangeNotifier {
 
     // Route is ready. Preserve any GPS data already received while the
     // route was loading instead of resetting speed/accuracy back to zero.
-    final hasRecentStreamFix = _lastGpsStreamEventAt != null &&
-        DateTime.now().difference(_lastGpsStreamEventAt!).inSeconds < 3;
+    final hasRecentFix = (_lastGpsStreamEventAt != null &&
+            _currentTime.difference(_lastGpsStreamEventAt!).inSeconds < 3) ||
+        (_lastNavigationFixAt != null &&
+            _currentTime.difference(_lastNavigationFixAt!).inSeconds < 3);
 
-    _debugTrackingState = hasRecentStreamFix ? 'MATCH INIT' : 'WAIT GPS';
+    _debugTrackingState = hasRecentFix ? 'MATCH INIT' : 'WAIT GPS';
     _debugRecoverySeconds = 0;
     _debugMatchPerpDistance = double.infinity;
 
@@ -1078,41 +1156,52 @@ class NavigationController extends ChangeNotifier {
     // Route loads/reroutes must not restart a healthy stream.
     if (_positionSub != null) {
       _ensureGpsHealthWatchdog();
-      _scheduleStartupGpsWatchdog();
       return;
     }
 
     _subscribePositionStream();
     _ensureGpsHealthWatchdog();
-    _scheduleStartupGpsWatchdog();
   }
 
   void _subscribePositionStream() {
-    _positionSub = Geolocator.getPositionStream(
-      locationSettings: AndroidSettings(
-        accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 0,
+    final streamProvider = positionStreamProvider;
+    final stream = streamProvider != null
+        ? streamProvider(
+            locationSettings: AndroidSettings(
+              accuracy: LocationAccuracy.bestForNavigation,
+              distanceFilter: 0,
+              intervalDuration: const Duration(milliseconds: 500),
+              foregroundNotificationConfig: const ForegroundNotificationConfig(
+                notificationText: 'Navigation is active',
+                notificationTitle: 'Turn-by-turn Navigation',
+                enableWakeLock: true,
+              ),
+            ),
+          )
+        : Geolocator.getPositionStream(
+            locationSettings: AndroidSettings(
+              accuracy: LocationAccuracy.bestForNavigation,
+              distanceFilter: 0,
+              intervalDuration: const Duration(milliseconds: 500),
+              foregroundNotificationConfig: const ForegroundNotificationConfig(
+                notificationText: 'Navigation is active',
+                notificationTitle: 'Turn-by-turn Navigation',
+                enableWakeLock: true,
+              ),
+            ),
+          );
 
-        // Default fused provider. Do not force LocationManager on this device:
-        // the latest road test showed that path stopping for 30+ seconds.
-        intervalDuration: const Duration(milliseconds: 500),
-
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationText: 'Navigation is active',
-          notificationTitle: 'Turn-by-turn Navigation',
-          enableWakeLock: true,
-        ),
-      ),
-    ).listen(
+    _positionSub = stream.listen(
       (raw) {
         final now = _currentTime;
         _lastGpsStreamEventAt = now;
         _lastNavigationFixAt = now;
+        _fallbackRequestGeneration++;
 
-        // First genuine stream event means startup recovery is no longer
-        // necessary. The CONTINUOUS health watchdog remains active.
-        _startupGpsWatchdog?.cancel();
-        _startupGpsWatchdog = null;
+        print('[NAV_GPS][STREAM]\n'
+            'lat=${raw.latitude.toStringAsFixed(5)}\n'
+            'lng=${raw.longitude.toStringAsFixed(5)}\n'
+            'accuracy=${raw.accuracy.toStringAsFixed(1)}');
 
         _handlePosition(raw, customNow: now);
       },
@@ -1134,61 +1223,103 @@ class NavigationController extends ChangeNotifier {
     _gpsHealthWatchdog = Timer.periodic(
       const Duration(seconds: 1),
       (_) async {
-        if (hasArrived) return;
-
-        final lastStream = _lastGpsStreamEventAt;
-
-        if (lastStream == null) {
-          // Startup watchdog handles the first-fix case.
-          return;
-        }
-
-        final streamAgeMs =
-            DateTime.now().difference(lastStream).inMilliseconds;
-
-        // At >2.2s without a stream event, actively request a fresh position.
-        // This keeps route progress alive while Android's continuous stream
-        // is unhealthy.
-        if (streamAgeMs >= 2200 &&
-            !_gpsHealthFallbackBusy &&
-            (_lastHealthFallbackAt == null ||
-                DateTime.now()
-                        .difference(_lastHealthFallbackAt!)
-                        .inMilliseconds >=
-                    1400)) {
-          _lastHealthFallbackAt = DateTime.now();
-          _gpsHealthFallbackBusy = true;
-
-          try {
-            final fresh = await Geolocator.getCurrentPosition(
-              desiredAccuracy: LocationAccuracy.bestForNavigation,
-            ).timeout(const Duration(milliseconds: 1600));
-
-            _lastNavigationFixAt = _currentTime;
-
-            // Do not pretend this came from the stream: GPS age continues to
-            // expose the stream problem, while Fix age confirms recovery data
-            // is still reaching navigation.
-            _debugTrackingState = 'GPS RECOVER';
-            await _handlePosition(fresh, customNow: _lastNavigationFixAt);
-          } catch (_) {
-            // Stream restart below is the next recovery layer.
-          } finally {
-            _gpsHealthFallbackBusy = false;
-          }
-        }
-
-        // If the stream itself is silent for 5s, recreate the subscription.
-        // This does NOT reset route/matcher/ETA/heading state.
-        if (streamAgeMs >= 5000) {
-          unawaited(_restartGpsStream());
-        }
+        if (_isDisposed || hasArrived) return;
+        await _checkGpsHealthAndFallback();
       },
     );
   }
 
+  @visibleForTesting
+  Future<void> checkGpsHealthAndFallback() async {
+    await _checkGpsHealthAndFallback();
+  }
+
+  Future<void> _checkGpsHealthAndFallback() async {
+    if (_isDisposed || hasArrived) return;
+
+    final lastStream = _lastGpsStreamEventAt;
+    final now = _currentTime;
+
+    if (lastStream == null) {
+      // Pre-stream phase: actively poll until the first stream event arrives
+      await _performFallbackLocation('pre_stream');
+      return;
+    }
+
+    final streamAgeMs = now.difference(lastStream).inMilliseconds;
+
+    // At >2.2s without a stream event, actively request a fresh position.
+    // This keeps route progress alive while Android's continuous stream is unhealthy.
+    if (streamAgeMs >= 2200) {
+      await _performFallbackLocation('stream_stalled');
+    }
+
+    // If the stream itself is silent for 5s, recreate the subscription.
+    // This does NOT reset route/matcher/ETA/heading state.
+    if (streamAgeMs >= 5000) {
+      unawaited(_restartGpsStream());
+    }
+  }
+
+  @visibleForTesting
+  Future<void> performFallbackLocation(String phase) async {
+    await _performFallbackLocation(phase);
+  }
+
+  Future<void> _performFallbackLocation(String phase) async {
+    if (_isFallbackInFlight || _isDisposed || hasArrived) return;
+
+    final now = _currentTime;
+    if (_lastFallbackAttemptAt != null &&
+        now.difference(_lastFallbackAttemptAt!).inMilliseconds < 1400) {
+      return;
+    }
+
+    _lastFallbackAttemptAt = now;
+    _isFallbackInFlight = true;
+    final requestGen = ++_fallbackRequestGeneration;
+    final requestStartTime = now;
+
+    try {
+      final fresh = await _fetchCurrentPosition(
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
+      ).timeout(const Duration(milliseconds: 1600));
+
+      if (_isDisposed || hasArrived) return;
+      if (requestGen != _fallbackRequestGeneration) {
+        print(
+            '[NAV_GPS][HANDOVER] Stale fallback ignored (gen $requestGen != $_fallbackRequestGeneration)');
+        return;
+      }
+      if (_lastGpsStreamEventAt != null &&
+          _lastGpsStreamEventAt!.isAfter(requestStartTime)) {
+        print('[NAV_GPS][HANDOVER] Stream fix is newer than fallback request');
+        return;
+      }
+
+      _lastNavigationFixAt = _currentTime;
+      if (_lastGpsStreamEventAt == null) {
+        _debugTrackingState = 'START FIX';
+      } else {
+        _debugTrackingState = 'GPS RECOVER';
+      }
+
+      print('[NAV_GPS][FALLBACK]\n'
+          'phase=$phase\n'
+          'lat=${fresh.latitude.toStringAsFixed(5)}\n'
+          'lng=${fresh.longitude.toStringAsFixed(5)}\n'
+          'accuracy=${fresh.accuracy.toStringAsFixed(1)}');
+
+      await _handlePosition(fresh, customNow: _lastNavigationFixAt);
+    } catch (e) {
+      print('[NAV_GPS][FALLBACK] attempt failed: $e');
+    } finally {
+      _isFallbackInFlight = false;
+    }
+  }
+
   Future<void> _restartGpsStream() async {
-    if (_gpsStreamRestarting || hasArrived) return;
+    if (_gpsStreamRestarting || hasArrived || _isDisposed) return;
     _gpsStreamRestarting = true;
 
     try {
@@ -1202,7 +1333,7 @@ class NavigationController extends ChangeNotifier {
       // new one is registered.
       await Future<void>.delayed(const Duration(milliseconds: 120));
 
-      if (!hasArrived) {
+      if (!hasArrived && !_isDisposed) {
         _subscribePositionStream();
       }
     } catch (e) {
@@ -1210,52 +1341,6 @@ class NavigationController extends ChangeNotifier {
     } finally {
       _gpsStreamRestarting = false;
     }
-  }
-
-  void _scheduleStartupGpsWatchdog() {
-    if (_lastGpsStreamEventAt != null) return;
-    if (_startupGpsWatchdog != null) return;
-
-    _startupFallbackAttempts = 0;
-
-    _startupGpsWatchdog = Timer.periodic(
-      const Duration(seconds: 1),
-      (timer) async {
-        if (_lastGpsStreamEventAt != null) {
-          timer.cancel();
-          _startupGpsWatchdog = null;
-          return;
-        }
-
-        if (_startupFallbackBusy) return;
-
-        _startupFallbackAttempts++;
-
-        if (_startupFallbackAttempts > 4) {
-          timer.cancel();
-          _startupGpsWatchdog = null;
-          return;
-        }
-
-        _startupFallbackBusy = true;
-
-        try {
-          final fresh = await Geolocator.getCurrentPosition(
-            desiredAccuracy: LocationAccuracy.bestForNavigation,
-          ).timeout(const Duration(milliseconds: 1500));
-
-          if (_lastGpsStreamEventAt == null) {
-            _lastNavigationFixAt = _currentTime;
-            _debugTrackingState = 'START FIX';
-            await _handlePosition(fresh, customNow: _lastNavigationFixAt);
-          }
-        } catch (_) {
-          // Continuous health recovery takes over after startup.
-        } finally {
-          _startupFallbackBusy = false;
-        }
-      },
-    );
   }
 
   Future<void> _handlePosition(Position raw, {DateTime? customNow}) async {
@@ -1597,21 +1682,38 @@ class NavigationController extends ChangeNotifier {
 
     // ── 5. Arrival ──────────────────────────────────────────────────
     final isLastStep = steps.isEmpty || currentStepIndex >= steps.length - 1;
+    final distToEnd = _dist(rawLatLng, LatLng(endLat, endLng));
+    final isQualifyingArrivalFix = isLastStep &&
+        !hasArrived &&
+        ArrivalPolicy.isQualifyingFix(
+          distanceMetres: distToEnd,
+          accuracyMetres: raw.accuracy,
+        );
 
-    if (_dist(rawLatLng, LatLng(endLat, endLng)) <= _arrivedThresh &&
-        isLastStep &&
-        !hasArrived) {
-      hasArrived = true;
-      _activeRouteGeneration++;
-      _pendingReroutePosition = null;
-      _positionSub?.cancel();
-      stopTrafficRefreshTimer();
-      _cancelRouteUpdateFeedback();
+    if (isQualifyingArrivalFix) {
+      _consecutiveArrivalFixes++;
+      if (_consecutiveArrivalFixes >= ArrivalPolicy.requiredConsecutiveFixes) {
+        hasArrived = true;
+        _consecutiveArrivalFixes = 0;
+        _activeRouteGeneration++;
+        _fallbackRequestGeneration++;
+        _pendingReroutePosition = null;
+        _positionSub?.cancel();
+        _positionSub = null;
+        _gpsHealthWatchdog?.cancel();
+        _gpsHealthWatchdog = null;
+        _startupGpsWatchdog?.cancel();
+        _startupGpsWatchdog = null;
+        stopTrafficRefreshTimer();
+        _cancelRouteUpdateFeedback();
 
-      await _speak('You have arrived at your destination');
-      onArrived?.call();
-      notifyListeners();
-      return;
+        await _speak('You have arrived at your destination');
+        onArrived?.call();
+        notifyListeners();
+        return;
+      }
+    } else {
+      _consecutiveArrivalFixes = 0;
     }
 
     // ── 6. Feed the visual renderer ─────────────────────────────────
@@ -2667,6 +2769,7 @@ class NavigationController extends ChangeNotifier {
     final now = eventTime ?? _currentTime;
     _lastGpsStreamEventAt = now;
     _lastNavigationFixAt = now;
+    _fallbackRequestGeneration++;
     _startupGpsWatchdog?.cancel();
     _startupGpsWatchdog = null;
     await _handlePosition(raw, customNow: now);

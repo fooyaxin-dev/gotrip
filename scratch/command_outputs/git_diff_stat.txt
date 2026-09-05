@@ -1,0 +1,7 @@
+warning: in the working copy of 'test/itinerary_arrival_tracking_test.dart', LF will be replaced by CRLF the next time Git touches it
+ lib/modules/main/mainpage.dart            |   5 +-
+ lib/modules/place/placeDetailPage.dart    | 196 +++++++++++++++++++-----------
+ lib/services/location_service.dart        |  46 +++++--
+ lib/services/navigate_service.dart        |  50 +++++---
+ test/itinerary_arrival_tracking_test.dart | 151 ++++++++++++++++++-----
+ 5 files changed, 321 insertions(+), 127 deletions(-)

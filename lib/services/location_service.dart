@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/itineraryModel.dart';
+import 'arrival_policy.dart';
 
 enum LocationStatus {
   success,
@@ -79,6 +80,14 @@ class LocationService extends ChangeNotifier {
   bool isPlaceArrived(String placeId) => _alreadyArrived.contains(placeId);
 
   @visibleForTesting
+  int getConsecutiveArrivalFixes(String placeId) {
+    for (final w in _watchedPlaces) {
+      if (w.placeId == placeId) return w.consecutiveArrivalFixes;
+    }
+    return 0;
+  }
+
+  @visibleForTesting
   Future<Position> Function(
       {LocationAccuracy desiredAccuracy,
       Duration? timeLimit})? testPositionProvider;
@@ -149,7 +158,7 @@ class LocationService extends ChangeNotifier {
   }
 
   // ── Proximity tracking ──
-  static const double _arrivalRadiusMetres = 50;
+  static double get arrivalRadiusMetres => ArrivalPolicy.arrivalRadiusMetres;
 
   final StreamController<PlaceArrivalEvent> _arrivalController =
       StreamController<PlaceArrivalEvent>.broadcast();
@@ -229,6 +238,11 @@ class LocationService extends ChangeNotifier {
 
   void rearmArrival(String placeId) {
     _alreadyArrived.remove(placeId);
+    for (final w in _watchedPlaces) {
+      if (w.placeId == placeId) {
+        w.consecutiveArrivalFixes = 0;
+      }
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -362,6 +376,7 @@ class LocationService extends ChangeNotifier {
   // ─────────────────────────────────────────────
 
   void _checkProximity(Position pos) {
+    final accuracy = pos.accuracy;
     for (final watched in _watchedPlaces) {
       if (_alreadyArrived.contains(watched.placeId)) continue;
 
@@ -372,14 +387,26 @@ class LocationService extends ChangeNotifier {
         watched.lng,
       );
 
-      if (dist <= _arrivalRadiusMetres) {
-        _alreadyArrived.add(watched.placeId);
-        _arrivalController.add(PlaceArrivalEvent(
-          placeId: watched.placeId,
-          placeName: watched.placeName,
-          dayIndex: watched.dayIndex,
-          placeIndex: watched.placeIndex,
-        ));
+      final isQualifying = ArrivalPolicy.isQualifyingFix(
+        distanceMetres: dist,
+        accuracyMetres: accuracy,
+      );
+
+      if (isQualifying) {
+        watched.consecutiveArrivalFixes++;
+        if (watched.consecutiveArrivalFixes >=
+            ArrivalPolicy.requiredConsecutiveFixes) {
+          _alreadyArrived.add(watched.placeId);
+          watched.consecutiveArrivalFixes = 0;
+          _arrivalController.add(PlaceArrivalEvent(
+            placeId: watched.placeId,
+            placeName: watched.placeName,
+            dayIndex: watched.dayIndex,
+            placeIndex: watched.placeIndex,
+          ));
+        }
+      } else {
+        watched.consecutiveArrivalFixes = 0;
       }
     }
   }
@@ -410,6 +437,7 @@ class _WatchedPlace {
   final double lng;
   final int dayIndex;
   final int placeIndex;
+  int consecutiveArrivalFixes = 0;
 
   _WatchedPlace({
     required this.placeId,

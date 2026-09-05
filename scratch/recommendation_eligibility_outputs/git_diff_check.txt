@@ -1,0 +1,2 @@
+warning: in the working copy of 'lib/services/for_you_recommendation_service.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/services/nearbyPlace_service.dart', LF will be replaced by CRLF the next time Git touches it

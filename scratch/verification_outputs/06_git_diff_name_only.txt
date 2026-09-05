@@ -1,0 +1,6 @@
+warning: in the working copy of 'test/itinerary_arrival_tracking_test.dart', LF will be replaced by CRLF the next time Git touches it
+lib/modules/main/mainpage.dart
+lib/modules/place/placeDetailPage.dart
+lib/services/location_service.dart
+lib/services/navigate_service.dart
+test/itinerary_arrival_tracking_test.dart

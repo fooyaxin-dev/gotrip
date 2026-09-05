@@ -1,0 +1,1207 @@
+Flutter assets will be downloaded from https://storage.flutter-io.cn. Make sure you trust this source!
+Resolving dependencies...
+Downloading packages...
+  _flutterfire_internals 1.3.59 (1.3.77 available)
+  algolia_client_core 1.46.2 (1.52.0 available)
+  algolia_client_insights 1.46.2 (1.52.0 available)
+  algolia_client_search 1.46.2 (1.49.2 available)
+  algoliasearch 1.46.2 (1.49.2 available)
+  archive 4.0.7 (4.2.0 available)
+  async 2.13.0 (2.13.1 available)
+  cached_network_image 3.4.1 (4.0.0 available)
+  cached_network_image_platform_interface 4.1.1 (5.0.0 available)
+  cached_network_image_web 1.3.1 (2.0.0 available)
+  camera 0.11.4 (0.12.1 available)
+  camera_android_camerax 0.6.30 (0.7.4+7 available)
+  camera_avfoundation 0.9.23+2 (0.10.3 available)
+  camera_platform_interface 2.12.0 (2.13.1 available)
+  camera_web 0.3.5+3 (0.3.5+5 available)
+  characters 1.4.0 (1.4.1 available)
+  cli_util 0.4.2 (0.6.0 available)
+  clock 1.1.2 (1.1.3 available)
+  cloud_firestore 5.6.12 (6.9.0 available)
+  cloud_firestore_platform_interface 6.6.12 (8.0.7 available)
+  cloud_firestore_web 4.4.12 (5.7.3 available)
+  connectivity_plus 6.1.5 (7.3.1 available)
+  connectivity_plus_platform_interface 2.0.1 (2.1.0 available)
+  cross_file 0.3.5+1 (0.3.5+5 available)
+  cupertino_icons 1.0.8 (1.0.9 available)
+  dbus 0.7.12 (0.7.15 available)
+  dio 5.9.2 (5.11.1 available)
+  dio_web_adapter 2.1.2 (2.2.2 available)
+  equatable 2.0.8 (2.1.0 available)
+  ffi 2.1.5 (2.2.0 available)
+  file_selector_linux 0.9.4 (0.9.4+1 available)
+  file_selector_macos 0.9.5 (0.9.5+1 available)
+  file_selector_windows 0.9.3+5 (0.9.3+6 available)
+  firebase_auth 5.7.0 (6.6.1 available)
+  firebase_auth_platform_interface 7.7.3 (9.0.7 available)
+  firebase_auth_web 5.15.3 (6.2.7 available)
+  firebase_core 3.15.2 (4.14.0 available)
+  firebase_core_platform_interface 6.0.2 (8.1.1 available)
+  firebase_core_web 2.24.1 (3.11.0 available)
+  firebase_crashlytics 4.3.10 (5.3.0 available)
+  firebase_crashlytics_platform_interface 3.8.10 (3.9.0 available)
+  firebase_storage 12.4.10 (13.5.0 available)
+  firebase_storage_platform_interface 5.2.10 (6.0.7 available)
+  firebase_storage_web 3.10.17 (3.11.13 available)
+  fl_chart 0.70.2 (1.2.0 available)
+  flutter_cache_manager 3.4.1 (3.4.2 available)
+  flutter_launcher_icons 0.13.1 (0.14.4 available)
+  flutter_lints 3.0.2 (6.0.0 available)
+  flutter_plugin_android_lifecycle 2.0.33 (2.0.35 available)
+  flutter_svg 2.2.3 (2.3.0 available)
+  font_awesome_flutter 10.12.0 (11.0.0 available)
+  geocoding 3.0.0 (5.0.0 available)
+  geocoding_android 3.3.1 (5.1.0 available)
+  geocoding_platform_interface 3.2.0 (5.0.0 available)
+  geolocator 9.0.2 (14.0.3 available)
+  geolocator_android 4.6.2 (5.0.3 available)
+  geolocator_apple 2.3.13 (2.3.14 available)
+  geolocator_platform_interface 4.2.6 (4.3.0 available)
+  geolocator_web 2.2.1 (4.1.4 available)
+  geolocator_windows 0.1.3 (0.2.5 available)
+  google_fonts 6.3.3 (8.2.1 available)
+  google_maps 8.2.0 (8.3.0 available)
+  google_maps_flutter 2.14.0 (2.18.0 available)
+  google_maps_flutter_android 2.18.9 (2.19.13 available)
+  google_maps_flutter_ios 2.16.1 (2.18.6 available)
+  google_maps_flutter_platform_interface 2.14.1 (2.16.1 available)
+  google_maps_flutter_web 0.5.14+3 (0.6.3 available)
+  google_mlkit_commons 0.11.0 (0.13.0 available)
+  google_mlkit_image_labeling 0.14.1 (0.16.1 available)
+  google_sign_in 6.3.0 (7.2.0 available)
+  google_sign_in_android 6.2.1 (7.2.17 available)
+  google_sign_in_ios 5.9.0 (6.3.3 available)
+  google_sign_in_platform_interface 2.5.0 (3.1.0 available)
+  google_sign_in_web 0.12.4+4 (1.1.3 available)
+  html 0.15.6 (0.15.7 available)
+  image 4.7.2 (4.9.2 available)
+  image_picker 0.8.9 (1.2.3 available)
+  image_picker_android 0.8.13+10 (0.8.13+22 available)
+  image_picker_for_web 2.1.12 (3.1.1 available)
+  image_picker_ios 0.8.13+3 (0.8.13+7 available)
+  intl 0.19.0 (0.20.3 available)
+  json_annotation 4.11.0 (4.12.0 available)
+  lints 3.0.0 (6.1.0 available)
+  lottie 3.3.2 (3.5.1 available)
+  matcher 0.12.17 (0.12.20 available)
+  material_color_utilities 0.11.1 (0.13.1 available)
+  meta 1.17.0 (1.19.0 available)
+  mime 2.0.0 (2.1.0 available)
+  page_transition 2.2.1 (2.2.2 available)
+  path_provider 2.1.5 (2.1.6 available)
+  path_provider_android 2.2.22 (2.3.1 available)
+  path_provider_foundation 2.5.1 (2.6.0 available)
+  path_provider_linux 2.2.1 (2.2.2 available)
+  path_provider_platform_interface 2.1.2 (2.1.3 available)
+  pdf 3.12.0 (3.13.0 available)
+  petitparser 7.0.1 (7.0.2 available)
+  posix 6.0.3 (6.5.2 available)
+  qr 3.0.2 (4.0.0 available)
+  sanitize_html 2.1.0 (2.2.0 available)
+  share_plus 10.1.4 (13.3.0 available)
+  share_plus_platform_interface 5.0.2 (7.2.0 available)
+  shared_preferences 2.5.4 (2.5.5 available)
+  shared_preferences_android 2.4.20 (2.4.28 available)
+  shared_preferences_foundation 2.5.6 (2.5.7 available)
+  shared_preferences_platform_interface 2.4.1 (2.4.2 available)
+  source_span 1.10.1 (1.10.2 available)
+  sqflite 2.4.2+1 (2.4.3 available)
+  sqflite_android 2.4.2+3 (2.4.3 available)
+  sqflite_common 2.5.8 (2.5.11 available)
+  sqflite_darwin 2.4.2 (2.4.3+1 available)
+  sqflite_platform_interface 2.4.0 (2.4.1 available)
+  stack_trace 1.12.1 (1.12.2 available)
+  stream_transform 2.1.1 (2.1.2 available)
+  synchronized 3.4.0 (3.4.1+2 available)
+  test_api 0.7.7 (0.7.14 available)
+  url_launcher_android 6.3.28 (6.3.33 available)
+  url_launcher_ios 6.3.6 (6.4.2 available)
+  url_launcher_linux 3.2.2 (3.2.3 available)
+  url_launcher_macos 3.2.5 (3.2.6 available)
+  url_launcher_web 2.4.2 (2.4.3 available)
+  url_launcher_windows 3.1.5 (3.1.6 available)
+  uuid 4.5.2 (4.6.0 available)
+  vector_graphics 1.1.19 (1.2.3 available)
+  vector_graphics_compiler 1.1.20 (1.3.0 available)
+  vector_math 2.2.0 (2.4.2 available)
+  video_player 2.11.1 (2.14.0 available)
+  video_player_android 2.9.5 (2.12.2 available)
+  video_player_avfoundation 2.9.4 (2.11.1 available)
+  video_player_platform_interface 6.6.0 (6.9.0 available)
+  vm_service 15.0.2 (15.3.0 available)
+  win32 5.15.0 (6.4.0 available)
+  xml 6.6.1 (7.0.1 available)
+  yaml 3.1.3 (3.1.4 available)
+Got dependencies!
+133 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+00:00 +0: loading d:/gotrip/test/navigation_metric_truth_test.dart
+00:00 +0: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 1. Total Drive distance comes from RouteResult.distanceMeters
+00:00 +1: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 2. Total Walk distance comes from the Walk RouteResult
+00:00 +2: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 3. Motorcycle preview never silently labels Drive data as Motorcycle
+00:00 +3: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 4. Explicit Motorcycle fallback is reused during active navigation
+00:00 +4: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 5. Progress is based on matched distance along route
+00:00 +5: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 6. Remaining road distance uses API distance scaled by polyline progress
+00:00 +6: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 7. Remaining distance does not use destination straight-line distance
+00:00 +7: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 8. Remaining duration decreases consistently with route progress
+00:00 +8: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 9. Zero GPS speed does not make ETA infinite
+00:00 +9: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 10. One inaccurate forward GPS jump does not permanently advance progress
+00:00 +10: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 11. Progress does not move backward under ordinary jitter
+00:00 +11: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 12. Next-turn instruction and distance use the same step
+00:00 +12: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 13. Reroute atomically replaces all route metrics
+00:00 +13: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 14. Failed reroute preserves the last valid route metrics
+00:00 +14: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 15. Stale GPS stops unlimited prediction
+00:00 +15: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 16. Fresh origin is preferred before navigation starts
+00:00 +16: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 17. Invalid (0,0) coordinates are rejected
+00:00 +17: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 18. Existing lower-marker, progress-bar and camera configuration remain present
+00:00 +18: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 19. Walk, Motorcycle and Drive all remain supported
+00:00 +19: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1 — Navigation Metric Truth and Mode Parity Tests 20. Progress clamp guarantees no NaN or infinity and reaches 1.0 only on arrival
+00:00 +20: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.1 — ETA Traffic Calibration and Origin Freshness Tests 1. Sum of adjusted step durations equals route baseline duration
+00:00 +21: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.1 — ETA Traffic Calibration and Origin Freshness Tests 2. Half-completed current step reduces adjusted remaining time correctly
+00:00 +22: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.1 — ETA Traffic Calibration and Origin Freshness Tests 3. Traffic-aware route duration remains authoritative
+00:00 +23: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.1 — ETA Traffic Calibration and Origin Freshness Tests 4. Zero step durations use proportional fallback
+00:00 +24: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.1 — ETA Traffic Calibration and Origin Freshness Tests 5. Recent cached GPS is accepted
+00:00 +25: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +26: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +27: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +28: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +29: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +30: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +31: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +32: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +33: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +34: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +35: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +36: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +37: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +38: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+00:00 +39: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+00:00 +39: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2 — Bounded Live Traffic ETA Refresh Tests 8. Valid refreshed result updates authoritative duration and road distance
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=5000.0
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=5000.0
+predictionState=WAIT GPS
+00:00 +39: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 1. Same-route accepted Progress never decreases
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=33.4m delta=33.4m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +40: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2 — Bounded Live Traffic ETA Refresh Tests 8. Valid refreshed result updates authoritative duration and road distance
+00:00 +40: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 2. Same-route Visual never decreases during normal forward travel
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=33.4m delta=33.4m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +41: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2 — Bounded Live Traffic ETA Refresh Tests 8. Valid refreshed result updates authoritative duration and road distance
+[NAV_TRAFFIC][APPLIED]
+sessionId=
+requestId=0
+oldRemainingSeconds=600
+newRemainingSeconds=950
+oldRemainingMeters=5000.0
+newRemainingMeters=4500.0
+source=google_routes_api
+00:00 +42: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 3. Reproduce Case A: Progress fixed at 308.5m, dead-reckoning collapses, Visual does not move backward
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=30.8m delta=30.8m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +43: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2 — Bounded Live Traffic ETA Refresh Tests 9. Failed refresh preserves the previous route and metrics
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=5000.0
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=0.0
+predictionState=WAIT GPS
+00:00 +44: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 4. Reproduce stop case (Case E): speed drops to 0, prediction becomes 0, Visual does not move backward or remain materially ahead
+00:00 +45: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 4. Reproduce stop case (Case E): speed drops to 0, prediction becomes 0, Visual does not move backward or remain materially ahead
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=39.9m delta=39.9m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +46: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2 — Bounded Live Traffic ETA Refresh Tests 11. Stopping or disposing navigation cancels scheduled refresh work
+00:00 +46: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 5. Single derived-speed spike does not produce implausible speed jump or massive prediction overshoot
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+00:00 +47: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 5. Single derived-speed spike does not produce implausible speed jump or massive prediction overshoot
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=33.4m delta=33.4m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +48: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2 — Bounded Live Traffic ETA Refresh Tests 12. Off-route reroute cannot be overwritten by an older traffic response
+00:00 +49: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 5B. First-sample speed spike from zero speed is rate-limited and does not inflate prediction lead
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=0.0m delta=0.0m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +50: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2 — Bounded Live Traffic ETA Refresh Tests 13. Existing calculateRemainingDuration() behaviour remains correct
+00:00 +51: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 6. Repeated MATCH/HOLD cycles do not cause forward-backward oscillation
+00:00 +52: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 6. Repeated MATCH/HOLD cycles do not cause forward-backward oscillation
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+00:00 +53: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 6. Repeated MATCH/HOLD cycles do not cause forward-backward oscillation
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=27.8m delta=27.8m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +54: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2A — Lifecycle and Route Request Protection Tests 2. shouldLaunchPendingReroute prevents launching when disposed, arrived or no position
+00:00 +55: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 7. Stale or inaccurate fixes do not pull Visual backward
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+00:00 +56: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 7. Stale or inaccurate fixes do not pull Visual backward
+NAV MATCH progress=33.4m delta=33.4m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +57: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2A — Lifecycle and Route Request Protection Tests 4. Disposal lifecycle cancels scheduled refresh timer and marks disposed
+00:00 +58: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 8. Marker production position follows non-regressing Visual progress
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=27.8m delta=27.8m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +59: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2A — Lifecycle and Route Request Protection Tests 5. Real production failure path uses injectable routeFetcher
+00:00 +59: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 9. Camera target coordinates follow the same non-regressing positionNotifier stream (controller/structural coverage)
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=27.8m delta=27.8m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +60: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2A — Lifecycle and Route Request Protection Tests 5. Real production failure path uses injectable routeFetcher
+00:00 +60: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 10. Segment and Step remain monotonic on the same route
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=556.0
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=44.5m delta=44.5m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +61: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2A — Lifecycle and Route Request Protection Tests 5. Real production failure path uses injectable routeFetcher
+00:00 +61: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 11. Legitimate next-maneuver distance reset still works when step advances
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=556.0
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=35.6m delta=35.6m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +62: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2A — Lifecycle and Route Request Protection Tests 5. Real production failure path uses injectable routeFetcher
+00:00 +62: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 12. A confirmed reroute/new route generation can reset Progress and Visual
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=39.9m delta=39.9m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_METRIC][REROUTE]
+oldRouteMeters=2003.8
+newRouteMeters=2226.4
+metricsReset=true
+source=google_routes_api
+00:00 +63: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16B1.2A — Lifecycle and Route Request Protection Tests 5. Real production failure path uses injectable routeFetcher
+00:00 +63: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][TRIGGERED]
+sessionId=
+generation=0
+originLat=5.005
+originLng=100.005
+destinationLat=5.018
+destinationLng=100.0
+mode=drive
+[NAV_REROUTE][TRIGGERED]
+sessionId=
+generation=1
+originLat=5.006
+originLng=100.006
+destinationLat=5.018
+destinationLng=100.0
+mode=drive
+00:00 +64: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +64: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C — Real-Time Navigation Origin, Route Progress and Reliable Rerouting Tests 1. Preview origin resolver uses fresh high-accuracy GPS when valid
+[NAV_ORIGIN][PREVIEW]
+source=fresh_gps
+gpsAgeMs=0
+lat=5.4165
+lng=100.3325
+00:00 +65: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +65: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C — Real-Time Navigation Origin, Route Progress and Reliable Rerouting Tests 2. Preview origin resolver falls back gracefully on provider error
+[NAV_ORIGIN][PREVIEW]
+source=fallback_passed_coordinate
+gpsAgeMs=-1
+lat=5.414
+lng=100.329
+00:00 +66: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +66: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C — Real-Time Navigation Origin, Route Progress and Reliable Rerouting Tests 3. Preview origin resolver rejects invalid (0,0) coordinates and falls back
+[NAV_ORIGIN][PREVIEW]
+source=fallback_passed_coordinate
+gpsAgeMs=0
+lat=5.414
+lng=100.329
+00:00 +67: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +68: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +69: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +70: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +71: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +72: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +73: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +73: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C1 — Fresh GPS Validation and Route Colour Seam Tests 1. GPS age <=10 seconds is accepted as fresh_gps
+[NAV_ORIGIN][PREVIEW]
+source=fresh_gps
+gpsAgeMs=5000
+lat=5.4165
+lng=100.3325
+00:00 +74: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +74: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C1 — Fresh GPS Validation and Route Colour Seam Tests 2. GPS age >10 seconds is rejected and preserves calculated age
+[NAV_ORIGIN][PREVIEW]
+source=fallback_passed_coordinate
+gpsAgeMs=15000
+lat=5.414
+lng=100.329
+00:00 +75: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +75: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C1 — Fresh GPS Validation and Route Colour Seam Tests 3. Future timestamp is rejected beyond clock tolerance
+[NAV_ORIGIN][PREVIEW]
+source=fallback_passed_coordinate
+gpsAgeMs=-5000
+lat=5.414
+lng=100.329
+00:00 +76: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +76: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C1 — Fresh GPS Validation and Route Colour Seam Tests 4. Accuracy >60m is rejected and falls back
+[NAV_ORIGIN][PREVIEW]
+source=fallback_passed_coordinate
+gpsAgeMs=2000
+lat=5.414
+lng=100.329
+00:00 +77: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +77: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C1 — Fresh GPS Validation and Route Colour Seam Tests 5. Accuracy <=60m is accepted as fresh_gps
+[NAV_ORIGIN][PREVIEW]
+source=fresh_gps
+gpsAgeMs=2000
+lat=5.4165
+lng=100.3325
+00:00 +78: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +78: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C1 — Fresh GPS Validation and Route Colour Seam Tests 6. Invalid fallback does not cause route request when GPS fails
+[NAV_ORIGIN][PREVIEW]
+source=fallback_passed_coordinate
+gpsAgeMs=-1
+lat=0.0
+lng=0.0
+00:00 +79: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +80: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +80: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C1 — Fresh GPS Validation and Route Colour Seam Tests 8. displayedRoutePoint returns point strictly on route at displayDistAlongRoute
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=667.9
+remainingDurationSec=300
+eta=10:57 PM
+currentStepIndex=0
+nextTurnMeters=0.0
+predictionState=WAIT GPS
+00:00 +81: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +81: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C1 — Fresh GPS Validation and Route Colour Seam Tests 9. displayedRoutePoint stays on route even when raw GPS/marker is off-route
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=667.9
+remainingDurationSec=300
+eta=10:57 PM
+currentStepIndex=0
+nextTurnMeters=0.0
+predictionState=WAIT GPS
+00:00 +82: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+[NAV_METRIC][REROUTE]
+oldRouteMeters=2003.8
+newRouteMeters=1570.3
+metricsReset=true
+source=google_routes_api
+[NAV_REROUTE][APPLIED]
+sessionId=
+generation=3
+newRoadDistanceMeters=1570.3
+newDurationSeconds=600
+message="Route updated"
+00:00 +82: d:/gotrip/test/navigation_metric_truth_test.dart: Task 16C1 — Fresh GPS Validation and Route Colour Seam Tests 10. Newly applied route updates displayedRoutePoint to new route
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=1000.0
+remainingDurationSec=300
+eta=10:57 PM
+currentStepIndex=0
+nextTurnMeters=0.0
+predictionState=WAIT GPS
+[NAV_METRIC][REROUTE]
+oldRouteMeters=1000.0
+newRouteMeters=1200.0
+metricsReset=true
+source=google_routes_api
+00:00 +83: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 13. Late asynchronous results from previous route generation cannot overwrite active route
+00:00 +84: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 14. Existing Drive, Motorcycle and Walk modes maintain appropriate prediction bounds
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=25.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=18.6m delta=18.6m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=22.3m delta=22.3m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=22.3m delta=22.3m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +85: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 15. Two processed fixes exactly 1 second apart produce dtFix approximately 1.0s, not 0.2s
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=11.1m delta=11.1m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=22.3m delta=11.1m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+00:00 +86: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 16. Two processed fixes exactly 500ms apart use approximately 0.5s
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=11.1m delta=11.1m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +87: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 17. Production stream pre-updating GPS-age state does not overwrite separate speed-sample interval
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=11.1m delta=11.1m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=22.3m delta=11.1m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+00:00 +88: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 18. Acceleration limit scales with elapsed time (0.5s vs 1.0s vs 2.0s)
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=0.0m delta=0.0m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=0.0m delta=0.0m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=11.1m delta=11.1m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=0.0m delta=0.0m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=11.1m delta=11.1m recovery=2.0s rawRouteDist=0.0m gps±=5.0m
+00:00 +89: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 19. Deceleration scales with real elapsed time
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=0.0m delta=0.0m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=22.3m delta=22.3m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=44.5m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=66.8m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=89.1m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=111.3m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=0.0m delta=0.0m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=22.3m delta=22.3m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=44.5m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=66.8m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=89.1m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=111.3m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=111.3m delta=0.0m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=0.0m delta=0.0m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=22.3m delta=22.3m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=44.5m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=66.8m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=89.1m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=111.3m delta=22.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=111.3m delta=0.0m recovery=2.0s rawRouteDist=0.0m gps±=5.0m
+00:00 +90: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 20. First abnormal speed sample from rest cannot jump directly to mode ceiling
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=11.1m delta=11.1m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+00:00 +91: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 21. Normal vehicle accelerating from rest does not remain artificially slow because of 0.2s clamping
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=0.0m delta=0.0m recovery=0.2s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=3.3m delta=3.3m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+[NAV_REROUTE][GPS_CHECK]
+accuracyMeters=5.0
+distanceFromRouteMeters=0.0
+effectiveThresholdMeters=40.0
+consecutiveOffRouteFixes=0
+offRouteDurationMs=0
+eligible=false
+reason=on_route
+NAV MATCH progress=8.9m delta=5.6m recovery=1.0s rawRouteDist=0.0m gps±=5.0m
+00:00 +92: d:/gotrip/test/navigation_visual_progress_test.dart: GPS Navigation Visual Progress & Monotonicity Production Tests 22. Route generation mechanism does not duplicate, invalidate, or disrupt navigation flows
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_METRIC][LIVE]
+gpsAgeMs=-1
+gpsAccuracyM=0.0
+matchedPolylineMeters=0.0
+progress=0.0%
+remainingRoadMeters=2003.8
+remainingDurationSec=600
+eta=11:02 PM
+currentStepIndex=0
+nextTurnMeters=2003.8
+predictionState=WAIT GPS
+[NAV_REROUTE][TRIGGERED]
+sessionId=
+generation=0
+originLat=5.005
+originLng=100.005
+destinationLat=5.018
+destinationLng=100.0
+mode=drive
+[NAV_METRIC][REROUTE]
+oldRouteMeters=2003.8
+newRouteMeters=1113.2
+metricsReset=true
+source=google_routes_api
+[NAV_REROUTE][APPLIED]
+sessionId=
+generation=1
+newRoadDistanceMeters=1113.2
+newDurationSeconds=600
+message="Route updated"
+[NAV_TRAFFIC][APPLIED]
+sessionId=
+requestId=0
+oldRemainingSeconds=600
+newRemainingSeconds=500
+oldRemainingMeters=1113.2
+newRemainingMeters=1000.0
+source=google_routes_api
+00:00 +93: All tests passed!

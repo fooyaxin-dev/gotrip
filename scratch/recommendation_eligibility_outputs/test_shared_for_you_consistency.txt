@@ -1,0 +1,585 @@
+Flutter assets will be downloaded from https://storage.flutter-io.cn. Make sure you trust this source!
+Resolving dependencies...
+Downloading packages...
+  _flutterfire_internals 1.3.59 (1.3.77 available)
+  algolia_client_core 1.46.2 (1.52.0 available)
+  algolia_client_insights 1.46.2 (1.52.0 available)
+  algolia_client_search 1.46.2 (1.49.2 available)
+  algoliasearch 1.46.2 (1.49.2 available)
+  archive 4.0.7 (4.2.0 available)
+  async 2.13.0 (2.13.1 available)
+  cached_network_image 3.4.1 (4.0.0 available)
+  cached_network_image_platform_interface 4.1.1 (5.0.0 available)
+  cached_network_image_web 1.3.1 (2.0.0 available)
+  camera 0.11.4 (0.12.1 available)
+  camera_android_camerax 0.6.30 (0.7.4+7 available)
+  camera_avfoundation 0.9.23+2 (0.10.3 available)
+  camera_platform_interface 2.12.0 (2.13.1 available)
+  camera_web 0.3.5+3 (0.3.5+5 available)
+  characters 1.4.0 (1.4.1 available)
+  cli_util 0.4.2 (0.6.0 available)
+  clock 1.1.2 (1.1.3 available)
+  cloud_firestore 5.6.12 (6.9.0 available)
+  cloud_firestore_platform_interface 6.6.12 (8.0.7 available)
+  cloud_firestore_web 4.4.12 (5.7.3 available)
+  connectivity_plus 6.1.5 (7.3.1 available)
+  connectivity_plus_platform_interface 2.0.1 (2.1.0 available)
+  cross_file 0.3.5+1 (0.3.5+5 available)
+  cupertino_icons 1.0.8 (1.0.9 available)
+  dbus 0.7.12 (0.7.15 available)
+  dio 5.9.2 (5.11.1 available)
+  dio_web_adapter 2.1.2 (2.2.2 available)
+  equatable 2.0.8 (2.1.0 available)
+  ffi 2.1.5 (2.2.0 available)
+  file_selector_linux 0.9.4 (0.9.4+1 available)
+  file_selector_macos 0.9.5 (0.9.5+1 available)
+  file_selector_windows 0.9.3+5 (0.9.3+6 available)
+  firebase_auth 5.7.0 (6.6.1 available)
+  firebase_auth_platform_interface 7.7.3 (9.0.7 available)
+  firebase_auth_web 5.15.3 (6.2.7 available)
+  firebase_core 3.15.2 (4.14.0 available)
+  firebase_core_platform_interface 6.0.2 (8.1.1 available)
+  firebase_core_web 2.24.1 (3.11.0 available)
+  firebase_crashlytics 4.3.10 (5.3.0 available)
+  firebase_crashlytics_platform_interface 3.8.10 (3.9.0 available)
+  firebase_storage 12.4.10 (13.5.0 available)
+  firebase_storage_platform_interface 5.2.10 (6.0.7 available)
+  firebase_storage_web 3.10.17 (3.11.13 available)
+  fl_chart 0.70.2 (1.2.0 available)
+  flutter_cache_manager 3.4.1 (3.4.2 available)
+  flutter_launcher_icons 0.13.1 (0.14.4 available)
+  flutter_lints 3.0.2 (6.0.0 available)
+  flutter_plugin_android_lifecycle 2.0.33 (2.0.35 available)
+  flutter_svg 2.2.3 (2.3.0 available)
+  font_awesome_flutter 10.12.0 (11.0.0 available)
+  geocoding 3.0.0 (5.0.0 available)
+  geocoding_android 3.3.1 (5.1.0 available)
+  geocoding_platform_interface 3.2.0 (5.0.0 available)
+  geolocator 9.0.2 (14.0.3 available)
+  geolocator_android 4.6.2 (5.0.3 available)
+  geolocator_apple 2.3.13 (2.3.14 available)
+  geolocator_platform_interface 4.2.6 (4.3.0 available)
+  geolocator_web 2.2.1 (4.1.4 available)
+  geolocator_windows 0.1.3 (0.2.5 available)
+  google_fonts 6.3.3 (8.2.1 available)
+  google_maps 8.2.0 (8.3.0 available)
+  google_maps_flutter 2.14.0 (2.18.0 available)
+  google_maps_flutter_android 2.18.9 (2.19.13 available)
+  google_maps_flutter_ios 2.16.1 (2.18.6 available)
+  google_maps_flutter_platform_interface 2.14.1 (2.16.1 available)
+  google_maps_flutter_web 0.5.14+3 (0.6.3 available)
+  google_mlkit_commons 0.11.0 (0.13.0 available)
+  google_mlkit_image_labeling 0.14.1 (0.16.1 available)
+  google_sign_in 6.3.0 (7.2.0 available)
+  google_sign_in_android 6.2.1 (7.2.17 available)
+  google_sign_in_ios 5.9.0 (6.3.3 available)
+  google_sign_in_platform_interface 2.5.0 (3.1.0 available)
+  google_sign_in_web 0.12.4+4 (1.1.3 available)
+  html 0.15.6 (0.15.7 available)
+  image 4.7.2 (4.9.2 available)
+  image_picker 0.8.9 (1.2.3 available)
+  image_picker_android 0.8.13+10 (0.8.13+22 available)
+  image_picker_for_web 2.1.12 (3.1.1 available)
+  image_picker_ios 0.8.13+3 (0.8.13+7 available)
+  intl 0.19.0 (0.20.3 available)
+  json_annotation 4.11.0 (4.12.0 available)
+  lints 3.0.0 (6.1.0 available)
+  lottie 3.3.2 (3.5.1 available)
+  matcher 0.12.17 (0.12.20 available)
+  material_color_utilities 0.11.1 (0.13.1 available)
+  meta 1.17.0 (1.19.0 available)
+  mime 2.0.0 (2.1.0 available)
+  page_transition 2.2.1 (2.2.2 available)
+  path_provider 2.1.5 (2.1.6 available)
+  path_provider_android 2.2.22 (2.3.1 available)
+  path_provider_foundation 2.5.1 (2.6.0 available)
+  path_provider_linux 2.2.1 (2.2.2 available)
+  path_provider_platform_interface 2.1.2 (2.1.3 available)
+  pdf 3.12.0 (3.13.0 available)
+  petitparser 7.0.1 (7.0.2 available)
+  posix 6.0.3 (6.5.2 available)
+  qr 3.0.2 (4.0.0 available)
+  sanitize_html 2.1.0 (2.2.0 available)
+  share_plus 10.1.4 (13.3.0 available)
+  share_plus_platform_interface 5.0.2 (7.2.0 available)
+  shared_preferences 2.5.4 (2.5.5 available)
+  shared_preferences_android 2.4.20 (2.4.28 available)
+  shared_preferences_foundation 2.5.6 (2.5.7 available)
+  shared_preferences_platform_interface 2.4.1 (2.4.2 available)
+  source_span 1.10.1 (1.10.2 available)
+  sqflite 2.4.2+1 (2.4.3 available)
+  sqflite_android 2.4.2+3 (2.4.3 available)
+  sqflite_common 2.5.8 (2.5.11 available)
+  sqflite_darwin 2.4.2 (2.4.3+1 available)
+  sqflite_platform_interface 2.4.0 (2.4.1 available)
+  stack_trace 1.12.1 (1.12.2 available)
+  stream_transform 2.1.1 (2.1.2 available)
+  synchronized 3.4.0 (3.4.1+2 available)
+  test_api 0.7.7 (0.7.14 available)
+  url_launcher_android 6.3.28 (6.3.33 available)
+  url_launcher_ios 6.3.6 (6.4.2 available)
+  url_launcher_linux 3.2.2 (3.2.3 available)
+  url_launcher_macos 3.2.5 (3.2.6 available)
+  url_launcher_web 2.4.2 (2.4.3 available)
+  url_launcher_windows 3.1.5 (3.1.6 available)
+  uuid 4.5.2 (4.6.0 available)
+  vector_graphics 1.1.19 (1.2.3 available)
+  vector_graphics_compiler 1.1.20 (1.3.0 available)
+  vector_math 2.2.0 (2.4.2 available)
+  video_player 2.11.1 (2.14.0 available)
+  video_player_android 2.9.5 (2.12.2 available)
+  video_player_avfoundation 2.9.4 (2.11.1 available)
+  video_player_platform_interface 6.6.0 (6.9.0 available)
+  vm_service 15.0.2 (15.3.0 available)
+  win32 5.15.0 (6.4.0 available)
+  xml 6.6.1 (7.0.1 available)
+  yaml 3.1.3 (3.1.4 available)
+Got dependencies!
+133 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+00:00 +0: loading d:/gotrip/test/shared_for_you_consistency_test.dart
+00:00 +0: d:/gotrip/test/shared_for_you_consistency_test.dart: A. Authoritative Shared For You Pipeline 1. Shared For You combines DISTANCE and POPULARITY candidates [Production Service Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=1)
+00:00 +1: d:/gotrip/test/shared_for_you_consistency_test.dart: A. Authoritative Shared For You Pipeline 2. Duplicate Place IDs appear once [Production Service Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=2)
+00:00 +2: d:/gotrip/test/shared_for_you_consistency_test.dart: A. Authoritative Shared For You Pipeline 3. Geoapify candidates are excluded from For You [Production Service Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=3)
+00:00 +3: d:/gotrip/test/shared_for_you_consistency_test.dart: A. Authoritative Shared For You Pipeline 4. Closed places (isOpenNow == false) are excluded [Production Service Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=4)
+00:00 +4: d:/gotrip/test/shared_for_you_consistency_test.dart: A. Authoritative Shared For You Pipeline 5. Photoless places are excluded on both surfaces [Production Service Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=5)
+00:00 +5: d:/gotrip/test/shared_for_you_consistency_test.dart: A. Authoritative Shared For You Pipeline 6. The same distance/radius rule is applied across travel modes [Production Service Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=6)
+00:00 +6: d:/gotrip/test/shared_for_you_consistency_test.dart: A. Authoritative Shared For You Pipeline 7. Deterministic tie-breaking produces the same order regardless of input order [Production Algorithm Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=7)
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=500m → score=0.75
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=500m → score=0.75
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=200m → score=0.90
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=800m → score=0.60
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=800m → score=0.60
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=200m → score=0.90
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=500m → score=0.75
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=500m → score=0.75
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=200m → score=0.90
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=500m → score=0.75
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=800m → score=0.60
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=500m → score=0.75
+00:00 +7: d:/gotrip/test/shared_for_you_consistency_test.dart: A. Authoritative Shared For You Pipeline 8 & 9. MainPage preview is exactly first 7 IDs and DetectPlace For You consumes complete result in same order [Production Consistency Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=8)
+00:00 +8: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10. For You View All selects SortMode.recommended [Production Route Contract]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=9)
+00:00 +9: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 11. Nearby View All selects SortMode.distance (Nearest) [Production Route Contract]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=10)
+00:00 +10: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 12. Default DetectPlace entry selects SortMode.recommended [Production Route Contract]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=11)
+00:00 +11: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10b. RealTimeDetectPage.isValidInitialSnapshot validates matching context and rejects mismatch [Production Helper Seam]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=12)
+00:00 +12: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10c. MainPage navigation seams construct correct SortMode and pass valid snapshot [Production Navigation Seam]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=13)
+00:00 +13: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10d. Initial snapshot validation uses saved walk mode radius (2000m) [Production Seam Coverage; Live Rendered Zero-Flicker Unverified Pending Real-Phone Testing]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=14)
+00:00 +14: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10e. Initial snapshot validation uses saved motor mode radius (8000m) [Production Seam Coverage; Live Rendered Zero-Flicker Unverified Pending Real-Phone Testing]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=15)
+00:00 +15: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10f. Initial snapshot validation uses saved drive mode radius (12000m) [Production Seam Coverage; Live Rendered Zero-Flicker Unverified Pending Real-Phone Testing]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=16)
+00:00 +16: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10g. Saved Walk with no override: For You View All transfers Walk; Nearby View All transfers Walk [Production Navigation Seam]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=17)
+00:00 +17: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10h. Saved Walk + temporary Motor override: View All transfers Motor and 8000m snapshot; saved preference remains Walk [Production Navigation Seam]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=18)
+00:00 +18: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10i. Saved Walk + temporary Drive override: View All transfers Drive and 12000m context; saved preference remains Walk [Production Navigation Seam]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=19)
+00:00 +19: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10j. RealTimeDetectPage supplied initialTravelMode takes precedence only for that page session [Production Seam Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=20)
+00:00 +20: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10k. RealTimeDetectPage without initialTravelMode continues using saved preferences [Production Seam Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=21)
+00:00 +21: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10l. A transferred Motor/Drive snapshot validates immediately against the transferred mode radius [Production Seam Coverage; Live Rendered Zero-Flicker Unverified Pending Real-Phone Testing]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=22)
+00:00 +22: d:/gotrip/test/shared_for_you_consistency_test.dart: B. MainPage Navigation & Mode Routing 10m. Landmark mode still rejects a normal user-GPS initial snapshot [Production Isolation Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=23)
+00:00 +23: d:/gotrip/test/shared_for_you_consistency_test.dart: C. Invalidation, Isolation & Stale Protection 13. Preference invalidation causes both surfaces to receive the same rebuilt result [Production Seam Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=24)
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=25)
+00:00 +24: d:/gotrip/test/shared_for_you_consistency_test.dart: C. Invalidation, Isolation & Stale Protection 13b. Snapshot in flight when preference revision changes is not committed; subsequent requests receive new snapshot [Production Race Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=26)
+00:00 +25: d:/gotrip/test/shared_for_you_consistency_test.dart: C. Invalidation, Isolation & Stale Protection 14. Manual/location refresh invalidation does not reuse a stale context [Production Seam Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=27)
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=28)
+00:00 +26: d:/gotrip/test/shared_for_you_consistency_test.dart: C. Invalidation, Isolation & Stale Protection 15. Search snapshot cannot overwrite normal GPS snapshot [Production Isolation Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=29)
+00:00 +27: d:/gotrip/test/shared_for_you_consistency_test.dart: C. Invalidation, Isolation & Stale Protection 16. Landmark snapshot cannot overwrite normal GPS snapshot [Production Isolation Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=30)
+00:00 +28: d:/gotrip/test/shared_for_you_consistency_test.dart: C. Invalidation, Isolation & Stale Protection 16b. Landmark recommended mode triggers popularity prefetch and integrates candidates [Production Bootstrap Seam Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=31)
+00:00 +29: d:/gotrip/test/shared_for_you_consistency_test.dart: C. Invalidation, Isolation & Stale Protection 17. A stale in-flight request cannot overwrite a newer generation [Production Async Guard Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=32)
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=33)
+00:00 +30: d:/gotrip/test/shared_for_you_consistency_test.dart: D. Algorithm Preservation 18. Nearest remains DISTANCE-only and sorted ascending [Production Preservation Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=34)
+00:00 +31: d:/gotrip/test/shared_for_you_consistency_test.dart: D. Algorithm Preservation 19. Rank remains POPULARITY-only and preserves its existing ordering [Production Preservation Coverage]
+♻️ ForYouRecommendationService: invalidated user GPS snapshot (gen=35)
+00:00 +32: d:/gotrip/test/realtime_detect_place_test.dart: Group 1: Mode Selection & Defaults 1. For You is the default mode (RealTimeDetectPage.defaultSortMode) upon initialization [Structural Production Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +33: d:/gotrip/test/realtime_detect_place_test.dart: Group 1: Mode Selection & Defaults 2. DISTANCE results are usable immediately without awaiting POPULARITY [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +34: d:/gotrip/test/realtime_detect_place_test.dart: Group 1: Mode Selection & Defaults 3. Background POPULARITY Future invocation [Service Async Boundary; Automatic Page Triggering Unverified Pending Real-Phone Testing]
+♻️ Google raw caches cleared for ALL locations
+💰 Google DISTANCE raw cache MISS for 3.139,101.687:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 2000m)
+🟡 API Call #1: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #2: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #3: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #4: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 0 places (0ms)
+✅ searchNearby: 0 places (0ms)
+✅ searchNearby: 0 places (0ms)
+✅ searchNearby: 0 places (0ms)
+📦 Google DISTANCE raw response: 0 results
+✅ Google DISTANCE cache STORED for 3.139,101.687:DISTANCE:ALL: 0 places @ 15000m
+💰 Google POPULARITY raw cache MISS for 3.139,101.687:POPULARITY:ALL — calling Google Places API ONCE at radius 15000m (requested: 2000m)
+🟡 API Call #5: searchNearby | restaurant | rank=POPULARITY
+🟡 API Call #6: searchNearby | movie_theater | rank=POPULARITY
+🟡 API Call #7: searchNearby | subway_station | rank=POPULARITY
+🟡 API Call #8: searchNearby | park | rank=POPULARITY
+✅ searchNearby: 0 places (0ms)
+✅ searchNearby: 0 places (0ms)
+✅ searchNearby: 0 places (0ms)
+✅ searchNearby: 0 places (0ms)
+📦 Google POPULARITY raw response: 0 results
+✅ Google POPULARITY cache STORED for 3.139,101.687:POPULARITY:ALL: 0 places @ 15000m
+00:00 +35: d:/gotrip/test/realtime_detect_place_test.dart: Group 2: For You Mode 4. For You candidate pool combines and deduplicates DISTANCE and POPULARITY preserving distance instance [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +36: d:/gotrip/test/realtime_detect_place_test.dart: Group 2: For You Mode 5. UserPreferenceService.instance.buildForYouList processes combined pool without altering ranking algorithm [Production Helper Coverage]
+♻️ Google raw caches cleared for ALL locations
+📏 _distanceScore: mode=walk, baseline=2000.0m, dist=300m → score=0.85
+00:00 +37: d:/gotrip/test/realtime_detect_place_test.dart: Group 3: Nearest Mode 6. Nearest tab uses ONLY DISTANCE candidates and strictly excludes POPULARITY-only places [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +38: d:/gotrip/test/realtime_detect_place_test.dart: Group 3: Nearest Mode 7. Nearest sorts distance ascending and places with missing distance last [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +39: d:/gotrip/test/realtime_detect_place_test.dart: Group 4: Rank Mode 8. Rank tab uses ONLY POPULARITY candidates and strictly excludes DISTANCE-only places [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +40: d:/gotrip/test/realtime_detect_place_test.dart: Group 4: Rank Mode 9. Rank sorts rating descending and places with missing rating last [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +41: d:/gotrip/test/realtime_detect_place_test.dart: Group 4: Rank Mode 10. Equal-rating Rank results break ties using POPULARITY response order first, then distance [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +42: d:/gotrip/test/realtime_detect_place_test.dart: Group 4: Rank Mode 11. Rank displays honest loading indicator when POPULARITY is loading [Production Component-Widget Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +43: d:/gotrip/test/realtime_detect_place_test.dart: Group 4: Rank Mode 12. POPULARITY candidate pool integration [Service Seam Coverage; UI Scroll/Filter Preservation Unverified Pending Real-Phone Testing]
+♻️ Google raw caches cleared for ALL locations
+00:00 +44: d:/gotrip/test/realtime_detect_place_test.dart: Group 4: Rank Mode 13. Stale async response protection [Source-Reviewed Structural Analysis; Runtime Guard Unverified Pending Real-Phone Testing]
+♻️ Google raw caches cleared for ALL locations
+00:00 +45: d:/gotrip/test/realtime_detect_place_test.dart: Group 5: Category Filtering 14. Search-mode category filtering operates strictly on active candidate pool [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +46: d:/gotrip/test/realtime_detect_place_test.dart: Group 5: Category Filtering 15. Landmark-mode category filtering operates strictly on active candidate pool [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +47: d:/gotrip/test/realtime_detect_place_test.dart: Group 6: Google Places API & Cache Isolation 16. One failed Google type group retains successful groups without throwing away valid data [Production Service Coverage]
+♻️ Google raw caches cleared for ALL locations
+💰 Google DISTANCE raw cache MISS for 3.139,101.687:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 2000m)
+🟡 API Call #9: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #10: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #11: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #12: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (4ms)
+✅ searchNearby: 1 places (4ms)
+✅ searchNearby: 1 places (4ms)
+⚠️ Google type group search failed (DISTANCE): Exception: searchNearby failed: {"error": "Internal Server Error"}
+📦 Google DISTANCE raw response: 3 results
+✅ Google DISTANCE cache STORED for 3.139,101.687:DISTANCE:ALL: 1 places @ 15000m
+00:00 +48: d:/gotrip/test/realtime_detect_place_test.dart: Group 6: Google Places API & Cache Isolation 17. PlacesApiService sends correct rankPreference payload in DISTANCE and POPULARITY requests [Production Service Coverage]
+♻️ Google raw caches cleared for ALL locations
+🟡 API Call #13: searchNearby | restaurant | rank=DISTANCE
+✅ searchNearby: 0 places (2ms)
+🟡 API Call #14: searchNearby | restaurant | rank=POPULARITY
+✅ searchNearby: 0 places (0ms)
+00:00 +49: d:/gotrip/test/realtime_detect_place_test.dart: Group 6: Google Places API & Cache Isolation 18. DISTANCE and POPULARITY caches remain strictly isolated and do not cross-satisfy [Production Service Coverage]
+♻️ Google raw caches cleared for ALL locations
+♻️ Google raw caches cleared for ALL locations
+💰 Google DISTANCE raw cache MISS for 3.139,101.687:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 2000m)
+🟡 API Call #15: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #16: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #17: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #18: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (4ms)
+✅ searchNearby: 1 places (4ms)
+✅ searchNearby: 1 places (2ms)
+✅ searchNearby: 1 places (2ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.139,101.687:DISTANCE:ALL: 1 places @ 15000m
+🆓 Google DISTANCE raw cache HIT for 3.139,101.687:DISTANCE:ALL (cached @ 15000m, requested: 2000m)
+💰 Google POPULARITY raw cache MISS for 3.139,101.687:POPULARITY:ALL — calling Google Places API ONCE at radius 15000m (requested: 2000m)
+🟡 API Call #19: searchNearby | restaurant | rank=POPULARITY
+🟡 API Call #20: searchNearby | movie_theater | rank=POPULARITY
+🟡 API Call #21: searchNearby | subway_station | rank=POPULARITY
+🟡 API Call #22: searchNearby | park | rank=POPULARITY
+✅ searchNearby: 1 places (4ms)
+✅ searchNearby: 1 places (2ms)
+✅ searchNearby: 1 places (2ms)
+✅ searchNearby: 1 places (2ms)
+📦 Google POPULARITY raw response: 4 results
+✅ Google POPULARITY cache STORED for 3.139,101.687:POPULARITY:ALL: 1 places @ 15000m
+🆓 Google POPULARITY raw cache HIT for 3.139,101.687:POPULARITY:ALL (cached @ 15000m, requested: 2000m)
+00:00 +50: d:/gotrip/test/realtime_detect_place_test.dart: Group 6: Google Places API & Cache Isolation 19. Request inside an already fetched radius hits cache without refetching and filters to requested radius [Production Service Coverage]
+♻️ Google raw caches cleared for ALL locations
+💰 Google DISTANCE raw cache MISS for 3.139,101.687:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 5000m)
+🟡 API Call #23: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #24: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #25: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #26: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+📦 Google DISTANCE raw response: 8 results
+✅ Google DISTANCE cache STORED for 3.139,101.687:DISTANCE:ALL: 2 places @ 15000m
+🆓 Google DISTANCE raw cache HIT for 3.139,101.687:DISTANCE:ALL (cached @ 15000m, requested: 2000m)
+00:00 +51: d:/gotrip/test/realtime_detect_place_test.dart: Group 6: Google Places API & Cache Isolation 20. LRU eviction removes actual stored cache entries and radius tracking [Production Service Coverage]
+♻️ Google raw caches cleared for ALL locations
+💰 Google DISTANCE raw cache MISS for 3.000,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #27: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #28: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #29: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #30: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (2ms)
+✅ searchNearby: 1 places (2ms)
+✅ searchNearby: 1 places (2ms)
+✅ searchNearby: 1 places (2ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.000,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.050,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #31: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #32: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #33: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #34: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (2ms)
+✅ searchNearby: 1 places (2ms)
+✅ searchNearby: 1 places (2ms)
+✅ searchNearby: 1 places (2ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.050,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.100,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #35: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #36: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #37: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #38: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.100,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.150,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #39: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #40: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #41: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #42: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (3ms)
+✅ searchNearby: 1 places (3ms)
+✅ searchNearby: 1 places (3ms)
+✅ searchNearby: 1 places (3ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.150,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.200,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #43: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #44: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #45: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #46: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.200,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.250,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #47: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #48: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #49: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #50: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.250,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.300,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #51: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #52: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #53: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #54: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.300,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.350,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #55: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #56: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #57: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #58: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.350,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.400,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #59: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #60: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #61: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #62: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.400,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.450,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #63: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #64: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #65: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #66: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.450,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.500,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #67: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #68: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #69: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #70: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.500,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.550,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #71: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #72: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #73: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #74: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.550,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.600,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #75: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #76: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #77: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #78: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (15ms)
+✅ searchNearby: 1 places (15ms)
+✅ searchNearby: 1 places (15ms)
+✅ searchNearby: 1 places (15ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.600,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.650,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #79: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #80: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #81: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #82: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.650,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.700,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #83: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #84: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #85: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #86: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.700,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.750,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #87: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #88: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #89: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #90: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.750,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.800,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #91: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #92: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #93: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #94: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.800,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.850,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #95: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #96: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #97: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #98: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.850,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.900,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #99: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #100: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #101: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #102: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.900,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 3.950,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #103: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #104: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #105: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #106: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+✅ Google DISTANCE cache STORED for 3.950,101.000:DISTANCE:ALL: 0 places @ 15000m
+💰 Google DISTANCE raw cache MISS for 5.000,101.000:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #107: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #108: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #109: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #110: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+✅ searchNearby: 1 places (0ms)
+📦 Google DISTANCE raw response: 4 results
+♻️ Google DISTANCE cache LRU evicted: 3.000,101.000:DISTANCE:ALL
+♻️ Google raw cache LRU evicted: 3.000,101.000
+✅ Google DISTANCE cache STORED for 5.000,101.000:DISTANCE:ALL: 0 places @ 15000m
+00:00 +52: d:/gotrip/test/realtime_detect_place_test.dart: Group 6: Google Places API & Cache Isolation 21. Missing-coordinate and out-of-radius results are rejected during production parsing and filtering [Production Service Coverage]
+♻️ Google raw caches cleared for ALL locations
+💰 Google DISTANCE raw cache MISS for 3.139,101.687:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 1000m)
+🟡 API Call #111: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #112: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #113: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #114: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 3 places (13ms)
+✅ searchNearby: 3 places (13ms)
+✅ searchNearby: 3 places (13ms)
+✅ searchNearby: 3 places (13ms)
+📦 Google DISTANCE raw response: 12 results
+✅ Google DISTANCE cache STORED for 3.139,101.687:DISTANCE:ALL: 1 places @ 15000m
+00:00 +53: d:/gotrip/test/realtime_detect_place_test.dart: Group 6: Google Places API & Cache Isolation 22. Geoapify candidates remain outside the Google Rank pool [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +54: d:/gotrip/test/realtime_detect_place_test.dart: Group 7: Active Origin Candidate Pool Regression 23. Active tab Google candidate pool dictates category/subcategory availability across normal, search, and landmark origins [Production Seam Coverage]
+♻️ Google raw caches cleared for ALL locations
+00:00 +55: All tests passed!

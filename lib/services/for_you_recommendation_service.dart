@@ -6,6 +6,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../models/placeModel.dart';
 import 'nearbyPlace_service.dart';
+import 'recommendation_eligibility_policy.dart';
 import 'route_service.dart';
 import 'userPreference_service.dart';
 import 'weather_service.dart';
@@ -214,10 +215,15 @@ class ForYouRecommendationService {
         // - Exclude Geoapify candidates
         // - Exclude explicitly closed places (isOpenNow == false)
         // - Require valid coordinates
+        // - Exclude corporate/business places without authoritative visitor types
         final eligible = combined.where((p) {
           if (p.isGeoapify) return false;
           if (p.isOpenNow == false) return false;
           if (p.lat == null || p.lng == null) return false;
+          if (!RecommendationEligibilityPolicy
+              .isEligibleForAutomaticRecommendation(p)) {
+            return false;
+          }
           return true;
         }).toList();
 

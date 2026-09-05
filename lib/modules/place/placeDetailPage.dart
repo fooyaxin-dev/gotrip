@@ -109,8 +109,10 @@ class PlaceOpeningStatusChip extends StatelessWidget {
         color: color[50],
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+      child: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 6,
+        runSpacing: 2,
         children: [
           Text(
             text,
@@ -120,7 +122,6 @@ class PlaceOpeningStatusChip extends StatelessWidget {
               fontSize: 12,
             ),
           ),
-          const SizedBox(width: 6),
           Text(
             '· Based on regular hours',
             style: TextStyle(
@@ -128,6 +129,123 @@ class PlaceOpeningStatusChip extends StatelessWidget {
               fontSize: 11,
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Responsive recommendation explanation card extracted from [PlaceDetailPage].
+///
+/// Handles narrow viewports (e.g. 320px) and large accessibility text scales
+/// (e.g. 1.5x, 2.0x) without [RenderFlex] overflow. When space is constrained,
+/// the header wraps the match tier chip to the next line and allows the title
+/// to wrap across multiple lines without truncating.
+class WhyRecommendedCard extends StatelessWidget {
+  final String matchTier;
+  final List<String> explanationReasons;
+
+  const WhyRecommendedCard({
+    super.key,
+    required this.matchTier,
+    required this.explanationReasons,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF7C4DFF).withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: const Color(0xFF7C4DFF).withValues(alpha: 0.2),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final double maxWidth = constraints.maxWidth;
+              return Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: maxWidth),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.auto_awesome_rounded,
+                          color: Color(0xFF7C4DFF),
+                          size: 18,
+                        ),
+                        SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            'Why this was recommended',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF1E293B),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: maxWidth),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF7C4DFF),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        matchTier,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 10),
+          ...explanationReasons.map((reason) => Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('• ',
+                        style: TextStyle(
+                            color: Color(0xFF7C4DFF),
+                            fontWeight: FontWeight.bold)),
+                    Expanded(
+                      child: Text(
+                        reason,
+                        style: const TextStyle(
+                            fontSize: 12.5,
+                            color: Color(0xFF334155),
+                            height: 1.3),
+                      ),
+                    ),
+                  ],
+                ),
+              )),
         ],
       ),
     );
@@ -850,75 +968,13 @@ class _PlaceDetailPageState extends State<PlaceDetailPage> {
     );
 
     final expl = recScore.explanation;
-    if (expl == null || expl.explanationReasons.isEmpty)
+    if (expl == null || expl.explanationReasons.isEmpty) {
       return const SizedBox.shrink();
+    }
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 20),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF7C4DFF).withOpacity(0.06),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF7C4DFF).withOpacity(0.2)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.auto_awesome_rounded,
-                  color: Color(0xFF7C4DFF), size: 18),
-              const SizedBox(width: 8),
-              const Text(
-                'Why this was recommended',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF1E293B),
-                ),
-              ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF7C4DFF),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  expl.matchTier,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          ...expl.explanationReasons.map((reason) => Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('• ',
-                        style: TextStyle(
-                            color: Color(0xFF7C4DFF),
-                            fontWeight: FontWeight.bold)),
-                    Expanded(
-                      child: Text(
-                        reason,
-                        style: const TextStyle(
-                            fontSize: 12.5,
-                            color: Color(0xFF334155),
-                            height: 1.3),
-                      ),
-                    ),
-                  ],
-                ),
-              )),
-        ],
-      ),
+    return WhyRecommendedCard(
+      matchTier: expl.matchTier,
+      explanationReasons: expl.explanationReasons,
     );
   }
 

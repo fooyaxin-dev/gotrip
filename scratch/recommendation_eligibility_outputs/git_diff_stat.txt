@@ -1,0 +1,12 @@
+warning: in the working copy of 'lib/services/for_you_recommendation_service.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/services/nearbyPlace_service.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'test/itinerary_arrival_tracking_test.dart', LF will be replaced by CRLF the next time Git touches it
+ lib/modules/main/mainpage.dart                   |   5 +-
+ lib/modules/place/placeDetailPage.dart           | 196 +++++++----
+ lib/services/for_you_recommendation_service.dart |   6 +
+ lib/services/itinerary_service.dart              |  35 +-
+ lib/services/location_service.dart               |  46 ++-
+ lib/services/navigate_service.dart               | 411 ++++++++++++++---------
+ lib/services/nearbyPlace_service.dart            |  21 ++
+ test/itinerary_arrival_tracking_test.dart        | 151 +++++++--
+ 8 files changed, 584 insertions(+), 287 deletions(-)

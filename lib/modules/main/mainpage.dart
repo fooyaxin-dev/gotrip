@@ -1145,10 +1145,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
               const SizedBox(height: 12),
               _buildNearbySection(),
 
-              SizedBox(
-                  height: 10 +
-                      MediaQuery.of(context).padding.bottom +
-                      kBottomNavigationBarHeight),
+              const SizedBox(height: 16),
             ],
           ),
         ),

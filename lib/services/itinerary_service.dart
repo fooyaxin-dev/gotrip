@@ -12,6 +12,7 @@ import '../services/nearbyPlace_service.dart';
 import 'storage_service.dart';
 import '../services/route_service.dart';
 import 'category_mapper.dart';
+import 'recommendation_eligibility_policy.dart';
 import 'history_service.dart';
 import 'userActivity_service.dart';
 import 'flexible_route_optimizer.dart';
@@ -81,26 +82,8 @@ class ItineraryService {
     'roofing_contractor',
   };
 
-  static const _blockedNameKeywords = [
-    'sdn bhd',
-    'sdn. bhd',
-    'sdnbhd',
-    'network',
-    'solution',
-    'solutions',
-    'enterprise',
-    'enterprises',
-    'management',
-    'services',
-    'trading',
-    'holdings',
-    'group berhad',
-    'berhad',
-    'consultant',
-    'consultancy',
+  static const _itineraryBlockedNameKeywords = [
     'insurance',
-    'agency',
-    'agencies',
     'clinic',
     'hospital',
     'pharmacy',
@@ -117,12 +100,22 @@ class ItineraryService {
     'park': 60,
   };
 
-  bool _isBlocked(PlaceModel p) {
+  bool _isBlocked(PlaceModel p) => isBlocked(p);
+
+  static bool isBlocked(PlaceModel p) {
     if (p.allTypes.any((t) => _blockedTypes.contains(t))) return true;
+    if (!RecommendationEligibilityPolicy.isEligibleForAutomaticRecommendation(
+        p)) {
+      return true;
+    }
     final nameLower = p.name.toLowerCase();
-    if (_blockedNameKeywords.any((k) => nameLower.contains(k))) return true;
+    if (_itineraryBlockedNameKeywords.any((k) => nameLower.contains(k)))
+      return true;
     return false;
   }
+
+  @visibleForTesting
+  static bool isBlockedForTesting(PlaceModel p) => isBlocked(p);
 
   bool _isSuitableForTravel(PlaceModel p) {
     if (_isBlocked(p)) return false;
