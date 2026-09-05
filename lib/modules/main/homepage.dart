@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -33,7 +32,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
-  bool _nearbyTabVisited = false; 
+  bool _nearbyTabVisited = false;
   bool _locationTrackingActive = false;
   String _username = "UserName";
   String _email = "user@email.com";
@@ -42,19 +41,18 @@ class _HomePageState extends State<HomePage> {
 
   static const List<int> _navIndexMap = [0, 1, 3, 4]; // slot → 实际 _currentIndex
   static const List<NavItemData> _navData = [
-    NavItemData(Icons.home_rounded,    "Home"),
+    NavItemData(Icons.home_rounded, "Home"),
     NavItemData(Icons.explore_rounded, "Nearby"),
-    NavItemData(Icons.book_rounded,    "Itinerary"),
-    NavItemData(Icons.person_rounded,  "Profile"),
+    NavItemData(Icons.book_rounded, "Itinerary"),
+    NavItemData(Icons.person_rounded, "Profile"),
   ];
-
 
   @override
   void initState() {
     super.initState();
     _loadCachedData();
     _listenToUserData();
-    _syncLocationTracking(); 
+    _syncLocationTracking();
   }
 
   @override
@@ -86,14 +84,11 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
 
     setState(() {
-      _username =
-          prefs.getString('username_$uid') ?? 'UserName';
+      _username = prefs.getString('username_$uid') ?? 'UserName';
 
-      _email =
-          prefs.getString('email_$uid') ?? 'user@email.com';
+      _email = prefs.getString('email_$uid') ?? 'user@email.com';
 
-      _profileImageUrl =
-          prefs.getString('profileImageUrl_$uid') ?? '';
+      _profileImageUrl = prefs.getString('profileImageUrl_$uid') ?? '';
     });
   }
 
@@ -133,14 +128,11 @@ class _HomePageState extends State<HomePage> {
 
       final data = doc.data()!;
 
-      final latestUsername =
-          data['username'] as String? ?? 'UserName';
+      final latestUsername = data['username'] as String? ?? 'UserName';
 
-      final latestEmail =
-          data['email'] as String? ?? 'user@email.com';
+      final latestEmail = data['email'] as String? ?? 'user@email.com';
 
-      final latestProfileImg =
-          data['profileImageUrl'] as String? ?? '';
+      final latestProfileImg = data['profileImageUrl'] as String? ?? '';
 
       if (mounted) {
         setState(() {
@@ -150,8 +142,7 @@ class _HomePageState extends State<HomePage> {
         });
       }
 
-      final prefs =
-          await SharedPreferences.getInstance();
+      final prefs = await SharedPreferences.getInstance();
 
       await Future.wait([
         prefs.setString(
@@ -197,12 +188,12 @@ class _HomePageState extends State<HomePage> {
   Future<void> _goGenerateItinerary() async {
     await UserPreferenceService.instance.load();
     if (!mounted) return;
-    
-    await Navigator.push(  
+
+    await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const GenerateItineraryPage()),
     );
-    
+
     if (mounted) {
       setState(() => _itineraryReloadKey++);
     }
@@ -214,7 +205,6 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    
     final bool isItineraryTab = _currentIndex == 3;
 
     return Scaffold(
@@ -245,7 +235,7 @@ class _HomePageState extends State<HomePage> {
       floatingActionButton: isItineraryTab
           // Itinerary tab → New Trip button (bottom right)
           ? FloatingActionButton.extended(
-            key: const ValueKey('newTripFab'), 
+              key: const ValueKey('newTripFab'),
               onPressed: _goGenerateItinerary,
               backgroundColor: const Color(0xFF7C4DFF),
               foregroundColor: Colors.white,
@@ -255,7 +245,7 @@ class _HomePageState extends State<HomePage> {
             )
           // Other tabs → Camera button (center docked)
           : FloatingActionButton(
-            key: const ValueKey('cameraFab'), 
+              key: const ValueKey('cameraFab'),
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const LandmarkFAB()),
               ),
@@ -267,168 +257,173 @@ class _HomePageState extends State<HomePage> {
             ),
 
       // ── FAB position changes with tab ──
-floatingActionButtonLocation: isItineraryTab
-    ? FloatingActionButtonLocation.endFloat
-    : FloatingActionButtonLocation.centerDocked,   // ← 从 centerDocked 改成 centerFloat
+      floatingActionButtonLocation: isItineraryTab
+          ? FloatingActionButtonLocation.endFloat
+          : FloatingActionButtonLocation
+              .centerDocked, // ← 从 centerDocked 改成 centerFloat
 
-     bottomNavigationBar: ClipRRect(
-  child: BackdropFilter(
-    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-    child: BottomAppBar(
-      padding: EdgeInsets.zero,
-      height: 62,
-      shape: const CircularNotchedRectangle(),
-      notchMargin: 8,
-      color: Colors.white.withOpacity(0.85),
-      elevation: 0,
-      child: Row(
-        children: [
-          _navTab(Icons.home_outlined, Icons.home_rounded, "Home", 0),
-          _navTab(Icons.explore_outlined, Icons.explore_rounded, "Nearby", 1),
-          const SizedBox(width: 56),
-          _navTab(Icons.book_outlined, Icons.book_rounded, "Itinerary", 3),
-          _navTab(Icons.person_outline, Icons.person_rounded, "Profile", 4),
-        ],
+      bottomNavigationBar: ClipRRect(
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: BottomAppBar(
+            padding: EdgeInsets.zero,
+            height: 62,
+            shape: const CircularNotchedRectangle(),
+            notchMargin: 8,
+            color: Colors.white.withOpacity(0.85),
+            elevation: 0,
+            child: Row(
+              children: [
+                _navTab(Icons.home_outlined, Icons.home_rounded, "Home", 0),
+                _navTab(
+                    Icons.explore_outlined, Icons.explore_rounded, "Nearby", 1),
+                const SizedBox(width: 56),
+                _navTab(
+                    Icons.book_outlined, Icons.book_rounded, "Itinerary", 3),
+                _navTab(
+                    Icons.person_outline, Icons.person_rounded, "Profile", 4),
+              ],
+            ),
+          ),
+        ),
       ),
-    ),
-  ),
-),
     );
   }
 
-  Widget _navTab(IconData outlineIcon, IconData filledIcon, String label, int index) {
-  final selected = _currentIndex == index;
-  return Expanded(
-    child: InkWell(
-      splashFactory: NoSplash.splashFactory,   // ← 关掉水波纹
-      highlightColor: Colors.transparent,  
-      onTap: () => setState(() {
-        _currentIndex = index;
-        if (index == 1) _nearbyTabVisited = true;
-        _syncLocationTracking();
-      }),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AnimatedScale(
-            duration: const Duration(milliseconds: 280),
-            curve: Curves.easeOutBack,
-            scale: selected ? 1.18 : 1.0,
-            child: AnimatedContainer(
+  Widget _navTab(
+      IconData outlineIcon, IconData filledIcon, String label, int index) {
+    final selected = _currentIndex == index;
+    return Expanded(
+      child: InkWell(
+        splashFactory: NoSplash.splashFactory, // ← 关掉水波纹
+        highlightColor: Colors.transparent,
+        onTap: () => setState(() {
+          _currentIndex = index;
+          if (index == 1) _nearbyTabVisited = true;
+          _syncLocationTracking();
+        }),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedScale(
+              duration: const Duration(milliseconds: 280),
+              curve: Curves.easeOutBack,
+              scale: selected ? 1.18 : 1.0,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: selected
+                      ? [
+                          BoxShadow(
+                            color: const Color(0xFF6366F1).withOpacity(0.35),
+                            blurRadius: 12,
+                            spreadRadius: 1,
+                          ),
+                        ]
+                      : [],
+                ),
+                child: Icon(
+                  selected ? filledIcon : outlineIcon,
+                  size: 22,
+                  color: selected
+                      ? const Color(0xFF6366F1)
+                      : const Color(0xFFB0B8C1),
+                ),
+              ),
+            ),
+            const SizedBox(height: 2),
+            AnimatedDefaultTextStyle(
+              duration: const Duration(milliseconds: 220),
+              style: TextStyle(
+                fontSize: 10,
+                color: selected
+                    ? const Color(0xFF6366F1)
+                    : const Color(0xFFB0B8C1),
+                fontWeight: selected ? FontWeight.w700 : FontWeight.normal,
+              ),
+              child: Text(label),
+            ),
+            const SizedBox(height: 3),
+            AnimatedContainer(
               duration: const Duration(milliseconds: 250),
-              padding: const EdgeInsets.all(6),
+              curve: Curves.easeOut,
+              width: selected ? 16 : 0,
+              height: 3,
               decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: selected
-                    ? [
-                        BoxShadow(
-                          color: const Color(0xFF6366F1).withOpacity(0.35),
-                          blurRadius: 12,
-                          spreadRadius: 1,
-                        ),
-                      ]
-                    : [],
-              ),
-              child: Icon(
-                selected ? filledIcon : outlineIcon,
-                size: 22,
-                color: selected ? const Color(0xFF6366F1) : const Color(0xFFB0B8C1),
+                color: const Color(0xFF6366F1),
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
-          ),
-          const SizedBox(height: 2),
-          AnimatedDefaultTextStyle(
-            duration: const Duration(milliseconds: 220),
-            style: TextStyle(
-              fontSize: 10,
-              color: selected ? const Color(0xFF6366F1) : const Color(0xFFB0B8C1),
-              fontWeight: selected ? FontWeight.w700 : FontWeight.normal,
-            ),
-            child: Text(label),
-          ),
-          const SizedBox(height: 3),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
-            curve: Curves.easeOut,
-            width: selected ? 16 : 0,
-            height: 3,
-            decoration: BoxDecoration(
-              color: const Color(0xFF6366F1),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
+  Widget _buildNavItem(IconData icon, String label, int index) {
+    final isSelected = _currentIndex == index;
 
-
-Widget _buildNavItem(IconData icon, String label, int index) {
-  final isSelected = _currentIndex == index;
-
-  return Expanded(
-    child: InkWell(
-      borderRadius: BorderRadius.circular(16),
-      splashColor: const Color(0xFF6366F1).withOpacity(0.08),
-      highlightColor: const Color(0xFF6366F1).withOpacity(0.05),
-      onTap: () => setState(() {
-        _currentIndex = index;
-        if (index == 1) _nearbyTabVisited = true;
-        _syncLocationTracking();
-      }),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AnimatedSlide(
-            duration: const Duration(milliseconds: 260),
-            curve: Curves.easeOutBack,
-            offset: isSelected ? const Offset(0, -0.15) : Offset.zero,
-            child: AnimatedScale(
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        splashColor: const Color(0xFF6366F1).withOpacity(0.08),
+        highlightColor: const Color(0xFF6366F1).withOpacity(0.05),
+        onTap: () => setState(() {
+          _currentIndex = index;
+          if (index == 1) _nearbyTabVisited = true;
+          _syncLocationTracking();
+        }),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedSlide(
               duration: const Duration(milliseconds: 260),
               curve: Curves.easeOutBack,
-              scale: isSelected ? 1.15 : 1.0,
-              child: Icon(
-                icon,
-                size: 23,
+              offset: isSelected ? const Offset(0, -0.15) : Offset.zero,
+              child: AnimatedScale(
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOutBack,
+                scale: isSelected ? 1.15 : 1.0,
+                child: Icon(
+                  icon,
+                  size: 23,
+                  color: isSelected
+                      ? const Color(0xFF6366F1)
+                      : Colors.blueGrey.shade300,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
                 color: isSelected
                     ? const Color(0xFF6366F1)
                     : Colors.blueGrey.shade300,
+                fontSize: 10,
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.normal,
               ),
             ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: TextStyle(
-              color: isSelected
-                  ? const Color(0xFF6366F1)
-                  : Colors.blueGrey.shade300,
-              fontSize: 10,
-              fontWeight: isSelected ? FontWeight.w700 : FontWeight.normal,
+            const SizedBox(height: 2),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              width: isSelected ? 5 : 0,
+              height: isSelected ? 5 : 0,
+              decoration: const BoxDecoration(
+                color: Color(0xFF6366F1),
+                shape: BoxShape.circle,
+              ),
             ),
-          ),
-          const SizedBox(height: 2),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            width: isSelected ? 5 : 0,
-            height: isSelected ? 5 : 0,
-            decoration: const BoxDecoration(
-              color: Color(0xFF6366F1),
-              shape: BoxShape.circle,
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-  );
-}
-  
-  
-  
+    );
+  }
+
   Widget _buildAppDrawer(BuildContext context) {
     return Drawer(
       child: Column(
@@ -448,8 +443,7 @@ Widget _buildNavItem(IconData icon, String label, int index) {
                   child: CircleAvatar(
                     radius: 26,
                     backgroundImage: _getProfileImageProvider(),
-                    onBackgroundImageError: (e, _) =>
-                        print('❌ 头像加载失败: $e'),
+                    onBackgroundImageError: (e, _) => print('❌ 头像加载失败: $e'),
                     child: _profileImageUrl.isEmpty
                         ? const Icon(Icons.person,
                             size: 32, color: Color(0xFF6366F1))
@@ -474,16 +468,16 @@ Widget _buildNavItem(IconData icon, String label, int index) {
               ],
             ),
           ),
-
           const SizedBox(height: 15),
-
           ListTile(
             leading: const Icon(Icons.location_on_sharp),
             title: const Text("Landmark Record"),
             onTap: () {
               Navigator.pop(context);
-              Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const LandmarkHistoryPage()));
+              Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const LandmarkHistoryPage()));
             },
           ),
           ListTile(
@@ -510,8 +504,7 @@ Widget _buildNavItem(IconData icon, String label, int index) {
             onTap: () {
               Navigator.pop(context);
               Navigator.push(context,
-                  MaterialPageRoute(
-                      builder: (_) => const InteractionPage()));
+                  MaterialPageRoute(builder: (_) => const InteractionPage()));
             },
           ),
           ListTile(
@@ -523,10 +516,8 @@ Widget _buildNavItem(IconData icon, String label, int index) {
                   MaterialPageRoute(builder: (_) => const SettingsPage()));
             },
           ),
-
           const Spacer(),
           const Divider(),
-
           ListTile(
             leading: const Icon(Icons.logout_rounded),
             title: const Text("Logout"),

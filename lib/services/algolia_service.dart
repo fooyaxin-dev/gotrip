@@ -128,6 +128,7 @@ class AlgoliaService {
       // Firestore whereIn 最多 10 个，hitsPerPage 不应超过 10
       final snapshot = await FirebaseFirestore.instance
           .collection('posts')
+          .where('visibility', isEqualTo: 'public')
           .where(FieldPath.documentId, whereIn: ids)
           .get();
 

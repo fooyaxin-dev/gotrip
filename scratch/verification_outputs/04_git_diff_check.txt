@@ -1,0 +1,1 @@
+warning: in the working copy of 'test/itinerary_arrival_tracking_test.dart', LF will be replaced by CRLF the next time Git touches it

@@ -1,0 +1,170 @@
+warning: in the working copy of 'lib/services/for_you_recommendation_service.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/services/nearbyPlace_service.dart', LF will be replaced by CRLF the next time Git touches it
+diff --git a/lib/services/for_you_recommendation_service.dart b/lib/services/for_you_recommendation_service.dart
+index bf11eac..cab2f70 100644
+--- a/lib/services/for_you_recommendation_service.dart
++++ b/lib/services/for_you_recommendation_service.dart
+@@ -6,6 +6,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
+ 
+ import '../models/placeModel.dart';
+ import 'nearbyPlace_service.dart';
++import 'recommendation_eligibility_policy.dart';
+ import 'route_service.dart';
+ import 'userPreference_service.dart';
+ import 'weather_service.dart';
+@@ -214,10 +215,15 @@ class ForYouRecommendationService {
+         // - Exclude Geoapify candidates
+         // - Exclude explicitly closed places (isOpenNow == false)
+         // - Require valid coordinates
++        // - Exclude corporate/business places without authoritative visitor types
+         final eligible = combined.where((p) {
+           if (p.isGeoapify) return false;
+           if (p.isOpenNow == false) return false;
+           if (p.lat == null || p.lng == null) return false;
++          if (!RecommendationEligibilityPolicy
++              .isEligibleForAutomaticRecommendation(p)) {
++            return false;
++          }
+           return true;
+         }).toList();
+ 
+diff --git a/lib/services/itinerary_service.dart b/lib/services/itinerary_service.dart
+index 407d256..fa67c0f 100644
+--- a/lib/services/itinerary_service.dart
++++ b/lib/services/itinerary_service.dart
+@@ -12,6 +12,7 @@ import '../services/nearbyPlace_service.dart';
+ import 'storage_service.dart';
+ import '../services/route_service.dart';
+ import 'category_mapper.dart';
++import 'recommendation_eligibility_policy.dart';
+ import 'history_service.dart';
+ import 'userActivity_service.dart';
+ import 'flexible_route_optimizer.dart';
+@@ -81,26 +82,8 @@ class ItineraryService {
+     'roofing_contractor',
+   };
+ 
+-  static const _blockedNameKeywords = [
+-    'sdn bhd',
+-    'sdn. bhd',
+-    'sdnbhd',
+-    'network',
+-    'solution',
+-    'solutions',
+-    'enterprise',
+-    'enterprises',
+-    'management',
+-    'services',
+-    'trading',
+-    'holdings',
+-    'group berhad',
+-    'berhad',
+-    'consultant',
+-    'consultancy',
++  static const _itineraryBlockedNameKeywords = [
+     'insurance',
+-    'agency',
+-    'agencies',
+     'clinic',
+     'hospital',
+     'pharmacy',
+@@ -117,13 +100,23 @@ class ItineraryService {
+     'park': 60,
+   };
+ 
+-  bool _isBlocked(PlaceModel p) {
++  bool _isBlocked(PlaceModel p) => isBlocked(p);
++
++  static bool isBlocked(PlaceModel p) {
+     if (p.allTypes.any((t) => _blockedTypes.contains(t))) return true;
++    if (!RecommendationEligibilityPolicy.isEligibleForAutomaticRecommendation(
++        p)) {
++      return true;
++    }
+     final nameLower = p.name.toLowerCase();
+-    if (_blockedNameKeywords.any((k) => nameLower.contains(k))) return true;
++    if (_itineraryBlockedNameKeywords.any((k) => nameLower.contains(k)))
++      return true;
+     return false;
+   }
+ 
++  @visibleForTesting
++  static bool isBlockedForTesting(PlaceModel p) => isBlocked(p);
++
+   bool _isSuitableForTravel(PlaceModel p) {
+     if (_isBlocked(p)) return false;
+     final r = p.rating;
+diff --git a/lib/services/nearbyPlace_service.dart b/lib/services/nearbyPlace_service.dart
+index 13a3302..72d3c97 100644
+--- a/lib/services/nearbyPlace_service.dart
++++ b/lib/services/nearbyPlace_service.dart
+@@ -8,6 +8,7 @@ import 'geoapify_service.dart';
+ import 'location_service.dart';
+ import 'geoapifyEnrichment_service.dart';
+ import 'category_mapper.dart';
++import 'recommendation_eligibility_policy.dart';
+ 
+ class _LruTracker {
+   final int capacity;
+@@ -336,6 +337,12 @@ class NearbyPlacesService {
+       final dist = _haversineMetres(lat, lng, place.lat!, place.lng!);
+       if (dist > fetchRadius) continue;
+ 
++      // Reject corporate places without authoritative visitor types
++      if (!RecommendationEligibilityPolicy.isEligibleForAutomaticRecommendation(
++          place)) {
++        continue;
++      }
++
+       seenIds.add(id);
+       places.add(place);
+     }
+@@ -732,6 +739,10 @@ class NearbyPlacesService {
+ 
+         final place = PlaceModel.fromGoogle(p, primary: primaryType);
+         if (place.lat == null || place.lng == null) continue;
++        if (!RecommendationEligibilityPolicy
++            .isEligibleForAutomaticRecommendation(place)) {
++          continue;
++        }
+ 
+         targetList.add(place);
+         targetByType.putIfAbsent(primaryType, () => []);
+@@ -1061,6 +1072,7 @@ class NearbyPlacesService {
+             maxResultCount: 20,
+             radius: radius,
+             rankPreference: 'POPULARITY',
++            client: httpClient,
+           );
+           final seen = <String>{};
+           final places = <PlaceModel>[];
+@@ -1079,6 +1091,10 @@ class NearbyPlacesService {
+                   !seen.add(place.id)) {
+                 continue;
+               }
++              if (!RecommendationEligibilityPolicy
++                  .isEligibleForAutomaticRecommendation(place)) {
++                continue;
++              }
+               places.add(place);
+             }
+           }
+@@ -1148,6 +1164,7 @@ class NearbyPlacesService {
+               maxResultCount: 20,
+               radius: radius,
+               rankPreference: 'POPULARITY',
++              client: httpClient,
+             );
+ 
+             for (final item in raw) {
+@@ -1163,6 +1180,10 @@ class NearbyPlacesService {
+                   !localSeen.add(place.id)) {
+                 continue;
+               }
++              if (!RecommendationEligibilityPolicy
++                  .isEligibleForAutomaticRecommendation(place)) {
++                continue;
++              }
+               additional.add(place);
+               if (additional.length >= needed) break;
+             }

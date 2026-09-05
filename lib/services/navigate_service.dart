@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/scheduler.dart';
 import 'dart:ui' as ui;
@@ -7,13 +6,35 @@ import 'package:flutter/material.dart';
 import 'package:compassx/compassx.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:http/http.dart' as http;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'route_service.dart';
 import 'api_Keys.dart';
+import 'arrival_policy.dart';
+
+typedef RouteFetcher = Future<RouteResult> Function({
+  required double fromLat,
+  required double fromLng,
+  required double toLat,
+  required double toLng,
+  required TravelMode mode,
+});
+
+typedef CurrentPositionProvider = Future<Position> Function({
+  LocationAccuracy? desiredAccuracy,
+});
+
+typedef PositionStreamProvider = Stream<Position> Function({
+  LocationSettings? locationSettings,
+});
+
+enum NavigationRouteUpdateState {
+  idle,
+  searching,
+  updated,
+  failed,
+}
 
 class NavigationController extends ChangeNotifier {
-
   // ── Config ──
   final double startLat;
   final double startLng;
@@ -22,6 +43,9 @@ class NavigationController extends ChangeNotifier {
   final String? destinationName;
   final TravelMode travelMode;
   final RouteResult? initialRoute;
+  final RouteFetcher? routeFetcher;
+  final CurrentPositionProvider? currentPositionProvider;
+  final PositionStreamProvider? positionStreamProvider;
 
   NavigationController({
     required this.startLat,
@@ -30,21 +54,24 @@ class NavigationController extends ChangeNotifier {
     required this.endLng,
     this.destinationName,
     this.travelMode = TravelMode.drive,
-    this.initialRoute,     
+    this.initialRoute,
+    this.routeFetcher,
+    this.currentPositionProvider,
+    this.positionStreamProvider,
   });
 
   static const String _apiKey = ApiKeys.googleMaps;
 
-  static const double _offRouteThresh  = 50.0; 
-  static const double _arrivedThresh   = 30.0;
-  static const int    _offRouteConfirm = 4;
-  static const int    _stepConfirm     = 2;
+  static const double _offRouteThresh = 50.0;
+  static double get arrivedThresh => ArrivalPolicy.arrivalRadiusMetres;
+  static const int _offRouteConfirm = 4;
+  static const int _stepConfirm = 2;
 
   // ── Route ──
-  List<LatLng>  polylinePoints  = [];
-  List<LatLng>  walkedPoints    = [];
-  List<LatLng>  remainingPoints = [];
-  int           nearestIdx      = 0; // matched segment START index
+  List<LatLng> polylinePoints = [];
+  List<LatLng> walkedPoints = [];
+  List<LatLng> remainingPoints = [];
+  int nearestIdx = 0; // matched segment START index
   LatLngBounds? routeBounds;
 
   // Distance from route start to each polyline vertex.
@@ -92,31 +119,50 @@ class NavigationController extends ChangeNotifier {
   double get debugRawDistanceToRoute => _lastRawDistanceToRoute;
   double get debugMatchedProgress => _matchedDistAlongRoute;
   double get displayDistAlongRoute => _displayDistAlongRoute;
-  int get displayNearestIdx =>
-      _cumDist.length >= 2
-          ? _segmentIdxAtDistance(_displayDistAlongRoute)
-          : nearestIdx;
+  int get displayNearestIdx => _cumDist.length >= 2
+      ? _segmentIdxAtDistance(_displayDistAlongRoute)
+      : nearestIdx;
+
+  /// Read-only production getter returning the current visual point on the
+  /// active route polyline at [_displayDistAlongRoute].
+  ///
+  /// Always lies strictly on the route geometry and does not pull off-road
+  /// even when the navigation marker temporarily renders raw GPS during recovery.
+  LatLng? get displayedRoutePoint {
+    if (polylinePoints.length < 2) return null;
+    return _pointAtRouteDistance(_displayDistAlongRoute);
+  }
+
   double get debugSpeedKmh => (_debugSpeedMps * 3.6).clamp(0.0, 250.0);
+  double get debugSpeedMps => _debugSpeedMps;
   double get debugGpsAccuracy => _debugGpsAccuracy;
 
   double get debugGpsAgeSeconds {
     if (_lastGpsStreamEventAt == null) return double.infinity;
-    return DateTime.now()
-            .difference(_lastGpsStreamEventAt!)
-            .inMilliseconds /
+    return _currentTime.difference(_lastGpsStreamEventAt!).inMilliseconds /
+        1000.0;
+  }
+
+  double get debugNavigationFixAgeSeconds {
+    if (_lastNavigationFixAt == null) return double.infinity;
+    return _currentTime.difference(_lastNavigationFixAt!).inMilliseconds /
         1000.0;
   }
 
   double get debugAcceptedProgressAgeSeconds {
     if (_lastAcceptedProgressAt == null) return double.infinity;
-    return DateTime.now()
-            .difference(_lastAcceptedProgressAt!)
-            .inMilliseconds /
+    return _currentTime.difference(_lastAcceptedProgressAt!).inMilliseconds /
         1000.0;
   }
 
   double get debugVisualLagMeters =>
       (_matchedDistAlongRoute - _displayDistAlongRoute).abs();
+
+  /// Signed visual lead over accepted route progress:
+  /// positive when Visual is ahead (e.g. dead reckoning),
+  /// negative when Visual is lagging behind accepted progress.
+  double get debugSignedVisualLeadMeters =>
+      _displayDistAlongRoute - _matchedDistAlongRoute;
 
   int get debugRouteVersion => _debugRouteVersion;
   int get debugRoutePointCount => polylinePoints.length;
@@ -127,16 +173,16 @@ class NavigationController extends ChangeNotifier {
   int get debugCurrentStepIndex => currentStepIndex;
 
   // ── Steps ──
-  List<NavStep> steps               = [];
-  List<int>     stepEndPolylineIdx  = [];
-  int           currentStepIndex   = 0;
-  double        distToTurnEnd      = 0;
-  int           _stepConfirmCount  = 0;
-  int           _stepConfirmForIndex = -1;
+  List<NavStep> steps = [];
+  List<int> stepEndPolylineIdx = [];
+  int currentStepIndex = 0;
+  double distToTurnEnd = 0;
+  int _stepConfirmCount = 0;
+  int _stepConfirmForIndex = -1;
 
   // ── ETA ──
-  double remainingMeters   = 0;
-  int    remainingSeconds  = 0;
+  double remainingMeters = 0;
+  int remainingSeconds = 0;
   double _totalRouteMeters = 0;
 
   // Baseline ETA from RouteResult.durationSeconds. For DRIVE/MOTOR this is
@@ -146,9 +192,9 @@ class NavigationController extends ChangeNotifier {
   int _routeBaselineSeconds = 0;
 
   // ── Position ──
-  LatLng?   userLatLng;
-  LatLng?   targetLatLng;
-  LatLng?   displayLatLng;
+  LatLng? userLatLng;
+  LatLng? targetLatLng;
+  LatLng? displayLatLng;
   Position? lastPos;
 
   // 高频位置更新专用通知器：只有地图子树监听它，箭头平滑移动不会
@@ -187,16 +233,20 @@ class NavigationController extends ChangeNotifier {
   double displayBearing = 0;
 
   // ── State ──
-  bool    loading        = true;
+  bool loading = true;
   String? error;
-  bool    isRerouting    = false;
+  bool isRerouting = false;
 
   // Network-degraded navigation. If rerouting fails, keep the existing
   // route and GPS tracking alive instead of clearing the user's guidance.
-  bool    isOfflineNavigation = false;
+  bool isOfflineNavigation = false;
   String? networkNotice;
-  bool    hasArrived     = false;
-  int     _offRouteCount = 0;
+  bool hasArrived = false;
+  int _offRouteCount = 0;
+  int _consecutiveArrivalFixes = 0;
+
+  @visibleForTesting
+  int get consecutiveArrivalFixes => _consecutiveArrivalFixes;
 
   // Route-joining state:
   // A user may intentionally use a familiar road at the beginning and only
@@ -209,39 +259,158 @@ class NavigationController extends ChangeNotifier {
   BitmapDescriptor? arrowIcon;
 
   // ── Internals ──
-  StreamSubscription<Position>?      _positionSub;
+  StreamSubscription<Position>? _positionSub;
 
   // Startup GPS acquisition helpers.
   // The live position stream is started BEFORE route loading and is not
   // restarted when the route arrives. This avoids the long "WAIT GPS"
   // period seen in the road-test video.
   DateTime? _lastGpsStreamEventAt;
+  DateTime? _lastNavigationFixAt;
+  DateTime? _lastSpeedSampleAt;
   Timer? _startupGpsWatchdog;
+
+  /// Optional clock seam for deterministic unit testing.
+  @visibleForTesting
+  DateTime Function()? testClock;
+
+  DateTime get _currentTime => testClock?.call() ?? DateTime.now();
+
+  @visibleForTesting
+  double? get debugLastSpeedDtFix => _debugLastSpeedDtFix;
+  double? _debugLastSpeedDtFix;
+
+  @visibleForTesting
+  DateTime? get lastSpeedSampleAt => _lastSpeedSampleAt;
+
+  @visibleForTesting
+  DateTime? get lastGpsStreamEventAt => _lastGpsStreamEventAt;
+
+  @visibleForTesting
+  DateTime? get lastNavigationFixAt => _lastNavigationFixAt;
+
+  @visibleForTesting
+  DateTime? get lastAcceptedProgressAt => _lastAcceptedProgressAt;
+
+  @visibleForTesting
+  bool get isFallbackInFlight => _isFallbackInFlight;
+
+  @visibleForTesting
+  int get fallbackRequestGeneration => _fallbackRequestGeneration;
+
+  @visibleForTesting
+  double get matchedDistAlongRoute => _matchedDistAlongRoute;
+
+  // Continuous stream-health recovery. The single watchdog handles both
+  // pre-stream acquisition (replacing the old 4-attempt dead zone)
+  // and continuous stream-stall recovery (>2.2s fallback, >5s restart).
+  Timer? _gpsHealthWatchdog;
+  bool _isFallbackInFlight = false;
+  int _fallbackRequestGeneration = 0;
+  DateTime? _lastFallbackAttemptAt;
+  bool _gpsStreamRestarting = false;
 
   LatLng? _lastRawMotionFix;
   DateTime? _lastRawMotionFixAt;
-  bool _startupFallbackBusy = false;
-  int _startupFallbackAttempts = 0;
   StreamSubscription<CompassXEvent>? _compassSub;
-  Ticker?       _ticker;
+  Ticker? _ticker;
   VoidCallback? onArrived;
 
   // ── TTS ──
   final FlutterTts _tts = FlutterTts();
   Future<void>? _ttsReady;
   String? _lastSpokenInstruction;
-  bool    _ttsEnabled = true;
+  bool _ttsEnabled = true;
   bool get ttsEnabled => _ttsEnabled;
 
   // Distance reminder dedup — track which distance thresholds already spoken
   final Map<int, Set<int>> _spokenDistanceReminders = {};
+
+  // ── Traffic refresh & request gating ──
+  bool _isDisposed = false;
+  bool get isDisposed => _isDisposed;
+
+  bool _isRouteRequestInFlight = false;
+  bool get isRouteRequestInFlight => _isRouteRequestInFlight;
+
+  int _activeRouteGeneration = 0;
+  int get activeRouteGeneration => _activeRouteGeneration;
+
+  String _navigationSessionId = '';
+  String get navigationSessionId => _navigationSessionId;
+
+  int _trafficRequestId = 0;
+  DateTime? _lastSuccessfulRouteOrRefreshAt;
+  DateTime? _lastTrafficAttemptAt;
+  Timer? _trafficRefreshTimer;
+  DateTime? _lastTrafficCheckLogAt;
+  LatLng? _pendingReroutePosition;
+
+  bool get isTrafficRefreshActive => _trafficRefreshTimer?.isActive ?? false;
+
+  NavigationRouteUpdateState _routeUpdateState =
+      NavigationRouteUpdateState.idle;
+  NavigationRouteUpdateState get routeUpdateState => _routeUpdateState;
+
+  String? _routeUpdateMessage;
+  String? get routeUpdateMessage => _routeUpdateMessage;
+
+  Timer? _routeUpdateDismissTimer;
+  int _consecutiveOffRouteFixes = 0;
+  DateTime? _lastOffRouteCheckLogAt;
+
+  void _setRouteUpdateState(
+    NavigationRouteUpdateState state, {
+    String? message,
+    Duration? autoDismissDuration,
+  }) {
+    if (_isDisposed || hasArrived) return;
+    _routeUpdateDismissTimer?.cancel();
+    _routeUpdateState = state;
+    _routeUpdateMessage = message;
+    notifyListeners();
+
+    if (autoDismissDuration != null) {
+      _routeUpdateDismissTimer = Timer(autoDismissDuration, () {
+        if (_isDisposed || hasArrived) return;
+        _routeUpdateState = NavigationRouteUpdateState.idle;
+        _routeUpdateMessage = null;
+        notifyListeners();
+      });
+    }
+  }
+
+  void _cancelRouteUpdateFeedback() {
+    _routeUpdateDismissTimer?.cancel();
+    _routeUpdateDismissTimer = null;
+    _routeUpdateState = NavigationRouteUpdateState.idle;
+    _routeUpdateMessage = null;
+  }
 
   // ─────────────────────────────────────────────
   // Init & dispose
   // ─────────────────────────────────────────────
 
   Future<void> init(TickerProvider vsync) async {
-    _routeSessionStartedAt = DateTime.now();
+    if (!startLat.isFinite ||
+        !startLng.isFinite ||
+        !endLat.isFinite ||
+        !endLng.isFinite ||
+        (startLat == 0.0 && startLng == 0.0) ||
+        (endLat == 0.0 && endLng == 0.0)) {
+      error = 'Invalid route coordinates';
+      loading = false;
+      notifyListeners();
+      return;
+    }
+
+    _navigationSessionId = _currentTime.millisecondsSinceEpoch.toString();
+    _lastSuccessfulRouteOrRefreshAt = _currentTime;
+    _routeSessionStartedAt = _currentTime;
+    _lastSpeedSampleAt = null;
+    _lastNavigationFixAt = null;
+    _lastGpsStreamEventAt = null;
+    _consecutiveArrivalFixes = 0;
     _ticker = vsync.createTicker(_onTick)..start();
 
     // GPS/navigation startup is the critical path.
@@ -251,6 +420,8 @@ class NavigationController extends ChangeNotifier {
     _ttsReady = _initTts();
     unawaited(_ttsReady!);
     unawaited(_createArrowIcon());
+
+    startTrafficRefreshTimer();
 
     await _initWithRealLocation();
   }
@@ -264,11 +435,25 @@ class NavigationController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _isDisposed = true;
+    _activeRouteGeneration++;
+    _fallbackRequestGeneration++;
+    _pendingReroutePosition = null;
+    _lastSpeedSampleAt = null;
+    _consecutiveArrivalFixes = 0;
+    stopTrafficRefreshTimer();
+    _cancelRouteUpdateFeedback();
     _ticker?.dispose();
     _positionSub?.cancel();
+    _positionSub = null;
     _startupGpsWatchdog?.cancel();
+    _startupGpsWatchdog = null;
+    _gpsHealthWatchdog?.cancel();
+    _gpsHealthWatchdog = null;
     _compassSub?.cancel();
-    _tts.stop();
+    try {
+      _tts.stop().catchError((_) => null);
+    } catch (_) {}
     positionNotifier.dispose();
     super.dispose();
   }
@@ -277,7 +462,7 @@ class NavigationController extends ChangeNotifier {
   // Ticker — smooth display position interpolation
   // ─────────────────────────────────────────────
 
- void _onTick(Duration elapsed) {
+  void _onTick(Duration elapsed) {
     if (targetLatLng == null) return;
 
     final dtMs = _lastTickElapsed == null
@@ -314,90 +499,110 @@ class NavigationController extends ChangeNotifier {
     // Keep rendering forward along the already-known route using the last
     // trusted speed while GPS is temporarily silent. This does NOT change map
     // matching or route progress; _matchedDistAlongRoute remains GPS-driven.
-    final gpsAgeSeconds = _lastGpsStreamEventAt == null
+    final gpsAgeSeconds = _lastNavigationFixAt == null
         ? 0.0
-        : DateTime.now()
-                .difference(_lastGpsStreamEventAt!)
-                .inMilliseconds /
+        : _currentTime.difference(_lastNavigationFixAt!).inMilliseconds /
             1000.0;
 
-    final canDeadReckon =
-        speed > 1.0 &&
+    // Conservative evidence-based dead-reckoning window:
+    // Active only when vehicle is clearly moving (speed > 1.2 m/s), GPS accuracy is good,
+    // and fix age is fresh (< 2.0s).
+    final canDeadReckon = speed > 1.2 &&
         _debugGpsAccuracy.isFinite &&
-        _debugGpsAccuracy <= 35.0 &&
-        (_debugTrackingState == 'MATCH' ||
-            _debugTrackingState == 'MATCH~');
+        _debugGpsAccuracy <= 30.0 &&
+        gpsAgeSeconds < 2.0 &&
+        (_debugTrackingState == 'MATCH' || _debugTrackingState == 'MATCH~');
 
-    // Up to ~4 seconds of route-constrained prediction. If Android delivers
-    // ~1 Hz fixes (the target after forcing LocationManager), this usually
-    // stays well below one second. The cap protects against running far ahead
-    // during a genuine GPS outage.
-    final predictionSeconds = canDeadReckon
-        ? gpsAgeSeconds.clamp(0.0, 4.0)
-        : 0.0;
+    // Small evidence-based forward allowance ahead of accepted route progress:
+    // - Walk: at most 1.5 meters (~1 step).
+    // - Drive / Motor: at most 4.0 meters (~1 car length, well within GPS accuracy).
+    // During the inter-fix gap (<= 0.8s), provide subtle glide lead.
+    // If GPS silence exceeds 0.8s, confidence decays smoothly to avoid overshooting
+    // if the vehicle is slowing down or stopping.
+    final maxPredictionLead = travelMode == TravelMode.walk ? 1.5 : 4.0;
+    double predictionLead = 0.0;
 
-    // Small latency compensation plus time-based dead reckoning.
-    final latencyLead = canDeadReckon ? speed * 0.30 : 0.0;
-    final deadReckonLead = speed * predictionSeconds;
-
-    final predictionLead =
-        (latencyLead + deadReckonLead).clamp(0.0, 50.0);
+    if (canDeadReckon) {
+      final latencyLead = speed * 0.15;
+      final deadReckonLead = speed * min(gpsAgeSeconds, 0.6) * 0.35;
+      final rawLead = latencyLead + deadReckonLead;
+      final decay = gpsAgeSeconds <= 0.8
+          ? 1.0
+          : max(0.0, 1.0 - (gpsAgeSeconds - 0.8) / 1.2);
+      predictionLead = (rawLead * decay).clamp(0.0, maxPredictionLead);
+    }
 
     _debugPredictionLeadMeters = predictionLead;
 
+    if (gpsAgeSeconds >= 3.0 &&
+        _debugTrackingState != 'OFFLINE' &&
+        _debugTrackingState != 'REROUTE') {
+      _debugTrackingState = 'WAIT ACCURATE GPS';
+    }
+
     final desiredDist =
-        (_matchedDistAlongRoute + predictionLead)
-            .clamp(0.0, routeEnd);
+        (_matchedDistAlongRoute + predictionLead).clamp(0.0, routeEnd);
 
     final error = desiredDist - _displayDistAlongRoute;
+    final previousVisual = _displayDistAlongRoute;
 
     if (error > 0.0) {
-      final baseVelocity = speed > 0.8 ? speed : 1.5;
-      final catchUpVelocity = (error / 0.70).clamp(0.0, 18.0);
+      final baseVelocity = speed > 0.8 ? speed : 1.2;
+      // Proportional catch-up velocity smoothly glides towards desiredDist
+      final catchUpVelocity = (error / 0.8).clamp(0.0, 6.0);
+      final maxVisualVelocity = travelMode == TravelMode.walk ? 4.0 : 35.0;
       final visualVelocity =
-          (baseVelocity + catchUpVelocity).clamp(1.5, 42.0);
+          (baseVelocity + catchUpVelocity).clamp(0.5, maxVisualVelocity);
 
       final advance = (visualVelocity * dt).clamp(0.0, error);
       _displayDistAlongRoute += advance;
-    } else if (error < -3.0) {
-      // Only a gentle backwards correction (mainly for a real reroute).
-      _displayDistAlongRoute += error * (1 - exp(-dt / 0.8));
     }
-
+    // When error <= 0.0, Visual holds its current progress.
+    // Because predictionLead is capped at <= 4.0m (Drive/Motor) and <= 1.5m (Walk),
+    // Visual never materially overshoots. When the vehicle stops, Visual settles
+    // within 0 to 4.0m of accepted fresh GPS (consistent with stop line) with
+    // ZERO backward movement.
     _displayDistAlongRoute =
-        _displayDistAlongRoute.clamp(0.0, routeEnd);
+        max(previousVisual, _displayDistAlongRoute).clamp(0.0, routeEnd);
 
     displayLatLng = _pointAtRouteDistance(_displayDistAlongRoute);
 
     // Heading is taken from the exact route segment under the rendered arrow.
     // This avoids diagonal "average" headings after a 90-degree turn.
-    final headingTarget =
-        _routeBearingAtDistance(_displayDistAlongRoute);
+    final headingTarget = _routeBearingAtDistance(_displayDistAlongRoute);
 
     final headingAlpha = 1 - exp(-dt / 0.16);
-    displayBearing =
-        _lerpBearing(displayBearing, headingTarget, headingAlpha);
+    displayBearing = _lerpBearing(displayBearing, headingTarget, headingAlpha);
 
     final elapsedMs = elapsed.inMilliseconds;
     if (_lastVisualPublishMs == 0 ||
-        elapsedMs - _lastVisualPublishMs >=
-            _visualPublishIntervalMs) {
+        elapsedMs - _lastVisualPublishMs >= _visualPublishIntervalMs) {
       _lastVisualPublishMs = elapsedMs;
       positionNotifier.value = displayLatLng;
     }
   }
 
-
   // ─────────────────────────────────────────────
   // GPS init
   // ─────────────────────────────────────────────
 
+  Future<Position> _fetchCurrentPosition({
+    LocationAccuracy desiredAccuracy = LocationAccuracy.bestForNavigation,
+  }) {
+    if (currentPositionProvider != null) {
+      return currentPositionProvider!(desiredAccuracy: desiredAccuracy);
+    }
+    return Geolocator.getCurrentPosition(desiredAccuracy: desiredAccuracy);
+  }
+
   Future<void> _initWithRealLocation() async {
     try {
-      var perm = await Geolocator.checkPermission();
+      if (currentPositionProvider == null) {
+        var perm = await Geolocator.checkPermission();
 
-      if (perm == LocationPermission.denied) {
-        perm = await Geolocator.requestPermission();
+        if (perm == LocationPermission.denied) {
+          perm = await Geolocator.requestPermission();
+        }
       }
 
       // Start the live stream BEFORE waiting for getCurrentPosition().
@@ -408,7 +613,7 @@ class NavigationController extends ChangeNotifier {
       Position? seedPosition;
 
       try {
-        seedPosition = await Geolocator.getCurrentPosition(
+        seedPosition = await _fetchCurrentPosition(
           desiredAccuracy: LocationAccuracy.bestForNavigation,
         ).timeout(const Duration(milliseconds: 1200));
       } catch (_) {
@@ -425,10 +630,10 @@ class NavigationController extends ChangeNotifier {
 
         // Do not overwrite a newer stream fix with an older one-shot result.
         if (_lastGpsStreamEventAt == null) {
-          userLatLng    = bestLatLng;
-          targetLatLng  = bestLatLng;
+          userLatLng = bestLatLng;
+          targetLatLng = bestLatLng;
           displayLatLng = bestLatLng;
-          lastPos       = bestPosition;
+          lastPos = bestPosition;
 
           _debugSpeedMps =
               bestPosition.speed.isFinite ? bestPosition.speed : 0.0;
@@ -440,32 +645,62 @@ class NavigationController extends ChangeNotifier {
         }
 
         final routeSeed = lastPos ?? bestPosition;
+        final currentGps = LatLng(routeSeed.latitude, routeSeed.longitude);
+        final canReuse = shouldReuseInitialRoute(
+          currentGps: currentGps,
+          initialRoute: initialRoute,
+          mode: travelMode,
+        );
 
-        if (initialRoute != null) {
+        final startGpsSource = _lastGpsStreamEventAt != null
+            ? 'live_stream'
+            : (seedPosition != null
+                ? 'best_for_navigation'
+                : 'preview_fallback');
+
+        final previewOrigin = initialRoute?.polylinePoints.isNotEmpty == true
+            ? initialRoute!.polylinePoints.first
+            : LatLng(startLat, startLng);
+        final distFromPreview = _dist(currentGps, previewOrigin);
+
+        print('[NAV_ORIGIN][START]\n'
+            'source=$startGpsSource\n'
+            'distanceFromPreviewOriginMeters=${distFromPreview.toStringAsFixed(1)}\n'
+            'action=${canReuse && initialRoute != null ? "reuse_preview_route" : "request_fresh_route"}');
+
+        if (canReuse && initialRoute != null) {
           _resetRouteState();
           notifyListeners();
-          await _applyRouteResult(initialRoute!);
+          _lastSuccessfulRouteOrRefreshAt = _currentTime;
+          await applyRouteResult(initialRoute!);
         } else {
+          if (initialRoute != null) {
+            print(
+                '[NAV_METRIC][ROUTE] User moved away from preview route origin; requesting fresh route from current GPS.');
+          }
           await _loadRoute(
             routeSeed.latitude,
             routeSeed.longitude,
           );
         }
 
+        _maybeApplySeedPositionAfterRoute(bestPosition);
+
         return;
       }
 
       // No usable seed yet: keep the live stream running and use the supplied
       // start coordinate only to bootstrap route loading.
-      userLatLng    = LatLng(startLat, startLng);
-      targetLatLng  = userLatLng;
+      userLatLng = LatLng(startLat, startLng);
+      targetLatLng = userLatLng;
       displayLatLng = userLatLng;
       positionNotifier.value = displayLatLng;
 
       if (initialRoute != null) {
         _resetRouteState();
         notifyListeners();
-        await _applyRouteResult(initialRoute!);
+        _lastSuccessfulRouteOrRefreshAt = _currentTime;
+        await applyRouteResult(initialRoute!);
       } else {
         await _loadRoute(startLat, startLng);
       }
@@ -474,21 +709,42 @@ class NavigationController extends ChangeNotifier {
       // recover later if location becomes available.
       _startTracking();
 
-      userLatLng    = LatLng(startLat, startLng);
-      targetLatLng  = userLatLng;
+      userLatLng = LatLng(startLat, startLng);
+      targetLatLng = userLatLng;
       displayLatLng = userLatLng;
       positionNotifier.value = displayLatLng;
 
       if (initialRoute != null) {
         _resetRouteState();
         notifyListeners();
-        await _applyRouteResult(initialRoute!);
+        _lastSuccessfulRouteOrRefreshAt = _currentTime;
+        await applyRouteResult(initialRoute!);
       } else {
         await _loadRoute(startLat, startLng);
       }
     }
   }
 
+  void _maybeApplySeedPositionAfterRoute(Position? seed) {
+    if (seed == null || _isDisposed || hasArrived) return;
+    if (_lastGpsStreamEventAt != null || _lastNavigationFixAt != null) return;
+    if (!seed.latitude.isFinite || !seed.longitude.isFinite) return;
+
+    final now = _currentTime;
+    final ageSec = now.difference(seed.timestamp).inSeconds.abs();
+    if (ageSec > 15) {
+      print('[NAV_GPS][SEED] Seed rejected: age ${ageSec}s > 15s');
+      return;
+    }
+
+    print('[NAV_GPS][SEED]\n'
+        'action=apply_seed\n'
+        'ageSeconds=$ageSec\n'
+        'accuracy=${seed.accuracy.toStringAsFixed(1)}');
+    _lastNavigationFixAt = now;
+    _debugTrackingState = 'SEED FIX';
+    _handlePosition(seed, customNow: now);
+  }
 
   // ─────────────────────────────────────────────
   // Arrow icon
@@ -497,7 +753,7 @@ class NavigationController extends ChangeNotifier {
   Future<void> _createArrowIcon() async {
     const size = 72.0;
     final rec = ui.PictureRecorder();
-    final c   = Canvas(rec);
+    final c = Canvas(rec);
     c.drawCircle(const Offset(size / 2, size / 2 + 2), size / 2 - 2,
         Paint()..color = Colors.black26);
     c.drawCircle(const Offset(size / 2, size / 2), size / 2 - 2,
@@ -511,9 +767,9 @@ class NavigationController extends ChangeNotifier {
       ..lineTo(size / 2 - 15, size - 14)
       ..close();
     c.drawPath(arrow, Paint()..color = Colors.white);
-    final img   = await rec.endRecording().toImage(size.toInt(), size.toInt());
+    final img = await rec.endRecording().toImage(size.toInt(), size.toInt());
     final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
-    if (bytes != null) {
+    if (bytes != null && !_isDisposed) {
       arrowIcon = BitmapDescriptor.fromBytes(bytes.buffer.asUint8List());
       notifyListeners();
     }
@@ -534,13 +790,19 @@ class NavigationController extends ChangeNotifier {
     }
 
     _lastSpokenInstruction = text;
-    await _tts.stop();
-    await _tts.speak(text);
+    try {
+      await _tts.stop();
+      await _tts.speak(text);
+    } catch (_) {}
   }
 
   void toggleTts() {
     _ttsEnabled = !_ttsEnabled;
-    if (!_ttsEnabled) _tts.stop();
+    if (!_ttsEnabled) {
+      try {
+        _tts.stop().catchError((_) => null);
+      } catch (_) {}
+    }
     notifyListeners();
   }
 
@@ -584,9 +846,12 @@ class NavigationController extends ChangeNotifier {
 
   String get _travelModeStr {
     switch (travelMode) {
-      case TravelMode.walk:  return 'WALK';
-      case TravelMode.drive: return 'DRIVE';
-      case TravelMode.motor: return 'TWO_WHEELER';
+      case TravelMode.walk:
+        return 'WALK';
+      case TravelMode.drive:
+        return 'DRIVE';
+      case TravelMode.motor:
+        return 'TWO_WHEELER';
     }
   }
 
@@ -595,6 +860,25 @@ class NavigationController extends ChangeNotifier {
     double fromLng, {
     bool isReroute = false,
   }) async {
+    if (!canInitiateRouteRequest(
+      isDisposed: _isDisposed,
+      hasArrived: hasArrived,
+    )) {
+      return;
+    }
+
+    if (_isRouteRequestInFlight) {
+      if (isReroute) {
+        _pendingReroutePosition = LatLng(fromLat, fromLng);
+        _activeRouteGeneration++;
+      }
+      return;
+    }
+
+    _isRouteRequestInFlight = true;
+    final currentSessionId = _navigationSessionId;
+    final requestGeneration = ++_activeRouteGeneration;
+
     // IMPORTANT:
     // Do not clear the active route before a reroute request succeeds.
     // If the phone temporarily loses network, the user must still retain
@@ -605,7 +889,8 @@ class NavigationController extends ChangeNotifier {
     }
 
     try {
-      final result = await RouteService.instance.fetchNavigationRoute(
+      final fetch = routeFetcher ?? RouteService.instance.fetchNavigationRoute;
+      final result = await fetch(
         fromLat: fromLat,
         fromLng: fromLng,
         toLat: endLat,
@@ -613,64 +898,123 @@ class NavigationController extends ChangeNotifier {
         mode: travelMode,
       );
 
+      if (_navigationSessionId != currentSessionId ||
+          _activeRouteGeneration != requestGeneration ||
+          _isDisposed ||
+          hasArrived) {
+        return;
+      }
+
       isOfflineNavigation = false;
       networkNotice = null;
+      _lastSuccessfulRouteOrRefreshAt = DateTime.now();
 
-      await _applyRouteResult(result);
+      await applyRouteResult(result);
+
+      if (isReroute) {
+        _setRouteUpdateState(
+          NavigationRouteUpdateState.updated,
+          message: 'Route updated',
+          autoDismissDuration: const Duration(seconds: 3),
+        );
+        print('[NAV_REROUTE][APPLIED]\n'
+            'sessionId=$currentSessionId\n'
+            'generation=$requestGeneration\n'
+            'newRoadDistanceMeters=${result.distanceMeters.toStringAsFixed(1)}\n'
+            'newDurationSeconds=${result.durationSeconds}\n'
+            'message="Route updated"');
+      }
     } catch (e) {
+      if (_isDisposed || hasArrived) return;
+
       if (isReroute) {
         isRerouting = false;
         isOfflineNavigation = true;
         networkNotice = 'Offline — continuing on current route';
         _debugTrackingState = 'OFFLINE';
+        _setRouteUpdateState(
+          NavigationRouteUpdateState.failed,
+          message:
+              'We couldn’t update the route. Continue safely and we’ll try again.',
+          autoDismissDuration: const Duration(seconds: 4),
+        );
+        print('[NAV_REROUTE][FAILED]\n'
+            'sessionId=$currentSessionId\n'
+            'generation=$requestGeneration\n'
+            'action=retain_existing_route\n'
+            'message="We couldn’t update the route. Continue safely and we’ll try again."');
+        print('[NAV_METRIC][REROUTE]\n'
+            'oldRouteMeters=${_totalRouteMeters.toStringAsFixed(1)}\n'
+            'newRouteMeters=${_totalRouteMeters.toStringAsFixed(1)}\n'
+            'metricsReset=false\n'
+            'source=retained_existing_route');
         notifyListeners();
       } else {
-        error   = e.toString();
+        error = e.toString();
         loading = false;
         notifyListeners();
+      }
+    } finally {
+      _isRouteRequestInFlight = false;
+      if (shouldLaunchPendingReroute(
+        isDisposed: _isDisposed,
+        hasArrived: hasArrived,
+        hasPendingPosition: _pendingReroutePosition != null,
+      )) {
+        final pos = _pendingReroutePosition!;
+        _pendingReroutePosition = null;
+        _loadRoute(pos.latitude, pos.longitude, isReroute: true);
+      } else {
+        _pendingReroutePosition = null;
       }
     }
   }
 
   void _resetRouteState({bool isReroute = false}) {
-    currentStepIndex       = 0;
-    steps                  = [];
-    stepEndPolylineIdx     = [];
-    _stepConfirmCount      = 0;
-    _stepConfirmForIndex   = -1;
+    currentStepIndex = 0;
+    steps = [];
+    stepEndPolylineIdx = [];
+    _stepConfirmCount = 0;
+    _stepConfirmForIndex = -1;
     _spokenDistanceReminders.clear();
     _lastSpokenInstruction = null;
-    error                  = null;
+    error = null;
 
     if (!isReroute) {
-      _offRouteCount         = 0;
-      loading                = true;
-      isRerouting             = false;
-      walkedPoints            = [];
-      remainingPoints         = [];
-      nearestIdx              = 0;
-      _matchedDistAlongRoute  = 0;
-      _lastMatchedLatLng      = null;
+      _offRouteCount = 0;
+      _consecutiveArrivalFixes = 0;
+      loading = true;
+      isRerouting = false;
+      walkedPoints = [];
+      remainingPoints = [];
+      nearestIdx = 0;
+      _matchedDistAlongRoute = 0;
+      _lastMatchedLatLng = null;
       _lastAcceptedProgressAt = null;
-      _stepEndRouteDist       = [];
-      _offRouteSince          = null;
-      _lastOffRouteCheckAt    = null;
+      _stepEndRouteDist = [];
+      _offRouteSince = null;
+      _lastOffRouteCheckAt = null;
       _lastRawDistanceToRoute = 0;
-      _lastDebugLogAt         = null;
+      _lastDebugLogAt = null;
     }
   }
 
-  Future<void> _applyRouteResult(RouteResult result) async {
-    final pts      = result.polylinePoints;
+  Future<void> applyRouteResult(RouteResult result,
+      {bool isTrafficRefresh = false}) async {
+    final oldTotalMeters = _totalRouteMeters;
+    final oldRemainingSeconds = remainingSeconds;
+    final oldRemainingMeters = remainingMeters;
+    final pts = result.polylinePoints;
     final newSteps = result.steps;
 
     // Diagnostic only: increments whenever a fresh route is successfully
     // applied (initial route or reroute).
     _debugRouteVersion++;
 
-    isRerouting     = false;
-    _offRouteCount  = 0;
-    _offRouteSince  = null;
+    isRerouting = false;
+    _offRouteCount = 0;
+    _offRouteSince = null;
+    _consecutiveArrivalFixes = 0;
 
     // A reroute may return fewer steps than the previous route.
     // Reset old step indexes before rebuilding the new route arrays.
@@ -682,21 +1026,21 @@ class NavigationController extends ChangeNotifier {
     _routeSessionStartedAt = DateTime.now();
     _hasJoinedPlannedRoute = false;
 
-    if (pts.length >= 2) {
+    if (!isTrafficRefresh && pts.length >= 2) {
       bearing = _calcBearing(pts[0], pts[1]);
       displayBearing = bearing;
     }
 
-    polylinePoints     = pts;
-    remainingPoints    = List.from(pts);
-    walkedPoints       = [];
-    steps              = newSteps;
-    remainingMeters    = result.distanceMeters;
-    remainingSeconds   = result.durationSeconds;
+    polylinePoints = pts;
+    remainingPoints = List.from(pts);
+    walkedPoints = [];
+    steps = newSteps;
+    remainingMeters = result.distanceMeters;
+    remainingSeconds = result.durationSeconds;
     _routeBaselineSeconds = result.durationSeconds;
-    _totalRouteMeters  = result.distanceMeters;
-    routeBounds        = result.bounds;
-    loading            = false;
+    _totalRouteMeters = result.distanceMeters;
+    routeBounds = result.bounds;
+    loading = false;
 
     _cumDist = _buildCumDist(pts);
 
@@ -704,7 +1048,7 @@ class NavigationController extends ChangeNotifier {
     // prevents a loop / nearby parallel segment from mapping a later step
     // back to an earlier point in the route.
     stepEndPolylineIdx = [];
-    _stepEndRouteDist  = [];
+    _stepEndRouteDist = [];
     int searchStart = 0;
 
     for (final step in newSteps) {
@@ -730,11 +1074,11 @@ class NavigationController extends ChangeNotifier {
     // Initialise the match from the user's current displayed position,
     // rather than blindly assuming route-distance 0. This matters when a
     // preview route was generated slightly before navigation actually starts.
-    nearestIdx              = 0;
-    _matchedDistAlongRoute  = 0;
-    _lastMatchedLatLng      = pts.isNotEmpty ? pts.first : null;
+    nearestIdx = 0;
+    _matchedDistAlongRoute = 0;
+    _lastMatchedLatLng = pts.isNotEmpty ? pts.first : null;
     _lastAcceptedProgressAt = DateTime.now();
-    _displayDistAlongRoute  = 0.0;
+    _displayDistAlongRoute = 0.0;
     _displayRouteInitialised = false;
 
     if (displayLatLng != null && pts.length >= 2) {
@@ -747,290 +1091,447 @@ class NavigationController extends ChangeNotifier {
       );
 
       if (initial != null && initial.perpDist <= 80.0) {
-        nearestIdx             = initial.idx;
+        nearestIdx = initial.idx;
         _matchedDistAlongRoute = initial.distAlongRoute;
-        _lastMatchedLatLng     = initial.snapped;
+        _lastMatchedLatLng = initial.snapped;
         _displayDistAlongRoute = initial.distAlongRoute;
         _displayRouteInitialised = true;
 
         final initialJoinThreshold =
             travelMode == TravelMode.walk ? 20.0 : 30.0;
-        _hasJoinedPlannedRoute =
-            initial.perpDist <= initialJoinThreshold;
+        _hasJoinedPlannedRoute = initial.perpDist <= initialJoinThreshold;
       }
     }
 
     _syncStepIndexToMatchedProgress();
-    _updateRouteProgress(_lastMatchedLatLng ?? (pts.isNotEmpty ? pts.first : LatLng(startLat, startLng)));
+    _updateRouteProgress(_lastMatchedLatLng ??
+        (pts.isNotEmpty ? pts.first : LatLng(startLat, startLng)));
     _updateNavigationMetrics();
+
+    if (isTrafficRefresh) {
+      print('[NAV_TRAFFIC][APPLIED]\n'
+          'sessionId=$_navigationSessionId\n'
+          'requestId=$_trafficRequestId\n'
+          'oldRemainingSeconds=$oldRemainingSeconds\n'
+          'newRemainingSeconds=$remainingSeconds\n'
+          'oldRemainingMeters=${oldRemainingMeters.toStringAsFixed(1)}\n'
+          'newRemainingMeters=${remainingMeters.toStringAsFixed(1)}\n'
+          'source=${result.isFallback ? 'google_drive_fallback' : 'google_routes_api'}');
+    } else if (_debugRouteVersion > 1) {
+      print('[NAV_METRIC][REROUTE]\n'
+          'oldRouteMeters=${oldTotalMeters.toStringAsFixed(1)}\n'
+          'newRouteMeters=${result.distanceMeters.toStringAsFixed(1)}\n'
+          'metricsReset=true\n'
+          'source=${result.isFallback ? 'google_drive_fallback' : 'google_routes_api'}');
+    }
 
     // Route is ready. Preserve any GPS data already received while the
     // route was loading instead of resetting speed/accuracy back to zero.
-    final hasRecentStreamFix = _lastGpsStreamEventAt != null &&
-        DateTime.now().difference(_lastGpsStreamEventAt!).inSeconds < 3;
+    final hasRecentFix = (_lastGpsStreamEventAt != null &&
+            _currentTime.difference(_lastGpsStreamEventAt!).inSeconds < 3) ||
+        (_lastNavigationFixAt != null &&
+            _currentTime.difference(_lastNavigationFixAt!).inSeconds < 3);
 
-    _debugTrackingState = hasRecentStreamFix ? 'MATCH INIT' : 'WAIT GPS';
+    _debugTrackingState = hasRecentFix ? 'MATCH INIT' : 'WAIT GPS';
     _debugRecoverySeconds = 0;
     _debugMatchPerpDistance = double.infinity;
 
     notifyListeners();
 
-    if (newSteps.isNotEmpty) {
+    if (!isTrafficRefresh && newSteps.isNotEmpty) {
       // First step normally contains the initial "Head/Continue" instruction.
       _speak(newSteps.first.instruction);
     }
 
-    _startTracking();
+    if (!isTrafficRefresh) {
+      _startTracking();
+    }
   }
-  
-  
+
   // ─────────────────────────────────────────────
   // GPS tracking
   // ─────────────────────────────────────────────
 
   void _startTracking() {
-    // Do not cancel/restart an already-running navigation stream when a
-    // route finishes loading or rerouting completes.
+    // Route loads/reroutes must not restart a healthy stream.
     if (_positionSub != null) {
-      _scheduleStartupGpsWatchdog();
+      _ensureGpsHealthWatchdog();
       return;
     }
 
-    _positionSub?.cancel();
+    _subscribePositionStream();
+    _ensureGpsHealthWatchdog();
+  }
 
-    _positionSub = Geolocator.getPositionStream(
-      locationSettings: AndroidSettings(
-        accuracy:         LocationAccuracy.bestForNavigation,
-        distanceFilter:   0,
+  void _subscribePositionStream() {
+    final streamProvider = positionStreamProvider;
+    final stream = streamProvider != null
+        ? streamProvider(
+            locationSettings: AndroidSettings(
+              accuracy: LocationAccuracy.bestForNavigation,
+              distanceFilter: 0,
+              intervalDuration: const Duration(milliseconds: 500),
+              foregroundNotificationConfig: const ForegroundNotificationConfig(
+                notificationText: 'Navigation is active',
+                notificationTitle: 'Turn-by-turn Navigation',
+                enableWakeLock: true,
+              ),
+            ),
+          )
+        : Geolocator.getPositionStream(
+            locationSettings: AndroidSettings(
+              accuracy: LocationAccuracy.bestForNavigation,
+              distanceFilter: 0,
+              intervalDuration: const Duration(milliseconds: 500),
+              foregroundNotificationConfig: const ForegroundNotificationConfig(
+                notificationText: 'Navigation is active',
+                notificationTitle: 'Turn-by-turn Navigation',
+                enableWakeLock: true,
+              ),
+            ),
+          );
 
-        // The diagnostic video shows the fused stream arriving in multi-second
-        // bursts (GPS age repeatedly climbs to ~4-9 s, then resets). For a
-        // foreground navigation session prefer Android LocationManager and a
-        // realistic high-rate request. GPS hardware is normally ~1 Hz; the
-        // visual renderer fills the interval between fixes.
-        forceLocationManager: true,
-        intervalDuration: const Duration(milliseconds: 500),
-
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationText:  'Navigation is active',
-          notificationTitle: 'Turn-by-turn Navigation',
-          enableWakeLock:    true,
-        ),
-      ),
-    ).listen(
+    _positionSub = stream.listen(
       (raw) {
-        _lastGpsStreamEventAt = DateTime.now();
+        final now = _currentTime;
+        _lastGpsStreamEventAt = now;
+        _lastNavigationFixAt = now;
+        _fallbackRequestGeneration++;
 
-        // First genuine stream event means Android's live feed is active;
-        // the temporary startup fallback is no longer needed.
-        _startupGpsWatchdog?.cancel();
-        _startupGpsWatchdog = null;
+        print('[NAV_GPS][STREAM]\n'
+            'lat=${raw.latitude.toStringAsFixed(5)}\n'
+            'lng=${raw.longitude.toStringAsFixed(5)}\n'
+            'accuracy=${raw.accuracy.toStringAsFixed(1)}');
 
-        _handlePosition(raw);
+        _handlePosition(raw, customNow: now);
       },
       onError: (Object e) {
         debugPrint('NAV GPS STREAM ERROR: $e');
+        unawaited(_restartGpsStream());
       },
+      onDone: () {
+        debugPrint('NAV GPS STREAM CLOSED');
+        unawaited(_restartGpsStream());
+      },
+      cancelOnError: false,
     );
-
-    _scheduleStartupGpsWatchdog();
   }
 
-  void _scheduleStartupGpsWatchdog() {
-    if (_lastGpsStreamEventAt != null) return;
-    if (_startupGpsWatchdog != null) return;
+  void _ensureGpsHealthWatchdog() {
+    if (_gpsHealthWatchdog != null) return;
 
-    _startupFallbackAttempts = 0;
-
-    _startupGpsWatchdog = Timer.periodic(
+    _gpsHealthWatchdog = Timer.periodic(
       const Duration(seconds: 1),
-      (timer) async {
-        // Stop immediately once the real stream has produced a fix.
-        if (_lastGpsStreamEventAt != null) {
-          timer.cancel();
-          _startupGpsWatchdog = null;
-          return;
-        }
-
-        if (_startupFallbackBusy) return;
-
-        _startupFallbackAttempts++;
-
-        // Startup-only safety net: do not poll forever.
-        if (_startupFallbackAttempts > 4) {
-          timer.cancel();
-          _startupGpsWatchdog = null;
-          return;
-        }
-
-        _startupFallbackBusy = true;
-
-        try {
-          final fresh = await Geolocator.getCurrentPosition(
-            desiredAccuracy: LocationAccuracy.bestForNavigation,
-          ).timeout(const Duration(milliseconds: 1500));
-
-          // If the live stream arrived while this request was in flight,
-          // let the stream win and ignore the fallback duplicate.
-          if (_lastGpsStreamEventAt == null) {
-            _debugTrackingState = 'START FIX';
-            await _handlePosition(fresh);
-          }
-        } catch (_) {
-          // Keep WAIT GPS / LOW GPS visible; the next watchdog tick may
-          // recover. We intentionally do not turn this into a route error.
-        } finally {
-          _startupFallbackBusy = false;
-        }
+      (_) async {
+        if (_isDisposed || hasArrived) return;
+        await _checkGpsHealthAndFallback();
       },
     );
   }
 
-  Future<void> _handlePosition(Position raw) async {
-      final handleWatch = Stopwatch()..start();
-      final now       = DateTime.now();
-      final rawLatLng = LatLng(raw.latitude, raw.longitude);
+  @visibleForTesting
+  Future<void> checkGpsHealthAndFallback() async {
+    await _checkGpsHealthAndFallback();
+  }
 
-      // Some Android devices briefly report speed=0 after the vehicle has
-      // already started moving. Use coordinate displacement as a fallback,
-      // but only when movement is clearly larger than ordinary GPS jitter.
-      double derivedSpeed = 0.0;
+  Future<void> _checkGpsHealthAndFallback() async {
+    if (_isDisposed || hasArrived) return;
 
-      if (_lastRawMotionFix != null &&
-          _lastRawMotionFixAt != null) {
-        final dt =
-            now.difference(_lastRawMotionFixAt!).inMilliseconds / 1000.0;
-        final movedMeters =
-            _dist(_lastRawMotionFix!, rawLatLng);
+    final lastStream = _lastGpsStreamEventAt;
+    final now = _currentTime;
 
-        if (dt >= 0.15 &&
-            dt <= 3.0 &&
-            movedMeters >= 3.0 &&
-            raw.accuracy.isFinite &&
-            raw.accuracy <= 60.0) {
-          derivedSpeed = movedMeters / dt;
-        }
+    if (lastStream == null) {
+      // Pre-stream phase: actively poll until the first stream event arrives
+      await _performFallbackLocation('pre_stream');
+      return;
+    }
+
+    final streamAgeMs = now.difference(lastStream).inMilliseconds;
+
+    // At >2.2s without a stream event, actively request a fresh position.
+    // This keeps route progress alive while Android's continuous stream is unhealthy.
+    if (streamAgeMs >= 2200) {
+      await _performFallbackLocation('stream_stalled');
+    }
+
+    // If the stream itself is silent for 5s, recreate the subscription.
+    // This does NOT reset route/matcher/ETA/heading state.
+    if (streamAgeMs >= 5000) {
+      unawaited(_restartGpsStream());
+    }
+  }
+
+  @visibleForTesting
+  Future<void> performFallbackLocation(String phase) async {
+    await _performFallbackLocation(phase);
+  }
+
+  Future<void> _performFallbackLocation(String phase) async {
+    if (_isFallbackInFlight || _isDisposed || hasArrived) return;
+
+    final now = _currentTime;
+    if (_lastFallbackAttemptAt != null &&
+        now.difference(_lastFallbackAttemptAt!).inMilliseconds < 1400) {
+      return;
+    }
+
+    _lastFallbackAttemptAt = now;
+    _isFallbackInFlight = true;
+    final requestGen = ++_fallbackRequestGeneration;
+    final requestStartTime = now;
+
+    try {
+      final fresh = await _fetchCurrentPosition(
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
+      ).timeout(const Duration(milliseconds: 1600));
+
+      if (_isDisposed || hasArrived) return;
+      if (requestGen != _fallbackRequestGeneration) {
+        print(
+            '[NAV_GPS][HANDOVER] Stale fallback ignored (gen $requestGen != $_fallbackRequestGeneration)');
+        return;
       }
-
-      _lastRawMotionFix = rawLatLng;
-      _lastRawMotionFixAt = now;
-
-      final rawSpeed =
-          raw.speed.isFinite ? max(raw.speed, 0.0) : 0.0;
-      final effectiveSpeed =
-          max(rawSpeed, derivedSpeed).clamp(0.0, 45.0);
-      final isMoving = effectiveSpeed > 0.8;
-
-      // IMPORTANT: record every GPS fix before any quality decision.
-      // The previous version returned immediately for accuracy >30m, so
-      // Android could be receiving movement while the UI stayed at
-      // INIT / 0 km/h / GPS ±0 for many seconds during GPS warm-up.
-      _debugSpeedMps = effectiveSpeed;
-      _debugGpsAccuracy = raw.accuracy.isFinite
-          ? raw.accuracy.abs()
-          : double.infinity;
-
-      if (polylinePoints.length < 2) {
-        _debugTrackingState = 'WAIT ROUTE';
-
-        // Cache the newest live fix even before the route arrives.
-        // The map itself is still behind the loading UI, so updating the
-        // display here is safe and lets _applyRouteResult() align against
-        // the user's latest position rather than an older startup fix.
-        lastPos       = raw;
-        userLatLng    = rawLatLng;
-        targetLatLng  = rawLatLng;
-        displayLatLng = rawLatLng;
-        positionNotifier.value = rawLatLng;
-
-        _debugHandleMs = handleWatch.elapsedMicroseconds / 1000.0;
-        notifyListeners();
+      if (_lastGpsStreamEventAt != null &&
+          _lastGpsStreamEventAt!.isAfter(requestStartTime)) {
+        print('[NAV_GPS][HANDOVER] Stream fix is newer than fallback request');
         return;
       }
 
-      // GPS quality bands. We intentionally do NOT hard-reject a 31-60m
-      // fix: that is common during navigation warm-up and is still useful
-      // when constrained by the planned route + heading + recovery window.
-      final gpsAccuracy = _debugGpsAccuracy;
-      final bool goodGps   = gpsAccuracy <= 25.0;
-      final bool usableGps = gpsAccuracy <= 60.0;
-
-      final secondsSinceAccepted = _lastAcceptedProgressAt == null
-          ? 1.0
-          : now.difference(_lastAcceptedProgressAt!).inMilliseconds / 1000.0;
-
-      final recoverySeconds = secondsSinceAccepted.clamp(0.2, 30.0);
-
-      _debugRecoverySeconds = recoverySeconds;
-
-      // Accuracy >60m is too uncertain to advance trusted route progress.
-      // Do not pretend the phone is stationary: speed/accuracy still update
-      // on the overlay, recovery time keeps growing, and the next usable fix
-      // gets a wider search window so the matcher can catch up immediately.
-      if (!usableGps) {
-        _debugTrackingState = 'LOW GPS';
-        _debugMatchPerpDistance = double.infinity;
-        lastPos = raw;
-
-        // Keep route progress and the snapped marker stable. Poor GPS must
-        // never by itself trigger rerouting.
-        _offRouteSince = null;
-
-        // Route gap remains useful diagnostic information even when the fix
-        // is poor; it is display-only in this branch.
-        if (_lastOffRouteCheckAt == null ||
-            now.difference(_lastOffRouteCheckAt!).inMilliseconds >= 500) {
-          _lastOffRouteCheckAt = now;
-          _lastRawDistanceToRoute = _distanceToRoute(rawLatLng);
-        }
-
-        _debugHandleMs = handleWatch.elapsedMicroseconds / 1000.0;
-        notifyListeners();
-        return;
+      _lastNavigationFixAt = _currentTime;
+      if (_lastGpsStreamEventAt == null) {
+        _debugTrackingState = 'START FIX';
+      } else {
+        _debugTrackingState = 'GPS RECOVER';
       }
 
-      // ── 1. Map match ────────────────────────────────────────────────
-      final match = _mapMatch(
-        rawLatLng,
-        speedMps: effectiveSpeed,
-        isMoving: isMoving,
-        gpsHeading: raw.heading,
-        recoverySeconds: recoverySeconds,
-      );
+      print('[NAV_GPS][FALLBACK]\n'
+          'phase=$phase\n'
+          'lat=${fresh.latitude.toStringAsFixed(5)}\n'
+          'lng=${fresh.longitude.toStringAsFixed(5)}\n'
+          'accuracy=${fresh.accuracy.toStringAsFixed(1)}');
 
-      _debugMatchPerpDistance = match?.perpDist ?? double.infinity;
+      await _handlePosition(fresh, customNow: _lastNavigationFixAt);
+    } catch (e) {
+      print('[NAV_GPS][FALLBACK] attempt failed: $e');
+    } finally {
+      _isFallbackInFlight = false;
+    }
+  }
 
-      final previousProgress = _matchedDistAlongRoute;
+  Future<void> _restartGpsStream() async {
+    if (_gpsStreamRestarting || hasArrived || _isDisposed) return;
+    _gpsStreamRestarting = true;
 
-      LatLng routePoint = _lastMatchedLatLng ?? polylinePoints.first;
-      LatLng visualPoint = routePoint;
-      bool trustedMatch = false;
+    try {
+      final oldSub = _positionSub;
+      _positionSub = null;
+      await oldSub?.cancel();
 
-      if (match != null && match.perpDist.isFinite) {
-        // With a good fix we keep snapping strict. During warm-up (25-60m
-        // accuracy) we allow a slightly wider route snap, but only inside
-        // the existing distance-along-route search window and heading score.
-        final baseSnapThreshold =
-            travelMode == TravelMode.walk ? 18.0 : 35.0;
-        final snapThreshold = goodGps
-            ? baseSnapThreshold
-            : min(60.0, max(baseSnapThreshold, gpsAccuracy * 1.05));
+      debugPrint('NAV GPS STREAM RESTART');
 
-        if (match.perpDist <= snapThreshold) {
+      // Small separation helps Android release the previous request before a
+      // new one is registered.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+
+      if (!hasArrived && !_isDisposed) {
+        _subscribePositionStream();
+      }
+    } catch (e) {
+      debugPrint('NAV GPS STREAM RESTART ERROR: $e');
+    } finally {
+      _gpsStreamRestarting = false;
+    }
+  }
+
+  Future<void> _handlePosition(Position raw, {DateTime? customNow}) async {
+    final handleWatch = Stopwatch()..start();
+    final now = customNow ?? _currentTime;
+    final rawLatLng = LatLng(raw.latitude, raw.longitude);
+
+    // Conservative derived speed:
+    // Some Android devices briefly report speed=0 after moving. Use coordinate
+    // displacement only when the time interval is sufficient (>= 0.75s) and
+    // displacement clearly exceeds the GPS accuracy ellipse to prevent dividing
+    // short-interval jitter by small dt (which previously produced 45 m/s / 162 km/h spikes).
+    double derivedSpeed = 0.0;
+
+    if (_lastRawMotionFix != null && _lastRawMotionFixAt != null) {
+      final dt = now.difference(_lastRawMotionFixAt!).inMilliseconds / 1000.0;
+      final movedMeters = _dist(_lastRawMotionFix!, rawLatLng);
+
+      if (dt >= 0.75 &&
+          dt <= 4.0 &&
+          movedMeters >= 4.0 &&
+          raw.accuracy.isFinite &&
+          raw.accuracy <= 35.0 &&
+          movedMeters >= (raw.accuracy * 0.35)) {
+        derivedSpeed = movedMeters / dt;
+      }
+    }
+
+    _lastRawMotionFix = rawLatLng;
+    _lastRawMotionFixAt = now;
+
+    final rawSpeed = raw.speed.isFinite ? max(raw.speed, 0.0) : 0.0;
+
+    // Physical travel-mode maximum speed ceiling:
+    // Walk: 4.0 m/s (~14.4 km/h)
+    // Drive/Motor: 35.0 m/s (~126 km/h)
+    final maxModeSpeed = travelMode == TravelMode.walk ? 4.0 : 35.0;
+
+    // Prefer device Doppler speed when it reports reliable motion (> 0.5 m/s).
+    // Use derivedSpeed only as a fallback when device speed is near-zero or absent.
+    double candidateSpeed;
+    if (rawSpeed > 0.5) {
+      candidateSpeed = rawSpeed;
+    } else {
+      candidateSpeed = max(rawSpeed, derivedSpeed);
+    }
+    candidateSpeed = candidateSpeed.clamp(0.0, maxModeSpeed);
+
+    // Rate-limit speed changes based on elapsed time to enforce physically realistic
+    // acceleration limits across varying fix cadences:
+    // Maximum physical acceleration: Walk 1.5 m/s^2, Drive/Motor 4.5 m/s^2.
+    // Maximum physical braking deceleration: Walk 3.0 m/s^2, Drive/Motor 9.0 m/s^2.
+    final dtFix = _lastSpeedSampleAt == null
+        ? 1.0
+        : (now.difference(_lastSpeedSampleAt!).inMilliseconds / 1000.0)
+            .clamp(0.2, 3.0);
+    _debugLastSpeedDtFix = dtFix;
+
+    final maxAccel = travelMode == TravelMode.walk ? 1.5 : 4.5;
+    final maxDecel = travelMode == TravelMode.walk ? 3.0 : 9.0;
+    final maxSpeedIncrease = maxAccel * dtFix;
+    final maxSpeedDecrease = maxDecel * dtFix;
+
+    // Prevent abnormal first-sample or single-sample spikes from jumping
+    // instantly to the mode ceiling from stopped/low speed:
+    final effectiveSpeed = (_debugSpeedMps +
+            (candidateSpeed - _debugSpeedMps)
+                .clamp(-maxSpeedDecrease, maxSpeedIncrease))
+        .clamp(0.0, maxModeSpeed);
+
+    _lastSpeedSampleAt = now;
+    _lastNavigationFixAt = now;
+
+    final isMoving = effectiveSpeed > 0.8;
+
+    // IMPORTANT: record every GPS fix before any quality decision.
+    // The previous version returned immediately for accuracy >30m, so
+    // Android could be receiving movement while the UI stayed at
+    // INIT / 0 km/h / GPS ±0 for many seconds during GPS warm-up.
+    _debugSpeedMps = effectiveSpeed;
+    _debugGpsAccuracy =
+        raw.accuracy.isFinite ? raw.accuracy.abs() : double.infinity;
+
+    if (polylinePoints.length < 2) {
+      _debugTrackingState = 'WAIT ROUTE';
+
+      // Cache the newest live fix even before the route arrives.
+      // The map itself is still behind the loading UI, so updating the
+      // display here is safe and lets _applyRouteResult() align against
+      // the user's latest position rather than an older startup fix.
+      lastPos = raw;
+      userLatLng = rawLatLng;
+      targetLatLng = rawLatLng;
+      displayLatLng = rawLatLng;
+      positionNotifier.value = rawLatLng;
+
+      _debugHandleMs = handleWatch.elapsedMicroseconds / 1000.0;
+      notifyListeners();
+      return;
+    }
+
+    // GPS quality bands. We intentionally do NOT hard-reject a 31-60m
+    // fix: that is common during navigation warm-up and is still useful
+    // when constrained by the planned route + heading + recovery window.
+    final gpsAccuracy = _debugGpsAccuracy;
+    final bool goodGps = gpsAccuracy <= 25.0;
+    final bool usableGps = gpsAccuracy <= 60.0;
+
+    final secondsSinceAccepted = _lastAcceptedProgressAt == null
+        ? 1.0
+        : now.difference(_lastAcceptedProgressAt!).inMilliseconds / 1000.0;
+
+    final recoverySeconds = secondsSinceAccepted.clamp(0.2, 30.0);
+
+    _debugRecoverySeconds = recoverySeconds;
+
+    // Accuracy >60m is too uncertain to advance trusted route progress.
+    // Do not pretend the phone is stationary: speed/accuracy still update
+    // on the overlay, recovery time keeps growing, and the next usable fix
+    // gets a wider search window so the matcher can catch up immediately.
+    if (!usableGps) {
+      _debugTrackingState = 'LOW GPS';
+      _debugMatchPerpDistance = double.infinity;
+      lastPos = raw;
+
+      // Keep route progress and the snapped marker stable. Poor GPS must
+      // never by itself trigger rerouting.
+      _offRouteSince = null;
+
+      // Route gap remains useful diagnostic information even when the fix
+      // is poor; it is display-only in this branch.
+      if (_lastOffRouteCheckAt == null ||
+          now.difference(_lastOffRouteCheckAt!).inMilliseconds >= 500) {
+        _lastOffRouteCheckAt = now;
+        _lastRawDistanceToRoute = _distanceToRoute(rawLatLng);
+      }
+
+      _debugHandleMs = handleWatch.elapsedMicroseconds / 1000.0;
+      notifyListeners();
+      return;
+    }
+
+    // ── 1. Map match ────────────────────────────────────────────────
+    final match = _mapMatch(
+      rawLatLng,
+      speedMps: effectiveSpeed,
+      isMoving: isMoving,
+      gpsHeading: raw.heading,
+      recoverySeconds: recoverySeconds,
+    );
+
+    _debugMatchPerpDistance = match?.perpDist ?? double.infinity;
+
+    final previousProgress = _matchedDistAlongRoute;
+
+    LatLng routePoint = _lastMatchedLatLng ?? polylinePoints.first;
+    LatLng visualPoint = routePoint;
+    bool trustedMatch = false;
+
+    if (match != null && match.perpDist.isFinite) {
+      // With a good fix we keep snapping strict. During warm-up (25-60m
+      // accuracy) we allow a slightly wider route snap, but only inside
+      // the existing distance-along-route search window and heading score.
+      final baseSnapThreshold = travelMode == TravelMode.walk ? 18.0 : 35.0;
+      final snapThreshold = goodGps
+          ? baseSnapThreshold
+          : min(60.0, max(baseSnapThreshold, gpsAccuracy * 1.05));
+
+      if (match.perpDist <= snapThreshold) {
+        // One inaccurate forward GPS jump does not permanently advance progress.
+        final maxAllowableJump = max(
+          45.0,
+          effectiveSpeed * recoverySeconds * 2.0 + (goodGps ? 40.0 : 20.0),
+        );
+        final candidateJump = match.distAlongRoute - _matchedDistAlongRoute;
+        final isPlausibleJump = candidateJump <= maxAllowableJump;
+
+        if (isPlausibleJump) {
           trustedMatch = true;
 
           nearestIdx = match.idx;
 
           // Progress is monotonic. Tiny backward GPS jitter is ignored.
-          final newProgress =
-              max(_matchedDistAlongRoute, match.distAlongRoute);
+          final newProgress = max(_matchedDistAlongRoute, match.distAlongRoute);
 
           final progressed = newProgress - _matchedDistAlongRoute;
 
           _matchedDistAlongRoute = newProgress;
-          _lastMatchedLatLng     = match.snapped;
-          routePoint             = match.snapped;
-          visualPoint            = match.snapped;
+          _lastMatchedLatLng = match.snapped;
+          routePoint = match.snapped;
+          visualPoint = match.snapped;
 
           // Only a REAL forward movement resets recovery. A repeated match
           // to the same old point must not keep shrinking the search window.
@@ -1039,186 +1540,242 @@ class NavigationController extends ChangeNotifier {
           }
 
           _debugTrackingState = goodGps ? 'MATCH' : 'MATCH~';
-        }
-      }
-
-      if (!trustedMatch) {
-        _debugTrackingState = 'HOLD';
-        routePoint = _lastMatchedLatLng ?? routePoint;
-
-        // Briefly hold the snapped icon through ordinary GPS noise.
-        // If matching has genuinely been lost for longer, show raw GPS so
-        // the car icon never appears frozen while the vehicle keeps moving.
-        visualPoint = recoverySeconds <= 1.2
-            ? routePoint
-            : rawLatLng;
-      }
-
-      // Do NOT rebuild walkedPoints / remainingPoints on every GPS fix.
-      // GuidePage renders progress directly from polylinePoints +
-      // displayNearestIdx, so these two list allocations are unnecessary in
-      // the hot tracking path and can create periodic GC pauses.
-      //
-      // _updateRouteProgress() is still used when a route is first applied,
-      // where a one-time allocation is harmless.
-
-      // ── 2. Independent off-route check ─────────────────────────────
-      // Do NOT infer off-route from "matcher failed". Once per ~800 ms,
-      // measure the raw GPS point against the route geometry directly.
-      if (_lastOffRouteCheckAt == null ||
-          now.difference(_lastOffRouteCheckAt!).inMilliseconds >= 500) {
-        _lastOffRouteCheckAt = now;
-        _lastRawDistanceToRoute = _distanceToRoute(rawLatLng);
-
-        if (isMoving && !isRerouting && goodGps) {
-          final joinThreshold =
-              travelMode == TravelMode.walk ? 18.0 : 28.0;
-          final offThreshold =
-              travelMode == TravelMode.walk ? 25.0 : 35.0;
-
-          // Once the user has come close to the planned route, normal
-          // off-route behavior can begin.
-          if (_lastRawDistanceToRoute <= joinThreshold) {
-            _hasJoinedPlannedRoute = true;
-          }
-
-          if (!_hasJoinedPlannedRoute) {
-            // STARTUP / FAMILIAR-ROAD CASE:
-            // The user may intentionally ignore the suggested first streets.
-            // Give them a short grace period, then quietly rebase the route
-            // from their actual position instead of repeatedly fighting them.
-            _offRouteSince = null;
-
-            final startedAt = _routeSessionStartedAt ?? now;
-            final elapsed = now.difference(startedAt).inSeconds;
-
-            if (elapsed >= 4 &&
-                _lastRawDistanceToRoute > offThreshold) {
-              isRerouting = true;
-              _debugTrackingState = 'JOIN ROUTE';
-              notifyListeners();
-
-              debugPrint(
-                'NAV JOIN ROUTE rawDist=${_lastRawDistanceToRoute.toStringAsFixed(1)}m',
-              );
-
-              _loadRoute(
-                raw.latitude,
-                raw.longitude,
-                isReroute: true,
-              );
-              return;
-            }
-          } else {
-            // Normal active-navigation off-route logic after the route has
-            // been successfully joined at least once.
-            if (_lastRawDistanceToRoute > offThreshold) {
-              _offRouteSince ??= now;
-            } else {
-              _offRouteSince = null;
-            }
-
-            final offRouteDurationMs = _offRouteSince == null
-                ? 0
-                : now.difference(_offRouteSince!).inMilliseconds;
-
-            final requiredConfirmMs =
-                _lastRawDistanceToRoute >= 60.0 ? 700 : 1400;
-
-            if (_offRouteSince != null &&
-                offRouteDurationMs >= requiredConfirmMs) {
-              isRerouting = true;
-              _debugTrackingState = 'REROUTE';
-              _offRouteSince = null;
-              notifyListeners();
-
-              await _speak('Off route, recalculating');
-
-              debugPrint(
-                'NAV REROUTE rawDist=${_lastRawDistanceToRoute.toStringAsFixed(1)}m',
-              );
-
-              _loadRoute(
-                raw.latitude,
-                raw.longitude,
-                isReroute: true,
-              );
-              return;
-            }
-          }
         } else {
-          // Stationary or only medium-quality GPS: do not accumulate an
-          // off-route timer from uncertain geometry.
-          _offRouteSince = null;
+          trustedMatch = false;
+          _debugTrackingState = 'HOLD_JUMP';
         }
       }
+    }
 
-      // ── 3. Bearing ──────────────────────────────────────────────────
-      if (trustedMatch && isMoving && _cumDist.length >= 2) {
-        // Logical route heading also uses the exact current matched segment.
-        // No long look-ahead across corners.
-        final currentRoadBearing =
-            _routeBearingAtDistance(_matchedDistAlongRoute);
+    if (!trustedMatch) {
+      _debugTrackingState = 'HOLD';
+      routePoint = _lastMatchedLatLng ?? routePoint;
 
-        final blend = travelMode == TravelMode.walk ? 0.45 : 0.82;
-        bearing = _lerpBearing(
-          bearing,
-          currentRoadBearing,
-          blend,
-        );
+      // Briefly hold the snapped icon through ordinary GPS noise.
+      // If matching has genuinely been lost for longer, show raw GPS so
+      // the car icon never appears frozen while the vehicle keeps moving.
+      visualPoint = recoverySeconds <= 1.2 ? routePoint : rawLatLng;
+    }
+
+    // Do NOT rebuild walkedPoints / remainingPoints on every GPS fix.
+    // GuidePage renders progress directly from polylinePoints +
+    // displayNearestIdx, so these two list allocations are unnecessary in
+    // the hot tracking path and can create periodic GC pauses.
+    //
+    // _updateRouteProgress() is still used when a route is first applied,
+    // where a one-time allocation is harmless.
+
+    // ── 2. Independent accuracy-aware off-route check ───────────────
+    final isReliableFix = raw.latitude.isFinite &&
+        raw.longitude.isFinite &&
+        (raw.latitude != 0.0 || raw.longitude != 0.0) &&
+        gpsAccuracy.isFinite &&
+        gpsAccuracy >= 0.0 &&
+        gpsAccuracy <= 60.0 &&
+        now.difference(raw.timestamp).inSeconds <= 15;
+
+    _lastRawDistanceToRoute = _distanceToRoute(rawLatLng);
+    final effectiveThreshold = calculateEffectiveRerouteThreshold(
+      mode: travelMode,
+      gpsAccuracyMeters: gpsAccuracy,
+    );
+    final joinThreshold = travelMode == TravelMode.walk ? 18.0 : 30.0;
+
+    if (isReliableFix && isMoving && !_isDisposed && !hasArrived) {
+      if (_lastRawDistanceToRoute <= joinThreshold) {
+        _hasJoinedPlannedRoute = true;
       }
 
-      // ── 4. Step / ETA / route progress from ONE source of truth ─────
-      _syncStepIndexToMatchedProgress();
-      _updateNavigationMetrics();
+      if (_lastRawDistanceToRoute > effectiveThreshold) {
+        _consecutiveOffRouteFixes++;
+        _offRouteSince ??= now;
+      } else {
+        _consecutiveOffRouteFixes = 0;
+        _offRouteSince = null;
+      }
+    }
 
-      // ── 5. Arrival ──────────────────────────────────────────────────
-      final isLastStep =
-          steps.isEmpty || currentStepIndex >= steps.length - 1;
+    final offRouteDurationMs = _offRouteSince == null
+        ? 0
+        : now.difference(_offRouteSince!).inMilliseconds;
 
-      if (_dist(rawLatLng, LatLng(endLat, endLng)) <= _arrivedThresh &&
-          isLastStep &&
-          !hasArrived) {
+    // Rate-limited diagnostic check log (once per ~1000ms)
+    if (_lastOffRouteCheckLogAt == null ||
+        now.difference(_lastOffRouteCheckLogAt!).inMilliseconds >= 1000) {
+      _lastOffRouteCheckLogAt = now;
+      final isEligible = isReliableFix &&
+          !isRerouting &&
+          !_isRouteRequestInFlight &&
+          !hasArrived &&
+          !_isDisposed &&
+          evaluateRerouteCondition(
+            consecutiveOffRouteFixes: _consecutiveOffRouteFixes,
+            offRouteDurationMs: offRouteDurationMs,
+          );
+      final reason = !isReliableFix
+          ? 'unreliable_gps'
+          : (_isRouteRequestInFlight || isRerouting
+              ? 'request_in_flight'
+              : (_lastRawDistanceToRoute <= effectiveThreshold
+                  ? 'on_route'
+                  : (_consecutiveOffRouteFixes < 3
+                      ? 'insufficient_fixes'
+                      : (offRouteDurationMs < 3000
+                          ? 'insufficient_duration'
+                          : 'eligible'))));
+
+      print('[NAV_REROUTE][GPS_CHECK]\n'
+          'accuracyMeters=${gpsAccuracy.toStringAsFixed(1)}\n'
+          'distanceFromRouteMeters=${_lastRawDistanceToRoute.toStringAsFixed(1)}\n'
+          'effectiveThresholdMeters=${effectiveThreshold.toStringAsFixed(1)}\n'
+          'consecutiveOffRouteFixes=$_consecutiveOffRouteFixes\n'
+          'offRouteDurationMs=$offRouteDurationMs\n'
+          'eligible=$isEligible\n'
+          'reason=$reason');
+    }
+
+    if (isReliableFix &&
+        isMoving &&
+        !isRerouting &&
+        !_isRouteRequestInFlight &&
+        !hasArrived &&
+        !_isDisposed) {
+      if (!_hasJoinedPlannedRoute) {
+        final startedAt = _routeSessionStartedAt ?? now;
+        final elapsed = now.difference(startedAt).inSeconds;
+
+        if (elapsed >= 4 &&
+            _consecutiveOffRouteFixes >= 3 &&
+            _lastRawDistanceToRoute > effectiveThreshold) {
+          _triggerReroute(raw, reason: 'startup_rebase');
+          return;
+        }
+      } else {
+        if (evaluateRerouteCondition(
+          consecutiveOffRouteFixes: _consecutiveOffRouteFixes,
+          offRouteDurationMs: offRouteDurationMs,
+        )) {
+          _triggerReroute(raw, reason: 'off_route');
+          return;
+        }
+      }
+    }
+
+    // ── 3. Bearing ──────────────────────────────────────────────────
+    if (trustedMatch && isMoving && _cumDist.length >= 2) {
+      // Logical route heading also uses the exact current matched segment.
+      // No long look-ahead across corners.
+      final currentRoadBearing =
+          _routeBearingAtDistance(_matchedDistAlongRoute);
+
+      final blend = travelMode == TravelMode.walk ? 0.45 : 0.82;
+      bearing = _lerpBearing(
+        bearing,
+        currentRoadBearing,
+        blend,
+      );
+    }
+
+    // ── 4. Step / ETA / route progress from ONE source of truth ─────
+    _syncStepIndexToMatchedProgress();
+    _updateNavigationMetrics();
+
+    // ── 5. Arrival ──────────────────────────────────────────────────
+    final isLastStep = steps.isEmpty || currentStepIndex >= steps.length - 1;
+    final distToEnd = _dist(rawLatLng, LatLng(endLat, endLng));
+    final isQualifyingArrivalFix = isLastStep &&
+        !hasArrived &&
+        ArrivalPolicy.isQualifyingFix(
+          distanceMetres: distToEnd,
+          accuracyMetres: raw.accuracy,
+        );
+
+    if (isQualifyingArrivalFix) {
+      _consecutiveArrivalFixes++;
+      if (_consecutiveArrivalFixes >= ArrivalPolicy.requiredConsecutiveFixes) {
         hasArrived = true;
+        _consecutiveArrivalFixes = 0;
+        _activeRouteGeneration++;
+        _fallbackRequestGeneration++;
+        _pendingReroutePosition = null;
         _positionSub?.cancel();
+        _positionSub = null;
+        _gpsHealthWatchdog?.cancel();
+        _gpsHealthWatchdog = null;
+        _startupGpsWatchdog?.cancel();
+        _startupGpsWatchdog = null;
+        stopTrafficRefreshTimer();
+        _cancelRouteUpdateFeedback();
 
         await _speak('You have arrived at your destination');
         onArrived?.call();
         notifyListeners();
         return;
       }
+    } else {
+      _consecutiveArrivalFixes = 0;
+    }
 
-      // ── 6. Feed the visual renderer ─────────────────────────────────
-      _lastFixAt = now;
+    // ── 6. Feed the visual renderer ─────────────────────────────────
+    _lastFixAt = now;
 
-      // Matching stays GPS-driven. The ticker continuously renders from
-      // _matchedDistAlongRoute, so irregular GPS gaps cannot directly create
-      // a large on-screen teleport.
-      lastPos      = raw;
-      userLatLng   = visualPoint;
-      targetLatLng = visualPoint;
+    // Matching stays GPS-driven. The ticker continuously renders from
+    // _matchedDistAlongRoute, so irregular GPS gaps cannot directly create
+    // a large on-screen teleport.
+    lastPos = raw;
+    userLatLng = visualPoint;
+    targetLatLng = visualPoint;
 
-      final delta = _matchedDistAlongRoute - previousProgress;
+    final delta = _matchedDistAlongRoute - previousProgress;
 
-      if (_lastDebugLogAt == null ||
-          now.difference(_lastDebugLogAt!).inMilliseconds >= 1000) {
-        _lastDebugLogAt = now;
+    if (_lastDebugLogAt == null ||
+        now.difference(_lastDebugLogAt!).inMilliseconds >= 1000) {
+      _lastDebugLogAt = now;
 
-        debugPrint(
-          trustedMatch
-              ? 'NAV MATCH progress=${_matchedDistAlongRoute.toStringAsFixed(1)}m '
+      debugPrint(
+        trustedMatch
+            ? 'NAV MATCH progress=${_matchedDistAlongRoute.toStringAsFixed(1)}m '
                 'delta=${delta.toStringAsFixed(1)}m '
                 'recovery=${recoverySeconds.toStringAsFixed(1)}s '
                 'rawRouteDist=${_lastRawDistanceToRoute.toStringAsFixed(1)}m '
                 'gps±=${gpsAccuracy.toStringAsFixed(1)}m'
-              : 'NAV HOLD recovery=${recoverySeconds.toStringAsFixed(1)}s '
+            : 'NAV HOLD recovery=${recoverySeconds.toStringAsFixed(1)}s '
                 'rawRouteDist=${_lastRawDistanceToRoute.toStringAsFixed(1)}m '
                 'gps±=${gpsAccuracy.toStringAsFixed(1)}m',
-        );
-      }
+      );
+    }
 
-      _debugHandleMs = handleWatch.elapsedMicroseconds / 1000.0;
-      notifyListeners();
+    _debugHandleMs = handleWatch.elapsedMicroseconds / 1000.0;
+    notifyListeners();
+  }
+
+  Future<void> _triggerReroute(Position raw, {required String reason}) async {
+    isRerouting = true;
+    _debugTrackingState = 'REROUTE';
+    _consecutiveOffRouteFixes = 0;
+    _offRouteSince = null;
+    _setRouteUpdateState(
+      NavigationRouteUpdateState.searching,
+      message: 'You’re off the planned route. Finding a new route…',
+    );
+    notifyListeners();
+
+    print('[NAV_REROUTE][TRIGGERED]\n'
+        'sessionId=$_navigationSessionId\n'
+        'generation=$_activeRouteGeneration\n'
+        'originLat=${raw.latitude}\n'
+        'originLng=${raw.longitude}\n'
+        'destinationLat=$endLat\n'
+        'destinationLng=$endLng\n'
+        'mode=${travelMode.name}');
+
+    await _speak('Off route, recalculating');
+
+    _loadRoute(
+      raw.latitude,
+      raw.longitude,
+      isReroute: true,
+    );
   }
 
   // ─────────────────────────────────────────────
@@ -1315,48 +1872,39 @@ class NavigationController extends ChangeNotifier {
       case TravelMode.walk:
         baseForward = 15.0;
         speedFactor = 1.8;
-        maxForward  = 70.0;
+        maxForward = 70.0;
         break;
 
       case TravelMode.drive:
       case TravelMode.motor:
         baseForward = 25.0;
         speedFactor = 1.7;
-        maxForward  = 600.0;
+        maxForward = 600.0;
         break;
     }
 
     final predictedTravel =
-        max(speedMps, isMoving ? 1.0 : 0.0) *
-        recoverySeconds *
-        speedFactor;
+        max(speedMps, isMoving ? 1.0 : 0.0) * recoverySeconds * speedFactor;
 
     // Recovery must not depend only on Position.speed. During GPS warm-up
     // Android can report speed=0 even after the raw location has visibly
     // moved. The straight-line displacement from the last trusted route
     // point provides a second, independent clue for how wide the forward
     // reacquisition window needs to be.
-    final rawDisplacementFromTrusted = _lastMatchedLatLng == null
-        ? 0.0
-        : _dist(raw, _lastMatchedLatLng!);
+    final rawDisplacementFromTrusted =
+        _lastMatchedLatLng == null ? 0.0 : _dist(raw, _lastMatchedLatLng!);
 
-    final displacementWindow =
-        rawDisplacementFromTrusted * 1.6 + baseForward;
+    final displacementWindow = rawDisplacementFromTrusted * 1.6 + baseForward;
 
     final forwardWindow = max(
       baseForward + predictedTravel,
       displacementWindow,
     ).clamp(baseForward, maxForward);
 
-    final behindSlack =
-        travelMode == TravelMode.walk ? 12.0 : 20.0;
+    final behindSlack = travelMode == TravelMode.walk ? 12.0 : 20.0;
 
-    final startDist =
-        (currentDist - behindSlack)
-            .clamp(0.0, _cumDist.last);
-    final endDist =
-        (currentDist + forwardWindow)
-            .clamp(0.0, _cumDist.last);
+    final startDist = (currentDist - behindSlack).clamp(0.0, _cumDist.last);
+    final endDist = (currentDist + forwardWindow).clamp(0.0, _cumDist.last);
 
     final startIdx = _segmentIdxAtDistance(startDist);
     final endIdx = min(
@@ -1398,7 +1946,7 @@ class NavigationController extends ChangeNotifier {
     if (polylinePoints.length < 2) return null;
 
     final from = startIdx.clamp(0, polylinePoints.length - 2);
-    final to   = endIdx.clamp(from, polylinePoints.length - 2);
+    final to = endIdx.clamp(from, polylinePoints.length - 2);
 
     _MatchResult? best;
     double bestScore = double.infinity;
@@ -1418,8 +1966,7 @@ class NavigationController extends ChangeNotifier {
 
       if (useHeading) {
         final segBearing = _calcBearing(a, b);
-        final diff =
-            (((gpsHeading - segBearing + 540) % 360) - 180).abs();
+        final diff = (((gpsHeading - segBearing + 540) % 360) - 180).abs();
 
         // Heading is a tie-breaker, not a force strong enough to pull the
         // vehicle onto a distant parallel / post-turn segment.
@@ -1430,13 +1977,11 @@ class NavigationController extends ChangeNotifier {
       // segments are geometrically almost identical (parallel lanes,
       // roundabouts, stacked geometry).
       final segLen = _dist(a, b);
-      final t = segLen <= 0
-          ? 0.0
-          : (_dist(a, projected) / segLen).clamp(0.0, 1.0);
+      final t =
+          segLen <= 0 ? 0.0 : (_dist(a, projected) / segLen).clamp(0.0, 1.0);
       final distAlong = _cumDist[i] + segLen * t;
 
-      final forwardBias =
-          max(0.0, distAlong - _matchedDistAlongRoute) * 0.015;
+      final forwardBias = max(0.0, distAlong - _matchedDistAlongRoute) * 0.015;
 
       final score = perp + headingPenalty + forwardBias;
 
@@ -1473,7 +2018,7 @@ class NavigationController extends ChangeNotifier {
     // a segment hundreds of points away between two 500 ms checks, so search a
     // generous local window first.
     final localFrom = max(0, nearestIdx - 35);
-    final localTo   = min(lastSeg, nearestIdx + 90);
+    final localTo = min(lastSeg, nearestIdx + 90);
 
     double best = double.infinity;
 
@@ -1519,7 +2064,7 @@ class NavigationController extends ChangeNotifier {
     }
 
     final refineFrom = max(0, coarseBestIdx - stride);
-    final refineTo   = min(lastSeg, coarseBestIdx + stride * 2);
+    final refineTo = min(lastSeg, coarseBestIdx + stride * 2);
 
     for (int i = refineFrom; i <= refineTo; i++) {
       final projected = _projectOntoSegment(
@@ -1540,8 +2085,7 @@ class NavigationController extends ChangeNotifier {
       return;
     }
 
-    final tolerance =
-        travelMode == TravelMode.walk ? 4.0 : 8.0;
+    final tolerance = travelMode == TravelMode.walk ? 4.0 : 8.0;
 
     while (currentStepIndex < steps.length - 1 &&
         currentStepIndex < _stepEndRouteDist.length &&
@@ -1557,70 +2101,57 @@ class NavigationController extends ChangeNotifier {
     }
   }
 
+  DateTime? _lastLiveMetricLogAt;
+
   void _updateNavigationMetrics() {
+    final totalPolyDist = _cumDist.isNotEmpty ? _cumDist.last : 0.0;
+    final routeProgress = (totalPolyDist > 0.0 && totalPolyDist.isFinite)
+        ? (_matchedDistAlongRoute / totalPolyDist).clamp(0.0, 1.0)
+        : 0.0;
+
+    // 1. Authoritative remaining road distance scaled by polyline progress
+    remainingMeters = max(0.0, _totalRouteMeters * (1.0 - routeProgress));
+
     if (steps.isEmpty ||
         _stepEndRouteDist.isEmpty ||
         currentStepIndex >= steps.length ||
         currentStepIndex >= _stepEndRouteDist.length) {
-      if (_cumDist.isNotEmpty) {
-        final remainingFraction =
-            1.0 - (_matchedDistAlongRoute / _cumDist.last)
-                .clamp(0.0, 1.0);
-        remainingMeters =
-            (_totalRouteMeters * remainingFraction)
-                .clamp(0.0, _totalRouteMeters);
-      }
+      distToTurnEnd = 0.0;
+      remainingSeconds =
+          (_routeBaselineSeconds * (1.0 - routeProgress)).round();
+      _logLiveMetric(routeProgress);
       return;
     }
 
     final step = steps[currentStepIndex];
 
-    final stepStartRouteDist = currentStepIndex == 0
-        ? 0.0
-        : _stepEndRouteDist[currentStepIndex - 1];
+    final stepStartRouteDist =
+        currentStepIndex == 0 ? 0.0 : _stepEndRouteDist[currentStepIndex - 1];
 
-    final stepEndRouteDist =
-        _stepEndRouteDist[currentStepIndex];
+    final stepEndRouteDist = _stepEndRouteDist[currentStepIndex];
 
     final routeLengthForStep =
         max(stepEndRouteDist - stepStartRouteDist, 0.001);
 
-    final routeRemainingForStep =
-        (stepEndRouteDist - _matchedDistAlongRoute)
-            .clamp(0.0, routeLengthForStep);
+    final routeRemainingForStep = (stepEndRouteDist - _matchedDistAlongRoute)
+        .clamp(0.0, routeLengthForStep);
 
     final stepRemainingRatio =
-        (routeRemainingForStep / routeLengthForStep)
-            .clamp(0.0, 1.0);
+        (routeRemainingForStep / routeLengthForStep).clamp(0.0, 1.0);
 
-    // Banner distance to the UPCOMING maneuver.
-    distToTurnEnd =
-        step.distanceMeters * stepRemainingRatio;
+    // Banner distance to the upcoming maneuver along the route
+    distToTurnEnd = step.distanceMeters > 0
+        ? step.distanceMeters * stepRemainingRatio
+        : routeRemainingForStep;
 
-    // Remaining route distance is derived from the same route-progress
-    // source used by the matcher.
-    final routeTotal =
-        _cumDist.isNotEmpty ? _cumDist.last : _totalRouteMeters;
-
-    final routeRemaining =
-        (routeTotal - _matchedDistAlongRoute)
-            .clamp(0.0, routeTotal);
-
-    // Keep the displayed distance in the API route's distance scale.
-    final remainingFraction = routeTotal > 0
-        ? (routeRemaining / routeTotal).clamp(0.0, 1.0)
-        : 0.0;
-
-    remainingMeters =
-        (_totalRouteMeters * remainingFraction)
-            .clamp(0.0, _totalRouteMeters);
-
-    // IMPORTANT:
-    // RouteService supplies RouteResult.durationSeconds from routes.duration.
-    // Do not rebuild ETA from NavStep.staticDuration values here because that
-    // mixes traffic-aware total ETA with non-traffic per-step durations.
-    remainingSeconds =
-        (_routeBaselineSeconds * remainingFraction).round();
+    // 2. Remaining duration: step duration integration preserving authoritative traffic baseline
+    remainingSeconds = calculateRemainingDuration(
+      routeBaselineSeconds: _routeBaselineSeconds,
+      steps: steps,
+      currentStepIndex: currentStepIndex,
+      currentStepRemainingRatio: stepRemainingRatio,
+      routeProgress: routeProgress,
+    );
 
     final upcoming = currentStep;
     if (upcoming != null) {
@@ -1630,6 +2161,399 @@ class NavigationController extends ChangeNotifier {
         upcoming.instruction,
       );
     }
+
+    _logLiveMetric(routeProgress);
+  }
+
+  void _logLiveMetric(double routeProgress) {
+    final now = DateTime.now();
+    if (_lastLiveMetricLogAt != null &&
+        now.difference(_lastLiveMetricLogAt!).inMilliseconds < 1000) {
+      return;
+    }
+    _lastLiveMetricLogAt = now;
+
+    final gpsAgeMs = _lastGpsStreamEventAt != null
+        ? now.difference(_lastGpsStreamEventAt!).inMilliseconds
+        : -1;
+    final eta = DateTime.now().add(Duration(seconds: remainingSeconds));
+    final h12 = eta.hour % 12 == 0 ? 12 : eta.hour % 12;
+    final m = eta.minute.toString().padLeft(2, '0');
+    final p = eta.hour >= 12 ? 'PM' : 'AM';
+
+    print('[NAV_METRIC][LIVE]\n'
+        'gpsAgeMs=$gpsAgeMs\n'
+        'gpsAccuracyM=${_debugGpsAccuracy.isFinite ? _debugGpsAccuracy.toStringAsFixed(1) : 'unknown'}\n'
+        'matchedPolylineMeters=${_matchedDistAlongRoute.toStringAsFixed(1)}\n'
+        'progress=${(progress * 100).toStringAsFixed(1)}%\n'
+        'remainingRoadMeters=${remainingMeters.toStringAsFixed(1)}\n'
+        'remainingDurationSec=$remainingSeconds\n'
+        'eta=$h12:$m $p\n'
+        'currentStepIndex=$currentStepIndex\n'
+        'nextTurnMeters=${distToTurnEnd.toStringAsFixed(1)}\n'
+        'predictionState=$_debugTrackingState');
+  }
+
+  /// Pure production calculation for remaining duration preserving authoritative
+  /// traffic-aware routeBaselineSeconds while distributing across steps.
+  static int calculateRemainingDuration({
+    required int routeBaselineSeconds,
+    required List<NavStep> steps,
+    required int currentStepIndex,
+    required double currentStepRemainingRatio,
+    required double routeProgress,
+  }) {
+    if (steps.isEmpty || currentStepIndex >= steps.length) {
+      return max(0, (routeBaselineSeconds * (1.0 - routeProgress)).round());
+    }
+
+    int totalStaticStepSeconds = 0;
+    for (final s in steps) {
+      totalStaticStepSeconds += s.durationSeconds;
+    }
+
+    if (totalStaticStepSeconds > 0) {
+      final curStep = steps[currentStepIndex];
+      final curAdjustedStepSeconds = routeBaselineSeconds *
+          (curStep.durationSeconds / totalStaticStepSeconds);
+      double remaining =
+          curAdjustedStepSeconds * currentStepRemainingRatio.clamp(0.0, 1.0);
+
+      for (int i = currentStepIndex + 1; i < steps.length; i++) {
+        final futStep = steps[i];
+        final futAdjustedStepSeconds = routeBaselineSeconds *
+            (futStep.durationSeconds / totalStaticStepSeconds);
+        remaining += futAdjustedStepSeconds;
+      }
+      return max(0, remaining.round());
+    } else {
+      // Step-duration data unavailable; use proportional route-level baseline duration
+      return max(0, (routeBaselineSeconds * (1.0 - routeProgress)).round());
+    }
+  }
+
+  /// Pure production validation to determine if a preview route can be reused
+  /// based on proximity of navigation-start GPS fix to the preview route origin.
+  static bool shouldReuseInitialRoute({
+    required LatLng currentGps,
+    required RouteResult? initialRoute,
+    required TravelMode mode,
+    double? customToleranceMeters,
+  }) {
+    if (initialRoute == null || initialRoute.polylinePoints.isEmpty) {
+      return false;
+    }
+    final startPoint = initialRoute.polylinePoints.first;
+    final dist = Geolocator.distanceBetween(
+      currentGps.latitude,
+      currentGps.longitude,
+      startPoint.latitude,
+      startPoint.longitude,
+    );
+    final tolerance =
+        customToleranceMeters ?? (mode == TravelMode.walk ? 50.0 : 80.0);
+    return dist <= tolerance;
+  }
+
+  // ─────────────────────────────────────────────
+  // Bounded Live Traffic Refresh
+  // ─────────────────────────────────────────────
+
+  void startTrafficRefreshTimer() {
+    _trafficRefreshTimer?.cancel();
+    _trafficRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      _checkAndRefreshTraffic();
+    });
+  }
+
+  void stopTrafficRefreshTimer() {
+    _trafficRefreshTimer?.cancel();
+    _trafficRefreshTimer = null;
+  }
+
+  void _checkAndRefreshTraffic({DateTime? nowOverride}) {
+    if (_isDisposed || hasArrived || loading) return;
+
+    final now = nowOverride ?? DateTime.now();
+    final outReason = StringBuffer();
+
+    final isEligible = checkTrafficRefreshEligibility(
+      isNavigationActive: !loading && !hasArrived && !_isDisposed,
+      isDisposed: _isDisposed,
+      hasArrived: hasArrived,
+      mode: travelMode,
+      lastGps: lastPos,
+      lastGpsTime: _lastGpsStreamEventAt ?? _lastNavigationFixAt,
+      isOffline: isOfflineNavigation,
+      isRequestInFlight: _isRouteRequestInFlight || isRerouting,
+      lastSuccessfulRouteOrRefreshAt: _lastSuccessfulRouteOrRefreshAt,
+      lastTrafficAttemptAt: _lastTrafficAttemptAt,
+      remainingMeters: remainingMeters,
+      now: now,
+      outReason: outReason,
+    );
+
+    final gpsAgeMs = (_lastGpsStreamEventAt != null)
+        ? now.difference(_lastGpsStreamEventAt!).inMilliseconds
+        : -1;
+    final secondsSinceSuccess = _lastSuccessfulRouteOrRefreshAt != null
+        ? now.difference(_lastSuccessfulRouteOrRefreshAt!).inSeconds
+        : -1;
+
+    final shouldLogCheck = isEligible ||
+        _lastTrafficCheckLogAt == null ||
+        now.difference(_lastTrafficCheckLogAt!).inSeconds >= 60;
+
+    if (shouldLogCheck) {
+      _lastTrafficCheckLogAt = now;
+      print('[NAV_TRAFFIC][CHECK]\n'
+          'mode=${travelMode.name}\n'
+          'remainingMeters=${remainingMeters.toStringAsFixed(1)}\n'
+          'secondsSinceLastSuccess=$secondsSinceSuccess\n'
+          'gpsAgeMs=$gpsAgeMs\n'
+          'eligible=$isEligible\n'
+          'reason=${outReason.toString()}');
+    }
+
+    if (!isEligible) {
+      return;
+    }
+
+    _refreshTraffic();
+  }
+
+  Future<void> _refreshTraffic() async {
+    if (!canInitiateRouteRequest(
+      isDisposed: _isDisposed,
+      hasArrived: hasArrived,
+    )) {
+      return;
+    }
+
+    if (_isRouteRequestInFlight) {
+      print('[NAV_TRAFFIC][SKIPPED]\nreason=request_in_flight');
+      return;
+    }
+
+    final raw = lastPos;
+    if (raw == null ||
+        !raw.latitude.isFinite ||
+        !raw.longitude.isFinite ||
+        (raw.latitude == 0.0 && raw.longitude == 0.0)) {
+      print('[NAV_TRAFFIC][SKIPPED]\nreason=no_fresh_gps');
+      return;
+    }
+
+    final originLat = raw.latitude;
+    final originLng = raw.longitude;
+    final currentSessionId = _navigationSessionId;
+    final currentRequestId = ++_trafficRequestId;
+    final currentGeneration = ++_activeRouteGeneration;
+
+    _isRouteRequestInFlight = true;
+    _lastTrafficAttemptAt = DateTime.now();
+
+    print('[NAV_TRAFFIC][REQUEST]\n'
+        'sessionId=$currentSessionId\n'
+        'requestId=$currentRequestId\n'
+        'originLat=$originLat\n'
+        'originLng=$originLng\n'
+        'destinationLat=$endLat\n'
+        'destinationLng=$endLng\n'
+        'mode=${travelMode.name}');
+
+    try {
+      final fetch = routeFetcher ?? RouteService.instance.fetchNavigationRoute;
+      final result = await fetch(
+        fromLat: originLat,
+        fromLng: originLng,
+        toLat: endLat,
+        toLng: endLng,
+        mode: travelMode,
+      );
+
+      if (_isDisposed || hasArrived) return;
+
+      final isValid = isValidTrafficRefreshResult(
+        result: result,
+        requestSessionId: currentSessionId,
+        currentSessionId: _navigationSessionId,
+        requestGeneration: currentGeneration,
+        currentGeneration: _activeRouteGeneration,
+        isNavigationActive: !_isDisposed && !hasArrived && !loading,
+      );
+
+      if (!isValid) {
+        print('[NAV_TRAFFIC][SKIPPED]\nreason=stale_response');
+        return;
+      }
+
+      _lastSuccessfulRouteOrRefreshAt = DateTime.now();
+      await applyRouteResult(result, isTrafficRefresh: true);
+      notifyListeners();
+    } catch (e) {
+      if (_isDisposed || hasArrived) return;
+
+      print('[NAV_TRAFFIC][FAILED]\n'
+          'sessionId=$currentSessionId\n'
+          'requestId=$currentRequestId\n'
+          'action=retain_existing_route');
+    } finally {
+      _isRouteRequestInFlight = false;
+      if (shouldLaunchPendingReroute(
+        isDisposed: _isDisposed,
+        hasArrived: hasArrived,
+        hasPendingPosition: _pendingReroutePosition != null,
+      )) {
+        final pos = _pendingReroutePosition!;
+        _pendingReroutePosition = null;
+        _loadRoute(pos.latitude, pos.longitude, isReroute: true);
+      } else {
+        _pendingReroutePosition = null;
+      }
+    }
+  }
+
+  /// Pure production helper to determine if a pending reroute should be launched.
+  static bool shouldLaunchPendingReroute({
+    required bool isDisposed,
+    required bool hasArrived,
+    required bool hasPendingPosition,
+  }) {
+    return !isDisposed && !hasArrived && hasPendingPosition;
+  }
+
+  /// Pure production helper to determine if a new route or refresh request can begin.
+  static bool canInitiateRouteRequest({
+    required bool isDisposed,
+    required bool hasArrived,
+  }) {
+    return !isDisposed && !hasArrived;
+  }
+
+  /// Pure production helper to calculate accuracy-aware reroute threshold.
+  static double calculateEffectiveRerouteThreshold({
+    required TravelMode mode,
+    required double gpsAccuracyMeters,
+  }) {
+    final base = mode == TravelMode.walk ? 25.0 : 40.0;
+    final safeAccuracy =
+        (gpsAccuracyMeters.isFinite && gpsAccuracyMeters >= 0.0)
+            ? gpsAccuracyMeters
+            : 20.0;
+    return max(base, safeAccuracy * 1.5);
+  }
+
+  /// Pure production helper to evaluate whether consecutive off-route conditions trigger reroute.
+  static bool evaluateRerouteCondition({
+    required int consecutiveOffRouteFixes,
+    required int offRouteDurationMs,
+    int requiredConsecutiveFixes = 3,
+    int requiredDurationMs = 3000,
+  }) {
+    return consecutiveOffRouteFixes >= requiredConsecutiveFixes &&
+        offRouteDurationMs >= requiredDurationMs;
+  }
+
+  /// Pure production helper to determine if active navigation is eligible for a
+  /// bounded background traffic/ETA refresh.
+  static bool checkTrafficRefreshEligibility({
+    required bool isNavigationActive,
+    required bool isDisposed,
+    required bool hasArrived,
+    required TravelMode mode,
+    required Position? lastGps,
+    required DateTime? lastGpsTime,
+    required bool isOffline,
+    required bool isRequestInFlight,
+    required DateTime? lastSuccessfulRouteOrRefreshAt,
+    required DateTime? lastTrafficAttemptAt,
+    required double remainingMeters,
+    required DateTime now,
+    StringBuffer? outReason,
+  }) {
+    if (isDisposed) {
+      outReason?.write('inactive');
+      return false;
+    }
+    if (!isNavigationActive || hasArrived) {
+      outReason?.write('inactive');
+      return false;
+    }
+    if (mode == TravelMode.walk) {
+      outReason?.write('walking');
+      return false;
+    }
+    if (isOffline) {
+      outReason?.write('offline');
+      return false;
+    }
+    if (isRequestInFlight) {
+      outReason?.write('request_in_flight');
+      return false;
+    }
+    if (remainingMeters <= 2000.0) {
+      outReason?.write('near_destination');
+      return false;
+    }
+    if (lastGps == null ||
+        !lastGps.latitude.isFinite ||
+        !lastGps.longitude.isFinite ||
+        (lastGps.latitude == 0.0 && lastGps.longitude == 0.0)) {
+      outReason?.write('no_fresh_gps');
+      return false;
+    }
+    if (lastGpsTime == null || now.difference(lastGpsTime).inSeconds > 15) {
+      outReason?.write('no_fresh_gps');
+      return false;
+    }
+    if (lastSuccessfulRouteOrRefreshAt != null &&
+        now.difference(lastSuccessfulRouteOrRefreshAt).inSeconds < 300) {
+      outReason?.write('cooldown');
+      return false;
+    }
+    if (lastTrafficAttemptAt != null &&
+        now.difference(lastTrafficAttemptAt).inSeconds < 120) {
+      outReason?.write('cooldown');
+      return false;
+    }
+
+    outReason?.write('eligible');
+    return true;
+  }
+
+  /// Pure production helper to validate that a background traffic refresh result
+  /// is structurally valid and corresponds to the active session and request.
+  static bool isValidTrafficRefreshResult({
+    required RouteResult? result,
+    required String requestSessionId,
+    required String currentSessionId,
+    required int requestGeneration,
+    required int currentGeneration,
+    required bool isNavigationActive,
+  }) {
+    if (result == null) {
+      return false;
+    }
+    if (requestSessionId.isEmpty || requestSessionId != currentSessionId) {
+      return false;
+    }
+    if (requestGeneration <= 0 || requestGeneration != currentGeneration) {
+      return false;
+    }
+    if (!isNavigationActive) {
+      return false;
+    }
+    if (result.polylinePoints.length < 2) {
+      return false;
+    }
+    if (!result.distanceMeters.isFinite || result.distanceMeters <= 0) {
+      return false;
+    }
+    if (result.durationSeconds <= 0) {
+      return false;
+    }
+    return true;
   }
 
   // ─────────────────────────────────────────────
@@ -1651,8 +2575,7 @@ class NavigationController extends ChangeNotifier {
     // walked    = route before A + snapped
     // remaining = snapped + B + everything after B
 
-    final safeIdx =
-        nearestIdx.clamp(0, polylinePoints.length - 2);
+    final safeIdx = nearestIdx.clamp(0, polylinePoints.length - 2);
 
     final walked = <LatLng>[];
 
@@ -1665,8 +2588,7 @@ class NavigationController extends ChangeNotifier {
     }
 
     // Avoid adding almost-identical points.
-    if (walked.isEmpty ||
-        _dist(walked.last, snapped) > 0.5) {
+    if (walked.isEmpty || _dist(walked.last, snapped) > 0.5) {
       walked.add(snapped);
     }
 
@@ -1690,16 +2612,15 @@ class NavigationController extends ChangeNotifier {
   // Math helpers
   // ─────────────────────────────────────────────
 
-  double _dist(LatLng a, LatLng b) =>
-      Geolocator.distanceBetween(
-          a.latitude, a.longitude, b.latitude, b.longitude);
+  double _dist(LatLng a, LatLng b) => Geolocator.distanceBetween(
+      a.latitude, a.longitude, b.latitude, b.longitude);
 
   double _calcBearing(LatLng from, LatLng to) {
     final dLng = (to.longitude - from.longitude) * pi / 180;
     final phi1 = from.latitude * pi / 180;
-    final phi2 = to.latitude   * pi / 180;
-    final y    = sin(dLng) * cos(phi2);
-    final x    = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLng);
+    final phi2 = to.latitude * pi / 180;
+    final y = sin(dLng) * cos(phi2);
+    final x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLng);
     return (atan2(y, x) * 180 / pi + 360) % 360;
   }
 
@@ -1711,11 +2632,11 @@ class NavigationController extends ChangeNotifier {
   LatLng _projectOntoSegment(LatLng p, LatLng a, LatLng b) {
     final ax = a.longitude, ay = a.latitude;
     final bx = b.longitude, by = b.latitude;
-    final px = p.longitude,  py = p.latitude;
+    final px = p.longitude, py = p.latitude;
     final dx = bx - ax, dy = by - ay;
     final lenSq = dx * dx + dy * dy;
     if (lenSq == 0) return a;
-    final t  = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+    final t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
     final tc = t.clamp(0.0, 1.0);
     return LatLng(ay + tc * dy, ax + tc * dx);
   }
@@ -1732,19 +2653,21 @@ class NavigationController extends ChangeNotifier {
   int _findNearestPolylineIndex(LatLng point, List<LatLng> poly,
       {int? start, int? end}) {
     if (poly.isEmpty) return 0;
-    final from    = (start ?? 0).clamp(0, poly.length - 1);
-    final to      = (end ?? poly.length - 1).clamp(0, poly.length - 1);
-    var bestIdx   = from;
-    var bestDist  = double.infinity;
+    final from = (start ?? 0).clamp(0, poly.length - 1);
+    final to = (end ?? poly.length - 1).clamp(0, poly.length - 1);
+    var bestIdx = from;
+    var bestDist = double.infinity;
     for (int i = from; i <= to; i++) {
       final d = _dist(point, poly[i]);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
     }
     return bestIdx;
   }
 
-  int _parseSecs(String s) =>
-      int.tryParse(s.replaceAll('s', '').trim()) ?? 0;
+  int _parseSecs(String s) => int.tryParse(s.replaceAll('s', '').trim()) ?? 0;
 
   String _sanitizeInstruction(String instruction) {
     var text = instruction.replaceAll(RegExp(r'<[^>]*>'), '');
@@ -1768,7 +2691,8 @@ class NavigationController extends ChangeNotifier {
         shift += 5;
       } while (b >= 0x20);
       lat += (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
-      shift = 0; result = 0;
+      shift = 0;
+      result = 0;
       do {
         b = encoded.codeUnitAt(i++) - 63;
         result |= (b & 0x1f) << shift;
@@ -1785,9 +2709,20 @@ class NavigationController extends ChangeNotifier {
   // ─────────────────────────────────────────────
 
   double get progress {
-    if (_cumDist.isEmpty || _cumDist.last <= 0) return 0.0;
-    return (_matchedDistAlongRoute / _cumDist.last)
-        .clamp(0.0, 1.0);
+    if (_cumDist.isEmpty || _cumDist.last <= 0 || !_cumDist.last.isFinite) {
+      return 0.0;
+    }
+    if (hasArrived) return 1.0;
+    final val = _matchedDistAlongRoute / _cumDist.last;
+    if (!val.isFinite) return 0.0;
+    return val.clamp(0.0, 0.999);
+  }
+
+  bool get isWaitingForAccurateLocation {
+    if (_lastNavigationFixAt == null) return false;
+    return _currentTime.difference(_lastNavigationFixAt!).inSeconds >= 4 &&
+        !hasArrived &&
+        !loading;
   }
 
   // VOICE/BANNER FIX: this used to return steps[currentStepIndex] — the
@@ -1823,6 +2758,36 @@ class NavigationController extends ChangeNotifier {
     // Camera and arrow use the exact same rendered route heading.
     return displayBearing;
   }
+
+  @visibleForTesting
+  Future<void> handlePositionForTesting(Position raw, {DateTime? now}) =>
+      _handlePosition(raw, customNow: now);
+
+  @visibleForTesting
+  Future<void> simulateProductionGpsStreamEvent(Position raw,
+      {DateTime? eventTime}) async {
+    final now = eventTime ?? _currentTime;
+    _lastGpsStreamEventAt = now;
+    _lastNavigationFixAt = now;
+    _fallbackRequestGeneration++;
+    _startupGpsWatchdog?.cancel();
+    _startupGpsWatchdog = null;
+    await _handlePosition(raw, customNow: now);
+  }
+
+  @visibleForTesting
+  void onTickForTesting(Duration elapsed) => _onTick(elapsed);
+
+  @visibleForTesting
+  void setDisplayDistForTesting(double dist) {
+    _displayDistAlongRoute = dist;
+    _displayRouteInitialised = true;
+  }
+
+  @visibleForTesting
+  Future<void> triggerRerouteForTesting(Position raw,
+          {required String reason}) =>
+      _triggerReroute(raw, reason: reason);
 }
 
 /// Result of a single map-match: which route segment a raw GPS fix landed

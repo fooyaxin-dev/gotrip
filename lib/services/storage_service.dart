@@ -18,11 +18,32 @@ import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
 class StorageService {
+  static final StorageService instance = StorageService._();
+  StorageService._();
+
   static final FirebaseStorage _storage = FirebaseStorage.instance;
   static final FirebaseFirestore _db = FirebaseFirestore.instance;
   static String? get _uid => FirebaseAuth.instance.currentUser?.uid;
 
   static const String _photoCacheCollection = 'place_photo_cache';
+
+  /// Deletes a file from Firebase Storage given either an HTTPS download URL
+  /// or a relative storage path. Safe and best-effort.
+  static Future<void> deleteStorageFile(String urlOrPath) async {
+    if (urlOrPath.isEmpty) return;
+    try {
+      if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) {
+        await _storage.refFromURL(urlOrPath).delete();
+      } else {
+        await _storage.ref().child(urlOrPath).delete();
+      }
+    } catch (e) {
+      // Best-effort cleanup: log without breaking calling operation
+    }
+  }
+
+  /// Instance method wrapper for deleteStorageFile
+  Future<void> deleteFile(String urlOrPath) => deleteStorageFile(urlOrPath);
 
   // ═══════════════════════════════════════════════════════════════════
   // 1. 帖子图片/视频上传（发帖用）

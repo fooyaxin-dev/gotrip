@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:math';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../services/route_service.dart';
@@ -10,7 +8,7 @@ import '../../services/navigate_service.dart';
 import '../../services/apps_Loading.dart';
 import 'navigation_debug_overlay.dart';
 
-class GuidePage extends StatefulWidget { 
+class GuidePage extends StatefulWidget {
   final double startLat;
   final double startLng;
   final double endLat;
@@ -18,7 +16,6 @@ class GuidePage extends StatefulWidget {
   final String? destinationName;
   final TravelMode travelMode;
   final RouteResult? initialRoute;
-    
 
   const GuidePage({
     super.key,
@@ -28,7 +25,7 @@ class GuidePage extends StatefulWidget {
     required this.endLng,
     this.destinationName,
     this.travelMode = TravelMode.drive,
-    this.initialRoute,  
+    this.initialRoute,
   });
 
   @override
@@ -36,15 +33,13 @@ class GuidePage extends StatefulWidget {
 }
 
 class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
-
   late NavigationController _nav;
 
   GoogleMapController? _mapController;
-  
- 
+
   // Camera follow state
   bool _isFollowing = true;
-  bool _isOverview  = false;
+  bool _isOverview = false;
   bool _isProgrammaticMove = false;
   DateTime _lastCameraMove = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -70,8 +65,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
 
   Set<Polyline> _cachedVisualPolylines = <Polyline>{};
   Set<Circle> _cachedVisualCircles = <Circle>{};
-  DateTime _lastHeavyMapOverlayUpdate =
-      DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastHeavyMapOverlayUpdate = DateTime.fromMillisecondsSinceEpoch(0);
 
   // Heavy polyline/circle diffing does not need marker-level frequency.
   // 100ms keeps the grey/blue boundary visually responsive while avoiding
@@ -83,19 +77,19 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     super.initState();
 
     _nav = NavigationController(
-      startLat:        widget.startLat,
-      startLng:        widget.startLng,
-      endLat:          widget.endLat,
-      endLng:          widget.endLng,
+      startLat: widget.startLat,
+      startLng: widget.startLng,
+      endLat: widget.endLat,
+      endLng: widget.endLng,
       destinationName: widget.destinationName,
-      travelMode:      widget.travelMode,
-      initialRoute:    widget.initialRoute,
+      travelMode: widget.travelMode,
+      initialRoute: widget.initialRoute,
     );
 
     _destinationMarker = Marker(
-      markerId:  const MarkerId('destination'),
-      position:  LatLng(widget.endLat, widget.endLng),
-      icon:      BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+      markerId: const MarkerId('destination'),
+      position: LatLng(widget.endLat, widget.endLng),
+      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
       infoWindow: InfoWindow(title: widget.destinationName ?? 'Destination'),
     );
 
@@ -171,8 +165,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     _pendingCameraTarget = target;
 
     final now = DateTime.now();
-    if (now.difference(_lastFollowMove).inMilliseconds <
-        _followCooldownMs) {
+    if (now.difference(_lastFollowMove).inMilliseconds < _followCooldownMs) {
       return;
     }
 
@@ -224,9 +217,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         _isFollowing &&
         !_isOverview &&
         mounted) {
-      final elapsed = DateTime.now()
-          .difference(_lastFollowMove)
-          .inMilliseconds;
+      final elapsed = DateTime.now().difference(_lastFollowMove).inMilliseconds;
 
       if (elapsed >= _followCooldownMs) {
         _lastFollowMove = DateTime.now();
@@ -235,7 +226,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     }
   }
 
-
   // Kept for one-off, EXPLICIT camera transitions only (recenter tap,
   // initial camera placement) — those benefit from a real animated
   // glide since they're single, isolated calls, not a 60x/sec stream.
@@ -243,7 +233,8 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     if (_mapController == null) return;
 
     final now = DateTime.now();
-    if (now.difference(_lastCameraMove).inMilliseconds < _cameraCooldownMs) return;
+    if (now.difference(_lastCameraMove).inMilliseconds < _cameraCooldownMs)
+      return;
     _lastCameraMove = now;
 
     final zoom = _zoomForSpeed(_nav.lastPos?.speed ?? 0);
@@ -255,9 +246,9 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     _mapController!.animateCamera(
       CameraUpdate.newCameraPosition(
         CameraPosition(
-          target:  target,
-          zoom:    zoom,
-          tilt:    widget.travelMode == TravelMode.walk ? 0 : 45,
+          target: target,
+          zoom: zoom,
+          tilt: widget.travelMode == TravelMode.walk ? 0 : 45,
           bearing: bearing,
         ),
       ),
@@ -274,15 +265,15 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     // so zoom eases continuously instead of jumping between fixed
     // levels the instant speed crosses a threshold.
     final anchors = <MapEntry<double, double>>[
-      const MapEntry(0,  19.5),
-      const MapEntry(1,  19.5),
-      const MapEntry(8,  18.0),
+      const MapEntry(0, 19.5),
+      const MapEntry(1, 19.5),
+      const MapEntry(8, 18.0),
       const MapEntry(14, 17.0),
       const MapEntry(25, 16.0),
     ];
 
     if (mps <= anchors.first.key) return anchors.first.value;
-    if (mps >= anchors.last.key)  return anchors.last.value;
+    if (mps >= anchors.last.key) return anchors.last.value;
 
     for (int i = 0; i < anchors.length - 1; i++) {
       final a0 = anchors[i], a1 = anchors[i + 1];
@@ -298,7 +289,10 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     _programmaticMoveResetTimer?.cancel();
     _isProgrammaticMove = true;
 
-    setState(() { _isFollowing = true; _isOverview = false; });
+    setState(() {
+      _isFollowing = true;
+      _isOverview = false;
+    });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final pos = _nav.positionNotifier.value;
@@ -321,7 +315,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
 
     if (goingToOverview) {
       setState(() {
-        _isOverview  = true;
+        _isOverview = true;
         _isFollowing = false;
       });
       await _mapController?.animateCamera(
@@ -345,9 +339,9 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         icon: _nav.arrowIcon ??
             BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
         rotation: _nav.cameraBearing,
-        anchor:   const Offset(0.5, 0.5),
-        flat:     true,
-        zIndex:   10,
+        anchor: const Offset(0.5, 0.5),
+        flat: true,
+        zIndex: 10,
       ));
     }
 
@@ -362,13 +356,12 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     final safeIdx =
         _nav.displayNearestIdx.clamp(0, _nav.polylinePoints.length - 2);
 
-    // IMPORTANT:
-    // Both colours meet at displayPos — the exact position used by the
-    // navigation arrow on screen. This prevents route colour from advancing
-    // before the arrow catches up.
-    final visualPoint = displayPos ??
-        _nav.positionNotifier.value ??
-        _nav.polylinePoints[safeIdx];
+    // CRITICAL:
+    // The route polyline seam strictly uses _nav.displayedRoutePoint (the
+    // interpolated point lying strictly ON the route geometry).
+    // The marker continues using displayPos (positionNotifier), but the
+    // route seam must NEVER use an off-route raw GPS marker position.
+    final seamPoint = _nav.displayedRoutePoint ?? _nav.polylinePoints[safeIdx];
 
     final walkedVisual = <LatLng>[];
     walkedVisual.addAll(
@@ -376,11 +369,11 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     );
 
     if (walkedVisual.isEmpty ||
-        _visualDistanceMeters(walkedVisual.last, visualPoint) > 0.5) {
-      walkedVisual.add(visualPoint);
+        _visualDistanceMeters(walkedVisual.last, seamPoint) > 0.5) {
+      walkedVisual.add(seamPoint);
     }
 
-    final remainingVisual = <LatLng>[visualPoint];
+    final remainingVisual = <LatLng>[seamPoint];
     remainingVisual.addAll(
       _nav.polylinePoints.skip(safeIdx + 1),
     );
@@ -389,7 +382,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       polylines.add(Polyline(
         polylineId: const PolylineId('walked'),
         points: walkedVisual,
-        color: Colors.grey.shade400,
+        color: const Color(0xFF9E9E9E),
         width: 7,
         startCap: Cap.roundCap,
         endCap: Cap.roundCap,
@@ -402,7 +395,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       polylines.add(Polyline(
         polylineId: const PolylineId('remaining'),
         points: remainingVisual,
-        color: const Color(0xFF1A73E8),
+        color: const Color(0xFF7C4DFF),
         width: 7,
         startCap: Cap.roundCap,
         endCap: Cap.roundCap,
@@ -422,8 +415,7 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     final lat2 = b.latitude * pi / 180.0;
 
     final h = sin(dLat / 2) * sin(dLat / 2) +
-        cos(lat1) * cos(lat2) *
-            sin(dLng / 2) * sin(dLng / 2);
+        cos(lat1) * cos(lat2) * sin(dLng / 2) * sin(dLng / 2);
 
     return 2 * earthRadius * asin(sqrt(h));
   }
@@ -432,11 +424,11 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
     if (pos == null) return {};
     return {
       Circle(
-        circleId:    const CircleId('accuracy'),
-        center:      pos,
-        radius:      8.0,
-        fillColor:   const Color(0x221A73E8),
-        strokeColor: const Color(0x441A73E8),
+        circleId: const CircleId('accuracy'),
+        center: pos,
+        radius: 8.0,
+        fillColor: const Color(0x227C4DFF),
+        strokeColor: const Color(0x447C4DFF),
         strokeWidth: 1,
       ),
     };
@@ -475,14 +467,16 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
   }
 
   IconData _maneuverIcon(String m) {
-    if (m.contains('uturn'))                               return Icons.u_turn_left_rounded;
-    if (m.contains('slight_right'))                        return Icons.turn_slight_right_rounded;
-    if (m.contains('slight_left'))                         return Icons.turn_slight_left_rounded;
-    if (m.contains('turn_right') || m.contains('right'))  return Icons.turn_right_rounded;
-    if (m.contains('turn_left')  || m.contains('left'))   return Icons.turn_left_rounded;
-    if (m.contains('roundabout'))                          return Icons.roundabout_left_rounded;
-    if (m.contains('merge'))                               return Icons.merge_rounded;
-    if (m.contains('destination'))                         return Icons.location_on_rounded;
+    if (m.contains('uturn')) return Icons.u_turn_left_rounded;
+    if (m.contains('slight_right')) return Icons.turn_slight_right_rounded;
+    if (m.contains('slight_left')) return Icons.turn_slight_left_rounded;
+    if (m.contains('turn_right') || m.contains('right'))
+      return Icons.turn_right_rounded;
+    if (m.contains('turn_left') || m.contains('left'))
+      return Icons.turn_left_rounded;
+    if (m.contains('roundabout')) return Icons.roundabout_left_rounded;
+    if (m.contains('merge')) return Icons.merge_rounded;
+    if (m.contains('destination')) return Icons.location_on_rounded;
     return Icons.straight_rounded;
   }
 
@@ -507,16 +501,12 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
         final mq = MediaQuery.of(context);
         final nextStep = _nav.nextStep;
 
-        final bannerH =
-            mq.padding.top + (nextStep != null ? 130.0 : 98.0);
+        final bannerH = mq.padding.top + (nextStep != null ? 130.0 : 98.0);
         const panelH = 90.0;
 
         const cameraFramingRatio = 0.65;
         final availableHeight =
-            mq.size.height -
-            bannerH -
-            panelH -
-            mq.padding.bottom;
+            mq.size.height - bannerH - panelH - mq.padding.bottom;
 
         final mapTopPadding = _isOverview
             ? bannerH
@@ -564,8 +554,6 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-
-
     if (_nav.loading) {
       return Scaffold(
         backgroundColor: Colors.white,
@@ -608,36 +596,36 @@ class _GuidePageState extends State<GuidePage> with TickerProviderStateMixin {
       );
     }
 
-final mq       = MediaQuery.of(context);
-final step     = _nav.currentStep;
-final nextStep = _nav.nextStep;
-final svc      = RouteService.instance;
+    final mq = MediaQuery.of(context);
+    final step = _nav.currentStep;
+    final nextStep = _nav.nextStep;
+    final svc = RouteService.instance;
 
-final bannerH = mq.padding.top + (nextStep != null ? 130.0 : 98.0);
-const panelH  = 90.0;
+    final bannerH = mq.padding.top + (nextStep != null ? 130.0 : 98.0);
+    const panelH = 90.0;
 
-const double _cameraFramingRatio = 0.65;
-final double availableHeight = mq.size.height - bannerH - panelH - mq.padding.bottom;
-final double mapTopPadding = _isOverview
-    ? bannerH
-    : bannerH + availableHeight * _cameraFramingRatio;
+    const double _cameraFramingRatio = 0.65;
+    final double availableHeight =
+        mq.size.height - bannerH - panelH - mq.padding.bottom;
+    final double mapTopPadding =
+        _isOverview ? bannerH : bannerH + availableHeight * _cameraFramingRatio;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
       body: Stack(
         children: [
-
           _persistentMapLayer,
 
           if (step != null)
             Positioned(
-              top: 0, left: 0, right: 0,
+              top: 0,
+              left: 0,
+              right: 0,
               child: Column(
                 children: [
                   Container(
                     color: Colors.black87,
-                    padding: EdgeInsets.fromLTRB(
-                        20, mq.padding.top + 12, 20,
+                    padding: EdgeInsets.fromLTRB(20, mq.padding.top + 12, 20,
                         nextStep != null ? 10 : 16),
                     child: Row(children: [
                       Icon(_maneuverIcon(step.maneuver),
@@ -673,8 +661,7 @@ final double mapTopPadding = _isOverview
                           horizontal: 20, vertical: 8),
                       child: Row(children: [
                         const Text('Then  ',
-                            style: TextStyle(
-                                color: Colors.grey, fontSize: 12)),
+                            style: TextStyle(color: Colors.grey, fontSize: 12)),
                         Icon(_maneuverIcon(nextStep.maneuver),
                             color: Colors.grey[400], size: 20),
                         const SizedBox(width: 8),
@@ -696,7 +683,8 @@ final double mapTopPadding = _isOverview
           if (!_nav.loading && step != null)
             Positioned(
               top: bannerH,
-              left: 0, right: 0,
+              left: 0,
+              right: 0,
               child: LinearProgressIndicator(
                 value: _nav.progress,
                 minHeight: 3,
@@ -706,48 +694,107 @@ final double mapTopPadding = _isOverview
               ),
             ),
 
+          if (_nav.routeUpdateState != NavigationRouteUpdateState.idle &&
+              _nav.routeUpdateMessage != null)
+            Positioned(
+              top: bannerH + 12,
+              left: 20,
+              right: 20,
+              child: Semantics(
+                liveRegion: true,
+                child: Center(
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                    decoration: BoxDecoration(
+                      color: const Color(0xE6212121),
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 6,
+                          offset: Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_nav.routeUpdateState ==
+                            NavigationRouteUpdateState.searching)
+                          const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor:
+                                  AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          )
+                        else if (_nav.routeUpdateState ==
+                            NavigationRouteUpdateState.updated)
+                          const Icon(Icons.check_circle,
+                              color: Color(0xFF4CAF50), size: 16)
+                        else
+                          const Icon(Icons.warning_amber_rounded,
+                              color: Color(0xFFFFB300), size: 16),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            _nav.routeUpdateMessage!,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
           Positioned(
             right: 16,
             bottom: panelH + mq.padding.bottom + 16,
-            child: 
-              Column(children: [
-                if (!_isFollowing) ...[
-                  _circleBtn(
-                    Icons.my_location_rounded,
-                    Colors.white,
-                    const Color(0xFF1A73E8),
-                    _recenter,
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                
+            child: Column(children: [
+              if (!_isFollowing) ...[
                 _circleBtn(
-                  _isOverview
-                      ? Icons.navigation_rounded
-                      : Icons.map_rounded,
-                  _isOverview ? const Color(0xFF9C27B0) : Colors.white,
-                  _isOverview ? Colors.white : Colors.black87,
-                  _toggleOverview,
+                  Icons.my_location_rounded,
+                  Colors.white,
+                  const Color(0xFF1A73E8),
+                  _recenter,
                 ),
-                
                 const SizedBox(height: 12),
-                
-                _circleBtn(
-                  _nav.ttsEnabled
-                      ? Icons.volume_up_rounded
-                      : Icons.volume_off_rounded,
-                  _nav.ttsEnabled ? Colors.white : Colors.grey[200]!,
-                  _nav.ttsEnabled ? Colors.black87 : Colors.grey[400]!,
-                  () => setState(() => _nav.toggleTts()),
-                ),
-              ]),
+              ],
+              _circleBtn(
+                _isOverview ? Icons.navigation_rounded : Icons.map_rounded,
+                _isOverview ? const Color(0xFF9C27B0) : Colors.white,
+                _isOverview ? Colors.white : Colors.black87,
+                _toggleOverview,
+              ),
+              const SizedBox(height: 12),
+              _circleBtn(
+                _nav.ttsEnabled
+                    ? Icons.volume_up_rounded
+                    : Icons.volume_off_rounded,
+                _nav.ttsEnabled ? Colors.white : Colors.grey[200]!,
+                _nav.ttsEnabled ? Colors.black87 : Colors.grey[400]!,
+                () => setState(() => _nav.toggleTts()),
+              ),
+            ]),
           ),
 
           Positioned(
-            left: 0, right: 0, bottom: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
             child: Container(
-              padding: EdgeInsets.fromLTRB(
-                  24, 14, 24, 14 + mq.padding.bottom),
+              padding: EdgeInsets.fromLTRB(24, 14, 24, 14 + mq.padding.bottom),
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius:
@@ -791,15 +838,16 @@ final double mapTopPadding = _isOverview
                           ),
                         ],
                       ),
-
                       if (_nav.lastPos != null) ...[
                         const SizedBox(height: 4),
                         Row(children: [
-                          Icon(Icons.speed_rounded, size: 13, color: Colors.grey[400]),
+                          Icon(Icons.speed_rounded,
+                              size: 13, color: Colors.grey[400]),
                           const SizedBox(width: 4),
                           Text(
                             '${((_nav.lastPos!.speed * 3.6).clamp(0, 200)).toStringAsFixed(0)} km/h',
-                            style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[500]),
                           ),
                         ]),
                       ],
@@ -845,8 +893,46 @@ final double mapTopPadding = _isOverview
             ),
           ),
 
-          if (_nav.isOfflineNavigation &&
-              _nav.networkNotice != null)
+          if (_nav.isWaitingForAccurateLocation &&
+              !_nav.isRerouting &&
+              !_nav.isOfflineNavigation)
+            Positioned(
+              top: bannerH + 8,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 9,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.78),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(
+                      Icons.gps_fixed_rounded,
+                      color: Colors.amber,
+                      size: 17,
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Waiting for a more accurate location…',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          if (_nav.isOfflineNavigation && _nav.networkNotice != null)
             Positioned(
               top: bannerH + 8,
               left: 20,
@@ -885,10 +971,12 @@ final double mapTopPadding = _isOverview
 
           if (_nav.isRerouting)
             Positioned(
-              top: bannerH + 8, left: 20, right: 20,
+              top: bannerH + 8,
+              left: 20,
+              right: 20,
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 decoration: BoxDecoration(
                   color: Colors.orange[700],
                   borderRadius: BorderRadius.circular(12),
@@ -898,8 +986,7 @@ final double mapTopPadding = _isOverview
                   SizedBox(width: 8),
                   Text('Off route, recalculating...',
                       style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600)),
+                          color: Colors.white, fontWeight: FontWeight.w600)),
                 ]),
               ),
             ),
@@ -908,12 +995,12 @@ final double mapTopPadding = _isOverview
     );
   }
 
-  Widget _circleBtn(
-      IconData icon, Color bg, Color fg, VoidCallback onTap) {
+  Widget _circleBtn(IconData icon, Color bg, Color fg, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 48, height: 48,
+        width: 48,
+        height: 48,
         decoration: BoxDecoration(
           color: bg,
           shape: BoxShape.circle,

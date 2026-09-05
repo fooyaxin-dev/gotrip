@@ -1,7 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../services/favourite_service.dart';
 import '../../services/userPreference_service.dart';
-import '../../services/apps_Loading.dart';
+import '../../services/error_handler.dart';
 
 /// ❤️ 可复用的收藏按钮
 /// showBackground: true  → 白色圆形背景（用于 PlaceCard 图片浮层）
@@ -15,6 +16,8 @@ class FavouriteButton extends StatefulWidget {
   final double? lat;
   final double? lng;
   final List<String>? types; // 👈 新增：用于 FavouritePage 分类 filter
+  final String source;
+  final String? googlePlaceId;
 
   final Color activeColor;
   final Color inactiveColor;
@@ -30,7 +33,9 @@ class FavouriteButton extends StatefulWidget {
     this.photoUrl,
     this.lat,
     this.lng,
-    this.types,           // 👈 新增
+    this.types,
+    this.source = 'place',
+    this.googlePlaceId,
     this.activeColor = Colors.red,
     this.inactiveColor = Colors.grey,
     this.iconSize = 24,
@@ -46,6 +51,8 @@ class _FavouriteButtonState extends State<FavouriteButton>
   late AnimationController _animController;
   late Animation<double> _scaleAnimation;
   bool _isLoading = false;
+  bool? _optimisticFavouriteStatus;
+  int _operationCount = 0;
 
   @override
   void initState() {
@@ -68,80 +75,118 @@ class _FavouriteButtonState extends State<FavouriteButton>
   Future<void> _handleTap(bool currentStatus) async {
     if (_isLoading) return;
 
-    _animController.forward().then((_) => _animController.reverse());
-    setState(() => _isLoading = true);
+    final newStatus = !currentStatus;
+    final opId = ++_operationCount;
+
+    _animController.forward().then((_) {
+      if (mounted) _animController.reverse();
+    });
+
+    setState(() {
+      _isLoading = true;
+      _optimisticFavouriteStatus = newStatus;
+    });
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+            newStatus ? '❤️ Added to favourites' : 'Removed from favourites'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
 
     try {
-      final newStatus = await FavouriteService.toggleFavourite(
-        placeId:  widget.placeId,
-        name:     widget.name,
-        address:  widget.address,
-        rating:   widget.rating,
-        photoUrl: widget.photoUrl,
-        lat:      widget.lat,
-        lng:      widget.lng,
-        types:    widget.types,
-      );
-
-      // ✅ 传入 isFavouriting 让 service 知道是收藏还是取消
-      if (widget.types != null) {
-        await UserPreferenceService.instance.updateFromFavourite(
-          primaryType:    widget.types!.isNotEmpty ? widget.types!.first : '',
-          allTypes:       widget.types!,
-          isFavouriting:  newStatus, // ← true = 收藏, false = 取消
+      if (newStatus) {
+        await FavouriteService.addFavourite(
+          placeId: widget.placeId,
+          name: widget.name,
+          address: widget.address,
+          rating: widget.rating,
+          photoUrl: widget.photoUrl,
+          lat: widget.lat,
+          lng: widget.lng,
+          types: widget.types,
+          source: widget.source,
+          googlePlaceId: widget.googlePlaceId,
         );
+      } else {
+        await FavouriteService.removeFavourite(widget.placeId);
       }
 
+      // ✅ Secondary background preference learning
+      if (widget.types != null) {
+        unawaited(_learnFromFavourite(widget.types!, newStatus));
+      }
+
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted && _operationCount == opId) {
+          setState(() {
+            _optimisticFavouriteStatus = null;
+          });
+        }
+      });
+    } catch (e) {
       if (mounted) {
+        setState(() {
+          _optimisticFavouriteStatus = null;
+        });
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(newStatus ? '❤️ Added to favourites' : 'Removed from favourites'),
-            duration: const Duration(seconds: 1),
+            content: Text(
+              ErrorHandler.userFriendlyMessage(
+                e,
+                defaultMessage: 'Unable to update favourite. Please try again.',
+              ),
+            ),
+            backgroundColor: Colors.red[700],
             behavior: SnackBarBehavior.floating,
           ),
         );
       }
-    } catch (e) {
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(e.toString().replaceFirst('Exception: ', '')),
-        backgroundColor: Colors.red[700],
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-} finally {
-      if (mounted) setState(() => _isLoading = false);
+    } finally {
+      _isLoading = false;
+      if (mounted) {
+        setState(() {});
+      }
     }
   }
 
+  Future<void> _learnFromFavourite(
+      List<String> types, bool isFavouriting) async {
+    try {
+      await UserPreferenceService.instance.updateFromFavourite(
+        primaryType: types.isNotEmpty ? types.first : '',
+        allTypes: types,
+        isFavouriting: isFavouriting,
+      );
+    } catch (e) {
+      debugPrint('⚠️ Favourite succeeded, but preference learning failed: $e');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<bool>(
       stream: FavouriteService.getFavouriteStatusStream(widget.placeId),
       builder: (context, snapshot) {
-        final isFav = snapshot.data ?? false;
+        final isFavFromStream = snapshot.data ?? false;
+        final isFav = _optimisticFavouriteStatus ?? isFavFromStream;
 
         final icon = ScaleTransition(
           scale: _scaleAnimation,
-          child: _isLoading
-              ? SizedBox(
-                  width: widget.iconSize,
-                  height: widget.iconSize,
-                  child: TravelLoadingIndicator(size: 22),
-                )
-              : Icon(
-                  isFav ? Icons.favorite : Icons.favorite_border,
-                  color: isFav ? widget.activeColor : widget.inactiveColor,
-                  size: widget.iconSize,
-                ),
+          child: Icon(
+            isFav ? Icons.favorite : Icons.favorite_border,
+            color: isFav ? widget.activeColor : widget.inactiveColor,
+            size: widget.iconSize,
+          ),
         );
 
         if (widget.showBackground) {
           return GestureDetector(
-            onTap: () => _handleTap(isFav),
+            onTap: _isLoading ? null : () => _handleTap(isFav),
             child: Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
@@ -161,7 +206,7 @@ class _FavouriteButtonState extends State<FavouriteButton>
         }
 
         return IconButton(
-          onPressed: () => _handleTap(isFav),
+          onPressed: _isLoading ? null : () => _handleTap(isFav),
           icon: icon,
         );
       },

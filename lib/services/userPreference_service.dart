@@ -8,6 +8,7 @@ import 'route_service.dart';
 import 'sentiment_service.dart';
 import 'weather_service.dart';
 import 'category_mapper.dart';
+import 'connectivity_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Budget tier  (set during onboarding)
@@ -18,17 +19,23 @@ enum BudgetTier { budget, midRange, premium }
 extension BudgetTierX on BudgetTier {
   String get label {
     switch (this) {
-      case BudgetTier.budget:   return 'Budget';
-      case BudgetTier.midRange: return 'Mid-range';
-      case BudgetTier.premium:  return 'Premium';
+      case BudgetTier.budget:
+        return 'Budget';
+      case BudgetTier.midRange:
+        return 'Mid-range';
+      case BudgetTier.premium:
+        return 'Premium';
     }
   }
 
   String get description {
     switch (this) {
-      case BudgetTier.budget:   return 'Affordable spots & local eats';
-      case BudgetTier.midRange: return 'A balance of comfort & value';
-      case BudgetTier.premium:  return 'Top-rated & high-end experiences';
+      case BudgetTier.budget:
+        return 'Affordable spots & local eats';
+      case BudgetTier.midRange:
+        return 'A balance of comfort & value';
+      case BudgetTier.premium:
+        return 'Top-rated & high-end experiences';
     }
   }
 
@@ -36,11 +43,56 @@ extension BudgetTierX on BudgetTier {
 
   static BudgetTier fromJson(String? s) {
     switch (s) {
-      case 'midRange': return BudgetTier.midRange;
-      case 'premium':  return BudgetTier.premium;
-      default:         return BudgetTier.budget;
+      case 'midRange':
+        return BudgetTier.midRange;
+      case 'premium':
+        return BudgetTier.premium;
+      default:
+        return BudgetTier.budget;
     }
   }
+}
+
+enum RecommendationOriginType {
+  gps,
+  searched,
+  landmark,
+  unknown,
+}
+
+class RecommendationExplanation {
+  final double totalScore;
+  final Map<String, double> factorScores;
+  final Map<String, double> factorWeights;
+  final Map<String, double> weightedContributions;
+  final List<String> matchedSelectedPreferences;
+  final List<String> matchedLearnedPreferences;
+  final List<String> explanationReasons;
+  final String? primaryReason;
+  final RecommendationOriginType originType;
+  final String? originName;
+
+  const RecommendationExplanation({
+    required this.totalScore,
+    required this.factorScores,
+    required this.factorWeights,
+    required this.weightedContributions,
+    required this.matchedSelectedPreferences,
+    required this.matchedLearnedPreferences,
+    required this.explanationReasons,
+    this.primaryReason,
+    this.originType = RecommendationOriginType.gps,
+    this.originName,
+  });
+
+  String get matchTier {
+    if (totalScore >= 0.80) return 'Excellent match';
+    if (totalScore >= 0.65) return 'Strong match';
+    if (totalScore >= 0.50) return 'Good match';
+    return 'Match';
+  }
+
+  int get matchPercentage => (totalScore * 100).round().clamp(0, 100);
 }
 
 // ─────────────────────────────────────────────
@@ -50,20 +102,20 @@ extension BudgetTierX on BudgetTier {
 class ForYouResult {
   final List<PlaceModel> places;
   final Map<String, double> scores;
-  ForYouResult(this.places, this.scores);
+  final Map<String, RecommendationExplanation> explanations;
+
+  ForYouResult(this.places, this.scores, [this.explanations = const {}]);
 }
-
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 class UserPreferences {
   final List<String> categories;
   final List<String> cuisines;
-  final String       travelMode;
-  final BudgetTier   budgetTier;
-  final bool         onboardingDone;
-  final String       topPriority;
+  final String travelMode;
+  final BudgetTier budgetTier;
+  final bool onboardingDone;
+  final String topPriority;
 
   UserPreferences({
     required this.categories,
@@ -75,52 +127,53 @@ class UserPreferences {
   });
 
   factory UserPreferences.empty() => UserPreferences(
-    categories:     [],
-    cuisines:       [],
-    travelMode:     'walk',
-    budgetTier:     BudgetTier.budget,
-    onboardingDone: false,
-    topPriority:    'interest',
-  );
+        categories: [],
+        cuisines: [],
+        travelMode: 'walk',
+        budgetTier: BudgetTier.budget,
+        onboardingDone: false,
+        topPriority: 'interest',
+      );
 
   factory UserPreferences.fromMap(Map<String, dynamic> map) {
     final prefs = map['preferences'] as Map<String, dynamic>? ?? {};
     return UserPreferences(
-      categories:     List<String>.from(prefs['categories'] ?? []),
-      cuisines:       List<String>.from(prefs['cuisines']   ?? []),
-      travelMode:     prefs['travelMode']  as String? ?? 'walk',
-      budgetTier:     BudgetTierX.fromJson(prefs['budgetTier'] as String?),
-      onboardingDone: map['onboardingDone'] as bool?  ?? false,
-      topPriority:    prefs['topPriority'] as String? ?? 'interest',
+      categories: List<String>.from(prefs['categories'] ?? []),
+      cuisines: List<String>.from(prefs['cuisines'] ?? []),
+      travelMode: prefs['travelMode'] as String? ?? 'walk',
+      budgetTier: BudgetTierX.fromJson(prefs['budgetTier'] as String?),
+      onboardingDone: map['onboardingDone'] as bool? ?? false,
+      topPriority: prefs['topPriority'] as String? ?? 'interest',
     );
   }
 
   Map<String, dynamic> toMap() => {
-    'onboardingDone': true,
-    'preferences': {
-      'categories': categories,
-      'cuisines':   cuisines,
-      'travelMode': travelMode,
-      'budgetTier': budgetTier.toJson(),
-      'topPriority': topPriority,
-    },
-  };
+        'onboardingDone': true,
+        'preferences': {
+          'categories': categories,
+          'cuisines': cuisines,
+          'travelMode': travelMode,
+          'budgetTier': budgetTier.toJson(),
+          'topPriority': topPriority,
+        },
+      };
 
   UserPreferences copyWith({
     List<String>? categories,
     List<String>? cuisines,
-    String?       travelMode,
-    BudgetTier?   budgetTier,
-    bool?         onboardingDone,
-    String?       topPriority,
-  }) => UserPreferences(
-    categories:     categories     ?? this.categories,
-    cuisines:       cuisines       ?? this.cuisines,
-    travelMode:     travelMode     ?? this.travelMode,
-    budgetTier:     budgetTier     ?? this.budgetTier,
-    onboardingDone: onboardingDone ?? this.onboardingDone,
-    topPriority:    topPriority    ?? this.topPriority,
-  );
+    String? travelMode,
+    BudgetTier? budgetTier,
+    bool? onboardingDone,
+    String? topPriority,
+  }) =>
+      UserPreferences(
+        categories: categories ?? this.categories,
+        cuisines: cuisines ?? this.cuisines,
+        travelMode: travelMode ?? this.travelMode,
+        budgetTier: budgetTier ?? this.budgetTier,
+        onboardingDone: onboardingDone ?? this.onboardingDone,
+        topPriority: topPriority ?? this.topPriority,
+      );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -134,7 +187,8 @@ class RecommendationScore {
   final double ratingScore;
   final double timeSuitability;
   final double budgetSuitability;
-  final double weatherScore; 
+  final double weatherScore;
+  final RecommendationExplanation? explanation;
 
   const RecommendationScore({
     required this.total,
@@ -144,17 +198,17 @@ class RecommendationScore {
     required this.timeSuitability,
     required this.budgetSuitability,
     required this.weatherScore,
+    this.explanation,
   });
 
   String get percentage => '${(total * 100).toStringAsFixed(1)}%';
 
   @override
-  String toString() =>
-      'Score=${percentage} '
-      '[interest=${(interestMatch  * 100).toStringAsFixed(0)}% '
-      'dist=${(distanceScore       * 100).toStringAsFixed(0)}% '
-      'rating=${(ratingScore       * 100).toStringAsFixed(0)}% '
-      'time=${(timeSuitability     * 100).toStringAsFixed(0)}% '
+  String toString() => 'Score=${percentage} '
+      '[interest=${(interestMatch * 100).toStringAsFixed(0)}% '
+      'dist=${(distanceScore * 100).toStringAsFixed(0)}% '
+      'rating=${(ratingScore * 100).toStringAsFixed(0)}% '
+      'time=${(timeSuitability * 100).toStringAsFixed(0)}% '
       'budget=${(budgetSuitability * 100).toStringAsFixed(0)}%]';
 }
 
@@ -168,9 +222,10 @@ class UserPreferenceService {
   UserPreferences get current => _prefs;
 
   final ValueNotifier<int> preferencesChanged = ValueNotifier(0);
+  int get preferenceRevision => preferencesChanged.value;
 
-  final Map<String, int>    _favouriteCount    = {};
-  final Map<String, double> _timeAffinity      = {};
+  final Map<String, int> _favouriteCount = {};
+  final Map<String, double> _timeAffinity = {};
   final Map<String, double> _passiveCount = {};
 
   // All learning signals mutate shared in-memory maps and then persist those
@@ -192,7 +247,8 @@ class UserPreferenceService {
         // a logout/login between queueing and execution write it to another
         // user's preference document.
         if (FirebaseAuth.instance.currentUser?.uid != requestedUid) {
-          print('⚠️ Preference signal skipped: account changed while queued');
+          debugPrint(
+              '⚠️ Preference signal skipped: account changed while queued');
           completer.complete();
           return;
         }
@@ -208,15 +264,14 @@ class UserPreferenceService {
   }
 
   // 🆕 各来源 × 各数据类型的基础权重
-  static const double _wPostTag      = 0.5;  // 发帖时的 tag/topic
-  static const double _wLikeLocation = 0.7;  // 点赞帖子挂的地点
-  static const double _wLikeTag      = 0.3;  // 点赞帖子的 tag/topic
+  static const double _wPostTag = 0.5; // 发帖时的 tag/topic
+  static const double _wLikeLocation = 0.7; // 点赞帖子挂的地点
+  static const double _wLikeTag = 0.3; // 点赞帖子的 tag/topic
   static const double _wSearchLocation = 0.5; // 搜索点开帖子挂的地点
-  static const double _wSearchTag      = 0.2; // 搜索点开帖子的 tag/topic
-    
-    
+  static const double _wSearchTag = 0.2; // 搜索点开帖子的 tag/topic
+
   static const int _minCountToLearn = 3;
-  static const double _minCountToLearnTime = 1.0; 
+  static const double _minCountToLearnTime = 1.0;
 
   // ─────────────────────────────────────────────
   // shared tag/topic → category maps
@@ -224,24 +279,24 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   static const _tagToCategory = <String, String>{
-    'food':        'restaurant',
-    'travel':      'tourist_attraction',
+    'food': 'restaurant',
+    'travel': 'tourist_attraction',
     'photography': 'tourist_attraction',
-    'fitness':     'entertainment',
-    'nature':      'park',
-    'shopping':    'shopping_mall',
+    'fitness': 'entertainment',
+    'nature': 'park',
+    'shopping': 'shopping_mall',
   };
 
   static const _topicToCategory = <String, String>{
-    '#foodie':      'restaurant',
-    '#malaysia':    'tourist_attraction',
-    '#KLCC':        'tourist_attraction',
-    '#penang':      'tourist_attraction',
-    '#niceView':    'park',
+    '#foodie': 'restaurant',
+    '#malaysia': 'tourist_attraction',
+    '#KLCC': 'tourist_attraction',
+    '#penang': 'tourist_attraction',
+    '#niceView': 'park',
     '#happyTravel': 'tourist_attraction',
-    '#travelvlog':  'tourist_attraction',
-    '#journey':     'tourist_attraction',
-    '#transport':   'tourist_attraction',
+    '#travelvlog': 'tourist_attraction',
+    '#journey': 'tourist_attraction',
+    '#transport': 'tourist_attraction',
   };
 
   // ─────────────────────────────────────────────
@@ -249,19 +304,19 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   static const _typeToCuisine = <String, String>{
-    'chinese_restaurant':   'chinese',
-    'malay_restaurant':     'malay',
+    'chinese_restaurant': 'chinese',
+    'malay_restaurant': 'malay',
     'malaysian_restaurant': 'malay',
-    'indian_restaurant':    'indian',
-    'western_restaurant':   'western',
-    'american_restaurant':  'western',
-    'japanese_restaurant':  'japanese',
-    'korean_restaurant':    'korean',
-    'dessert_shop':         'dessert',
-    'ice_cream_shop':       'dessert',
-    'bakery':               'dessert',
-    'cafe':                 'cafe',
-    'coffee_shop':          'cafe',
+    'indian_restaurant': 'indian',
+    'western_restaurant': 'western',
+    'american_restaurant': 'western',
+    'japanese_restaurant': 'japanese',
+    'korean_restaurant': 'korean',
+    'dessert_shop': 'dessert',
+    'ice_cream_shop': 'dessert',
+    'bakery': 'dessert',
+    'cafe': 'cafe',
+    'coffee_shop': 'cafe',
   };
 
   // ─────────────────────────────────────────────
@@ -272,8 +327,8 @@ class UserPreferenceService {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return UserPreferences.empty();
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('users').doc(uid).get();
+      final doc =
+          await FirebaseFirestore.instance.collection('users').doc(uid).get();
       if (!doc.exists) return UserPreferences.empty();
 
       _prefs = UserPreferences.fromMap(doc.data()!);
@@ -298,7 +353,7 @@ class UserPreferenceService {
 
       return _prefs;
     } catch (e) {
-      print('❌ UserPreferenceService.load: $e');
+      debugPrint('❌ UserPreferenceService.load: $e');
       return UserPreferences.empty();
     }
   }
@@ -308,11 +363,26 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> save(UserPreferences prefs) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
     _prefs = prefs;
-    await FirebaseFirestore.instance
-        .collection('users').doc(uid).update(prefs.toMap());
+    final userDoc =
+        FirebaseFirestore.instance.collection('users').doc(user.uid);
+    final snapshot = await userDoc.get();
+    if (!snapshot.exists) {
+      // Missing-profile recovery: reconstruct base user profile doc + preferences
+      final baseData = <String, dynamic>{
+        'username':
+            user.displayName ?? user.email?.split('@').first ?? 'Traveler',
+        'email': user.email ?? '',
+        'profileImageUrl': user.photoURL ?? '',
+        'createdAt': FieldValue.serverTimestamp(),
+      };
+      baseData.addAll(prefs.toMap());
+      await userDoc.set(baseData, SetOptions(merge: true));
+    } else {
+      await userDoc.set(prefs.toMap(), SetOptions(merge: true));
+    }
     preferencesChanged.value++;
   }
 
@@ -325,18 +395,34 @@ class UserPreferenceService {
     if (uid == null) return;
     _prefs = UserPreferences.empty().copyWith(onboardingDone: true);
     _favouriteCount.clear();
-    _passiveCount.clear();   // 🔧 取代 _searchScoreBuffer.clear()
+    _passiveCount.clear(); // 🔧 取代 _searchScoreBuffer.clear()
     _timeAffinity.clear();
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
-      'preferences.categories':  [],
-      'preferences.cuisines':    [],
-      'preferences.travelMode':  'walk',
-      'preferences.budgetTier':  'budget',
+      'preferences.categories': [],
+      'preferences.cuisines': [],
+      'preferences.travelMode': 'walk',
+      'preferences.budgetTier': 'budget',
       'preferences.topPriority': 'interest',
-      'favouriteTypeCounts':   {},
-      'passiveSignalCount':    {},   // 🔧 取代 'searchScoreBuffer': {}
-      'timeAffinity':          {},
+      'favouriteTypeCounts': {},
+      'passiveSignalCount': {}, // 🔧 取代 'searchScoreBuffer': {}
+      'timeAffinity': {},
     });
+    preferencesChanged.value++;
+  }
+
+  /// Clears local user state in memory and resets pending retries upon logout.
+  void clearLocalSession() {
+    _prefs = UserPreferences.empty();
+    _favouriteCount.clear();
+    _passiveCount.clear();
+    _timeAffinity.clear();
+    ConnectivityService.instance.clearPendingRetry();
+    preferencesChanged.value++;
+  }
+
+  @visibleForTesting
+  void setPreferencesForTesting(UserPreferences prefs) {
+    _prefs = prefs;
     preferencesChanged.value++;
   }
 
@@ -351,21 +437,22 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> updateFromFavourite({
-    required String       primaryType,
+    required String primaryType,
     required List<String> allTypes,
-    required bool         isFavouriting,
-  }) => _enqueueLearningForCurrentUser(
-    () => _updateFromFavouriteInternal(
-      primaryType: primaryType,
-      allTypes: allTypes,
-      isFavouriting: isFavouriting,
-    ),
-  );
+    required bool isFavouriting,
+  }) =>
+      _enqueueLearningForCurrentUser(
+        () => _updateFromFavouriteInternal(
+          primaryType: primaryType,
+          allTypes: allTypes,
+          isFavouriting: isFavouriting,
+        ),
+      );
 
   Future<void> _updateFromFavouriteInternal({
-    required String       primaryType,
+    required String primaryType,
     required List<String> allTypes,
-    required bool         isFavouriting,
+    required bool isFavouriting,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -388,28 +475,26 @@ class UserPreferenceService {
       if (isFavouriting) {
         _favouriteCount[key] = (_favouriteCount[key] ?? 0) + 1;
       } else {
-        _favouriteCount[key] =
-            ((_favouriteCount[key] ?? 0) - 1).clamp(0, 999);
+        _favouriteCount[key] = ((_favouriteCount[key] ?? 0) - 1).clamp(0, 999);
       }
     }
 
     final updatedCategories = List<String>.from(_prefs.categories);
-    final updatedCuisines   = List<String>.from(_prefs.cuisines);
+    final updatedCuisines = List<String>.from(_prefs.cuisines);
     _applyGate(updatedCategories, updatedCuisines);
 
     _prefs = _prefs.copyWith(
       categories: updatedCategories,
-      cuisines:   updatedCuisines,
+      cuisines: updatedCuisines,
     );
 
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
       'preferences.categories': updatedCategories,
-      'preferences.cuisines':   updatedCuisines,
-      'favouriteTypeCounts':    _favouriteCount,
+      'preferences.cuisines': updatedCuisines,
+      'favouriteTypeCounts': _favouriteCount,
     });
 
     await _saveTimeAffinity(uid); // 🆕
-
   }
 
   // ─────────────────────────────────────────────
@@ -434,25 +519,26 @@ class UserPreferenceService {
   Future<void> updateFromPost({
     required List<String> placeTypes,
     required List<String> postTags,
-    required String?      postTopic,
+    required String? postTopic,
     required SentimentLabel sentimentLabel,
     required int sentimentMatchedTokens,
     int postRating = 0,
-  }) => _enqueueLearningForCurrentUser(
-    () => _updateFromPostInternal(
-      placeTypes: placeTypes,
-      postTags: postTags,
-      postTopic: postTopic,
-      sentimentLabel: sentimentLabel,
-      sentimentMatchedTokens: sentimentMatchedTokens,
-      postRating: postRating,
-    ),
-  );
+  }) =>
+      _enqueueLearningForCurrentUser(
+        () => _updateFromPostInternal(
+          placeTypes: placeTypes,
+          postTags: postTags,
+          postTopic: postTopic,
+          sentimentLabel: sentimentLabel,
+          sentimentMatchedTokens: sentimentMatchedTokens,
+          postRating: postRating,
+        ),
+      );
 
   Future<void> _updateFromPostInternal({
     required List<String> placeTypes,
     required List<String> postTags,
-    required String?      postTopic,
+    required String? postTopic,
     required SentimentLabel sentimentLabel,
     required int sentimentMatchedTokens,
     int postRating = 0,
@@ -461,30 +547,33 @@ class UserPreferenceService {
     if (uid == null) return;
     if (placeTypes.isEmpty && postTags.isEmpty && postTopic == null) return;
 
-    final bool hasRating   = postRating > 0;
-    final bool ratingPos   = postRating >= 4;
-    final bool ratingNeg   = postRating <= 2;
+    final bool hasRating = postRating > 0;
+    final bool ratingPos = postRating >= 4;
+    final bool ratingNeg = postRating <= 2;
 
     final bool sentimentConfident = sentimentMatchedTokens >= 2;
-    final bool sentimentPos = sentimentConfident && sentimentLabel == SentimentLabel.positive;
-    final bool sentimentNeg = sentimentConfident && sentimentLabel == SentimentLabel.negative;
+    final bool sentimentPos =
+        sentimentConfident && sentimentLabel == SentimentLabel.positive;
+    final bool sentimentNeg =
+        sentimentConfident && sentimentLabel == SentimentLabel.negative;
 
     bool isPositive;
     bool isNegative;
-    int  weight;
+    int weight;
 
     if (hasRating) {
       if (!ratingPos && !ratingNeg) {
-        print('🧠 updateFromPost: skipped (rating=3, neutral)');
+        debugPrint('🧠 updateFromPost: skipped (rating=3, neutral)');
         return;
       }
       isPositive = ratingPos;
       isNegative = ratingNeg;
-      final agrees = (isPositive && sentimentPos) || (isNegative && sentimentNeg);
+      final agrees =
+          (isPositive && sentimentPos) || (isNegative && sentimentNeg);
       weight = agrees ? 2 : 1;
     } else {
       if (!sentimentPos && !sentimentNeg) {
-        print('🧠 updateFromPost: skipped (no rating, sentiment weak)');
+        debugPrint('🧠 updateFromPost: skipped (no rating, sentiment weak)');
         return;
       }
       isPositive = sentimentPos;
@@ -501,12 +590,16 @@ class UserPreferenceService {
       final resolvedCategory = CategoryMapper.toPrimaryType(placeTypes);
       if (CategoryMapper.isLearnableCategory(resolvedCategory)) {
         strongKeys.add('cat_$resolvedCategory');
-        if (isPositive) _recordTimeAffinity(resolvedCategory, weight: weight.toDouble());
+        if (isPositive)
+          _recordTimeAffinity(resolvedCategory, weight: weight.toDouble());
       }
     }
     for (final t in placeTypes) {
       final cuisine = _typeToCuisine[t];
-      if (cuisine != null) { strongKeys.add('cui_$cuisine'); break; }
+      if (cuisine != null) {
+        strongKeys.add('cui_$cuisine');
+        break;
+      }
     }
 
     // ── weakKeys：tag/topic → _passiveCount，不 gate ──
@@ -521,7 +614,7 @@ class UserPreferenceService {
     }
 
     if (strongKeys.isEmpty && weakKeys.isEmpty) {
-      print('🧠 updateFromPost: skipped (no recognized signal)');
+      debugPrint('🧠 updateFromPost: skipped (no recognized signal)');
       return;
     }
 
@@ -538,24 +631,26 @@ class UserPreferenceService {
     }
 
     final updatedCategories = List<String>.from(_prefs.categories);
-    final updatedCuisines   = List<String>.from(_prefs.cuisines);
-    _applyGate(updatedCategories, updatedCuisines); // 只吃 _favouriteCount，weakKeys 不影响 gate
+    final updatedCuisines = List<String>.from(_prefs.cuisines);
+    _applyGate(updatedCategories,
+        updatedCuisines); // 只吃 _favouriteCount，weakKeys 不影响 gate
 
-    _prefs = _prefs.copyWith(categories: updatedCategories, cuisines: updatedCuisines);
+    _prefs = _prefs.copyWith(
+        categories: updatedCategories, cuisines: updatedCuisines);
 
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
       'preferences.categories': updatedCategories,
-      'preferences.cuisines':   updatedCuisines,
-      'favouriteTypeCounts':    _favouriteCount,
-      'passiveSignalCount':     _passiveCount,
+      'preferences.cuisines': updatedCuisines,
+      'favouriteTypeCounts': _favouriteCount,
+      'passiveSignalCount': _passiveCount,
     });
 
     await _saveTimeAffinity(uid);
 
-    print('🧠 updateFromPost: strong=$strongKeys weak=$weakKeys '
+    debugPrint('🧠 updateFromPost: strong=$strongKeys weak=$weakKeys '
         'categories=$updatedCategories cuisines=$updatedCuisines');
   }
-  
+
 // ─────────────────────────────────────────────
   // Update from Like post
   // location 信号 +0.7 / -0.7，tag/topic 信号 +0.3 / -0.3，
@@ -563,41 +658,42 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> updateFromLike({
-    required List<String>   placeTypes,
-    required List<String>   postTags,
-    required String?        postTopic,
-    required bool           isLiking,
+    required List<String> placeTypes,
+    required List<String> postTags,
+    required String? postTopic,
+    required bool isLiking,
     required SentimentLabel sentimentLabel,
-    required int            sentimentMatchedTokens,
-  }) => _enqueueLearningForCurrentUser(
-    () => _updateFromLikeInternal(
-      placeTypes: placeTypes,
-      postTags: postTags,
-      postTopic: postTopic,
-      isLiking: isLiking,
-      sentimentLabel: sentimentLabel,
-      sentimentMatchedTokens: sentimentMatchedTokens,
-    ),
-  );
+    required int sentimentMatchedTokens,
+  }) =>
+      _enqueueLearningForCurrentUser(
+        () => _updateFromLikeInternal(
+          placeTypes: placeTypes,
+          postTags: postTags,
+          postTopic: postTopic,
+          isLiking: isLiking,
+          sentimentLabel: sentimentLabel,
+          sentimentMatchedTokens: sentimentMatchedTokens,
+        ),
+      );
 
   Future<void> _updateFromLikeInternal({
-    required List<String>   placeTypes,
-    required List<String>   postTags,
-    required String?        postTopic,
-    required bool           isLiking,
+    required List<String> placeTypes,
+    required List<String> postTags,
+    required String? postTopic,
+    required bool isLiking,
     required SentimentLabel sentimentLabel,
-    required int             sentimentMatchedTokens,
+    required int sentimentMatchedTokens,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
     if (placeTypes.isEmpty && postTags.isEmpty && postTopic == null) return;
 
     if (sentimentLabel != SentimentLabel.positive) {
-      print('🧠 updateFromLike: skipped (sentiment not positive)');
+      debugPrint('🧠 updateFromLike: skipped (sentiment not positive)');
       return;
     }
     if (sentimentMatchedTokens < 2) {
-      print('🧠 updateFromLike: skipped (low confidence)');
+      debugPrint('🧠 updateFromLike: skipped (low confidence)');
       return;
     }
 
@@ -640,7 +736,8 @@ class UserPreferenceService {
     await _savePassiveCount(uid);
     await _saveTimeAffinity(uid);
 
-    print('✅ updateFromLike: location=$locationKeys tags=$tagKeys isLiking=$isLiking');
+    debugPrint(
+        '✅ updateFromLike: location=$locationKeys tags=$tagKeys isLiking=$isLiking');
   }
 
 // ─────────────────────────────────────────────
@@ -652,19 +749,20 @@ class UserPreferenceService {
   Future<void> updateFromSearch({
     required List<String> placeTypes,
     required List<String> postTags,
-    required String?      postTopic,
-  }) => _enqueueLearningForCurrentUser(
-    () => _updateFromSearchInternal(
-      placeTypes: placeTypes,
-      postTags: postTags,
-      postTopic: postTopic,
-    ),
-  );
+    required String? postTopic,
+  }) =>
+      _enqueueLearningForCurrentUser(
+        () => _updateFromSearchInternal(
+          placeTypes: placeTypes,
+          postTags: postTags,
+          postTopic: postTopic,
+        ),
+      );
 
   Future<void> _updateFromSearchInternal({
-    required List<String> placeTypes,  // 🆕
+    required List<String> placeTypes, // 🆕
     required List<String> postTags,
-    required String?      postTopic,
+    required String? postTopic,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -703,9 +801,8 @@ class UserPreferenceService {
     await _savePassiveCount(uid);
     await _saveTimeAffinity(uid);
 
-    print('✅ updateFromSearch: location=$locationKeys tags=$tagKeys');
+    debugPrint('✅ updateFromSearch: location=$locationKeys tags=$tagKeys');
   }
-
 
   // ─────────────────────────────────────────────
   // Update from Place View (点开某个 place detail)
@@ -716,17 +813,18 @@ class UserPreferenceService {
   // ─────────────────────────────────────────────
 
   Future<void> updateFromPlaceView({
-    required String?      primaryType,
+    required String? primaryType,
     required List<String> allTypes,
-  }) => _enqueueLearningForCurrentUser(
-    () => _updateFromPlaceViewInternal(
-      primaryType: primaryType,
-      allTypes: allTypes,
-    ),
-  );
+  }) =>
+      _enqueueLearningForCurrentUser(
+        () => _updateFromPlaceViewInternal(
+          primaryType: primaryType,
+          allTypes: allTypes,
+        ),
+      );
 
   Future<void> _updateFromPlaceViewInternal({
-    required String?      primaryType,
+    required String? primaryType,
     required List<String> allTypes,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -742,18 +840,20 @@ class UserPreferenceService {
       ...allTypes,
     ];
     if (allRawTypes.isEmpty) {
-      print('👁️ updateFromPlaceView: skipped (no types)');
+      debugPrint('👁️ updateFromPlaceView: skipped (no types)');
       return;
     }
 
     final resolvedCategory = CategoryMapper.toPrimaryType(allRawTypes);
 
     if (!CategoryMapper.isLearnableCategory(resolvedCategory)) {
-      print('👁️ updateFromPlaceView: skipped ($primaryType → $resolvedCategory, not learnable)');
+      debugPrint(
+          '👁️ updateFromPlaceView: skipped ($primaryType → $resolvedCategory, not learnable)');
       return;
     }
 
-    print('👁️ updateFromPlaceView: recording $resolvedCategory (raw: $primaryType)');
+    debugPrint(
+        '👁️ updateFromPlaceView: recording $resolvedCategory (raw: $primaryType)');
     _recordTimeAffinity(resolvedCategory, weight: 0.3);
     await _saveTimeAffinity(uid);
   }
@@ -763,7 +863,6 @@ class UserPreferenceService {
       'passiveSignalCount': _passiveCount,
     });
   }
-
 
   // ─────────────────────────────────────────────
   // _applyGate — 根据 _favouriteCount 更新
@@ -775,7 +874,7 @@ class UserPreferenceService {
     List<String> updatedCuisines,
   ) {
     for (final entry in _favouriteCount.entries) {
-      final key   = entry.key;
+      final key = entry.key;
       final count = entry.value;
 
       if (key.startsWith('cat_')) {
@@ -804,7 +903,7 @@ class UserPreferenceService {
 
   String _currentPeriod() {
     final hour = DateTime.now().hour;
-    if (hour >= 6  && hour < 11) return 'morning';
+    if (hour >= 6 && hour < 11) return 'morning';
     if (hour >= 11 && hour < 14) return 'lunch';
     if (hour >= 14 && hour < 17) return 'afternoon';
     if (hour >= 17 && hour < 20) return 'evening';
@@ -815,7 +914,8 @@ class UserPreferenceService {
     final period = _currentPeriod();
     final key = 'timeAffinity_${category}_$period';
     _timeAffinity[key] = (_timeAffinity[key] ?? 0.0) + weight;
-    print('⏰ _recordTimeAffinity: $key += $weight → now ${_timeAffinity[key]!.toStringAsFixed(2)} '
+    debugPrint(
+        '⏰ _recordTimeAffinity: $key += $weight → now ${_timeAffinity[key]!.toStringAsFixed(2)} '
         '(need $_minCountToLearnTime to unlock personal score)');
   }
 
@@ -840,47 +940,228 @@ class UserPreferenceService {
   // list entirely, not merely down-weighted).
   // ═══════════════════════════════════════════════════════════════════
 
-  RecommendationScore recommendationScore({
-    required String?      primaryType,
+  RecommendationExplanation _buildExplanation({
+    required double total,
+    required Map<String, double> factorScores,
+    required Map<String, double> factorWeights,
+    required String? primaryType,
     required List<String> allTypes,
-    required double?      rating,
-    required double?      distanceMeters,
-    required int?         priceLevel,
-    WeatherCondition?     weather,
-    String?               travelMode,
-    bool                  useCurrentTime = true,
+    required double? distanceMeters,
+    required double? rating,
+    required int? priceLevel,
+    required WeatherCondition? weather,
+    required RecommendationOriginType originType,
+    required String? originName,
+    required String? travelMode,
+  }) {
+    const categoryToLabel = {
+      'restaurant': 'Food & Dining',
+      'park': 'Nature & Parks',
+      'tourist_attraction': 'Attractions',
+      'shopping_mall': 'Shopping',
+      'entertainment': 'Entertainment',
+    };
+
+    final matchedSelected = <String>[];
+    final matchedLearned = <String>[];
+
+    if (primaryType != null &&
+        CategoryMapper.isLearnableCategory(primaryType)) {
+      if (_prefs.categories.contains(primaryType)) {
+        matchedSelected.add(categoryToLabel[primaryType] ?? primaryType);
+      } else if ((_favouriteCount['cat_$primaryType'] ?? 0) >=
+          _minCountToLearn) {
+        matchedLearned.add(categoryToLabel[primaryType] ?? primaryType);
+      }
+    }
+
+    for (final t in allTypes) {
+      final cuisine = _typeToCuisine[t];
+      if (cuisine != null) {
+        if (_prefs.cuisines.contains(cuisine)) {
+          matchedSelected.add('$cuisine cuisine');
+        } else if ((_favouriteCount['cui_$cuisine'] ?? 0) >= _minCountToLearn) {
+          matchedLearned.add('$cuisine cuisine');
+        }
+      }
+    }
+
+    final weighted = <String, double>{
+      for (final k in factorScores.keys)
+        k: (factorScores[k] ?? 0.0) * (factorWeights[k] ?? 0.0),
+    };
+
+    // Candidate reasons paired with their contribution weight
+    final candidateReasons = <MapEntry<String, double>>[];
+
+    // 1. Interest
+    if (matchedSelected.isNotEmpty) {
+      candidateReasons.add(MapEntry(
+        'Matches your interest in ${matchedSelected.first}',
+        weighted['interest'] ?? 0.0,
+      ));
+    } else if (matchedLearned.isNotEmpty) {
+      candidateReasons.add(MapEntry(
+        'Based on places you often save or visit',
+        weighted['interest'] ?? 0.0,
+      ));
+    }
+
+    // 2. Distance (only if distanceMeters is valid and distanceScore is reasonably strong)
+    if (distanceMeters != null && (factorScores['distance'] ?? 0.0) >= 0.5) {
+      String distText;
+      switch (originType) {
+        case RecommendationOriginType.gps:
+          distText = 'Close to your current location';
+          break;
+        case RecommendationOriginType.searched:
+          distText = originName != null && originName.isNotEmpty
+              ? 'Near $originName'
+              : 'Near searched location';
+          break;
+        case RecommendationOriginType.landmark:
+          distText = originName != null && originName.isNotEmpty
+              ? 'Near $originName'
+              : 'Near this landmark';
+          break;
+        case RecommendationOriginType.unknown:
+          distText = 'Convenient distance for travel';
+          break;
+      }
+      candidateReasons.add(MapEntry(distText, weighted['distance'] ?? 0.0));
+    }
+
+    // 3. Rating (only if rating is actually present and >= 4.2)
+    if (rating != null &&
+        rating >= 4.2 &&
+        (factorScores['rating'] ?? 0.0) >= 0.6) {
+      candidateReasons.add(MapEntry(
+        'Highly rated by visitors (${rating.toStringAsFixed(1)}★)',
+        weighted['rating'] ?? 0.0,
+      ));
+    }
+
+    // 4. Weather (only if weather is known and score >= 0.8)
+    if (weather != null && (factorScores['weather'] ?? 0.0) >= 0.8) {
+      candidateReasons.add(MapEntry(
+        'Suitable for the current weather',
+        weighted['weather'] ?? 0.0,
+      ));
+    }
+
+    // 5. Time suitability (if time score >= 0.7)
+    if ((factorScores['time'] ?? 0.0) >= 0.7) {
+      final period = _currentPeriod();
+      candidateReasons.add(MapEntry(
+        'Great for $period activities',
+        weighted['time'] ?? 0.0,
+      ));
+    }
+
+    // 6. Budget (only if priceLevel is known and budgetScore >= 0.8)
+    if (priceLevel != null && (factorScores['budget'] ?? 0.0) >= 0.8) {
+      candidateReasons.add(MapEntry(
+        'Fits your ${_prefs.budgetTier.label.toLowerCase()} budget',
+        weighted['budget'] ?? 0.0,
+      ));
+    }
+
+    // Sort reasons by weighted contribution descending
+    candidateReasons.sort((a, b) => b.value.compareTo(a.value));
+
+    final reasons = candidateReasons.map((e) => e.key).take(3).toList();
+    final primary =
+        reasons.isNotEmpty ? reasons.first : 'Recommended for your trip';
+
+    return RecommendationExplanation(
+      totalScore: total,
+      factorScores: factorScores,
+      factorWeights: factorWeights,
+      weightedContributions: weighted,
+      matchedSelectedPreferences: matchedSelected,
+      matchedLearnedPreferences: matchedLearned,
+      explanationReasons: reasons,
+      primaryReason: primary,
+      originType: originType,
+      originName: originName,
+    );
+  }
+
+  RecommendationScore recommendationScore({
+    required String? primaryType,
+    required List<String> allTypes,
+    required double? rating,
+    required double? distanceMeters,
+    required int? priceLevel,
+    WeatherCondition? weather,
+    String? travelMode,
+    bool useCurrentTime = true,
+    RecommendationOriginType originType = RecommendationOriginType.gps,
+    String? originName,
   }) {
     final interest = _interestMatchScore(primaryType, allTypes);
     final distance = _distanceScore(
       distanceMeters,
       travelMode: travelMode,
     );
-    final ratingS  = _ratingScore(rating);
-    final time = useCurrentTime
-        ? _timeSuitabilityScore(primaryType, allTypes)
-        : 0.5;
-    final budget   = _budgetSuitabilityScore(priceLevel);
+    final ratingS = _ratingScore(rating);
+    final time =
+        useCurrentTime ? _timeSuitabilityScore(primaryType, allTypes) : 0.5;
+    final budget = _budgetSuitabilityScore(priceLevel);
     final weatherS = _weatherScore(weather, primaryType, allTypes);
 
-    final w = _resolveWeights(); // 🆕
+    final w = _resolveWeights();
 
-    final total = (
-        (w['interest'] ?? 0.30) * interest
-      + (w['distance'] ?? 0.20) * distance
-      + 0.15 * weatherS   // weather 固定，不受用户排序影响
-      + (w['rating']   ?? 0.15) * ratingS
-      + 0.10 * time       // time 固定，不受用户排序影响
-      + (w['budget']   ?? 0.10) * budget
-    ).clamp(0.0, 1.0);
+    final factorScores = <String, double>{
+      'interest': interest,
+      'distance': distance,
+      'weather': weatherS,
+      'rating': ratingS,
+      'time': time,
+      'budget': budget,
+    };
+
+    final factorWeights = <String, double>{
+      'interest': w['interest'] ?? 0.30,
+      'distance': w['distance'] ?? 0.20,
+      'weather': 0.15,
+      'rating': w['rating'] ?? 0.15,
+      'time': 0.10,
+      'budget': w['budget'] ?? 0.10,
+    };
+
+    final total = ((factorWeights['interest']!) * interest +
+            (factorWeights['distance']!) * distance +
+            (factorWeights['weather']!) * weatherS +
+            (factorWeights['rating']!) * ratingS +
+            (factorWeights['time']!) * time +
+            (factorWeights['budget']!) * budget)
+        .clamp(0.0, 1.0);
+
+    final expl = _buildExplanation(
+      total: total,
+      factorScores: factorScores,
+      factorWeights: factorWeights,
+      primaryType: primaryType,
+      allTypes: allTypes,
+      distanceMeters: distanceMeters,
+      rating: rating,
+      priceLevel: priceLevel,
+      weather: weather,
+      originType: originType,
+      originName: originName,
+      travelMode: travelMode,
+    );
 
     return RecommendationScore(
-      total:             total,
-      interestMatch:     interest,
-      distanceScore:     distance,
-      ratingScore:       ratingS,
-      timeSuitability:   time,
+      total: total,
+      interestMatch: interest,
+      distanceScore: distance,
+      ratingScore: ratingS,
+      timeSuitability: time,
       budgetSuitability: budget,
-      weatherScore:      weatherS,
+      weatherScore: weatherS,
+      explanation: expl,
     );
   }
 
@@ -894,7 +1175,8 @@ class UserPreferenceService {
 
     final specific = CategoryMapper.isOutdoorBySpecificType(allTypes);
     final isOutdoor = specific ??
-        (primaryType != null && CategoryMapper.outdoorFallbackBuckets.contains(primaryType));
+        (primaryType != null &&
+            CategoryMapper.outdoorFallbackBuckets.contains(primaryType));
 
     switch (weather) {
       case WeatherCondition.rain:
@@ -908,15 +1190,16 @@ class UserPreferenceService {
         return isOutdoor ? 1.0 : 0.8;
     }
   }
-  
-    // 🔧 CHANGED: 不再自己维护身份映射表，直接问 CategoryMapper 这个
-    // primaryType 是否可学习。
+
+  // 🔧 CHANGED: 不再自己维护身份映射表，直接问 CategoryMapper 这个
+  // primaryType 是否可学习。
   double _interestMatchScore(String? primaryType, List<String> allTypes) {
     double countToScore(int count) {
       if (count < _minCountToLearn) return 0.0;
       const maxCount = 10;
-      final clamped  = count.clamp(_minCountToLearn, maxCount);
-      return 0.6 + 0.4 * (clamped - _minCountToLearn) / (maxCount - _minCountToLearn);
+      final clamped = count.clamp(_minCountToLearn, maxCount);
+      return 0.6 +
+          0.4 * (clamped - _minCountToLearn) / (maxCount - _minCountToLearn);
     }
 
     double passiveScore(double count) {
@@ -926,14 +1209,17 @@ class UserPreferenceService {
 
     final scores = <double>[];
 
-    if (primaryType != null && CategoryMapper.isLearnableCategory(primaryType)) {
+    if (primaryType != null &&
+        CategoryMapper.isLearnableCategory(primaryType)) {
       if (_prefs.categories.contains(primaryType)) scores.add(1.0);
       final cnt = _favouriteCount['cat_$primaryType'] ?? 0;
-      final cs  = countToScore(cnt);
+      final cs = countToScore(cnt);
       if (cs > 0) scores.add(cs);
 
       final passiveCnt = _passiveCount['cat_$primaryType'] ?? 0.0;
-      if (passiveCnt > 0) scores.add(0.5 + passiveScore(passiveCnt)); // 🔧 passiveBoost → passiveScore
+      if (passiveCnt > 0)
+        scores.add(
+            0.5 + passiveScore(passiveCnt)); // 🔧 passiveBoost → passiveScore
     }
 
     for (final t in allTypes) {
@@ -941,7 +1227,7 @@ class UserPreferenceService {
       if (cuisine != null) {
         if (_prefs.cuisines.contains(cuisine)) scores.add(1.0);
         final cnt = _favouriteCount['cui_$cuisine'] ?? 0;
-        final cs  = countToScore(cnt);
+        final cs = countToScore(cnt);
         if (cs > 0) scores.add(cs);
 
         final passiveCnt = _passiveCount['cui_$cuisine'] ?? 0.0;
@@ -953,7 +1239,7 @@ class UserPreferenceService {
     if (scores.isEmpty) return 0.5;
     return (scores.reduce((a, b) => a + b) / scores.length).clamp(0.0, 1.0);
   }
-  
+
   double _distanceScore(
     double? distanceMeters, {
     String? travelMode,
@@ -964,7 +1250,8 @@ class UserPreferenceService {
     final baseline = _distanceBaselineForMode(resolvedTravelMode);
     final score = (1.0 - distanceMeters / baseline).clamp(0.0, 1.0);
 
-    print('📏 _distanceScore: mode=$resolvedTravelMode, baseline=${baseline}m, '
+    debugPrint(
+        '📏 _distanceScore: mode=$resolvedTravelMode, baseline=${baseline}m, '
         'dist=${distanceMeters.toStringAsFixed(0)}m → score=${score.toStringAsFixed(2)}');
     return score;
   }
@@ -998,7 +1285,8 @@ class UserPreferenceService {
 
     final personal = _personalTimeScore(primaryType, allTypes, period);
     if (personal != null) {
-      print('🎯 PERSONAL time score [$primaryType/$period] = ${personal.toStringAsFixed(2)}');
+      debugPrint(
+          '🎯 PERSONAL time score [$primaryType/$period] = ${personal.toStringAsFixed(2)}');
       return personal;
     }
 
@@ -1016,24 +1304,28 @@ class UserPreferenceService {
       ...allTypes,
     ];
     for (final t in candidates) {
-      final key   = 'timeAffinity_${t}_$period';
+      final key = 'timeAffinity_${t}_$period';
       final score = _timeAffinity[key] ?? 0.0;
       if (score >= _minCountToLearnTime) {
         const maxScore = 15.0;
         final clamped = score.clamp(_minCountToLearnTime, maxScore);
-        final result = 0.6 + 0.4 * (clamped - _minCountToLearnTime) /
-            (maxScore - _minCountToLearnTime);
-        print('   ✓ found unlocked key "$key" = ${score.toStringAsFixed(2)} → score ${result.toStringAsFixed(2)}');
+        final result = 0.6 +
+            0.4 *
+                (clamped - _minCountToLearnTime) /
+                (maxScore - _minCountToLearnTime);
+        debugPrint(
+            '   ✓ found unlocked key "$key" = ${score.toStringAsFixed(2)} → score ${result.toStringAsFixed(2)}');
         return result;
       } else if (score > 0) {
-        print('   … key "$key" = ${score.toStringAsFixed(2)} '
+        debugPrint('   … key "$key" = ${score.toStringAsFixed(2)} '
             '(need ${(_minCountToLearnTime - score).toStringAsFixed(2)} more to unlock)');
       }
     }
     return null;
   }
 
-  double _globalTimeSuitability(String? primaryType, List<String> allTypes, String period) {
+  double _globalTimeSuitability(
+      String? primaryType, List<String> allTypes, String period) {
     final specificMap = CategoryMapper.specificTimeSuitability[period]!;
     for (final t in allTypes) {
       if (specificMap.containsKey(t)) return specificMap[t]!;
@@ -1054,13 +1346,13 @@ class UserPreferenceService {
     if (priceLevel == null) return 1.0;
 
     const scores = <String, List<double>>{
-      'budget':   [1.0, 0.8, 0.3, 0.0],
+      'budget': [1.0, 0.8, 0.3, 0.0],
       'midRange': [0.6, 1.0, 1.0, 0.5],
-      'premium':  [0.2, 0.6, 1.0, 1.0],
+      'premium': [0.2, 0.6, 1.0, 1.0],
     };
 
     final tier = _prefs.budgetTier.toJson();
-    final idx  = (priceLevel - 1).clamp(0, 3);
+    final idx = (priceLevel - 1).clamp(0, 3);
     return scores[tier]![idx];
   }
 
@@ -1072,8 +1364,8 @@ class UserPreferenceService {
 
   Map<String, double> _resolveWeights() {
     // 默认顺序（现有写死权重的原始排序）
-    const defaultOrder  = ['interest', 'distance', 'rating', 'budget'];
-    const weightSlots   = [0.30, 0.20, 0.15, 0.10]; // 按顺序分配
+    const defaultOrder = ['interest', 'distance', 'rating', 'budget'];
+    const weightSlots = [0.30, 0.20, 0.15, 0.10]; // 按顺序分配
 
     final chosen = _prefs.topPriority;
     final order = List<String>.from(defaultOrder);
@@ -1091,133 +1383,138 @@ class UserPreferenceService {
     return weights;
   }
 
-
   double scorePlaceModel({
-    required String?      primaryType,
+    required String? primaryType,
     required List<String> allTypes,
-    double?               distanceMeters,
-    double?               rating,
-    int?                  priceLevel,
-    WeatherCondition?     weather,
-    String?               travelMode,
-    bool                  useCurrentTime = true,
+    double? distanceMeters,
+    double? rating,
+    int? priceLevel,
+    WeatherCondition? weather,
+    String? travelMode,
+    bool useCurrentTime = true,
   }) =>
       recommendationScore(
-        primaryType:    primaryType,
-        allTypes:       allTypes,
-        rating:         rating,
+        primaryType: primaryType,
+        allTypes: allTypes,
+        rating: rating,
         distanceMeters: distanceMeters,
-        priceLevel:     priceLevel,
-        weather:        weather,
-        travelMode:     travelMode,
+        priceLevel: priceLevel,
+        weather: weather,
+        travelMode: travelMode,
         useCurrentTime: useCurrentTime,
       ).total;
 
-
-    // 🔧 CHANGED: 不再自己维护身份映射表
-    bool matchesPreference({
-      required String?      primaryType,
-      required List<String> allTypes,
-    }) {
-      if (primaryType != null && CategoryMapper.isLearnableCategory(primaryType)) {
-        if (_prefs.categories.contains(primaryType)) return true;
-        if ((_favouriteCount['cat_$primaryType'] ?? 0) >= _minCountToLearn) return true;
-      }
-
-      for (final t in allTypes) {
-        final cuisine = _typeToCuisine[t];
-        if (cuisine == null) continue;
-        if (_prefs.cuisines.contains(cuisine)) return true;
-        if ((_favouriteCount['cui_$cuisine'] ?? 0) >= _minCountToLearn) return true;
-      }
-
-      return false;
-    }
-
-    ForYouResult buildForYouList({
-      required List<PlaceModel>     candidates,
-      Map<String, RouteResult>?     routeResults,
-      double?                       distanceLimitMeters,
-      WeatherCondition?             weather,
-      bool                          requirePhoto = false,
-    }) {
-      final matched = <PlaceModel>[];
-      final scores  = <String, double>{};
-
-      for (final p in candidates) {
-        final dist = routeResults?[p.id]?.distanceMeters;
-
-        if (distanceLimitMeters != null) {
-          if (dist == null || dist > distanceLimitMeters) continue;
-        }
-        if (requirePhoto && (p.photoUrl == null || p.photoUrl!.isEmpty)) continue;
-        if (!matchesPreference(primaryType: p.primaryType, allTypes: p.allTypes)) continue;
-
-        matched.add(p);
-        scores[p.id] = scorePlaceModel(
-          primaryType:    p.primaryType,
-          allTypes:       p.allTypes,
-          distanceMeters: dist,
-          rating:         p.rating,
-          priceLevel:     p.priceLevel,
-          weather:        weather,
-        );
-      }
-
-      matched.sort((a, b) => scores[b.id]!.compareTo(scores[a.id]!));
-      return ForYouResult(matched, scores);
-    }
-
-  // 🔧 CHANGED: typeToCategory/categoryToLabel 里的 'amusement_park' →
-  // 'entertainment'，night 时段判断也跟着改。
-  String? getRecommendReason({
-    required String?      primaryType,
+  // 🔧 CHANGED: 不再自己维护身份映射表
+  bool matchesPreference({
+    required String? primaryType,
     required List<String> allTypes,
   }) {
-    const categoryToLabel = {
-      'restaurant': 'Food', 'park': 'Nature',
-      'tourist_attraction': 'Historical places',
-      'shopping_mall': 'Shopping', 'entertainment': 'Entertainment',
-    };
-
-    final hour = DateTime.now().hour;
-    if (hour >= 6 && hour < 11 &&
-        (primaryType == 'cafe' ||
-         allTypes.any((t) => t == 'cafe' || t == 'coffee_shop'))) {
-      return 'Good morning ☕ Start your day here';
-    }
-    if (hour >= 11 && hour < 14 && primaryType == 'restaurant') {
-      return 'Lunch time 🍽️ Try this place';
-    }
-    if (hour >= 17 && hour < 20 && primaryType == 'restaurant') {
-      return 'Dinner time 🌆 Great for tonight';
-    }
-    if ((hour >= 20 || hour < 2) && primaryType == 'entertainment') {
-      return 'Night out 🌙 Fun nearby';
+    if (primaryType != null &&
+        CategoryMapper.isLearnableCategory(primaryType)) {
+      if (_prefs.categories.contains(primaryType)) return true;
+      if ((_favouriteCount['cat_$primaryType'] ?? 0) >= _minCountToLearn)
+        return true;
     }
 
     for (final t in allTypes) {
       final cuisine = _typeToCuisine[t];
-      if (cuisine != null && _prefs.cuisines.contains(cuisine.toLowerCase())) {
-        return 'Because you like $cuisine food';
+      if (cuisine == null) continue;
+      if (_prefs.cuisines.contains(cuisine)) return true;
+      if ((_favouriteCount['cui_$cuisine'] ?? 0) >= _minCountToLearn)
+        return true;
+    }
+
+    return false;
+  }
+
+  ForYouResult buildForYouList({
+    required List<PlaceModel> candidates,
+    Map<String, RouteResult>? routeResults,
+    double? distanceLimitMeters,
+    WeatherCondition? weather,
+    bool requirePhoto = false,
+    RecommendationOriginType originType = RecommendationOriginType.gps,
+    String? originName,
+  }) {
+    final matched = <PlaceModel>[];
+    final scores = <String, double>{};
+    final explanations = <String, RecommendationExplanation>{};
+
+    for (final p in candidates) {
+      final dist = routeResults?[p.id]?.distanceMeters;
+
+      if (distanceLimitMeters != null) {
+        if (dist == null || dist > distanceLimitMeters) continue;
+      }
+      if (requirePhoto && (p.photoUrl == null || p.photoUrl!.isEmpty)) continue;
+      if (!matchesPreference(primaryType: p.primaryType, allTypes: p.allTypes))
+        continue;
+
+      final recScore = recommendationScore(
+        primaryType: p.primaryType,
+        allTypes: p.allTypes,
+        distanceMeters: dist,
+        rating: p.rating,
+        priceLevel: p.priceLevel,
+        weather: weather,
+        originType: originType,
+        originName: originName,
+      );
+
+      matched.add(p);
+      scores[p.id] = recScore.total;
+      if (recScore.explanation != null) {
+        explanations[p.id] = recScore.explanation!;
       }
     }
-    if (primaryType != null && _prefs.categories.contains(primaryType)) {
-      return 'Because you like ${categoryToLabel[primaryType] ?? primaryType}';
-    }
-    return null;
+
+    matched.sort((a, b) {
+      // 1. Personalised score descending
+      final scoreA = scores[a.id] ?? 0.0;
+      final scoreB = scores[b.id] ?? 0.0;
+      final scoreCmp = scoreB.compareTo(scoreA);
+      if (scoreCmp != 0) return scoreCmp;
+
+      // 2. Route / geographic distance ascending
+      final distA = routeResults?[a.id]?.distanceMeters ?? double.infinity;
+      final distB = routeResults?[b.id]?.distanceMeters ?? double.infinity;
+      final distCmp = distA.compareTo(distB);
+      if (distCmp != 0) return distCmp;
+
+      // 3. Rating descending
+      final ratingA = a.rating ?? 0.0;
+      final ratingB = b.rating ?? 0.0;
+      final ratingCmp = ratingB.compareTo(ratingA);
+      if (ratingCmp != 0) return ratingCmp;
+
+      // 4. Stable Place ID ascending
+      return a.id.compareTo(b.id);
+    });
+    return ForYouResult(matched, scores, explanations);
   }
 
-  void clearLocalSession() {
-    _prefs = UserPreferences.empty();
-
-    _favouriteCount.clear();
-    _passiveCount.clear();
-    _timeAffinity.clear();
-
-    preferencesChanged.value++;
+  String? getRecommendReason({
+    required String? primaryType,
+    required List<String> allTypes,
+    double? distanceMeters,
+    double? rating,
+    int? priceLevel,
+    WeatherCondition? weather,
+    String? travelMode,
+    RecommendationOriginType originType = RecommendationOriginType.gps,
+    String? originName,
+  }) {
+    final score = recommendationScore(
+      primaryType: primaryType,
+      allTypes: allTypes,
+      distanceMeters: distanceMeters,
+      rating: rating,
+      priceLevel: priceLevel,
+      weather: weather,
+      travelMode: travelMode,
+      originType: originType,
+      originName: originName,
+    );
+    return score.explanation?.primaryReason;
   }
-
 }
-
-

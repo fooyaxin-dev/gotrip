@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import '../login_logout/login.dart';
 import '../main/onBoarding.dart';
 import '../../services/userPreference_service.dart';
 import '../itinerary/itineraryPage.dart';
@@ -296,10 +298,14 @@ class _SettingsPageState extends State<SettingsPage> {
 
               UserPreferenceService.instance.clearLocalSession();
 
+              await GoogleSignIn().signOut().catchError((_) => null);
               await FirebaseAuth.instance.signOut();
 
               if (mounted) {
-                Navigator.of(context).pushNamedAndRemoveUntil('/', (_) => false);
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => const LoginPage()),
+                  (route) => false,
+                );
               }
             },
             style: ElevatedButton.styleFrom(
@@ -352,9 +358,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 }
               } catch (e) {
                 if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Failed: $e')),
-                  );
+                  ErrorHandler.showError(context, error: e, message: ErrorHandler.userFriendlyMessage(e, defaultMessage: 'Failed to update password. Please try logging in again.'));
                 }
               }
             },

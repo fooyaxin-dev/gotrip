@@ -6,7 +6,7 @@
 
 import 'package:flutter/material.dart';
 import '../../services/connectivity_service.dart';
- 
+
 class NoInternetBanner extends StatelessWidget {
   final Widget child;
   const NoInternetBanner({super.key, required this.child});
@@ -22,7 +22,9 @@ class NoInternetBanner extends StatelessWidget {
             child,
             if (!isOnline)
               Positioned(
-                top: 0, left: 0, right: 0,
+                top: 0,
+                left: 0,
+                right: 0,
                 child: SafeArea(
                   bottom: false,
                   child: Container(
@@ -46,8 +48,7 @@ class NoInternetBanner extends StatelessWidget {
                         ),
                         GestureDetector(
                           onTap: () {
-                            // 手动触发一次刷新检查（用户点「重试」时）
-                            ConnectivityService.instance.start();
+                            ConnectivityService.instance.checkConnectivity();
                           },
                           child: const Text(
                             'Retry',

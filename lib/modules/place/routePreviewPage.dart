@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geolocator/geolocator.dart';
 import '../../services/route_service.dart';
+import '../../services/dialog_helper.dart';
 import 'guidePage.dart';
 import '../../services/apps_Loading.dart';
 
@@ -9,30 +11,27 @@ import '../../services/apps_Loading.dart';
 // ─────────────────────────────────────────────────────────
 class _ModeSummary {
   final TravelMode mode;
-  int durationSeconds;
-  double distanceMeters;
-  bool loading;
+  int durationSeconds = 0;
+  double distanceMeters = 0;
+  bool loading = false;
   String? error;
+  bool isFallback = false;
+  String? fallbackNotice;
 
-  _ModeSummary({
-    required this.mode,
-    this.durationSeconds = 0,
-    this.distanceMeters  = 0,
-    this.loading         = true,
-    this.error,
-  });
+  _ModeSummary({required this.mode});
 }
 
 // ─────────────────────────────────────────────────────────
 // RoutePreviewPage
 // ─────────────────────────────────────────────────────────
 class RoutePreviewPage extends StatefulWidget {
-  final double  startLat;
-  final double  startLng;
-  final double  endLat;
-  final double  endLng;
+  final double startLat;
+  final double startLng;
+  final double endLat;
+  final double endLng;
   final String? destinationName;
   final String? startLocationName;
+  final TravelMode? initialMode;
 
   const RoutePreviewPage({
     super.key,
@@ -42,32 +41,99 @@ class RoutePreviewPage extends StatefulWidget {
     required this.endLng,
     this.destinationName,
     this.startLocationName,
+    this.initialMode,
   });
+
+  /// Pure production helper to resolve fresh preview GPS origin with fallback.
+  static Future<({double lat, double lng, String source, int gpsAgeMs})>
+      resolvePreviewOrigin({
+    required double fallbackLat,
+    required double fallbackLng,
+    Future<Position> Function()? locationProvider,
+    DateTime? clockNow,
+  }) async {
+    double chosenLat = fallbackLat;
+    double chosenLng = fallbackLng;
+    String source = 'fallback_passed_coordinate';
+    int gpsAgeMs = -1;
+
+    try {
+      final pos = locationProvider != null
+          ? await locationProvider()
+          : await Geolocator.getCurrentPosition(
+              desiredAccuracy: LocationAccuracy.high,
+            ).timeout(const Duration(seconds: 4));
+
+      final now = clockNow ?? DateTime.now();
+      final calculatedAgeMs = now.difference(pos.timestamp).inMilliseconds;
+      gpsAgeMs = calculatedAgeMs;
+
+      // Acceptance conditions for fresh_gps:
+      // - latitude and longitude are finite
+      // - coordinate is not (0,0)
+      // - timestamp is not in the future beyond small clock tolerance (1s)
+      // - GPS age is between 0 and 10 seconds (considering clock tolerance)
+      // - accuracy is finite
+      // - accuracy is non-negative
+      // - accuracy is no greater than 60 metres
+      const int clockToleranceMs = 1000;
+      final bool isFuture = calculatedAgeMs < -clockToleranceMs;
+      final bool isAgeValid = !isFuture && calculatedAgeMs <= 10000;
+      final bool isAccuracyValid =
+          pos.accuracy.isFinite && pos.accuracy >= 0.0 && pos.accuracy <= 60.0;
+      final bool isCoordinateValid = pos.latitude.isFinite &&
+          pos.longitude.isFinite &&
+          (pos.latitude != 0.0 || pos.longitude != 0.0);
+
+      if (isCoordinateValid && isAgeValid && isAccuracyValid) {
+        chosenLat = pos.latitude;
+        chosenLng = pos.longitude;
+        source = 'fresh_gps';
+      } else {
+        chosenLat = fallbackLat;
+        chosenLng = fallbackLng;
+        source = 'fallback_passed_coordinate';
+      }
+    } catch (_) {
+      chosenLat = fallbackLat;
+      chosenLng = fallbackLng;
+      source = 'fallback_passed_coordinate';
+      gpsAgeMs = -1;
+    }
+
+    print('[NAV_ORIGIN][PREVIEW]\n'
+        'source=$source\n'
+        'gpsAgeMs=$gpsAgeMs\n'
+        'lat=$chosenLat\n'
+        'lng=$chosenLng');
+
+    return (lat: chosenLat, lng: chosenLng, source: source, gpsAgeMs: gpsAgeMs);
+  }
 
   @override
   State<RoutePreviewPage> createState() => _RoutePreviewPageState();
 }
 
 class _RoutePreviewPageState extends State<RoutePreviewPage> {
-
   final _svc = RouteService.instance;
 
   GoogleMapController? _mapController;
-  final Set<Polyline>  _polylines = {};
-  final Set<Marker>    _markers   = {};
+  final Set<Polyline> _polylines = {};
+  final Set<Marker> _markers = {};
 
   TravelMode _selectedMode = TravelMode.drive;
+  bool _isStartingNav = false;
 
   final Map<TravelMode, _ModeSummary> _summaries = {
     TravelMode.drive: _ModeSummary(mode: TravelMode.drive),
     TravelMode.motor: _ModeSummary(mode: TravelMode.motor),
-    TravelMode.walk:  _ModeSummary(mode: TravelMode.walk),
+    TravelMode.walk: _ModeSummary(mode: TravelMode.walk),
   };
 
   final Map<TravelMode, RouteResult?> _routeData = {
     TravelMode.drive: null,
     TravelMode.motor: null,
-    TravelMode.walk:  null,
+    TravelMode.walk: null,
   };
 
   // ⚠️ motor 目前是借用 drive 的数据做 ETA 近似展示（下面 _fetchMode 里),
@@ -79,7 +145,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   final Map<TravelMode, bool> _isRealFetch = {
     TravelMode.drive: false,
     TravelMode.motor: false,
-    TravelMode.walk:  false,
+    TravelMode.walk: false,
   };
 
   bool _trafficEnabled = false;
@@ -88,15 +154,76 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   double _topBarHeight = 0;
   final GlobalKey _topBarKey = GlobalKey();
 
+  // Effective preview origin resolved before requesting initial route
+  double? _effectiveStartLat;
+  double? _effectiveStartLng;
+
   @override
   void initState() {
     super.initState();
-    _setMarkers();
-    _fetchMode(TravelMode.drive);
-    _fetchMode(TravelMode.walk);
+    if (widget.initialMode != null) {
+      _selectedMode = widget.initialMode!;
+    }
+    _validateCoordinates();
+    _summaries[_selectedMode]!.loading = true;
+    _resolveOriginAndFetch();
 
     // Measure the top bar after first frame
     WidgetsBinding.instance.addPostFrameCallback((_) => _updateTopBarHeight());
+  }
+
+  Future<void> _resolveOriginAndFetch() async {
+    final origin = await RoutePreviewPage.resolvePreviewOrigin(
+      fallbackLat: widget.startLat,
+      fallbackLng: widget.startLng,
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _effectiveStartLat = origin.lat;
+      _effectiveStartLng = origin.lng;
+      _setMarkers();
+    });
+
+    final sLat = origin.lat;
+    final sLng = origin.lng;
+    if (!sLat.isFinite ||
+        !sLng.isFinite ||
+        !widget.endLat.isFinite ||
+        !widget.endLng.isFinite ||
+        (sLat == 0.0 && sLng == 0.0) ||
+        (widget.endLat == 0.0 && widget.endLng == 0.0)) {
+      if (mounted) {
+        setState(() {
+          _summaries[_selectedMode]!
+            ..loading = false
+            ..error = 'Invalid route coordinates.';
+        });
+      }
+      return;
+    }
+
+    await _fetchMode(_selectedMode);
+  }
+
+  void _validateCoordinates() {
+    final sLat = _effectiveStartLat ?? widget.startLat;
+    final sLng = _effectiveStartLng ?? widget.startLng;
+    if (!sLat.isFinite ||
+        !sLng.isFinite ||
+        !widget.endLat.isFinite ||
+        !widget.endLng.isFinite ||
+        (sLat == 0.0 && sLng == 0.0) ||
+        (widget.endLat == 0.0 && widget.endLng == 0.0)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Invalid route coordinates.')),
+          );
+        }
+      });
+    }
   }
 
   void _updateTopBarHeight() {
@@ -115,29 +242,70 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   // ── Markers ──
 
   void _setMarkers() {
-    _markers.addAll([
-      Marker(
-        markerId:  const MarkerId('end'),
-        position:  LatLng(widget.endLat, widget.endLng),
-        icon:      BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-        infoWindow: InfoWindow(title: widget.destinationName ?? 'Destination'),
-      ),
-      Marker(
-        markerId:  const MarkerId('start'),
-        position:  LatLng(widget.startLat, widget.startLng),
-        icon:      BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-        infoWindow: const InfoWindow(title: 'Your location'),
-      ),
-    ]);
+    final sLat = _effectiveStartLat ?? widget.startLat;
+    final sLng = _effectiveStartLng ?? widget.startLng;
+
+    _markers
+      ..clear()
+      ..addAll([
+        Marker(
+          markerId: const MarkerId('end'),
+          position: LatLng(widget.endLat, widget.endLng),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          infoWindow:
+              InfoWindow(title: widget.destinationName ?? 'Destination'),
+        ),
+        Marker(
+          markerId: const MarkerId('start'),
+          position: LatLng(sLat, sLng),
+          icon:
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          infoWindow: const InfoWindow(title: 'Your location'),
+        ),
+      ]);
   }
 
   // ── Fetch ──
   Future<void> _fetchMode(TravelMode mode) async {
+    // If already cached, reuse without duplicate request
+    if (_routeData[mode] != null) {
+      if (mode == _selectedMode) _renderPolyline(mode);
+      return;
+    }
+    final startLat = _effectiveStartLat ?? widget.startLat;
+    final startLng = _effectiveStartLng ?? widget.startLng;
+
+    if (!startLat.isFinite ||
+        !startLng.isFinite ||
+        !widget.endLat.isFinite ||
+        !widget.endLng.isFinite ||
+        (startLat == 0.0 && startLng == 0.0) ||
+        (widget.endLat == 0.0 && widget.endLng == 0.0)) {
+      if (mounted) {
+        setState(() {
+          _summaries[mode]!
+            ..loading = false
+            ..error = 'Invalid coordinates';
+        });
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _summaries[mode]!
+          ..loading = true
+          ..error = null;
+      });
+    }
+
     try {
       final result = await RouteService.instance.fetchNavigationRoute(
-        fromLat: widget.startLat, fromLng: widget.startLng,
-        toLat:   widget.endLat,   toLng:   widget.endLng,
-        mode:    mode,
+        fromLat: startLat,
+        fromLng: startLng,
+        toLat: widget.endLat,
+        toLng: widget.endLng,
+        mode: mode,
       );
 
       if (!mounted) return;
@@ -145,37 +313,22 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
       setState(() {
         _summaries[mode]!
           ..durationSeconds = result.durationSeconds
-          ..distanceMeters  = result.distanceMeters
-          ..loading         = false;
-        _routeData[mode]   = result;
-        _isRealFetch[mode] = true;   // ← 这个模式是真的请求过
-
-        // Motor 借用 drive 的数字做 ETA 近似展示（跟原来行为一致）——
-        // 但这不是真正的 TWO_WHEELER 请求，所以 motor 的 _isRealFetch
-        // 保持 false，不会被标记成"可以跳过第二次请求"。
-        if (mode == TravelMode.drive) {
-          _summaries[TravelMode.motor]!
-            ..durationSeconds = result.durationSeconds
-            ..distanceMeters  = result.distanceMeters
-            ..loading         = false;
-          _routeData[TravelMode.motor] = result;
-        }
+          ..distanceMeters = result.distanceMeters
+          ..loading = false
+          ..isFallback = result.isFallback
+          ..fallbackNotice = result.fallbackNotice;
+        _routeData[mode] = result;
+        _isRealFetch[mode] = true;
       });
 
       if (mode == _selectedMode) _renderPolyline(mode);
-
     } catch (e) {
       print('❌ _fetchMode error for $mode: $e');
       if (!mounted) return;
       setState(() {
         _summaries[mode]!
           ..loading = false
-          ..error   = e.toString();
-        if (mode == TravelMode.drive) {
-          _summaries[TravelMode.motor]!
-            ..loading = false
-            ..error   = e.toString();
-        }
+          ..error = e.toString();
       });
     }
   }
@@ -198,30 +351,87 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
         ..clear()
         ..add(Polyline(
           polylineId: const PolylineId('route'),
-          points:    data.polylinePoints,
-          color:     const Color(0xFF1A73E8),
-          width:     5,
-          startCap:  Cap.roundCap, endCap: Cap.roundCap,
+          points: data.polylinePoints,
+          color: const Color(0xFF1A73E8),
+          width: 5,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
           jointType: JointType.round,
         ));
     });
 
     // Padding needs to clear both the top bar and the bottom sheet,
     // whichever is taller, with a sane minimum fallback.
-    final double topInset    = (_topBarHeight > 0 ? _topBarHeight : 100.0) + 16.0;
+    final double topInset = (_topBarHeight > 0 ? _topBarHeight : 100.0) + 16.0;
     const double bottomInset = 240.0; // bottom sheet height + buffer
-    final double padding = <double>[topInset, bottomInset, 60.0]
-        .reduce((a, b) => a > b ? a : b);
+    final double padding =
+        <double>[topInset, bottomInset, 60.0].reduce((a, b) => a > b ? a : b);
 
     _mapController?.animateCamera(
       CameraUpdate.newLatLngBounds(data.bounds, padding),
     );
-}
+  }
 
   void _selectMode(TravelMode mode) {
     if (_selectedMode == mode) return;
     setState(() => _selectedMode = mode);
-    _renderPolyline(mode);
+    if (_routeData[mode] == null && !_summaries[mode]!.loading) {
+      _fetchMode(mode);
+    } else {
+      _renderPolyline(mode);
+    }
+  }
+
+  Future<bool> _checkPreciseLocation() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      if (mounted) AppDialogs.showLocationServiceDisabled(context);
+      return false;
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) return false;
+    }
+    if (permission == LocationPermission.deniedForever) {
+      if (mounted) AppDialogs.showLocationUnavailable(context);
+      return false;
+    }
+
+    try {
+      final accuracy = await Geolocator.getLocationAccuracy();
+      if (accuracy == LocationAccuracyStatus.reduced) {
+        if (!mounted) return false;
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Precise Location Required'),
+            content: const Text(
+              'Turn-by-turn navigation, rerouting, and arrival check-in require precise location accuracy. Please enable precise location in App Settings.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Not Now'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Geolocator.openAppSettings();
+                },
+                child: const Text('Open Settings'),
+              ),
+            ],
+          ),
+        );
+        return false;
+      }
+    } catch (_) {
+      // If getLocationAccuracy is unsupported on specific platform, continue safely
+    }
+
+    return true;
   }
 
   // ─────────────────────────────────────────────
@@ -231,7 +441,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   @override
   Widget build(BuildContext context) {
     final selected = _summaries[_selectedMode]!;
-    final mq       = MediaQuery.of(context);
+    final mq = MediaQuery.of(context);
 
     // Estimated top bar height = status bar + 15 top padding + ~80 content + 20 bottom padding
     const double kTopBarContent = 115.0;
@@ -244,7 +454,6 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
     return Scaffold(
       backgroundColor: Colors.white,
       body: Stack(children: [
-
         // ── Map — padding accounts for both overlapping panels ──
         GoogleMap(
           initialCameraPosition: CameraPosition(
@@ -254,17 +463,17 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
             ),
             zoom: 13,
           ),
-          markers:                 _markers,
-          polylines:               _polylines,
-          myLocationEnabled:       false,
+          markers: _markers,
+          polylines: _polylines,
+          myLocationEnabled: false,
           myLocationButtonEnabled: false,
-          zoomControlsEnabled:     false,
-          compassEnabled:          true,
-          trafficEnabled:          _trafficEnabled,
+          zoomControlsEnabled: false,
+          compassEnabled: true,
+          trafficEnabled: _trafficEnabled,
           onMapCreated: (c) => _mapController = c,
           // ✅ Key fix: pad top AND bottom so route fits in the visible gap
           padding: EdgeInsets.only(
-            top:    topPad,
+            top: topPad,
             bottom: bottomPad,
           ),
         ),
@@ -272,26 +481,28 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
         // ── Top bar ──
         Positioned(
           key: _topBarKey,
-          top: 0, left: 0, right: 0,
+          top: 0,
+          left: 0,
+          right: 0,
           child: Container(
             color: Colors.white,
-            padding: EdgeInsets.fromLTRB(
-                8, mq.padding.top + 15, 16, 20),
+            padding: EdgeInsets.fromLTRB(8, mq.padding.top + 15, 16, 20),
             child: Row(children: [
               IconButton(
                 icon: const Icon(Icons.arrow_back_rounded),
                 onPressed: () => Navigator.pop(context),
               ),
               const SizedBox(width: 12),
-              Expanded(child: Column(
+              Expanded(
+                  child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(children: [
                     Container(
-                      width: 10, height: 10,
+                      width: 10,
+                      height: 10,
                       decoration: const BoxDecoration(
-                          color: Color(0xFF1A73E8),
-                          shape: BoxShape.circle),
+                          color: Color(0xFF1A73E8), shape: BoxShape.circle),
                     ),
                     const SizedBox(width: 8),
                     Text(
@@ -314,7 +525,8 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                     const Icon(Icons.location_on_rounded,
                         color: Colors.red, size: 14),
                     const SizedBox(width: 4),
-                    Expanded(child: Text(
+                    Expanded(
+                        child: Text(
                       widget.destinationName ?? 'Destination',
                       style: const TextStyle(
                           fontSize: 16, fontWeight: FontWeight.w500),
@@ -338,20 +550,24 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
 
         // ── Bottom sheet ──
         Positioned(
-          left: 0, right: 0, bottom: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
           child: Container(
             decoration: const BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-              boxShadow: [BoxShadow(
-                color: Color(0x1A000000),
-                blurRadius: 20, offset: Offset(0, -4),
-              )],
+              boxShadow: [
+                BoxShadow(
+                  color: Color(0x1A000000),
+                  blurRadius: 20,
+                  offset: Offset(0, -4),
+                )
+              ],
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-
                 // Mode tabs
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
@@ -360,7 +576,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                     const SizedBox(width: 8),
                     _modeTab(TravelMode.motor, Icons.two_wheeler_rounded),
                     const SizedBox(width: 8),
-                    _modeTab(TravelMode.walk,  Icons.directions_walk_rounded),
+                    _modeTab(TravelMode.walk, Icons.directions_walk_rounded),
                   ]),
                 ),
 
@@ -377,8 +593,10 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                     children: [
                       if (selected.loading)
                         const SizedBox(
-                          width: 20, height: 20,
-                          child: TravelLoadingIndicator(),
+                          width: 20,
+                          height: 20,
+                          child: TravelLoadingIndicator(
+                              size: 20, color: Color(0xFF1A73E8)),
                         )
                       else if (selected.error != null)
                         const Text('Route unavailable',
@@ -412,7 +630,8 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                                     : Colors.grey[300]!,
                               ),
                             ),
-                            child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            child:
+                                Row(mainAxisSize: MainAxisSize.min, children: [
                               Icon(Icons.traffic_rounded,
                                   size: 14,
                                   color: _trafficEnabled
@@ -434,50 +653,95 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
                   ),
                 ),
 
+                if (selected.isFallback && selected.fallbackNotice != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF3E0),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFFFB74D)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.info_outline_rounded,
+                              size: 16, color: Color(0xFFE65100)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              selected.fallbackNotice!,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFFE65100),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
                 const SizedBox(height: 14),
 
                 // Start button
                 Padding(
-                  padding: EdgeInsets.fromLTRB(
-                      16, 0, 16, 16 + mq.padding.bottom),
+                  padding:
+                      EdgeInsets.fromLTRB(16, 0, 16, 16 + mq.padding.bottom),
                   child: SizedBox(
                     width: double.infinity,
-                  child: ElevatedButton.icon(
-                  onPressed: selected.loading || selected.error != null
-                    ? null
-                    : () async {
-                        final arrived = await Navigator.push<bool>(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => GuidePage(
-                              startLat:        widget.startLat,
-                              startLng:        widget.startLng,
-                              endLat:          widget.endLat,
-                              endLng:          widget.endLng,
-                              destinationName: widget.destinationName,
-                              travelMode:      _selectedMode,
-                              initialRoute: _isRealFetch[_selectedMode] == true
-                                  ? _routeData[_selectedMode]
-                                  : null,
-                            ),
-                          ),
-                        );
+                    child: ElevatedButton.icon(
+                      onPressed: selected.loading ||
+                              selected.error != null ||
+                              _isStartingNav
+                          ? null
+                          : () async {
+                              final canProceed = await _checkPreciseLocation();
+                              if (!canProceed || !mounted) return;
 
-                        if (!mounted) return;
+                              setState(() => _isStartingNav = true);
+                              try {
+                                final arrived = await Navigator.push<bool>(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => GuidePage(
+                                      startLat:
+                                          _effectiveStartLat ?? widget.startLat,
+                                      startLng:
+                                          _effectiveStartLng ?? widget.startLng,
+                                      endLat: widget.endLat,
+                                      endLng: widget.endLng,
+                                      destinationName: widget.destinationName,
+                                      travelMode: _selectedMode,
+                                      initialRoute:
+                                          _isRealFetch[_selectedMode] == true
+                                              ? _routeData[_selectedMode]
+                                              : null,
+                                    ),
+                                  ),
+                                );
 
-                        if (arrived == true) {
-                          Navigator.pop(context, true);
-                        }
-                      },
-                      icon:  const Icon(Icons.navigation_rounded, size: 18),
+                                if (!mounted) return;
+
+                                if (arrived == true) {
+                                  Navigator.pop(context, true);
+                                }
+                              } finally {
+                                if (mounted) {
+                                  setState(() => _isStartingNav = false);
+                                }
+                              }
+                            },
+                      icon: const Icon(Icons.navigation_rounded, size: 18),
                       label: const Text('Start',
                           style: TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w600)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF1A73E8),
                         foregroundColor: Colors.white,
-                        padding:
-                            const EdgeInsets.symmetric(vertical: 14),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(30)),
                         elevation: 0,
@@ -494,7 +758,7 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
   }
 
   Widget _modeTab(TravelMode mode, IconData icon) {
-    final summary    = _summaries[mode]!;
+    final summary = _summaries[mode]!;
     final isSelected = _selectedMode == mode;
 
     return Expanded(
@@ -517,28 +781,37 @@ class _RoutePreviewPageState extends State<RoutePreviewPage> {
             children: [
               Icon(icon,
                   size: 22,
-                  color: isSelected
-                      ? const Color(0xFF1A73E8) : Colors.grey[600]),
+                  color:
+                      isSelected ? const Color(0xFF1A73E8) : Colors.grey[600]),
               const SizedBox(height: 4),
               if (summary.loading)
                 const SizedBox(
-                  width: 14, height: 14,
+                  width: 14,
+                  height: 14,
                   child: TravelLoadingIndicator(),
                 )
               else if (summary.error != null)
                 Text('N/A',
                     style: TextStyle(
                         fontSize: 11,
-                        color: isSelected
-                            ? const Color(0xFF1A73E8) : Colors.grey))
-              else
+                        color:
+                            isSelected ? const Color(0xFF1A73E8) : Colors.grey))
+              else if (summary.durationSeconds > 0)
                 Text(_svc.formatDuration(summary.durationSeconds),
                     style: TextStyle(
                         fontSize: 12,
-                        fontWeight: isSelected
-                            ? FontWeight.bold : FontWeight.normal,
+                        fontWeight:
+                            isSelected ? FontWeight.bold : FontWeight.normal,
                         color: isSelected
-                            ? const Color(0xFF1A73E8) : Colors.grey[700])),
+                            ? const Color(0xFF1A73E8)
+                            : Colors.grey[700]))
+              else
+                Text('--',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: isSelected
+                            ? const Color(0xFF1A73E8)
+                            : Colors.grey)),
             ],
           ),
         ),

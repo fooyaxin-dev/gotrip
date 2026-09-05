@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'api_Keys.dart';
 import '../models/placeModel.dart';
 
@@ -10,6 +11,57 @@ class PlacesApiService {
 
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static const String _collectionName = 'place_details';
+
+  static const Duration placeDetailsTtl = Duration(days: 30);
+
+  @visibleForTesting
+  static DateTime Function()? customNow;
+
+  @visibleForTesting
+  static Future<Map<String, dynamic>?> Function(String placeId)?
+      customCacheReader;
+
+  @visibleForTesting
+  static Future<void> Function(
+    String placeId,
+    Map<String, dynamic> data, {
+    bool merge,
+  })? customCacheWriter;
+
+  @visibleForTesting
+  static Future<void> Function(String placeId)? customCacheDeleter;
+
+  @visibleForTesting
+  static void resetTestOverrides() {
+    customNow = null;
+    customCacheReader = null;
+    customCacheWriter = null;
+    customCacheDeleter = null;
+  }
+
+  static DateTime _getCurrentTime() =>
+      customNow != null ? customNow!() : DateTime.now();
+
+  static DateTime? _extractTimestamp(dynamic raw) {
+    if (raw is Timestamp) return raw.toDate();
+    if (raw is DateTime) return raw;
+    return null;
+  }
+
+  static bool _isStale(Map<String, dynamic> cachedData, DateTime now) {
+    final cachedAt = cachedData['cachedAt'];
+    final ts = _extractTimestamp(cachedAt);
+    if (ts == null) return true;
+    return now.difference(ts) >= placeDetailsTtl;
+  }
+
+  static bool _isCacheComplete(Map<String, dynamic> cachedData) {
+    final hasTypes = cachedData.containsKey('types') &&
+        (cachedData['types'] as List?)?.isNotEmpty == true;
+    final hasLocation =
+        cachedData.containsKey('location') && cachedData['location'] != null;
+    return hasTypes && hasLocation;
+  }
 
   // Cache for geo_ → Google Place ID lookups (in-memory, per session)
   // Key: 'geo_placeId', Value: Google Place ID e.g. 'ChIJ...'
@@ -44,7 +96,8 @@ class PlacesApiService {
     print('║ - Cache Hits: $_cacheHits');
     print('║ - Cache Misses: $_cacheMisses');
     if (_cacheHits + _cacheMisses > 0) {
-      final hitRate = (_cacheHits / (_cacheHits + _cacheMisses) * 100).toStringAsFixed(1);
+      final hitRate =
+          (_cacheHits / (_cacheHits + _cacheMisses) * 100).toStringAsFixed(1);
       print('║ - Hit Rate: $hitRate%');
     }
     print('╠════════════════════════════════════════╣');
@@ -73,7 +126,7 @@ class PlacesApiService {
   // Uses Text Search with name + coords to find the matching Google Place ID.
   // Result is cached in Firestore so the same place is never looked up twice.
   static Future<String?> findGooglePlaceId({
-    required String geoInternalId,   // our 'geo_xxx' id — used as cache key
+    required String geoInternalId, // our 'geo_xxx' id — used as cache key
     required String placeName,
     required double lat,
     required double lng,
@@ -94,7 +147,8 @@ class PlacesApiService {
       if (cacheDoc.exists) {
         final googleId = cacheDoc.data()?['googlePlaceId'] as String?;
         if (googleId != null && googleId.isNotEmpty) {
-          print('💾 findGooglePlaceId: Firestore hit for $placeName → $googleId');
+          print(
+              '💾 findGooglePlaceId: Firestore hit for $placeName → $googleId');
           _geoToGoogleIdCache[geoInternalId] = googleId;
           return googleId;
         }
@@ -117,7 +171,7 @@ class PlacesApiService {
           'locationBias': {
             'circle': {
               'center': {'latitude': lat, 'longitude': lng},
-              'radius': 100.0,   // tight radius — we know the coords
+              'radius': 100.0, // tight radius — we know the coords
             }
           },
           'maxResultCount': 1,
@@ -142,20 +196,16 @@ class PlacesApiService {
       print('✅ findGooglePlaceId: "$placeName" → $googleId');
 
       // 4. Save to Firestore cache so we never call this again for the same place
-      _firestore
-          .collection('geo_to_google_id')
-          .doc(geoInternalId)
-          .set({
-            'googlePlaceId': googleId,
-            'placeName':     placeName,
-            'lat':           lat,
-            'lng':           lng,
-            'cachedAt':      FieldValue.serverTimestamp(),
-          });
+      _firestore.collection('geo_to_google_id').doc(geoInternalId).set({
+        'googlePlaceId': googleId,
+        'placeName': placeName,
+        'lat': lat,
+        'lng': lng,
+        'cachedAt': FieldValue.serverTimestamp(),
+      });
 
       _geoToGoogleIdCache[geoInternalId] = googleId;
       return googleId;
-
     } catch (e) {
       print('❌ findGooglePlaceId exception: $e');
       return null;
@@ -179,13 +229,15 @@ class PlacesApiService {
     int radius = 5000,
     int maxResultCount = 20,
     String rankPreference = 'DISTANCE', // or 'POPULARITY'
+    http.Client? client,
   }) async {
     final startTime = DateTime.now();
     _totalApiCalls++;
     _searchNearbyCallCount++;
 
     final label = types == null ? 'ALL' : types.first;
-    print('🟡 API Call #$_totalApiCalls: searchNearby | $label | rank=$rankPreference');
+    print(
+        '🟡 API Call #$_totalApiCalls: searchNearby | $label | rank=$rankPreference');
 
     final Map<String, dynamic> bodyMap = {
       "locationRestriction": {
@@ -202,13 +254,15 @@ class PlacesApiService {
       bodyMap["includedTypes"] = types;
     }
 
-    final response = await http.post(
-      Uri.parse('$_baseUrl/places:searchNearby'),
-      headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
-      ),
-      body: jsonEncode(bodyMap),
+    final url = Uri.parse('$_baseUrl/places:searchNearby');
+    final headers = _headers(
+      'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow,places.regularOpeningHours.periods,places.utcOffsetMinutes',
     );
+    final encodedBody = jsonEncode(bodyMap);
+
+    final response = await (client != null
+        ? client.post(url, headers: headers, body: encodedBody)
+        : http.post(url, headers: headers, body: encodedBody));
 
     final duration = DateTime.now().difference(startTime);
     if (response.statusCode != 200) {
@@ -217,7 +271,8 @@ class PlacesApiService {
 
     final data = json.decode(response.body);
     final List rawPlaces = data['places'] ?? [];
-    print('✅ searchNearby: ${rawPlaces.length} places (${duration.inMilliseconds}ms)');
+    print(
+        '✅ searchNearby: ${rawPlaces.length} places (${duration.inMilliseconds}ms)');
     return rawPlaces.map(_normalizePlace).toList();
   }
 
@@ -250,7 +305,7 @@ class PlacesApiService {
     final response = await http.post(
       url,
       headers: _headers(
-        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow',
+        'places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,places.photos,places.priceLevel,places.regularOpeningHours.openNow,places.regularOpeningHours.periods,places.utcOffsetMinutes',
       ),
       body: body,
     );
@@ -262,7 +317,8 @@ class PlacesApiService {
 
     final data = json.decode(response.body);
     final List rawPlaces = data['places'] ?? [];
-    print('✅ searchText: ${rawPlaces.length} places (${duration.inMilliseconds}ms)');
+    print(
+        '✅ searchText: ${rawPlaces.length} places (${duration.inMilliseconds}ms)');
     return rawPlaces.map(_normalizePlace).toList();
   }
 
@@ -289,7 +345,8 @@ class PlacesApiService {
 
     final response = await http.post(
       url,
-      headers: _headers('suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat'),
+      headers: _headers(
+          'suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat'),
       body: jsonEncode(body),
     );
 
@@ -301,15 +358,19 @@ class PlacesApiService {
     final data = json.decode(response.body);
     final suggestions = (data['suggestions'] as List?) ?? [];
 
-    return suggestions.map((s) {
-      final pred = s['placePrediction'];
-      return {
-        'placeId':       pred['placeId'] ?? '',
-        'description':   pred['text']?['text'] ?? '',
-        'mainText':      pred['structuredFormat']?['mainText']?['text'] ?? '',
-        'secondaryText': pred['structuredFormat']?['secondaryText']?['text'] ?? '',
-      };
-    }).where((s) => (s['placeId'] as String).isNotEmpty).toList();
+    return suggestions
+        .map((s) {
+          final pred = s['placePrediction'];
+          return {
+            'placeId': pred['placeId'] ?? '',
+            'description': pred['text']?['text'] ?? '',
+            'mainText': pred['structuredFormat']?['mainText']?['text'] ?? '',
+            'secondaryText':
+                pred['structuredFormat']?['secondaryText']?['text'] ?? '',
+          };
+        })
+        .where((s) => (s['placeId'] as String).isNotEmpty)
+        .toList();
   }
 
   /// 📍 Get lat/lng from place ID
@@ -317,7 +378,8 @@ class PlacesApiService {
     final url = Uri.parse('$_baseUrl/places/$placeId');
     final response = await http.get(
       url,
-      headers: _headers('displayName,formattedAddress,location,types'), // ← 加 types
+      headers:
+          _headers('displayName,formattedAddress,location,types'), // ← 加 types
     );
 
     if (response.statusCode != 200) {
@@ -327,47 +389,55 @@ class PlacesApiService {
 
     final data = json.decode(response.body);
     return {
-      'name':    data['displayName']?['text'] ?? '',
+      'name': data['displayName']?['text'] ?? '',
       'address': data['formattedAddress'] ?? '',
-      'lat':     data['location']?['latitude'],
-      'lng':     data['location']?['longitude'],
-      'types':   (data['types'] as List?)?.cast<String>() ?? <String>[], // ← 加这行
+      'lat': data['location']?['latitude'],
+      'lng': data['location']?['longitude'],
+      'types': (data['types'] as List?)?.cast<String>() ?? <String>[], // ← 加这行
     };
   }
 
   /// 📄 Place Details (with Firebase cache)
-  static Future<Map<String, dynamic>> getPlaceDetails(String placeId) async {
+  static Future<Map<String, dynamic>> getPlaceDetails(
+    String placeId, {
+    http.Client? client,
+  }) async {
     final startTime = DateTime.now();
+    final now = _getCurrentTime();
     print('📄 getPlaceDetails: $placeId');
+
+    Map<String, dynamic>? cachedData;
+    bool hasUsableCache = false;
 
     try {
       print('💾 Checking Firebase cache...');
-      final docSnapshot = await _firestore
-          .collection(_collectionName)
-          .doc(placeId)
-          .get();
-
-      if (docSnapshot.exists) {
-        final cachedData = docSnapshot.data()!;
-
-        final cachedAt = cachedData['cachedAt'];
-        bool isExpired = true;
-        if (cachedAt != null && cachedAt is Timestamp) {
-          final age = DateTime.now().difference(cachedAt.toDate());
-          isExpired = age.inDays > 30;
+      if (customCacheReader != null) {
+        cachedData = await customCacheReader!(placeId);
+      } else {
+        final docSnapshot =
+            await _firestore.collection(_collectionName).doc(placeId).get();
+        if (docSnapshot.exists) {
+          cachedData = docSnapshot.data();
         }
+      }
 
-        final hasTypes    = cachedData.containsKey('types') &&
-            (cachedData['types'] as List?)?.isNotEmpty == true;
-        final hasLocation = cachedData.containsKey('location');
+      if (cachedData != null) {
+        final complete = _isCacheComplete(cachedData);
+        final stale = _isStale(cachedData, now);
 
-        if (hasTypes && hasLocation && !isExpired) {
-          _cacheHits++;
-          print('✅ CACHE HIT (${DateTime.now().difference(startTime).inMilliseconds}ms)');
-          return cachedData;
+        if (complete) {
+          hasUsableCache = true;
+          if (!stale) {
+            _cacheHits++;
+            print(
+                '✅ CACHE HIT (${DateTime.now().difference(startTime).inMilliseconds}ms)');
+            return cachedData;
+          } else {
+            print('⚠️ Cache expired (>= 30 days), re-fetching from API...');
+            // Stale complete cache is preserved in memory for fallback without deletion.
+          }
         } else {
-          print('⚠️ Cache expired or outdated, re-fetching...');
-          await _firestore.collection(_collectionName).doc(placeId).delete();
+          print('⚠️ Incomplete cache stub found, fetching full details...');
         }
       }
 
@@ -377,40 +447,83 @@ class PlacesApiService {
       print('🌐 Fetching from Google Places API...');
 
       final url = Uri.parse('$_baseUrl/places/$placeId');
-      final response = await http.get(
-        url,
-        headers: _headers(
-          'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,primaryType,location',
-        ),
+      final headers = _headers(
+        'displayName,formattedAddress,rating,userRatingCount,photos,regularOpeningHours,websiteUri,internationalPhoneNumber,reviews,types,primaryType,location,utcOffsetMinutes',
       );
+
+      final http.Response response;
+      try {
+        response = await (client != null
+            ? client.get(url, headers: headers)
+            : http.get(url, headers: headers));
+      } catch (networkError) {
+        if (hasUsableCache && cachedData != null) {
+          print(
+              '⚠️ Network error during refresh ($networkError), returning stale cache for $placeId');
+          return cachedData;
+        }
+        rethrow;
+      }
 
       if (response.statusCode == 404) {
         print('⚠️ Place ID invalid (404): $placeId');
-        await _firestore.collection(_collectionName).doc(placeId).delete();
+        if (hasUsableCache && cachedData != null) {
+          print('⚠️ Returning stale cache despite 404 for $placeId');
+          return cachedData;
+        }
         throw Exception('Place ID no longer valid: $placeId');
       }
 
       if (response.statusCode != 200) {
+        if (hasUsableCache && cachedData != null) {
+          print(
+              '⚠️ API error ${response.statusCode}, returning stale cache for $placeId');
+          return cachedData;
+        }
         throw Exception('getPlaceDetails failed: ${response.body}');
       }
 
-      final data = json.decode(response.body);
+      final data = json.decode(response.body) as Map<String, dynamic>;
 
-      await _firestore.collection(_collectionName).doc(placeId).set({
-        ...data,
-        'cachedAt': FieldValue.serverTimestamp(),
-      });
+      try {
+        final writePayload = <String, dynamic>{
+          ...data,
+          'cachedAt': customCacheWriter != null && customNow != null
+              ? Timestamp.fromDate(now)
+              : FieldValue.serverTimestamp(),
+        };
 
-      print('✅ Fetched & cached (${DateTime.now().difference(startTime).inMilliseconds}ms)');
+        if (customCacheWriter != null) {
+          await customCacheWriter!(placeId, writePayload, merge: true);
+        } else {
+          await _firestore.collection(_collectionName).doc(placeId).set(
+                writePayload,
+                SetOptions(merge: true),
+              );
+        }
+      } catch (writeError) {
+        print('⚠️ Firestore write failed after API success: $writeError');
+        if (hasUsableCache && cachedData != null) {
+          print(
+              '⚠️ Returning previous complete cache due to write failure for $placeId');
+          return cachedData;
+        }
+        rethrow;
+      }
+
+      print(
+          '✅ Fetched & cached (${DateTime.now().difference(startTime).inMilliseconds}ms)');
       return data;
-
     } catch (e) {
+      if (hasUsableCache && cachedData != null) {
+        print('⚠️ Unexpected error ($e), returning stale cache for $placeId');
+        return cachedData;
+      }
       print('❌ Error in getPlaceDetails: $e');
       rethrow;
     }
   }
 
-  
   /// 🆕 把 getPlaceDetails() 的原始 Google 格式转成 PlaceModel。
   /// 专门给 RouteOptimizerPage 的候补池 lazy-hydrate 用——
   /// 存档时只存了 placeId，用户点开 "More Places" tab 才需要
@@ -424,27 +537,34 @@ class PlacesApiService {
         ? buildPhotoUrl(photos[0]['name'])
         : null;
 
-    final rawTypes = (data['types'] as List?)
-            ?.map((e) => e.toString())
-            .toList() ??
-        [];
+    final rawTypes =
+        (data['types'] as List?)?.map((e) => e.toString()).toList() ?? [];
+
+    final rawPeriods = (data['regularOpeningHours'] is Map)
+        ? (data['regularOpeningHours']['periods'] as List?)
+        : null;
+    final periods = rawPeriods
+        ?.map((p) => OpeningHoursPeriod.fromJson(p))
+        .whereType<OpeningHoursPeriod>()
+        .toList();
 
     return PlaceModel(
-      id:          placeId,
-      name:        data['displayName']?['text'] ?? 'Unknown',
-      address:     data['formattedAddress'],
-      lat:         (data['location']?['latitude']  as num?)?.toDouble(),
-      lng:         (data['location']?['longitude'] as num?)?.toDouble(),
-      rating:      (data['rating'] as num?)?.toDouble(),
-      photoUrl:    photoUrl,
-      source:      'google',
+      id: placeId,
+      name: data['displayName']?['text'] ?? 'Unknown',
+      address: data['formattedAddress'],
+      lat: (data['location']?['latitude'] as num?)?.toDouble(),
+      lng: (data['location']?['longitude'] as num?)?.toDouble(),
+      rating: (data['rating'] as num?)?.toDouble(),
+      photoUrl: photoUrl,
+      source: 'google',
       primaryType: data['primaryType'] as String?,
-      allTypes:    rawTypes,
-      isOpenNow:   data['regularOpeningHours']?['openNow'] as bool?,
+      allTypes: rawTypes,
+      isOpenNow: data['regularOpeningHours']?['openNow'] as bool?,
+      regularOpeningPeriods: periods,
+      utcOffsetMinutes: (data['utcOffsetMinutes'] as num?)?.toInt(),
     );
   }
-  
-  
+
   static Future<void> clearPlaceCache(String placeId) async {
     try {
       await _firestore.collection(_collectionName).doc(placeId).delete();
@@ -456,7 +576,7 @@ class PlacesApiService {
 
   static Future<void> clearAllCache() async {
     try {
-      final batch    = _firestore.batch();
+      final batch = _firestore.batch();
       final snapshot = await _firestore.collection(_collectionName).get();
       for (var doc in snapshot.docs) {
         batch.delete(doc.reference);
@@ -481,22 +601,24 @@ class PlacesApiService {
     }
 
     return {
-      'id':               p['id'],
-      'displayName':      p['displayName'],
+      'id': p['id'],
+      'displayName': p['displayName'],
       'formattedAddress': p['formattedAddress'] ?? '',
-      'location': {
-        'latitude':  p['location']['latitude'],
-        'longitude': p['location']['longitude'],
-      },
-      'types':      (p['types'] as List?) ?? [],
-      'rating':     (p['rating'] as num?)?.toDouble(),
+      'location': p['location'] != null
+          ? {
+              'latitude': (p['location']['latitude'] as num?)?.toDouble(),
+              'longitude': (p['location']['longitude'] as num?)?.toDouble(),
+            }
+          : null,
+      'types': (p['types'] as List?) ?? [],
+      'rating': (p['rating'] as num?)?.toDouble(),
       'userRatingCount': (p['userRatingCount'] as num?)?.toInt(),
-      'photos':     photoList,
+      'photos': photoList,
       'priceLevel': p['priceLevel'],
-      'isOpenNow':  p['regularOpeningHours']?['openNow'] as bool?, 
-      'source':     'google',
+      'isOpenNow': p['regularOpeningHours']?['openNow'] as bool?,
+      'regularOpeningHours': p['regularOpeningHours'],
+      'utcOffsetMinutes': p['utcOffsetMinutes'],
+      'source': 'google',
     };
   }
 }
-
-

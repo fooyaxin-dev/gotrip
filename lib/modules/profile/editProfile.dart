@@ -1,12 +1,12 @@
 import 'dart:io';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../models/userModel.dart';
 import '../../services/user_service.dart';
 import '../../services/apps_Loading.dart';
+import '../../services/error_handler.dart';
 import 'package:image_cropper/image_cropper.dart';
 
 class EditProfilePage extends StatefulWidget {
@@ -92,7 +92,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
         }
       });
     } catch (e) {
-      _showErrorSnackBar('Could not select image: $e');
+      if (mounted) {
+        ErrorHandler.showError(context, error: e, message: 'Could not load the selected image. Please try again.');
+      }
     }
   }
 
@@ -229,7 +231,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
     } catch (e) {
       if (kDebugMode) print('❌ Error while saving profile: $e');
       if (mounted) setState(() => _isLoading = false);
-      _showErrorSnackBar('Something went wrong: $e');
+      if (mounted) {
+        ErrorHandler.showError(context, error: e);
+      }
     }
   }
   

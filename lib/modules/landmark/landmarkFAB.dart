@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show File;
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
+import 'package:geolocator/geolocator.dart';
 import '../../services/apps_Loading.dart';
 
 import '../../services/vision_service.dart';
@@ -29,6 +32,15 @@ Uint8List _fixOrientationAndEncode(Uint8List rawBytes) {
 // push it off the UI isolate too.
 String _encodeBase64(Uint8List bytes) => base64Encode(bytes);
 
+enum LandmarkCameraState {
+  initializing,
+  ready,
+  permissionDenied,
+  permissionPermanentlyDenied,
+  noCamera,
+  initializationFailed,
+}
+
 class LandmarkFAB extends StatefulWidget {
   const LandmarkFAB({super.key});
 
@@ -45,8 +57,14 @@ class _LandmarkFABState extends State<LandmarkFAB>
 
   CameraController? _cameraController;
   bool _isCameraReady = false;
-  bool _cameraError = false;
+  LandmarkCameraState _cameraState = LandmarkCameraState.initializing;
+  bool _waitingForCameraSettingsReturn = false;
   Uint8List? _previewBytes;
+
+  // ── Tap-to-Focus state ──
+  Offset? _focusPoint;
+  bool _showFocusIndicator = false;
+  Timer? _focusTimer;
 
   // Staged status text shown under the scan frame while _loading is true.
   String _statusText = 'Analyzing landmark...';
@@ -71,18 +89,50 @@ class _LandmarkFABState extends State<LandmarkFAB>
   }
 
   Future<void> _initCamera() async {
+    if (!mounted) return;
+    setState(() => _cameraState = LandmarkCameraState.initializing);
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        throw CameraException('no_camera', 'No camera available on this device');
+        if (!mounted) return;
+        setState(() {
+          _cameraState = LandmarkCameraState.noCamera;
+          _isCameraReady = false;
+        });
+        return;
       }
 
-      final controller = CameraController(
-        cameras.first,
-        ResolutionPreset.high, // 'max' is overkill for landmark recognition and slows down every downstream step
+      final camera = cameras.first;
+      CameraController controller = CameraController(
+        camera,
+        ResolutionPreset.veryHigh,
         enableAudio: false,
       );
-      await controller.initialize();
+
+      try {
+        await controller.initialize();
+      } catch (initErr) {
+        if (initErr is CameraException &&
+            (initErr.code == 'CameraAccessDenied' ||
+                initErr.code == 'CameraAccessDeniedWithoutPrompt' ||
+                initErr.code == 'CameraAccessRestricted')) {
+          rethrow;
+        }
+
+        // Retry with high resolution if veryHigh is unsupported
+        debugPrint(
+            '⚠️ veryHigh resolution failed ($initErr), retrying with high...');
+        await controller.dispose();
+
+        if (!mounted) return;
+
+        controller = CameraController(
+          camera,
+          ResolutionPreset.high,
+          enableAudio: false,
+        );
+        await controller.initialize();
+      }
 
       // Widget may have been disposed while awaiting initialize().
       if (!mounted) {
@@ -90,19 +140,41 @@ class _LandmarkFABState extends State<LandmarkFAB>
         return;
       }
 
+      // Configure autofocus and auto exposure safely where supported
+      try {
+        await controller.setFocusMode(FocusMode.auto);
+      } catch (_) {}
+
+      try {
+        await controller.setExposureMode(ExposureMode.auto);
+      } catch (_) {}
+
       _cameraController = controller;
       setState(() {
         _isCameraReady = true;
-        _cameraError = false;
+        _cameraState = LandmarkCameraState.ready;
       });
     } catch (e) {
       debugPrint('⚠️ Camera init failed: $e');
-      if (mounted) {
-        setState(() {
-          _cameraError = true;
-          _isCameraReady = false;
-        });
+      if (!mounted) return;
+
+      LandmarkCameraState mappedState =
+          LandmarkCameraState.initializationFailed;
+      if (e is CameraException) {
+        if (e.code == 'CameraAccessDenied') {
+          mappedState = LandmarkCameraState.permissionDenied;
+        } else if (e.code == 'CameraAccessDeniedWithoutPrompt' ||
+            e.code == 'CameraAccessRestricted') {
+          mappedState = LandmarkCameraState.permissionPermanentlyDenied;
+        } else if (e.code == 'no_camera') {
+          mappedState = LandmarkCameraState.noCamera;
+        }
       }
+
+      setState(() {
+        _cameraState = mappedState;
+        _isCameraReady = false;
+      });
     }
   }
 
@@ -110,17 +182,21 @@ class _LandmarkFABState extends State<LandmarkFAB>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) return;
-
-    if (
-        state == AppLifecycleState.paused) {
+    if (state == AppLifecycleState.paused) {
       _isFlashOn = false;
-      controller.dispose();
+      controller?.dispose();
       _cameraController = null;
       if (mounted) setState(() => _isCameraReady = false);
-   } else if (state == AppLifecycleState.resumed) {
-  if (_cameraController == null) _initCamera();
-}
+    } else if (state == AppLifecycleState.resumed) {
+      if (!mounted) return;
+      if (_waitingForCameraSettingsReturn) {
+        _waitingForCameraSettingsReturn = false;
+        _initCamera();
+      } else if (_cameraState == LandmarkCameraState.ready &&
+          _cameraController == null) {
+        _initCamera();
+      }
+    }
   }
 
   @override
@@ -128,6 +204,7 @@ class _LandmarkFABState extends State<LandmarkFAB>
     // Bump the request id so any in-flight work discards its result instead
     // of calling setState/Navigator after this State is gone.
     _requestId++;
+    _focusTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     if (_isFlashOn) _cameraController?.setFlashMode(FlashMode.off);
     _cameraController?.dispose();
@@ -154,12 +231,29 @@ class _LandmarkFABState extends State<LandmarkFAB>
     debugPrint('🚀 Calling VisionService.detectLandmark...');
 
     try {
-      final landmarkResult =
-          await VisionService.detectLandmark(base64Image);
+      final landmarkResult = await VisionService.detectLandmark(base64Image);
 
       // Check again — the network call may have outlived the request's
       // relevance (user navigated away, fired another capture, etc).
       if (myRequestId != _requestId || !mounted) return;
+
+      if (!landmarkResult.isDetected) {
+        debugPrint(
+            'ℹ️ No landmark detected — suppressing ResultPage navigation.');
+        setState(() {
+          _loading = false;
+          _previewBytes = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No recognizable landmark detected. Keep the landmark clearly visible and try again.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
 
       debugPrint(
           '🏛️ Result: ${landmarkResult.landmark} [${landmarkResult.method}]');
@@ -208,29 +302,30 @@ class _LandmarkFABState extends State<LandmarkFAB>
 
     try {
       final file = await _cameraController!.takePicture();
-if (myRequestId != _requestId || !mounted) return;
+      if (myRequestId != _requestId || !mounted) return;
 
-final rawBytes = await File(file.path).readAsBytes();
+      final rawBytes = await File(file.path).readAsBytes();
 
 // 立刻冻结画面，不等 orientation-fix
-if (myRequestId == _requestId && mounted) {
-  setState(() {
-    _previewBytes = rawBytes;
-    _loading = true;
-    _statusText = 'Processing image...';
-  });
-}
+      if (myRequestId == _requestId && mounted) {
+        setState(() {
+          _previewBytes = rawBytes;
+          _loading = true;
+          _statusText = 'Processing image...';
+        });
+      }
 
-final bytes = await compute(_fixOrientationAndEncode, rawBytes);
-if (myRequestId != _requestId || !mounted) return;
+      final bytes = await compute(_fixOrientationAndEncode, rawBytes);
+      if (myRequestId != _requestId || !mounted) return;
 
-await _processImage(bytes, myRequestId);
+      await _processImage(bytes, myRequestId);
     } catch (e) {
       debugPrint('⚠️ takePicture failed: $e');
       if (myRequestId != _requestId || !mounted) return;
       setState(() => _loading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to take picture, please try again')),
+        const SnackBar(
+            content: Text('Failed to take picture, please try again')),
       );
     }
   }
@@ -257,7 +352,7 @@ await _processImage(bytes, myRequestId);
 
       if (myRequestId != _requestId || !mounted) return;
       setState(() {
-        _previewBytes = rawBytes;      // 立刻冻结画面
+        _previewBytes = rawBytes; // 立刻冻结画面
         _loading = true;
         _statusText = 'Processing image...';
       });
@@ -266,7 +361,6 @@ await _processImage(bytes, myRequestId);
       if (myRequestId != _requestId || !mounted) return;
 
       await _processImage(bytes, myRequestId);
-
     } catch (e) {
       debugPrint('⚠️ pickImage failed: $e');
       if (myRequestId != _requestId || !mounted) return;
@@ -282,6 +376,65 @@ await _processImage(bytes, myRequestId);
     final newMode = _isFlashOn ? FlashMode.off : FlashMode.torch;
     await _cameraController!.setFlashMode(newMode);
     setState(() => _isFlashOn = !_isFlashOn);
+  }
+
+  Future<void> _onTapToFocus(
+    TapDownDetails details,
+    BoxConstraints constraints,
+  ) async {
+    if (_loading || !_isCameraReady || _cameraController == null) return;
+    final controller = _cameraController!;
+
+    final viewportWidth = constraints.maxWidth;
+    final viewportHeight = constraints.maxHeight;
+    if (viewportWidth <= 0 || viewportHeight <= 0) return;
+
+    var cameraAspectRatio = controller.value.aspectRatio;
+    if (cameraAspectRatio <= 0) return;
+    if (cameraAspectRatio > 1) {
+      cameraAspectRatio = 1 / cameraAspectRatio;
+    }
+
+    final sourceWidth = viewportWidth;
+    final sourceHeight = viewportWidth / cameraAspectRatio;
+    if (sourceHeight <= 0) return;
+
+    final scale = math.max(
+      viewportWidth / sourceWidth,
+      viewportHeight / sourceHeight,
+    );
+
+    final renderedWidth = sourceWidth * scale;
+    final renderedHeight = sourceHeight * scale;
+
+    final offsetX = (viewportWidth - renderedWidth) / 2.0;
+    final offsetY = (viewportHeight - renderedHeight) / 2.0;
+
+    final localPos = details.localPosition;
+    final normalizedX =
+        ((localPos.dx - offsetX) / renderedWidth).clamp(0.0, 1.0);
+    final normalizedY =
+        ((localPos.dy - offsetY) / renderedHeight).clamp(0.0, 1.0);
+
+    setState(() {
+      _focusPoint = localPos;
+      _showFocusIndicator = true;
+    });
+
+    _focusTimer?.cancel();
+    _focusTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted) {
+        setState(() => _showFocusIndicator = false);
+      }
+    });
+
+    try {
+      await controller.setFocusPoint(Offset(normalizedX, normalizedY));
+    } catch (_) {}
+
+    try {
+      await controller.setExposurePoint(Offset(normalizedX, normalizedY));
+    } catch (_) {}
   }
 
   // ── Build ─────────────────────────────────────────────────
@@ -302,31 +455,289 @@ await _processImage(bytes, myRequestId);
   }
 
   Widget _buildPreview() {
-    if (_cameraError) {
-      return const Center(
+    if (_cameraState == LandmarkCameraState.ready &&
+        _cameraController != null) {
+      if (_previewBytes != null) {
+        final mediaQuery = MediaQuery.of(context);
+        final targetCacheWidth =
+            (mediaQuery.size.width * mediaQuery.devicePixelRatio)
+                .round()
+                .clamp(800, 2400);
+
+        return Image.memory(
+          _previewBytes!,
+          fit: BoxFit.cover,
+          cacheWidth: targetCacheWidth,
+        );
+      }
+
+      final controller = _cameraController!;
+      final size = MediaQuery.sizeOf(context);
+      var cameraAspectRatio = controller.value.aspectRatio;
+      if (cameraAspectRatio > 1) {
+        cameraAspectRatio = 1 / cameraAspectRatio;
+      }
+
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (details) => _onTapToFocus(details, constraints),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ClipRect(
+                  child: SizedBox.expand(
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: size.width,
+                        height: size.width / cameraAspectRatio,
+                        child: CameraPreview(controller),
+                      ),
+                    ),
+                  ),
+                ),
+                if (_showFocusIndicator && _focusPoint != null)
+                  Positioned(
+                    left: _focusPoint!.dx - 30,
+                    top: _focusPoint!.dy - 30,
+                    child: IgnorePointer(
+                      child: Container(
+                        width: 60,
+                        height: 60,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.rectangle,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: Colors.amberAccent.withOpacity(0.9),
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
+      );
+    }
+
+    if (_cameraState == LandmarkCameraState.noCamera) {
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            '无法访问相机，请检查权限设置后重试',
-            style: TextStyle(color: Colors.white70),
-            textAlign: TextAlign.center,
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.no_photography_outlined,
+                    color: Colors.white70, size: 32),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'No Camera Available',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'No camera sensor was detected on this device. You can recognise landmarks by choosing an image from your gallery.',
+                style:
+                    TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: () => _pickImage(ImageSource.gallery),
+                icon: const Icon(Icons.photo_library,
+                    size: 16, color: Colors.white),
+                label: const Text('Choose from Gallery',
+                    style: TextStyle(color: Colors.white)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF7C4DFF),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ],
           ),
         ),
       );
     }
-    if (_isCameraReady && _cameraController != null) {
-      return _previewBytes != null
-          // cacheWidth avoids decoding the full-resolution image just to
-          // display it in a small preview frame — big memory/CPU win.
-          ? Image.memory(_previewBytes!, fit: BoxFit.cover, cacheWidth: 800)
-          : CameraPreview(_cameraController!);
+
+    if (_cameraState == LandmarkCameraState.permissionPermanentlyDenied) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.camera_alt_outlined,
+                    color: Colors.white70, size: 32),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'Camera Permission Denied',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Camera permission is permanently denied. Please enable camera access in App Settings, or select a photo from your gallery.',
+                style:
+                    TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () => _pickImage(ImageSource.gallery),
+                    icon: const Icon(Icons.photo_library,
+                        size: 16, color: Colors.white),
+                    label: const Text('Gallery',
+                        style: TextStyle(color: Colors.white)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white38),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      _waitingForCameraSettingsReturn = true;
+                      await Geolocator.openAppSettings();
+                    },
+                    icon: const Icon(Icons.settings,
+                        size: 16, color: Colors.white),
+                    label: const Text('Open Settings',
+                        style: TextStyle(color: Colors.white)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF7C4DFF),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
     }
+
+    if (_cameraState == LandmarkCameraState.permissionDenied ||
+        _cameraState == LandmarkCameraState.initializationFailed) {
+      final isDenied = _cameraState == LandmarkCameraState.permissionDenied;
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  isDenied
+                      ? Icons.camera_alt_outlined
+                      : Icons.error_outline_rounded,
+                  color: Colors.white70,
+                  size: 32,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                isDenied ? 'Camera Access Required' : 'Camera Unavailable',
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                isDenied
+                    ? 'Camera access is needed to photograph landmarks. You can try again or choose from your gallery.'
+                    : 'The camera could not be started. Please try again or select a photo from your gallery.',
+                style: const TextStyle(
+                    color: Colors.white70, fontSize: 13, height: 1.4),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () => _pickImage(ImageSource.gallery),
+                    icon: const Icon(Icons.photo_library,
+                        size: 16, color: Colors.white),
+                    label: const Text('Gallery',
+                        style: TextStyle(color: Colors.white)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white38),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      _initCamera();
+                    },
+                    icon: const Icon(Icons.refresh_rounded,
+                        size: 16, color: Colors.white),
+                    label: const Text('Try Again',
+                        style: TextStyle(color: Colors.white)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF7C4DFF),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return const Center(child: TravelLoadingIndicator());
   }
 
   Widget _buildTopGradient() {
     return Positioned(
-      top: 0, left: 0, right: 0,
+      top: 0,
+      left: 0,
+      right: 0,
       child: Container(
         height: 150,
         decoration: BoxDecoration(
@@ -378,7 +789,8 @@ await _processImage(bytes, myRequestId);
                     animation: _scanController,
                     builder: (_, __) => Positioned(
                       top: _scanController.value * 280,
-                      left: 0, right: 0,
+                      left: 0,
+                      right: 0,
                       child: Container(
                         height: 2,
                         decoration: BoxDecoration(
@@ -413,7 +825,9 @@ await _processImage(bytes, myRequestId);
 
   Widget _buildBottomControls() {
     return Positioned(
-      bottom: 50, left: 30, right: 30,
+      bottom: 50,
+      left: 30,
+      right: 30,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(40),
         child: Container(
@@ -426,34 +840,42 @@ await _processImage(bytes, myRequestId);
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               IconButton(
-                icon: const Icon(Icons.photo_library, color: Colors.white, size: 28),
-                onPressed: _loading ? null : () => _pickImage(ImageSource.gallery),
+                icon: const Icon(Icons.photo_library,
+                    color: Colors.white, size: 28),
+                onPressed:
+                    _loading ? null : () => _pickImage(ImageSource.gallery),
               ),
               GestureDetector(
                 onTap: _loading ? null : _scanWithCamera,
                 child: Container(
                   padding: const EdgeInsets.all(4),
                   decoration: const BoxDecoration(
-                    color: Colors.white30, shape: BoxShape.circle,
+                    color: Colors.white30,
+                    shape: BoxShape.circle,
                   ),
                   child: Container(
-                    height: 60, width: 60,
+                    height: 60,
+                    width: 60,
                     decoration: const BoxDecoration(
-                      color: Colors.white, shape: BoxShape.circle,
+                      color: Colors.white,
+                      shape: BoxShape.circle,
                     ),
                     child: _loading
-                      ? const Padding(
-                          padding: EdgeInsets.all(15),
-                          child: TravelLoadingIndicator(size: 22, color: Colors.black),
-                        )
-                      : const Icon(Icons.camera_alt, color: Colors.black, size: 30),
+                        ? const Padding(
+                            padding: EdgeInsets.all(15),
+                            child: TravelLoadingIndicator(
+                                size: 22, color: Colors.black),
+                          )
+                        : const Icon(Icons.camera_alt,
+                            color: Colors.black, size: 30),
                   ),
                 ),
               ),
               IconButton(
                 icon: Icon(
                   _isFlashOn ? Icons.flash_on : Icons.flash_off,
-                  color: Colors.white, size: 28,
+                  color: Colors.white,
+                  size: 28,
                 ),
                 onPressed: _loading ? null : _toggleFlash,
               ),
@@ -478,25 +900,42 @@ await _processImage(bytes, myRequestId);
 
   List<Widget> _buildCornerIndicators() {
     return [
-      Positioned(top: 0, left: 0, child: _corner(showTop: true, showLeft: true)),
-      Positioned(top: 0, right: 0, child: _corner(showTop: true, showRight: true)),
-      Positioned(bottom: 0, left: 0, child: _corner(showBottom: true, showLeft: true)),
-      Positioned(bottom: 0, right: 0, child: _corner(showBottom: true, showRight: true)),
+      Positioned(
+          top: 0, left: 0, child: _corner(showTop: true, showLeft: true)),
+      Positioned(
+          top: 0, right: 0, child: _corner(showTop: true, showRight: true)),
+      Positioned(
+          bottom: 0, left: 0, child: _corner(showBottom: true, showLeft: true)),
+      Positioned(
+          bottom: 0,
+          right: 0,
+          child: _corner(showBottom: true, showRight: true)),
     ];
   }
 
   Widget _corner({
-    bool showTop = false, bool showBottom = false,
-    bool showLeft = false, bool showRight = false,
+    bool showTop = false,
+    bool showBottom = false,
+    bool showLeft = false,
+    bool showRight = false,
   }) {
     return Container(
-      width: 25, height: 25,
+      width: 25,
+      height: 25,
       decoration: BoxDecoration(
         border: Border(
-          top:    showTop    ? const BorderSide(color: Colors.white, width: 4) : BorderSide.none,
-          bottom: showBottom ? const BorderSide(color: Colors.white, width: 4) : BorderSide.none,
-          left:   showLeft   ? const BorderSide(color: Colors.white, width: 4) : BorderSide.none,
-          right:  showRight  ? const BorderSide(color: Colors.white, width: 4) : BorderSide.none,
+          top: showTop
+              ? const BorderSide(color: Colors.white, width: 4)
+              : BorderSide.none,
+          bottom: showBottom
+              ? const BorderSide(color: Colors.white, width: 4)
+              : BorderSide.none,
+          left: showLeft
+              ? const BorderSide(color: Colors.white, width: 4)
+              : BorderSide.none,
+          right: showRight
+              ? const BorderSide(color: Colors.white, width: 4)
+              : BorderSide.none,
         ),
       ),
     );

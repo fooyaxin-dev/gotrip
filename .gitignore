@@ -46,3 +46,5 @@ app.*.map.json
 
 # Environment variables (contains real API keys - never commit)
 env.json
+# Node dependencies
+task8c_rules_test/node_modules/

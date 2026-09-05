@@ -1,0 +1,282 @@
+Flutter assets will be downloaded from https://storage.flutter-io.cn. Make sure you trust this source!
+Resolving dependencies...
+Downloading packages...
+  _flutterfire_internals 1.3.59 (1.3.77 available)
+  algolia_client_core 1.46.2 (1.52.0 available)
+  algolia_client_insights 1.46.2 (1.52.0 available)
+  algolia_client_search 1.46.2 (1.49.2 available)
+  algoliasearch 1.46.2 (1.49.2 available)
+  archive 4.0.7 (4.2.0 available)
+  async 2.13.0 (2.13.1 available)
+  cached_network_image 3.4.1 (4.0.0 available)
+  cached_network_image_platform_interface 4.1.1 (5.0.0 available)
+  cached_network_image_web 1.3.1 (2.0.0 available)
+  camera 0.11.4 (0.12.1 available)
+  camera_android_camerax 0.6.30 (0.7.4+7 available)
+  camera_avfoundation 0.9.23+2 (0.10.3 available)
+  camera_platform_interface 2.12.0 (2.13.1 available)
+  camera_web 0.3.5+3 (0.3.5+5 available)
+  characters 1.4.0 (1.4.1 available)
+  cli_util 0.4.2 (0.6.0 available)
+  clock 1.1.2 (1.1.3 available)
+  cloud_firestore 5.6.12 (6.9.0 available)
+  cloud_firestore_platform_interface 6.6.12 (8.0.7 available)
+  cloud_firestore_web 4.4.12 (5.7.3 available)
+  connectivity_plus 6.1.5 (7.3.1 available)
+  connectivity_plus_platform_interface 2.0.1 (2.1.0 available)
+  cross_file 0.3.5+1 (0.3.5+5 available)
+  cupertino_icons 1.0.8 (1.0.9 available)
+  dbus 0.7.12 (0.7.15 available)
+  dio 5.9.2 (5.11.1 available)
+  dio_web_adapter 2.1.2 (2.2.2 available)
+  equatable 2.0.8 (2.1.0 available)
+  ffi 2.1.5 (2.2.0 available)
+  file_selector_linux 0.9.4 (0.9.4+1 available)
+  file_selector_macos 0.9.5 (0.9.5+1 available)
+  file_selector_windows 0.9.3+5 (0.9.3+6 available)
+  firebase_auth 5.7.0 (6.6.1 available)
+  firebase_auth_platform_interface 7.7.3 (9.0.7 available)
+  firebase_auth_web 5.15.3 (6.2.7 available)
+  firebase_core 3.15.2 (4.14.0 available)
+  firebase_core_platform_interface 6.0.2 (8.1.1 available)
+  firebase_core_web 2.24.1 (3.11.0 available)
+  firebase_crashlytics 4.3.10 (5.3.0 available)
+  firebase_crashlytics_platform_interface 3.8.10 (3.9.0 available)
+  firebase_storage 12.4.10 (13.5.0 available)
+  firebase_storage_platform_interface 5.2.10 (6.0.7 available)
+  firebase_storage_web 3.10.17 (3.11.13 available)
+  fl_chart 0.70.2 (1.2.0 available)
+  flutter_cache_manager 3.4.1 (3.4.2 available)
+  flutter_launcher_icons 0.13.1 (0.14.4 available)
+  flutter_lints 3.0.2 (6.0.0 available)
+  flutter_plugin_android_lifecycle 2.0.33 (2.0.35 available)
+  flutter_svg 2.2.3 (2.3.0 available)
+  font_awesome_flutter 10.12.0 (11.0.0 available)
+  geocoding 3.0.0 (5.0.0 available)
+  geocoding_android 3.3.1 (5.1.0 available)
+  geocoding_platform_interface 3.2.0 (5.0.0 available)
+  geolocator 9.0.2 (14.0.3 available)
+  geolocator_android 4.6.2 (5.0.3 available)
+  geolocator_apple 2.3.13 (2.3.14 available)
+  geolocator_platform_interface 4.2.6 (4.3.0 available)
+  geolocator_web 2.2.1 (4.1.4 available)
+  geolocator_windows 0.1.3 (0.2.5 available)
+  google_fonts 6.3.3 (8.2.1 available)
+  google_maps 8.2.0 (8.3.0 available)
+  google_maps_flutter 2.14.0 (2.18.0 available)
+  google_maps_flutter_android 2.18.9 (2.19.13 available)
+  google_maps_flutter_ios 2.16.1 (2.18.6 available)
+  google_maps_flutter_platform_interface 2.14.1 (2.16.1 available)
+  google_maps_flutter_web 0.5.14+3 (0.6.3 available)
+  google_mlkit_commons 0.11.0 (0.13.0 available)
+  google_mlkit_image_labeling 0.14.1 (0.16.1 available)
+  google_sign_in 6.3.0 (7.2.0 available)
+  google_sign_in_android 6.2.1 (7.2.17 available)
+  google_sign_in_ios 5.9.0 (6.3.3 available)
+  google_sign_in_platform_interface 2.5.0 (3.1.0 available)
+  google_sign_in_web 0.12.4+4 (1.1.3 available)
+  html 0.15.6 (0.15.7 available)
+  image 4.7.2 (4.9.2 available)
+  image_picker 0.8.9 (1.2.3 available)
+  image_picker_android 0.8.13+10 (0.8.13+22 available)
+  image_picker_for_web 2.1.12 (3.1.1 available)
+  image_picker_ios 0.8.13+3 (0.8.13+7 available)
+  intl 0.19.0 (0.20.3 available)
+  json_annotation 4.11.0 (4.12.0 available)
+  lints 3.0.0 (6.1.0 available)
+  lottie 3.3.2 (3.5.1 available)
+  matcher 0.12.17 (0.12.20 available)
+  material_color_utilities 0.11.1 (0.13.1 available)
+  meta 1.17.0 (1.19.0 available)
+  mime 2.0.0 (2.1.0 available)
+  page_transition 2.2.1 (2.2.2 available)
+  path_provider 2.1.5 (2.1.6 available)
+  path_provider_android 2.2.22 (2.3.1 available)
+  path_provider_foundation 2.5.1 (2.6.0 available)
+  path_provider_linux 2.2.1 (2.2.2 available)
+  path_provider_platform_interface 2.1.2 (2.1.3 available)
+  pdf 3.12.0 (3.13.0 available)
+  petitparser 7.0.1 (7.0.2 available)
+  posix 6.0.3 (6.5.2 available)
+  qr 3.0.2 (4.0.0 available)
+  sanitize_html 2.1.0 (2.2.0 available)
+  share_plus 10.1.4 (13.3.0 available)
+  share_plus_platform_interface 5.0.2 (7.2.0 available)
+  shared_preferences 2.5.4 (2.5.5 available)
+  shared_preferences_android 2.4.20 (2.4.28 available)
+  shared_preferences_foundation 2.5.6 (2.5.7 available)
+  shared_preferences_platform_interface 2.4.1 (2.4.2 available)
+  source_span 1.10.1 (1.10.2 available)
+  sqflite 2.4.2+1 (2.4.3 available)
+  sqflite_android 2.4.2+3 (2.4.3 available)
+  sqflite_common 2.5.8 (2.5.11 available)
+  sqflite_darwin 2.4.2 (2.4.3+1 available)
+  sqflite_platform_interface 2.4.0 (2.4.1 available)
+  stack_trace 1.12.1 (1.12.2 available)
+  stream_transform 2.1.1 (2.1.2 available)
+  synchronized 3.4.0 (3.4.1+2 available)
+  test_api 0.7.7 (0.7.14 available)
+  url_launcher_android 6.3.28 (6.3.33 available)
+  url_launcher_ios 6.3.6 (6.4.2 available)
+  url_launcher_linux 3.2.2 (3.2.3 available)
+  url_launcher_macos 3.2.5 (3.2.6 available)
+  url_launcher_web 2.4.2 (2.4.3 available)
+  url_launcher_windows 3.1.5 (3.1.6 available)
+  uuid 4.5.2 (4.6.0 available)
+  vector_graphics 1.1.19 (1.2.3 available)
+  vector_graphics_compiler 1.1.20 (1.3.0 available)
+  vector_math 2.2.0 (2.4.2 available)
+  video_player 2.11.1 (2.14.0 available)
+  video_player_android 2.9.5 (2.12.2 available)
+  video_player_avfoundation 2.9.4 (2.11.1 available)
+  video_player_platform_interface 6.6.0 (6.9.0 available)
+  vm_service 15.0.2 (15.3.0 available)
+  win32 5.15.0 (6.4.0 available)
+  xml 6.6.1 (7.0.1 available)
+  yaml 3.1.3 (3.1.4 available)
+Got dependencies!
+133 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+00:00 +0: loading d:/gotrip/test/recommendation_eligibility_policy_test.dart
+00:00 +0: Group 1: Shared Recommendation Eligibility Policy Unit Tests 1. Woon Kwong Hing Sdn. Bhd. with only generic store/business types is excluded
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +1: Group 1: Shared Recommendation Eligibility Policy Unit Tests 2. Case and punctuation variants of Sdn. Bhd. are detected
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +2: Group 1: Shared Recommendation Eligibility Policy Unit Tests 3. A company-named place with restaurant is retained
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +3: Group 1: Shared Recommendation Eligibility Policy Unit Tests 4. A company-named place with cafe is retained
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +4: Group 1: Shared Recommendation Eligibility Policy Unit Tests 5. A company-named place with tourist_attraction is retained
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +5: Group 1: Shared Recommendation Eligibility Policy Unit Tests 6. A company-named place with shopping_mall is retained
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +6: Group 1: Shared Recommendation Eligibility Policy Unit Tests 7. A company-named place with only store, establishment, or point_of_interest is excluded
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +7: Group 1: Shared Recommendation Eligibility Policy Unit Tests 8. A normal place without corporate keywords is not excluded merely because it has a generic type
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +8: Group 1: Shared Recommendation Eligibility Policy Unit Tests 8b. Other corporate keywords (trading, management, solutions, consultancy, agency, services, network) are detected
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +9: Group 2: Production Candidate-Pipeline Integration Tests 9. MainPage automatic For You candidates use the policy via ensureForYouSnapshot
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +10: Group 2: Production Candidate-Pipeline Integration Tests 10. MainPage Nearby and Recommended candidates use the policy via _fetchGoogleOnce
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+💰 Google DISTANCE raw cache MISS for 3.139,101.687:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 5000m)
+🟡 API Call #1: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #2: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #3: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #4: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 3 places (15ms)
+✅ searchNearby: 3 places (15ms)
+✅ searchNearby: 3 places (15ms)
+✅ searchNearby: 3 places (15ms)
+📦 Google DISTANCE raw response: 12 results
+✅ Google DISTANCE cache STORED for 3.139,101.687:DISTANCE:ALL: 2 places @ 15000m
+00:00 +11: Group 2: Production Candidate-Pipeline Integration Tests 11. DetectPlace For You, Nearest, and Rank candidates use the same policy
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+💰 Google DISTANCE raw cache MISS for 3.139,101.687:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 5000m)
+🟡 API Call #5: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #6: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #7: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #8: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 2 places (1ms)
+✅ searchNearby: 2 places (1ms)
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+📦 Google DISTANCE raw response: 8 results
+✅ Google DISTANCE cache STORED for 3.139,101.687:DISTANCE:ALL: 1 places @ 15000m
+💰 Google POPULARITY raw cache MISS for 3.139,101.687:POPULARITY:ALL — calling Google Places API ONCE at radius 15000m (requested: 5000m)
+🟡 API Call #9: searchNearby | restaurant | rank=POPULARITY
+🟡 API Call #10: searchNearby | movie_theater | rank=POPULARITY
+🟡 API Call #11: searchNearby | subway_station | rank=POPULARITY
+🟡 API Call #12: searchNearby | park | rank=POPULARITY
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+📦 Google POPULARITY raw response: 8 results
+✅ Google POPULARITY cache STORED for 3.139,101.687:POPULARITY:ALL: 1 places @ 15000m
+00:00 +12: Group 2: Production Candidate-Pipeline Integration Tests 12. Automatic recommendations around a searched location use the policy
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+💰 Google DISTANCE raw cache MISS for 5.414,100.329:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 10000m)
+🟡 API Call #13: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #14: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #15: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #16: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+📦 Google DISTANCE raw response: 8 results
+✅ Google DISTANCE cache STORED for 5.414,100.329:DISTANCE:ALL: 1 places @ 15000m
+00:00 +13: Group 2: Production Candidate-Pipeline Integration Tests 13. System-generated itinerary candidates use the policy via fetchForItinerary and fetchAdditionalForItinerary
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+🎯 [fetchForItinerary] entered with radius=5000m (lat=3.139, lng=101.6869)
+🗺️ Itinerary cache MISS — preference categories are fetched independently with POPULARITY ranking (radius: 5000m)...
+🟡 API Call #17: searchNearby | restaurant | rank=POPULARITY
+✅ searchNearby: 2 places (0ms)
+  ✅ restaurant: 1 popularity-ranked candidates
+✅ Itinerary raw cache STORED for 3.139,101.687|restaurant|POPULARITY: 1 places @ 5000m
+🟡 API Call #18: searchNearby | restaurant | rank=POPULARITY
+✅ searchNearby: 2 places (0ms)
+🟡 API Call #19: searchNearby | bar | rank=POPULARITY
+✅ searchNearby: 2 places (0ms)
+🟡 API Call #20: searchNearby | meal_takeaway | rank=POPULARITY
+✅ searchNearby: 2 places (0ms)
+🟡 API Call #21: searchNearby | indian_restaurant | rank=POPULARITY
+✅ searchNearby: 2 places (0ms)
+🟡 API Call #22: searchNearby | korean_restaurant | rank=POPULARITY
+✅ searchNearby: 2 places (0ms)
+🟡 API Call #23: searchNearby | seafood_restaurant | rank=POPULARITY
+✅ searchNearby: 2 places (0ms)
+🟡 API Call #24: searchNearby | sushi_restaurant | rank=POPULARITY
+✅ searchNearby: 2 places (0ms)
+  ➕ restaurant: 1/2 extra candidates
+00:00 +14: Group 2: Production Candidate-Pipeline Integration Tests 13b. ItineraryService._isBlocked delegates corporate filtering to shared policy while preserving itinerary exclusions
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +15: Group 2: Production Candidate-Pipeline Integration Tests 17. Filtering preserves the relative order of retained places
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +16: Group 2: Production Candidate-Pipeline Integration Tests 18. Filtering does not cause a new API request
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+💰 Google DISTANCE raw cache MISS for 3.139,101.687:DISTANCE:ALL — calling Google Places API ONCE at radius 15000m (requested: 5000m)
+🟡 API Call #25: searchNearby | restaurant | rank=DISTANCE
+🟡 API Call #26: searchNearby | movie_theater | rank=DISTANCE
+🟡 API Call #27: searchNearby | subway_station | rank=DISTANCE
+🟡 API Call #28: searchNearby | park | rank=DISTANCE
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+✅ searchNearby: 2 places (0ms)
+📦 Google DISTANCE raw response: 8 results
+✅ Google DISTANCE cache STORED for 3.139,101.687:DISTANCE:ALL: 1 places @ 15000m
+🆓 Google DISTANCE raw cache HIT for 3.139,101.687:DISTANCE:ALL (cached @ 15000m, requested: 5000m)
+00:00 +17: Group 3: User-Driven and Preserved Flows Tests 14. User exact Search/autocomplete selection remains accessible
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+📄 getPlaceDetails: wkh_exact_id
+💾 Checking Firebase cache...
+🌐 Fetching from Google Places API...
+✅ Fetched & cached (0ms)
+00:00 +18: Group 3: User-Driven and Preserved Flows Tests 15. Landmark Recognition result remains unaffected
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +19: Group 3: User-Driven and Preserved Flows Tests 16. Existing saved itinerary places remain unaffected
+♻️ Google raw caches cleared for ALL locations
+♻️ NearbyPlacesService: cache cleared
+00:00 +20: All tests passed!

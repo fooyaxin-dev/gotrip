@@ -19,7 +19,7 @@ class UserActivityDataService {
   static final UserActivityDataService instance =
       UserActivityDataService._();
 
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  FirebaseFirestore get _db => FirebaseFirestore.instance;
   String? get _uid => FirebaseAuth.instance.currentUser?.uid;
 
   List<ActivityDoc>? _historyDocs;

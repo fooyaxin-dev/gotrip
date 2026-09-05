@@ -1,14 +1,12 @@
-import 'dart:async';
-import 'dart:ui'; 
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:get/get_navigation/src/root/get_material_app.dart';
 import 'modules/main/splashview.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_crashlytics/firebase_crashlytics.dart';   // 🆕
+import 'package:firebase_crashlytics/firebase_crashlytics.dart'; // 🆕
 import 'services/firebase_options.dart';
-import 'services/connectivity_service.dart';        // 🆕
-import 'modules/main/connectivity_banner.dart'; 
-
+import 'services/connectivity_service.dart'; // 🆕
+import 'modules/main/connectivity_banner.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,17 +28,14 @@ void main() async {
     return true;
   };
 
-   await ConnectivityService.instance.start();
+  ConnectivityService.instance.start();
 
   runApp(const GoTripApp());
-
-  PaintingBinding.instance.imageCache.maximumSize = 300;
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 150 << 20; // 150MB
 }
 
 class GoTripApp extends StatelessWidget {
   const GoTripApp({super.key});
-  
+
   get GoogleFonts => null;
 
   @override
@@ -51,11 +46,9 @@ class GoTripApp extends StatelessWidget {
         useMaterial3: true,
         scaffoldBackgroundColor: Color(0xFFF1F1F1),
       ),
-
       builder: (context, child) {
         return ConnectivityBanner(child: child!);
       },
-          
       home: Splashview(),
     );
   }

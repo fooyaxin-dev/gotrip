@@ -1,0 +1,168 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // Core Helper Functions
+    // =========================================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // =========================================================================
+    // User Profiles & Private Subcollections
+    // =========================================================================
+
+    match /users/{uid} {
+      // Authenticated users may read profiles (needed for author display across posts/feeds)
+      allow read: if isSignedIn();
+      allow create, update, delete: if isOwner(uid);
+
+      // Private User Subcollections: strictly owner-only
+      match /history/{document} {
+        allow read, write: if isOwner(uid);
+      }
+
+      match /itineraries/{document} {
+        allow read, write: if isOwner(uid);
+      }
+
+      match /favourites/{document} {
+        allow read, write: if isOwner(uid);
+      }
+
+      match /journalDays/{document} {
+        allow read, write: if isOwner(uid);
+      }
+
+      match /landmark_history/{document} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+
+    // =========================================================================
+    // Community Posts & Like Subcollections
+    // =========================================================================
+
+    match /posts/{postId} {
+      // Read allowed only for public posts or the post author
+      allow read: if isSignedIn() && (
+        resource.data.visibility == 'public' ||
+        request.auth.uid == resource.data.userId
+      );
+
+      // Create: author must match authenticated user with zeroed counters
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.likes == 0
+        && request.resource.data.comments == 0
+        && request.resource.data.shares == 0
+        && (request.resource.data.visibility in ['public', 'private', 'friends']);
+
+      // Update:
+      // Branch 1: Author editing content (cannot modify ownership, creation time, or counters)
+      // Branch 2: Non-author like/unlike atomic counter transition
+      allow update: if isSignedIn() && (
+        // Branch 1: Owner content edit
+        (
+          isOwner(resource.data.userId)
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.likes == resource.data.likes
+          && request.resource.data.comments == resource.data.comments
+          && request.resource.data.shares == resource.data.shares
+          && (request.resource.data.visibility in ['public', 'private', 'friends'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'title', 'content', 'visibility', 'tags',
+            'sentimentScore', 'sentimentLabel', 'sentimentMatchedTokens', 'sentimentAnalyzedAt'
+          ])
+        )
+        ||
+        // Branch 2: Strict atomic like/unlike transition
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes'])
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.visibility == resource.data.visibility
+          && request.resource.data.createdAt == resource.data.createdAt
+          && (
+            // Like: subcollection doc added in this transaction, likes incremented by 1
+            (
+              !exists(/databases/$(database)/documents/posts/$(postId)/likes/$(request.auth.uid))
+              && existsAfter(/databases/$(database)/documents/posts/$(postId)/likes/$(request.auth.uid))
+              && request.resource.data.likes == resource.data.likes + 1
+            )
+            ||
+            // Unlike: subcollection doc removed in this transaction, likes decremented by 1 (>= 0)
+            (
+              exists(/databases/$(database)/documents/posts/$(postId)/likes/$(request.auth.uid))
+              && !existsAfter(/databases/$(database)/documents/posts/$(postId)/likes/$(request.auth.uid))
+              && request.resource.data.likes == resource.data.likes - 1
+              && request.resource.data.likes >= 0
+            )
+          )
+        )
+      );
+
+      // Delete: author only
+      allow delete: if isOwner(resource.data.userId);
+
+      // Post Likes subcollection
+      match /likes/{likeUid} {
+        allow read: if isSignedIn();
+
+        // Must be created by matching authenticated UID and atomically increment parent post likes
+        allow create: if isOwner(likeUid)
+          && request.resource.data.userId == request.auth.uid
+          && getAfter(/databases/$(database)/documents/posts/$(postId)).data.likes == get(/databases/$(database)/documents/posts/$(postId)).data.likes + 1;
+
+        // Must be deleted by matching authenticated UID and atomically decrement parent post likes
+        allow delete: if isOwner(likeUid)
+          && getAfter(/databases/$(database)/documents/posts/$(postId)).data.likes == get(/databases/$(database)/documents/posts/$(postId)).data.likes - 1;
+      }
+    }
+
+    // =========================================================================
+    // Discovery Tags
+    // =========================================================================
+
+    match /tags/{tag} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['count'])
+        && request.resource.data.count == 1;
+      allow update: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['count'])
+        && request.resource.data.count == resource.data.count + 1;
+    }
+
+    // =========================================================================
+    // Shared Place & Metadata Caches (Client Populated)
+    // =========================================================================
+
+    match /place_details/{placeId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /geoapify_enrichment/{placeId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /geo_to_google_id/{document} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /wiki_landmarks/{document} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /place_photo_cache/{placeId} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}

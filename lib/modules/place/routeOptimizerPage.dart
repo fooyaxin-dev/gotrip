@@ -1,6 +1,7 @@
 //routeOptimizerPage.dart
 import 'dart:ui' as ui;
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -9,17 +10,17 @@ import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
-
 import '../../models/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
 import '../itinerary/itineraryDetail.dart';
 import '../../services/route_service.dart';
 import '../../models/placeModel.dart';
 import '../../services/placesAPI_service.dart';
-import 'placeDetailPage.dart';   // 跟 RealTimeDetectPage 用的是同一个相对路径，如果不在同一文件夹，按实际路径调整
-import '../../services/connectivity_service.dart';
+import 'placeDetailPage.dart';
 import '../../services/category_mapper.dart';
-
+import '../../services/error_handler.dart';
+import '../../services/flexible_route_optimizer.dart';
+import '../../services/opening_hours_evaluator.dart';
 
 class RouteOptimizerPage extends StatefulWidget {
   final ItineraryModel itinerary;
@@ -32,8 +33,9 @@ class RouteOptimizerPage extends StatefulWidget {
   // (pop back with the updated itinerary instead of pushReplacement-ing
   // a brand new ItineraryDetailPage on top of the one that's already there).
   final bool isEditingExisting;
-  final List<PlaceModel> leftoverCandidates;  
+  final List<PlaceModel> leftoverCandidates;
   final List<String> leftoverPlaceIds;
+  final bool preserveGeneratedSchedule;
 
   const RouteOptimizerPage({
     super.key,
@@ -45,6 +47,7 @@ class RouteOptimizerPage extends StatefulWidget {
     this.isEditingExisting = false,
     this.leftoverCandidates = const [],
     this.leftoverPlaceIds = const [],
+    this.preserveGeneratedSchedule = false,
   });
 
   @override
@@ -54,9 +57,9 @@ class RouteOptimizerPage extends StatefulWidget {
 class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   late ItineraryModel _itinerary;
   late List<PlaceModel> _leftovers;
-  List<String> _pendingLeftoverIds = [];   // 🆕 还没 hydrate 的 id
-  bool _isHydratingPool = false;           // 🆕
-  bool _poolHydrated = false;      
+  List<String> _pendingLeftoverIds = []; // 🆕 还没 hydrate 的 id
+  bool _isHydratingPool = false; // 🆕
+  bool _poolHydrated = false;
 
   // 0 = Overview, index i+1 = Day i
   int _selectedIndex = 0;
@@ -99,6 +102,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // Days currently fetching a real route matrix for Re-optimize
   final Set<int> _reOptimizingDays = {};
   bool _isReOptimizingAll = false;
+  bool _isInitialOptimizing = false;
+  bool _isAddingStop = false;
+  String? _addingCandidateId;
+  final Map<int, String> _dayRouteStatus = {};
+  final Map<int, List<String>> _dayWarnings = {};
 
   String _computeLegsSignature(int dayIndex) {
     final places = _itinerary.days[dayIndex].places;
@@ -123,31 +131,40 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
   double get _speedMps {
     switch (widget.travelMode) {
-      case TravelMode.walk:  return 1.4;
-      case TravelMode.motor: return 6.0;
-      case TravelMode.drive: return 12.0;
+      case TravelMode.walk:
+        return 1.4;
+      case TravelMode.motor:
+        return 6.0;
+      case TravelMode.drive:
+        return 12.0;
     }
   }
 
   IconData get _travelIcon {
     switch (widget.travelMode) {
-      case TravelMode.walk:  return Icons.directions_walk_rounded;
-      case TravelMode.motor: return Icons.motorcycle_rounded;
-      case TravelMode.drive: return Icons.directions_car_rounded;
+      case TravelMode.walk:
+        return Icons.directions_walk_rounded;
+      case TravelMode.motor:
+        return Icons.motorcycle_rounded;
+      case TravelMode.drive:
+        return Icons.directions_car_rounded;
     }
   }
 
   String get _travelLabel {
     switch (widget.travelMode) {
-      case TravelMode.walk:  return 'walk';
-      case TravelMode.motor: return 'ride';
-      case TravelMode.drive: return 'drive';
+      case TravelMode.walk:
+        return 'walk';
+      case TravelMode.motor:
+        return 'ride';
+      case TravelMode.drive:
+        return 'drive';
     }
   }
 
   double get _minSheetSize {
     final screenHeight = MediaQuery.of(context).size.height;
-    final bottomInset  = MediaQuery.of(context).padding.bottom;
+    final bottomInset = MediaQuery.of(context).padding.bottom;
     // Handle + trip header + day tabs + spacing/divider + bottom action bar.
     // Keep all fixed controls inside the sheet even on shorter Android screens.
     const fixedChromeHeight = 24.0 + 66.0 + 62.0 + 9.0 + 1.0 + 76.0;
@@ -155,15 +172,13 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   }
 
   bool _isDayLocked(int dayIndex) {
-    if (dayIndex < 0 ||
-        dayIndex >= _itinerary.days.length) {
+    if (dayIndex < 0 || dayIndex >= _itinerary.days.length) {
       return true;
     }
 
     final day = _itinerary.days[dayIndex];
 
-    return _itinerary.isCompleted ||
-        (day.totalCount > 0 && day.isCompleted);
+    return _itinerary.isCompleted || (day.totalCount > 0 && day.isCompleted);
   }
 
   bool _isDayStarted(int dayIndex) {
@@ -188,33 +203,59 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     return -1;
   }
 
-
   // ─────────────────────────────────────────────
   // Lifecycle
   // ─────────────────────────────────────────────
 
   @override
-    void initState() {
-      super.initState();
-      _itinerary = widget.itinerary;
-      _leftovers = List.from(widget.leftoverCandidates);
-
-      // 🆕 Generate 流程直接带完整 PlaceModel，不需要 hydrate；
-      // Edit 已存档行程时只有 id，标记成"待 hydrate"，等用户真的点开
-      // More Places tab 才去补全，而不是一进页面就打一堆 API
-      if (widget.leftoverCandidates.isEmpty && widget.leftoverPlaceIds.isNotEmpty) {
-        _pendingLeftoverIds = List.from(widget.leftoverPlaceIds);
-        _poolHydrated = false;
-      } else {
-        _poolHydrated = true;
-      }
-
-      _updateMapOverlays();
-
-      if (!widget.isEditingExisting && _itinerary.id.isEmpty) {
-        _autoOptimizeAllDays();
+  void initState() {
+    super.initState();
+    debugPrint(
+        '[ITIN_TRACE][OPT_INPUT] startLat=${widget.startLat} startLng=${widget.startLng} startLocationName=${widget.startLocationName} travelMode=${widget.travelMode.name} dayCount=${widget.itinerary.days.length}');
+    for (int d = 0; d < widget.itinerary.days.length; d++) {
+      for (int s = 0; s < widget.itinerary.days[d].places.length; s++) {
+        final p = widget.itinerary.days[d].places[s];
+        debugPrint(
+            '[ITIN_TRACE][OPT_INPUT] day=$d stop=$s placeId=${p.placeId} name=${p.name} lat=${p.lat} lng=${p.lng}');
+        debugPrint(
+            '[ROUTE_TRACE][ORIGINAL_ORDER] day=$d index=$s displayNumber=${s + 1} placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng} suggestedTime=${p.suggestedTime}');
       }
     }
+    _itinerary = widget.itinerary;
+    final mergedLeftovers = <PlaceModel>[];
+    final loadedIds = <String>{};
+
+    for (final p in widget.leftoverCandidates) {
+      if (p.id.isNotEmpty && loadedIds.add(p.id)) {
+        mergedLeftovers.add(p);
+      }
+    }
+    for (final p in widget.itinerary.leftoverPlaces) {
+      if (p.id.isNotEmpty && loadedIds.add(p.id)) {
+        mergedLeftovers.add(p);
+      }
+    }
+
+    final allSourceIds = <String>{
+      ...widget.leftoverPlaceIds,
+      ...widget.itinerary.leftoverPlaceIds,
+    };
+
+    final pending = allSourceIds
+        .where((id) => id.isNotEmpty && !loadedIds.contains(id))
+        .toList();
+
+    _leftovers = mergedLeftovers;
+    _pendingLeftoverIds = pending;
+    _poolHydrated = pending.isEmpty;
+
+    _updateMapOverlays();
+
+    if (!widget.isEditingExisting && !widget.preserveGeneratedSchedule) {
+      _isInitialOptimizing = true;
+      _autoOptimizeAllDays();
+    }
+  }
 
   Future<void> _autoOptimizeAllDays() async {
     _improveCrossDayAssignments();
@@ -223,6 +264,12 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       if (_itinerary.days[d].places.length >= 2) {
         await _reOptimizeDay(d);
       }
+    }
+    if (mounted) {
+      setState(() {
+        _isInitialOptimizing = false;
+      });
+      _updateMapOverlays();
     }
   }
 
@@ -250,10 +297,12 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         .toList();
     var changed = false;
 
-    bool isRestaurant(ItineraryPlace place) => CategoryMapper.isRestaurant(
-          place.primaryType,
-          const <String>[],
-        );
+    bool isRestaurant(ItineraryPlace place) =>
+        PlaceRoleClassifier.classify(
+          primaryType: place.primaryType,
+          allTypes: place.allTypes,
+        ) ==
+        PlaceRole.fullMeal;
 
     for (int pass = 0; pass < 60; pass++) {
       double bestSaving = 0;
@@ -328,9 +377,42 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     try {
       _improveCrossDayAssignments();
       if (mounted) setState(() {});
+      final failedDays = <OptimizationFailureInfo>[];
+      int optimizedCount = 0;
+
       for (int day = 0; day < _itinerary.days.length; day++) {
         if (!mounted) return;
-        await _reOptimizeDay(day);
+        if (_itinerary.days[day].places.length >= 2) {
+          final failure = await _reOptimizeDay(day, showFeedback: false);
+          if (failure != null) {
+            failedDays.add(failure);
+          } else {
+            optimizedCount++;
+          }
+        }
+      }
+
+      if (!mounted) return;
+
+      if (failedDays.isEmpty) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('All ${_itinerary.days.length} days optimized.'),
+            duration: const Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+            backgroundColor: const Color(0xFF1A1A2E),
+          ),
+        );
+      } else {
+        _showOptimizationFeedbackSheet(
+          failedDays,
+          totalDays: _itinerary.days.length,
+          successfulDays: optimizedCount,
+        );
       }
     } finally {
       if (mounted) setState(() => _isReOptimizingAll = false);
@@ -342,14 +424,14 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     _mapController?.dispose();
     _sheetController.dispose();
     _sheetExtentNotifier.dispose();
-    _mapOverlayNotifier.dispose();   
+    _mapOverlayNotifier.dispose();
     for (final notifier in _legsNotifiers.values) {
       notifier.dispose();
     }
     _paddingDebounce?.cancel();
     for (final t in _legsFetchDebounce.values) {
       t.cancel();
-    } 
+    }
     super.dispose();
   }
 
@@ -397,36 +479,37 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     final fallback = _computeStraightLegsForDay(dayIndex);
     notifier.value = fallback;
-    _scheduleFetchRealLegs(dayIndex); 
+    _scheduleFetchRealLegs(dayIndex);
     return fallback;
   }
 
   _DayLegs _computeStraightLegsForDay(int dayIndex) {
     final places = _itinerary.days[dayIndex].places;
-    final legs    = <double>[];
+    final legs = <double>[];
     final legMins = <int>[];
     double totalM = 0;
 
-    double prevLat;
-    double prevLng;
-    if (dayIndex == 0) {
-      prevLat = widget.startLat;
-      prevLng = widget.startLng;
-    } else if (places.isNotEmpty) {
-      prevLat = places.first.lat ?? widget.startLat;
-      prevLng = places.first.lng ?? widget.startLng;
-    } else {
-      prevLat = widget.startLat;
-      prevLng = widget.startLng;
-    }
+    final hasOrigin = widget.startLat != 0 &&
+        widget.startLng != 0 &&
+        widget.startLat.isFinite &&
+        widget.startLng.isFinite;
+
+    double prevLat = hasOrigin
+        ? widget.startLat
+        : (places.isNotEmpty
+            ? (places.first.lat ?? widget.startLat)
+            : widget.startLat);
+    double prevLng = hasOrigin
+        ? widget.startLng
+        : (places.isNotEmpty
+            ? (places.first.lng ?? widget.startLng)
+            : widget.startLng);
 
     for (int i = 0; i < places.length; i++) {
       final place = places[i];
       final lat = place.lat ?? prevLat;
       final lng = place.lng ?? prevLng;
-      // Day > 0 has no known real-world starting point, so its first
-      // leg contributes 0 distance instead of a misleading jump.
-      final d = (dayIndex > 0 && i == 0)
+      final d = (!hasOrigin && i == 0)
           ? 0.0
           : Geolocator.distanceBetween(prevLat, prevLng, lat, lng);
       legs.add(d);
@@ -438,11 +521,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     return _DayLegs(
       distances: legs,
-      minutes:   legMins,
-      segments:  const [],
-      totalKm:   totalM / 1000,
-      totalMin:  legMins.fold(0, (a, b) => a + b),
-      isReal:    false,
+      minutes: legMins,
+      segments: const [],
+      totalKm: totalM / 1000,
+      totalMin: legMins.fold(0, (a, b) => a + b),
+      isReal: false,
     );
   }
 
@@ -453,67 +536,124 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     final places = _itinerary.days[dayIndex].places;
     if (places.isEmpty) return;
 
-    // Build the (from → to) pairs for every leg of this day first, so
-    // all the Routes API calls can fire in parallel instead of one by one.
+    final hasOrigin = widget.startLat != 0 &&
+        widget.startLng != 0 &&
+        widget.startLat.isFinite &&
+        widget.startLng.isFinite;
+
     final pairs = <_LegPair>[];
-    double prevLat = dayIndex == 0
+    double prevLat = hasOrigin
         ? widget.startLat
-        : (places.first.lat ?? widget.startLat);
-    double prevLng = dayIndex == 0
+        : (places.isNotEmpty
+            ? (places.first.lat ?? widget.startLat)
+            : widget.startLat);
+    double prevLng = hasOrigin
         ? widget.startLng
-        : (places.first.lng ?? widget.startLng);
+        : (places.isNotEmpty
+            ? (places.first.lng ?? widget.startLng)
+            : widget.startLng);
 
     for (int i = 0; i < places.length; i++) {
       final lat = places[i].lat ?? prevLat;
       final lng = places[i].lng ?? prevLng;
-      // Day > 0 has no known real-world starting point for its first leg.
-      final skip = dayIndex > 0 && i == 0;
+      final skip = !hasOrigin && i == 0;
       pairs.add(_LegPair(
-          fromLat: prevLat, fromLng: prevLng,
-          toLat: lat, toLng: lng, skip: skip));
+          fromLat: prevLat,
+          fromLng: prevLng,
+          toLat: lat,
+          toLng: lng,
+          skip: skip));
       prevLat = lat;
       prevLng = lng;
     }
 
+    debugPrint(
+        '[ROUTE_TRACE][OPTIMIZATION_CONFIG] optimizeWaypointOrder=false travelMode=${widget.travelMode.name}');
+    if (hasOrigin) {
+      debugPrint(
+          '[ROUTE_TRACE][API_INPUT] day=$dayIndex originLat=${widget.startLat} originLng=${widget.startLng} travelMode=${widget.travelMode.name} inputIndex=0 placeId=ORIGIN name="${widget.startLocationName ?? "Origin"}" lat=${widget.startLat} lng=${widget.startLng} pointType=origin');
+    }
+    for (int i = 0; i < places.length; i++) {
+      final p = places[i];
+      final inputIdx = hasOrigin ? i + 1 : i;
+      final pointType = i == places.length - 1
+          ? 'destination'
+          : (!hasOrigin && i == 0 ? 'origin' : 'waypoint');
+      debugPrint(
+          '[ROUTE_TRACE][API_INPUT] day=$dayIndex originLat=${widget.startLat} originLng=${widget.startLng} travelMode=${widget.travelMode.name} inputIndex=$inputIdx placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng} pointType=$pointType');
+    }
+    debugPrint(
+        '[ROUTE_TRACE][API_RETURNED_ORDER] optimizedIndices=NONE routePreservesInputOrder=true');
+
     final results = await Future.wait(pairs.map((p) async {
-      if (p.skip) return const _LegResult(distance: 0, minutes: 0, points: []);
+      if (p.skip) {
+        debugPrint(
+            '[ITIN_TRACE][ROAD_LEG] day=$dayIndex from=(${p.fromLat},${p.fromLng}) to=(${p.toLat},${p.toLng}) travelMode=${widget.travelMode.name} roadDistanceMeters=0 roadDurationSec=0 calculationSource="skipped_day_start"');
+        return const _LegResult(distance: 0, minutes: 0, points: []);
+      }
       try {
         final summary = await RouteService.instance.fetchRouteSummary(
-          fromLat: p.fromLat, fromLng: p.fromLng,
-          toLat:   p.toLat,   toLng:   p.toLng,
-          mode:    widget.travelMode,
+          fromLat: p.fromLat,
+          fromLng: p.fromLng,
+          toLat: p.toLat,
+          toLng: p.toLng,
+          mode: widget.travelMode,
         );
+        debugPrint(
+            '[ITIN_TRACE][ROAD_LEG] day=$dayIndex from=(${p.fromLat},${p.fromLng}) to=(${p.toLat},${p.toLng}) travelMode=${widget.travelMode.name} roadDistanceMeters=${summary.distanceMeters} roadDurationSec=${summary.durationSeconds} calculationSource="google_routes_api"');
         return _LegResult(
           distance: summary.distanceMeters,
-          minutes:  (summary.durationSeconds / 60).round(),
-          points:   summary.polylinePoints,
+          minutes: (summary.durationSeconds / 60).round(),
+          points: summary.polylinePoints,
+          isVerified: true,
         );
       } catch (_) {
         // Per-leg fallback — one failed leg shouldn't blank out the rest.
-        final straight = Geolocator.distanceBetween(
-            p.fromLat, p.fromLng, p.toLat, p.toLng);
+        final straight =
+            Geolocator.distanceBetween(p.fromLat, p.fromLng, p.toLat, p.toLng);
+        debugPrint(
+            '[ITIN_TRACE][ROAD_LEG] day=$dayIndex from=(${p.fromLat},${p.fromLng}) to=(${p.toLat},${p.toLng}) travelMode=${widget.travelMode.name} roadDistanceMeters=$straight roadDurationSec=${(straight / _speedMps).round()} calculationSource="geolocator_straight_line_fallback"');
         return _LegResult(
           distance: straight,
-          minutes:  (straight / _speedMps / 60).round(),
-          points:   [LatLng(p.fromLat, p.fromLng), LatLng(p.toLat, p.toLng)],
+          minutes: (straight / _speedMps / 60).round(),
+          points: [LatLng(p.fromLat, p.fromLng), LatLng(p.toLat, p.toLng)],
+          isVerified: false,
         );
       }
     }));
 
     if (!mounted || _legsFetchGen[dayIndex] != myGen) return; // superseded
 
+    for (int i = 0; i < results.length; i++) {
+      final p = places[i];
+      final fromPlaceId = (hasOrigin && i == 0)
+          ? 'ORIGIN'
+          : (i > 0 ? places[i - 1].placeId : places.first.placeId);
+      final fromName = (hasOrigin && i == 0)
+          ? (widget.startLocationName ?? 'Origin')
+          : (i > 0 ? places[i - 1].name : places.first.name);
+      final r = results[i];
+      final legStatus =
+          pairs[i].skip ? 'skipped' : (r.isVerified ? 'valid' : 'unverified');
+      debugPrint(
+          '[ROUTE_TRACE][LEG] day=$dayIndex legIndex=$i fromPlaceId=$fromPlaceId fromName="$fromName" toPlaceId=${p.placeId} toName="${p.name}" distanceMeters=${r.distance} durationSeconds=${r.minutes * 60} legStatus=$legStatus');
+    }
+
     final distances = results.map((r) => r.distance).toList();
-    final minutes   = results.map((r) => r.minutes).toList();
-    final segments  = results.map((r) => r.points).toList();
-    final totalM    = distances.fold<double>(0, (a, b) => a + b);
+    final minutes = results.map((r) => r.minutes).toList();
+    final segments = results.map((r) => r.points).toList();
+    final totalM = distances.fold<double>(0, (a, b) => a + b);
+
+    debugPrint(
+        '[ITIN_TRACE][ROAD_TOTAL] day=$dayIndex totalRoadDistanceMeters=$totalM totalDisplayedKm=${(totalM / 1000).toStringAsFixed(2)}');
 
     final newLegs = _DayLegs(
       distances: distances,
-      minutes:   minutes,
-      segments:  segments,
-      totalKm:   totalM / 1000,
-      totalMin:  minutes.fold(0, (a, b) => a + b),
-      isReal:    true,
+      minutes: minutes,
+      segments: segments,
+      totalKm: totalM / 1000,
+      totalMin: minutes.fold(0, (a, b) => a + b),
+      isReal: true,
     );
 
     // 🔧 CHANGED: 不再用 setState —— 只更新这一天的 legs notifier，
@@ -541,7 +681,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     days[dayIndex] = days[dayIndex].copyWith(clearLegs: true);
     _itinerary = _itinerary.copyWith(days: days);
   }
-  
+
   // ─────────────────────────────────────────────
   // Map overlays
   // ─────────────────────────────────────────────
@@ -556,9 +696,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   }
 
   Future<void> _updateOverviewOverlays() async {
-    final newMarkers   = <Marker>{};
+    debugPrint(
+        '[ITIN_TRACE][MAP_ORIGIN] blueMarkerLat=${widget.startLat} blueMarkerLng=${widget.startLng} label=${widget.startLocationName}');
+    final newMarkers = <Marker>{};
     final newPolylines = <Polyline>{};
-    final allPoints    = <LatLng>[LatLng(widget.startLat, widget.startLng)];
+    final allPoints = <LatLng>[LatLng(widget.startLat, widget.startLng)];
 
     newMarkers.add(Marker(
       markerId: const MarkerId('__start__'),
@@ -568,15 +710,22 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           InfoWindow(title: widget.startLocationName ?? 'Your Location'),
     ));
 
+    final hasOrigin = widget.startLat != 0 &&
+        widget.startLng != 0 &&
+        widget.startLat.isFinite &&
+        widget.startLng.isFinite;
+
     for (int d = 0; d < _itinerary.days.length; d++) {
       final color = _dayColors[d % _dayColors.length];
       final places = _itinerary.days[d].places;
       final dayPoints = <LatLng>[]; // marker points — used for camera fit only
-      if (d == 0) dayPoints.add(LatLng(widget.startLat, widget.startLng));
+      if (hasOrigin) dayPoints.add(LatLng(widget.startLat, widget.startLng));
 
       for (int i = 0; i < places.length; i++) {
         final p = places[i];
         if (p.lat == null || p.lng == null) continue;
+        debugPrint(
+            '[ROUTE_TRACE][MARKER_ORDER] day=$d markerNumber=${i + 1} sourceListIndex=$i placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng}');
         final icon = await _buildNumberedPin(i + 1, color);
         newMarkers.add(Marker(
           markerId: MarkerId('d${d}_s$i'),
@@ -590,6 +739,14 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
       final legs = _legsFor(d);
       final routePoints = <LatLng>[];
+      final polySource =
+          legs.isReal ? 'reconstructed_legs' : 'straight_line_fallback';
+      debugPrint('[ROUTE_TRACE][POLYLINE_SOURCE] day=$d source=$polySource');
+      for (int i = 0; i < places.length; i++) {
+        final p = places[i];
+        debugPrint(
+            '[ROUTE_TRACE][POLYLINE_ORDER] day=$d position=$i placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng}');
+      }
       if (legs.isReal) {
         for (final seg in legs.segments) {
           routePoints.addAll(seg);
@@ -614,17 +771,22 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     if (!mounted) return;
     _mapOverlayNotifier.value =
         _MapOverlayData(markers: newMarkers, polylines: newPolylines);
-    _fitCamera(allPoints);   // _updateDayOverlays 里保持 _fitCamera(points)
+    _fitCamera(allPoints); // _updateDayOverlays 里保持 _fitCamera(points)
   }
 
   Future<void> _updateDayOverlays(int dayIndex) async {
-    final newMarkers   = <Marker>{};
+    final newMarkers = <Marker>{};
     final newPolylines = <Polyline>{};
     final places = _itinerary.days[dayIndex].places;
-    final color  = _dayColors[dayIndex % _dayColors.length];
+    final color = _dayColors[dayIndex % _dayColors.length];
     final points = <LatLng>[];
 
-    if (dayIndex == 0) {
+    final hasOrigin = widget.startLat != 0 &&
+        widget.startLng != 0 &&
+        widget.startLat.isFinite &&
+        widget.startLng.isFinite;
+
+    if (hasOrigin) {
       newMarkers.add(Marker(
         markerId: const MarkerId('__start__'),
         position: LatLng(widget.startLat, widget.startLng),
@@ -638,8 +800,10 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     for (int i = 0; i < places.length; i++) {
       final p = places[i];
       if (p.lat == null || p.lng == null) continue;
-      final icon = await _buildNumberedPin(
-          i + 1, _stopColor(i, places.length, color));
+      debugPrint(
+          '[ROUTE_TRACE][MARKER_ORDER] day=$dayIndex markerNumber=${i + 1} sourceListIndex=$i placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng}');
+      final icon =
+          await _buildNumberedPin(i + 1, _stopColor(i, places.length, color));
       newMarkers.add(Marker(
         markerId: MarkerId('stop_$i'),
         position: LatLng(p.lat!, p.lng!),
@@ -651,6 +815,15 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     final legs = _legsFor(dayIndex);
     final routePoints = <LatLng>[];
+    final polySource =
+        legs.isReal ? 'reconstructed_legs' : 'straight_line_fallback';
+    debugPrint(
+        '[ROUTE_TRACE][POLYLINE_SOURCE] day=$dayIndex source=$polySource');
+    for (int i = 0; i < places.length; i++) {
+      final p = places[i];
+      debugPrint(
+          '[ROUTE_TRACE][POLYLINE_ORDER] day=$dayIndex position=$i placeId=${p.placeId} name="${p.name}" lat=${p.lat} lng=${p.lng}');
+    }
     if (legs.isReal) {
       for (final seg in legs.segments) {
         routePoints.addAll(seg);
@@ -659,35 +832,56 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       routePoints.addAll(points); // straight-line fallback while loading
     }
 
+    final originalPlaces = widget.itinerary.days.length > dayIndex
+        ? widget.itinerary.days[dayIndex].places
+        : <ItineraryPlace>[];
+    final originalIds = originalPlaces.map((p) => p.placeId).toList();
+    final currentIds = places.map((p) => p.placeId).toList();
+    final markerIds = places
+        .where((p) => p.lat != null && p.lng != null)
+        .map((p) => p.placeId)
+        .toList();
+    final cardIds = List<String>.from(currentIds);
+
+    debugPrint(
+        '[ROUTE_TRACE][ORDER_SUMMARY] day=$dayIndex originalIds=$originalIds apiInputIds=$currentIds apiReturnedIds=$currentIds markerIds=$markerIds cardIds=$cardIds');
+
+    final apiMatchesOriginal = originalIds.join(',') == currentIds.join(',');
+    final markerMatchesApi = markerIds.join(',') == currentIds.join(',');
+    final cardsMatchApi = cardIds.join(',') == currentIds.join(',');
+    final markersMatchCards = markerIds.join(',') == cardIds.join(',');
+
+    debugPrint(
+        '[ROUTE_TRACE][ORDER_CHECK] day=$dayIndex apiMatchesOriginal=$apiMatchesOriginal markerMatchesApi=$markerMatchesApi cardsMatchApi=$cardsMatchApi markersMatchCards=$markersMatchCards');
+
     if (routePoints.length >= 2) {
       newPolylines.add(Polyline(
         polylineId: const PolylineId('route'),
         points: routePoints,
         color: color,
         width: 3,
-        patterns: legs.isReal
-            ? const []
-            : [PatternItem.dash(16), PatternItem.gap(8)],
+        patterns:
+            legs.isReal ? const [] : [PatternItem.dash(16), PatternItem.gap(8)],
       ));
     }
 
-      if (!mounted) return;                                    // 🔧 加回来
-      _mapOverlayNotifier.value =                               // 🔧 加回来
-          _MapOverlayData(markers: newMarkers, polylines: newPolylines);
-      _fitCamera(points);  
-      }
+    if (!mounted) return; // 🔧 加回来
+    _mapOverlayNotifier.value = // 🔧 加回来
+        _MapOverlayData(markers: newMarkers, polylines: newPolylines);
+    _fitCamera(points);
+  }
 
   void _fitCamera(List<LatLng> points) {
     if (_mapController == null || points.isEmpty) return;
     if (points.length == 1) {
-      _mapController!.animateCamera(
-          CameraUpdate.newLatLngZoom(points.first, 15));
+      _mapController!
+          .animateCamera(CameraUpdate.newLatLngZoom(points.first, 15));
       return;
     }
     double minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
     for (final p in points) {
-      if (p.latitude  < minLat) minLat = p.latitude;
-      if (p.latitude  > maxLat) maxLat = p.latitude;
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
       if (p.longitude < minLng) minLng = p.longitude;
       if (p.longitude > maxLng) maxLng = p.longitude;
     }
@@ -695,14 +889,15 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       LatLngBounds(
         southwest: LatLng(minLat, minLng),
         northeast: LatLng(maxLat, maxLng),
-      ), 60,
+      ),
+      60,
     ));
   }
 
   Future<BitmapDescriptor> _buildNumberedPin(int number, Color color) async {
     const size = 48.0;
     final recorder = ui.PictureRecorder();
-    final canvas   = Canvas(recorder);
+    final canvas = Canvas(recorder);
     canvas.drawCircle(
       const Offset(size / 2 + 1, size / 2 + 2),
       size / 2 - 4,
@@ -710,10 +905,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         ..color = Colors.black.withOpacity(0.25)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
     );
-    canvas.drawCircle(const Offset(size / 2, size / 2), size / 2 - 4,
-        Paint()..color = color);
     canvas.drawCircle(
-      const Offset(size / 2, size / 2), size / 2 - 4,
+        const Offset(size / 2, size / 2), size / 2 - 4, Paint()..color = color);
+    canvas.drawCircle(
+      const Offset(size / 2, size / 2),
+      size / 2 - 4,
       Paint()
         ..color = Colors.white
         ..style = PaintingStyle.stroke
@@ -728,8 +924,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       textDirection: ui.TextDirection.ltr,
     )..layout();
     tp.paint(canvas, Offset((size - tp.width) / 2, (size - tp.height) / 2));
-    final img  = await recorder.endRecording()
-        .toImage(size.toInt(), size.toInt());
+    final img =
+        await recorder.endRecording().toImage(size.toInt(), size.toInt());
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
     return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
   }
@@ -749,9 +945,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     _updateMapOverlays();
 
-    if (index == _poolTabIndex &&
-        !_poolHydrated &&
-        !_isHydratingPool) {
+    if (index == _poolTabIndex && !_poolHydrated && !_isHydratingPool) {
       _hydrateLeftoverPool();
     }
   }
@@ -759,8 +953,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   // 🆕 把 _pendingLeftoverIds 逐个补全成 PlaceModel。
   // 单个 id 失败（place 下架/无效）不影响其他的，直接跳过。
   Future<void> _hydrateLeftoverPool() async {
-    if (_pendingLeftoverIds.isEmpty) {
-      if (mounted) {
+    if (_isHydratingPool || _pendingLeftoverIds.isEmpty) {
+      if (mounted && _pendingLeftoverIds.isEmpty) {
         setState(() {
           _poolHydrated = true;
           _isHydratingPool = false;
@@ -777,63 +971,61 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     // Work from a snapshot so the source list cannot
     // change while the async requests are running.
-    final idsToHydrate =
-        List<String>.from(_pendingLeftoverIds);
+    final idsToHydrate = List<String>.from(_pendingLeftoverIds);
+    const batchSize = 3;
 
-    final successfulPlaces = <PlaceModel>[];
-    final failedIds = <String>[];
+    for (int i = 0; i < idsToHydrate.length; i += batchSize) {
+      if (!mounted) break;
+      final batch = idsToHydrate.sublist(
+        i,
+        math.min(i + batchSize, idsToHydrate.length),
+      );
 
-    await Future.wait(
-      idsToHydrate.map((id) async {
-        try {
-          final place =
-              await PlacesApiService.getPlaceModelDetails(
-            id,
-          );
+      final batchSuccesses = <PlaceModel>[];
 
-          successfulPlaces.add(place);
-        } catch (e) {
-          // IMPORTANT:
-          // A temporary API/network/cache failure must NOT
-          // permanently remove this candidate from the pool.
-          failedIds.add(id);
+      await Future.wait(
+        batch.map((id) async {
+          try {
+            final place = await PlacesApiService.getPlaceModelDetails(
+              id,
+            );
 
-          debugPrint(
-            '⚠️ Failed to hydrate leftover place '
-            '$id: $e',
-          );
+            batchSuccesses.add(place);
+          } catch (e) {
+            // A temporary API/network/cache failure must NOT
+            // permanently remove this candidate from the pool.
+            debugPrint(
+              '⚠️ Failed to hydrate leftover place '
+              '$id: $e',
+            );
+          }
+        }),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        final existingIds = _leftovers.map((p) => p.id).toSet();
+        for (final place in batchSuccesses) {
+          if (existingIds.add(place.id)) {
+            _leftovers.add(place);
+          }
+          _pendingLeftoverIds.remove(place.id);
         }
-      }),
-    );
+      });
+    }
 
     if (!mounted) return;
 
     setState(() {
-      // Add successful candidates without duplicates.
-      final existingIds =
-          _leftovers.map((p) => p.id).toSet();
-
-      for (final place in successfulPlaces) {
-        if (existingIds.add(place.id)) {
-          _leftovers.add(place);
-        }
-      }
-
-      // Keep ONLY failed IDs pending.
-      //
-      // They remain stored and can be retried later.
-      _pendingLeftoverIds = failedIds;
-
       _isHydratingPool = false;
-
-      // Fully hydrated only when nothing remains unresolved.
       _poolHydrated = _pendingLeftoverIds.isEmpty;
     });
 
     debugPrint(
-      '✅ Leftover hydration: '
-      '${successfulPlaces.length} loaded, '
-      '${failedIds.length} pending retry',
+      '✅ Leftover hydration finished: '
+      '${_leftovers.length} total loaded, '
+      '${_pendingLeftoverIds.length} pending retry',
     );
   }
 
@@ -864,32 +1056,27 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     // Future stops may be reordered, but never across the visited history.
     if (newIndex <= _lastVisitedIndex(dayIndex)) return;
 
-    final days =
-        List<ItineraryDay>.from(
+    final days = List<ItineraryDay>.from(
       _itinerary.days,
     );
 
-    final places =
-        List<ItineraryPlace>.from(
+    final places = List<ItineraryPlace>.from(
       days[dayIndex].places,
     );
 
-    final item =
-        places.removeAt(oldIndex);
+    final item = places.removeAt(oldIndex);
 
     places.insert(
       newIndex,
       item,
     );
 
-    days[dayIndex] =
-        days[dayIndex].copyWith(
+    days[dayIndex] = days[dayIndex].copyWith(
       places: places,
     );
 
     setState(() {
-      _itinerary =
-          _itinerary.copyWith(
+      _itinerary = _itinerary.copyWith(
         days: days,
       );
     });
@@ -899,25 +1086,73 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
   }
 
   void _removePlace(int dayIndex, int placeIndex) {
-
     if (_isPlaceLocked(dayIndex, placeIndex)) {
       return;
     }
 
-    final days   = List<ItineraryDay>.from(_itinerary.days);
-    final places = List<ItineraryPlace>.from(days[dayIndex].places);
-    final removed = places[placeIndex];
+    final currentPlaces = _itinerary.days[dayIndex].places;
+    if (placeIndex < 0 || placeIndex >= currentPlaces.length) return;
+    final removed = currentPlaces[placeIndex];
+
+    final removedRole = PlaceRoleClassifier.classify(
+      primaryType: removed.primaryType,
+      allTypes: removed.allTypes,
+    );
+
+    if (removedRole == PlaceRole.fullMeal) {
+      final remainingPlaces = List<ItineraryPlace>.from(currentPlaces)
+        ..removeAt(placeIndex);
+      final hasNonMeal = remainingPlaces.any((p) =>
+          PlaceRoleClassifier.classify(
+            primaryType: p.primaryType,
+            allTypes: p.allTypes,
+          ) ==
+          PlaceRole.nonMeal);
+      final hasRemainingFullMeal = remainingPlaces.any((p) =>
+          PlaceRoleClassifier.classify(
+            primaryType: p.primaryType,
+            allTypes: p.allTypes,
+          ) ==
+          PlaceRole.fullMeal);
+
+      if (hasNonMeal && !hasRemainingFullMeal) {
+        debugPrint(
+          '[ITIN_REMOVE_STOP][RESULT] day=$dayIndex placeId=${removed.placeId} status=rejected reason=required_full_meal',
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                "This is the day's only meal stop. Add or swap another restaurant first.",
+                style: TextStyle(fontSize: 13),
+              ),
+              duration: const Duration(seconds: 4),
+              behavior: SnackBarBehavior.floating,
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              backgroundColor: const Color(0xFF1A1A2E),
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    final days = List<ItineraryDay>.from(_itinerary.days);
+    final places = List<ItineraryPlace>.from(currentPlaces);
     places.removeAt(placeIndex);
     days[dayIndex] = days[dayIndex].copyWith(places: places);
 
     setState(() {
-      _lastDeletedPlace      = removed;
-      _lastDeletedDayIndex   = dayIndex;
+      _lastDeletedPlace = removed;
+      _lastDeletedDayIndex = dayIndex;
       _lastDeletedPlaceIndex = placeIndex;
-      _itinerary = _itinerary.copyWith(days: days);
 
-      // 🆕 删除后放回候补池,跟 swap 的逻辑保持一致
-      if (removed.lat != null && removed.lng != null &&
+      // Return removed place to leftovers with complete snapshot preserved
+      if (removed.lat != null &&
+          removed.lng != null &&
           !_leftovers.any((p) => p.id == removed.placeId)) {
         _leftovers.add(PlaceModel(
           id: removed.placeId,
@@ -928,12 +1163,30 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           photoUrl: removed.photoUrl,
           source: 'google',
           primaryType: removed.primaryType,
-          allTypes: removed.primaryType != null ? [removed.primaryType!] : const [],
+          allTypes: removed.allTypes.isNotEmpty
+              ? removed.allTypes
+              : (removed.primaryType != null
+                  ? [removed.primaryType!]
+                  : const []),
+          regularOpeningPeriods: removed.regularOpeningPeriods,
         ));
       }
+
+      _itinerary = _itinerary.copyWith(
+        days: days,
+        leftoverPlaces: _leftovers,
+      );
     });
+
+    debugPrint(
+      '[ITIN_REMOVE_STOP] day=$dayIndex placeId=${removed.placeId} returnedToLeftovers=true newStopCount=${places.length}',
+    );
+
     _invalidateLegs(dayIndex);
     _updateMapOverlays();
+    if (places.length >= 2) {
+      _reOptimizeDay(dayIndex);
+    }
 
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -948,12 +1201,13 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
               onTap: () => ScaffoldMessenger.of(context).hideCurrentSnackBar(),
               child: const Padding(
                 padding: EdgeInsets.only(left: 8),
-                child: Icon(Icons.close_rounded, size: 16, color: Colors.white70),
+                child:
+                    Icon(Icons.close_rounded, size: 16, color: Colors.white70),
               ),
             ),
           ],
         ),
-        duration: const Duration(seconds: 5),   // 🔧 3 → 5
+        duration: const Duration(seconds: 5),
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -972,11 +1226,11 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
         _lastDeletedDayIndex == null ||
         _lastDeletedPlaceIndex == null) return;
 
-    final dayIndex   = _lastDeletedDayIndex!;
+    final dayIndex = _lastDeletedDayIndex!;
     final placeIndex = _lastDeletedPlaceIndex!;
-    final place      = _lastDeletedPlace!;
+    final place = _lastDeletedPlace!;
 
-    final days   = List<ItineraryDay>.from(_itinerary.days);
+    final days = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
     places.insert(placeIndex.clamp(0, places.length), place);
     days[dayIndex] = days[dayIndex].copyWith(places: places);
@@ -984,338 +1238,495 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     setState(() {
       _itinerary = _itinerary.copyWith(days: days);
       _leftovers.removeWhere((p) => p.id == place.placeId);
-      _lastDeletedPlace      = null;
-      _lastDeletedDayIndex   = null;
+      _lastDeletedPlace = null;
+      _lastDeletedDayIndex = null;
       _lastDeletedPlaceIndex = null;
     });
     _invalidateLegs(dayIndex);
     _updateMapOverlays();
   }
 
-  Future<void> _reOptimizeDay(int dayIndex) async {
+  OptimizationFailureInfo _identifyOptimizationFailure({
+    required int dayIndex,
+    required PermutationOptimizationResult optResult,
+    required List<ItineraryPlace> geoPlaces,
+    required Map<String, List<OpeningHoursPeriod>> periodsByPlaceId,
+    required String? dayDate,
+    required bool isRoadMatrixFailure,
+  }) {
+    final dayNumber = dayIndex + 1;
+    final weekday = dayDate != null && dayDate.isNotEmpty
+        ? ((DateTime.tryParse(dayDate)?.weekday ?? 1) % 7)
+        : 1;
 
+    if (isRoadMatrixFailure ||
+        (optResult.rejectedInvalidRoute > 0 &&
+            optResult.rejectedOpeningHours == 0 &&
+            optResult.rejectedMealWindow == 0 &&
+            optResult.rejectedDayEnd == 0)) {
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.routeUnavailable,
+        title: 'Route information unavailable',
+        message:
+            'We couldn’t check the route between some places in Day $dayNumber. Your current itinerary has been kept. Please try again later.',
+      );
+    }
+
+    final totalIssues = (optResult.rejectedOpeningHours > 0 ? 1 : 0) +
+        (optResult.rejectedMealWindow > 0 ? 1 : 0) +
+        (optResult.rejectedDayEnd > 0 ? 1 : 0) +
+        (optResult.rejectedInvalidRoute > 0 ? 1 : 0);
+
+    if (totalIssues > 1) {
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.multipleIssues,
+        title: 'Schedule adjustments needed',
+        message:
+            'Some visit times or routes in Day $dayNumber may not work as planned. Your current itinerary has been kept.',
+      );
+    }
+
+    if (optResult.rejectedDayEnd > 0) {
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.dayEndTooLate,
+        title: 'Day finishes late',
+        message:
+            'Day $dayNumber may finish later than 9:30 PM. Your current itinerary has been kept.',
+      );
+    }
+
+    if (optResult.rejectedMealWindow > 0) {
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.mealTiming,
+        title: 'Meal timing issue',
+        message:
+            'A meal stop in Day $dayNumber may be scheduled at an inconvenient time. Your current itinerary has been kept.',
+      );
+    }
+
+    // Opening hours evaluation — identify specific conflicting place when possible
+    final conflictingPlaces = <ItineraryPlace>[];
+    for (final place in geoPlaces) {
+      final periods =
+          periodsByPlaceId[place.placeId] ?? place.regularOpeningPeriods;
+      if (periods != null && periods.isNotEmpty) {
+        bool isOpenAnytime = false;
+        for (int t = 9 * 60; t <= 18 * 60; t += 60) {
+          final status = OpeningHoursEvaluator.evaluateVisit(
+            visitWeekday: weekday,
+            arrivalMinutes: t,
+            durationMinutes:
+                place.durationMinutes > 0 ? place.durationMinutes : 60,
+            periods: periods,
+          );
+          if (status == OpeningStatus.open) {
+            isOpenAnytime = true;
+            break;
+          }
+        }
+        if (!isOpenAnytime) {
+          conflictingPlaces.add(place);
+        }
+      }
+    }
+
+    if (conflictingPlaces.length == 1) {
+      final placeName = conflictingPlaces.first.name;
+      return OptimizationFailureInfo(
+        dayIndex: dayIndex,
+        dayNumber: dayNumber,
+        issueType: OptimizationIssueType.knownOpeningHoursConflict,
+        conflictingPlaceName: placeName,
+        conflictingPlaceId: conflictingPlaces.first.placeId,
+        title: 'Some visit times may not work',
+        message:
+            'Day $dayNumber couldn’t be fully optimized because $placeName may be closed when you arrive. Your current itinerary has been kept.',
+      );
+    }
+
+    return OptimizationFailureInfo(
+      dayIndex: dayIndex,
+      dayNumber: dayNumber,
+      issueType: OptimizationIssueType.multipleOpeningHoursConflicts,
+      title: 'Some visit times may not work',
+      message:
+          'Day $dayNumber couldn’t be fully optimized because some places may be closed when you arrive. Your current itinerary has been kept.',
+    );
+  }
+
+  void _showOptimizationFeedbackSheet(
+    List<OptimizationFailureInfo> failures, {
+    int? totalDays,
+    int? successfulDays,
+  }) {
+    if (!mounted || failures.isEmpty) return;
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        final isMultiDay =
+            (totalDays != null && totalDays > 1) || failures.length > 1;
+        final title =
+            isMultiDay ? 'Optimization Summary' : failures.first.title;
+
+        String mainMessage;
+        if (isMultiDay && totalDays != null && successfulDays != null) {
+          if (successfulDays > 0) {
+            final failedDayNums =
+                failures.map((f) => 'Day ${f.dayNumber}').join(', ');
+            mainMessage =
+                'We optimized $successfulDays of $totalDays days. $failedDayNums still has visit-time conflicts, so its original plan was kept.';
+          } else {
+            mainMessage =
+                'We couldn’t fully optimize these days due to timing or route conflicts. Your original itinerary has been kept.';
+          }
+        } else {
+          mainMessage = failures.first.message;
+        }
+
+        return Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF3E0),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(
+                      Icons.info_outline_rounded,
+                      color: Color(0xFFE65100),
+                      size: 24,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1A1A2E),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                mainMessage,
+                style: TextStyle(
+                  fontSize: 14,
+                  height: 1.4,
+                  color: Colors.grey[800],
+                ),
+              ),
+              if (isMultiDay && failures.length > 1) ...[
+                const SizedBox(height: 12),
+                const Divider(height: 1),
+                const SizedBox(height: 8),
+                ...failures.map((f) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded,
+                              size: 16, color: Colors.orange[800]),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              f.conflictingPlaceName != null
+                                  ? 'Day ${f.dayNumber}: ${f.conflictingPlaceName} closed'
+                                  : 'Day ${f.dayNumber}: timing conflict',
+                              style: const TextStyle(
+                                  fontSize: 13, fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              Navigator.pop(sheetContext);
+                              _switchTab(f.dayIndex);
+                            },
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: Text('View Day ${f.dayNumber}',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF7C4DFF))),
+                          ),
+                        ],
+                      ),
+                    )),
+              ],
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(sheetContext),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        side: BorderSide(color: Colors.grey[300]!),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text(
+                        'Keep My Plan',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1A1A2E),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (!isMultiDay) ...[
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.pop(sheetContext);
+                          _switchTab(failures.first.dayIndex);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF7C4DFF),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: Text(
+                          'View Day ${failures.first.dayNumber}',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<OptimizationFailureInfo?> _reOptimizeDay(int dayIndex,
+      {bool showFeedback = true}) async {
     // Historical/visited stops are immutable. Re-optimizing a partially
     // travelled day could change their order, so only untouched days enter
     // the automatic solver; future stops remain manually editable.
     if (_isDayLocked(dayIndex) || _isDayStarted(dayIndex)) {
-      return;
+      return null;
     }
 
     final places = _itinerary.days[dayIndex].places;
-    if (places.length < 2) return; // nothing meaningful to reorder
+    if (places.length < 2) return null; // nothing meaningful to reorder
 
     setState(() => _reOptimizingDays.add(dayIndex));
 
     try {
-      final geoPlaces    = places.where((p) => p.lat != null && p.lng != null).toList();
-      final nonGeoPlaces = places.where((p) => p.lat == null || p.lng == null).toList();
-      if (geoPlaces.length < 2) return;
+      final geoPlaces =
+          places.where((p) => p.lat != null && p.lng != null).toList();
+      final nonGeoPlaces =
+          places.where((p) => p.lat == null || p.lng == null).toList();
+      if (geoPlaces.length < 2) return null;
 
-      // Day 0 has a known real starting point (widget.startLat/Lng) — include
-      // it as point 0 so the matrix/ordering accounts for it. Day > 0 has no
-      // known real start, so ordering just starts from the first place.
-      final hasStart = dayIndex == 0;
+      // Every day uses the shared trip origin as its starting point when
+      // valid origin coordinates are available.
+      final hasStart = widget.startLat != 0 &&
+          widget.startLng != 0 &&
+          widget.startLat.isFinite &&
+          widget.startLng.isFinite;
       final points = <LatLng>[
         if (hasStart) LatLng(widget.startLat, widget.startLng),
         ...geoPlaces.map((p) => LatLng(p.lat!, p.lng!)),
       ];
 
-      // Try to get a real road-distance matrix for every pair of points in
-      // one call. If the API call fails for any reason (offline, quota,
-      // etc.), fall back to straight-line distance so re-optimize still works.
-      List<List<double>>? matrix;
+      List<List<double>>? matrixDist;
+      List<List<int>>? matrixDur;
+      String roadMatrixSource = 'google_routes_api';
       try {
         final elements = await RouteService.instance.fetchRouteMatrix(
           origins: points,
           destinations: points,
           mode: widget.travelMode,
         );
-        matrix = List.generate(
+        matrixDist = List.generate(
             points.length, (_) => List.filled(points.length, double.infinity));
+        matrixDur =
+            List.generate(points.length, (_) => List.filled(points.length, -1));
         for (final e in elements) {
           if (e.isValid &&
               e.originIndex < points.length &&
               e.destinationIndex < points.length) {
-            matrix[e.originIndex][e.destinationIndex] = e.distanceMeters;
+            matrixDist[e.originIndex][e.destinationIndex] = e.distanceMeters;
+            matrixDur[e.originIndex][e.destinationIndex] = e.durationSeconds;
           }
         }
       } catch (_) {
-        matrix = null;
+        matrixDist = null;
+        matrixDur = null;
+        roadMatrixSource = 'geolocator_straight_line_fallback';
       }
 
-      double distBetween(int i, int j) {
-        final fromMatrix = matrix?[i][j];
-        if (fromMatrix != null && fromMatrix.isFinite) return fromMatrix;
+      double getDist(int i, int j) {
+        final d = matrixDist?[i][j];
+        if (d != null && d.isFinite && d >= 0) return d;
         return Geolocator.distanceBetween(
-          points[i].latitude, points[i].longitude,
-          points[j].latitude, points[j].longitude,
+          points[i].latitude,
+          points[i].longitude,
+          points[j].latitude,
+          points[j].longitude,
         );
       }
 
-      // Route optimization has two levels:
-      //   1. preserve sensible meal slots;
-      //   2. choose the nearest candidate that matches the current slot.
-      //
-      // A completely unconstrained nearest-neighbour pass can put two nearby
-      // restaurants next to each other and destroy the itinerary's meal
-      // pattern. Food-only days remain all-Food naturally.
-      final placeOffset = hasStart ? 1 : 0;
-      final remaining = List<int>.generate(
-        geoPlaces.length,
-        (i) => i + placeOffset,
-      );
-      final order = <int>[];
-      final restaurantCount = geoPlaces.where((place) {
-        return CategoryMapper.isRestaurant(
-          place.primaryType,
-          const <String>[],
-        );
-      }).length;
-      final mealPattern = _buildMealSlotPattern(
-        geoPlaces.length,
-        restaurantCount,
-      );
-
-      bool isRestaurantPoint(int pointIndex) {
-        final place = geoPlaces[pointIndex - placeOffset];
-        return CategoryMapper.isRestaurant(
-          place.primaryType,
-          const <String>[],
-        );
+      int getDurSec(int i, int j) {
+        final dur = matrixDur?[i][j];
+        if (dur != null && dur >= 0) return dur;
+        final d = getDist(i, j);
+        return (d / _speedMps).round();
       }
 
-      int? currentPoint = hasStart ? 0 : null;
-      for (int slot = 0; slot < mealPattern.length; slot++) {
-        final desiredRestaurant = mealPattern[slot];
-        var eligible = remaining
-            .where((idx) => isRestaurantPoint(idx) == desiredRestaurant)
-            .toList();
+      final periodsByPlaceId = <String, List<OpeningHoursPeriod>>{};
+      for (final place in geoPlaces) {
+        if (place.regularOpeningPeriods != null &&
+            place.regularOpeningPeriods!.isNotEmpty) {
+          periodsByPlaceId[place.placeId] = place.regularOpeningPeriods!;
+        }
+      }
+      for (final place in _leftovers) {
+        if (place.regularOpeningPeriods != null &&
+            place.regularOpeningPeriods!.isNotEmpty) {
+          periodsByPlaceId[place.id] = place.regularOpeningPeriods!;
+        }
+      }
 
-        // Defensive fallback for incomplete/misclassified place data.
-        if (eligible.isEmpty) eligible = List<int>.from(remaining);
+      final optResult = FlexibleRouteOptimizer.optimizeDay(
+        dayIndex: dayIndex,
+        dayDate: dayIndex < _itinerary.days.length
+            ? _itinerary.days[dayIndex].date
+            : null,
+        places: geoPlaces,
+        originLat: hasStart ? widget.startLat : null,
+        originLng: hasStart ? widget.startLng : null,
+        originName: hasStart ? (widget.startLocationName ?? 'Origin') : null,
+        travelMode: widget.travelMode,
+        getDistanceMeters: getDist,
+        getDurationSeconds: getDurSec,
+        periodsByPlaceId: periodsByPlaceId,
+        roadMatrixSource: roadMatrixSource,
+      );
 
-        int selected;
-        if (currentPoint != null) {
-          selected = eligible.reduce((best, candidate) {
-            return distBetween(currentPoint!, candidate) <
-                    distBetween(currentPoint!, best)
-                ? candidate
-                : best;
-          });
-        } else {
-          // Later days have no user origin. Start at the most central candidate
-          // of the required type instead of arbitrarily fixing list index 0.
-          selected = eligible.reduce((best, candidate) {
-            final candidateTotal = remaining
-                .where((idx) => idx != candidate)
-                .fold<double>(0, (sum, idx) => sum + distBetween(candidate, idx));
-            final bestTotal = remaining
-                .where((idx) => idx != best)
-                .fold<double>(0, (sum, idx) => sum + distBetween(best, idx));
-            return candidateTotal < bestTotal ? candidate : best;
-          });
+      if (!optResult.isFeasible) {
+        String dominantRejectionReason = 'opening_hours';
+        if (optResult.rejectedMealWindow >= optResult.rejectedOpeningHours &&
+            optResult.rejectedMealWindow >= optResult.rejectedDayEnd &&
+            optResult.rejectedMealWindow >= optResult.rejectedInvalidRoute) {
+          dominantRejectionReason = 'meal_window';
+        } else if (optResult.rejectedDayEnd >= optResult.rejectedOpeningHours &&
+            optResult.rejectedDayEnd >= optResult.rejectedMealWindow &&
+            optResult.rejectedDayEnd >= optResult.rejectedInvalidRoute) {
+          dominantRejectionReason = 'day_end';
+        } else if (optResult.rejectedInvalidRoute >=
+                optResult.rejectedOpeningHours &&
+            optResult.rejectedInvalidRoute >= optResult.rejectedMealWindow &&
+            optResult.rejectedInvalidRoute >= optResult.rejectedDayEnd) {
+          dominantRejectionReason = 'invalid_road';
         }
 
-        order.add(selected);
-        remaining.remove(selected);
-        currentPoint = selected;
+        debugPrint(
+          '[FLEX_ROUTE][INFEASIBLE] day=$dayIndex rejectedOpeningHours=${optResult.rejectedOpeningHours} rejectedMealWindow=${optResult.rejectedMealWindow} rejectedDayEnd=${optResult.rejectedDayEnd} rejectedInvalidRoute=${optResult.rejectedInvalidRoute} dominantReason=$dominantRejectionReason action=preserve_previous',
+        );
+
+        final failureInfo = _identifyOptimizationFailure(
+          dayIndex: dayIndex,
+          optResult: optResult,
+          geoPlaces: geoPlaces,
+          periodsByPlaceId: periodsByPlaceId,
+          dayDate: dayIndex < _itinerary.days.length
+              ? _itinerary.days[dayIndex].date
+              : null,
+          isRoadMatrixFailure: matrixDist == null || matrixDur == null,
+        );
+
+        if (showFeedback && mounted) {
+          _showOptimizationFeedbackSheet([failureInfo]);
+        }
+        return failureInfo;
+      } else {
+        final reordered = optResult.places;
+        if (!mounted) return null;
+        final days = List<ItineraryDay>.from(_itinerary.days);
+        days[dayIndex] =
+            days[dayIndex].copyWith(places: [...reordered, ...nonGeoPlaces]);
+        setState(() {
+          _dayRouteStatus[dayIndex] = 'verified_feasible';
+          _dayWarnings.remove(dayIndex);
+          _itinerary = _itinerary.copyWith(days: days);
+        });
+        _invalidateLegs(dayIndex);
+        _updateMapOverlays();
+
+        if (showFeedback && mounted) {
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Day ${dayIndex + 1} route optimized.'),
+              duration: const Duration(seconds: 3),
+              behavior: SnackBarBehavior.floating,
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              backgroundColor: const Color(0xFF1A1A2E),
+            ),
+          );
+        }
+        return null;
       }
-
-      final slotMinutes = geoPlaces
-          .map((p) => _parseTimeToMinutes(p.suggestedTime))
-          .toList()
-        ..sort();
-      final optimizedOrder = _improveRouteOrder(
-        order,
-        distance: distBetween,
-        isRestaurantPoint: isRestaurantPoint,
-        slotMinutes: slotMinutes,
-        startPoint: hasStart ? 0 : null,
-      );
-
-      final reordered = optimizedOrder
-          .map((idx) => geoPlaces[idx - placeOffset])
-          .toList();
-
-      // Preserve the day's existing chronological slots. Sequentially adding
-      // only visit duration used to collapse lunch/dinner gaps after a route
-      // reorder, which is another way restaurants became grouped together.
-      final retimed = List<ItineraryPlace>.generate(
-        reordered.length,
-        (i) => reordered[i].copyWith(
-          suggestedTime: _minutesToTimeString(slotMinutes[i]),
-        ),
-      );
-
-      if (!mounted) return;
-
-      final days = List<ItineraryDay>.from(_itinerary.days);
-      days[dayIndex] =
-          days[dayIndex].copyWith(places: [...retimed, ...nonGeoPlaces]);
-      setState(() => _itinerary = _itinerary.copyWith(days: days));
-      _invalidateLegs(dayIndex);
-      _updateMapOverlays();
     } finally {
       if (mounted) setState(() => _reOptimizingDays.remove(dayIndex));
     }
-  }
-
-  List<int> _improveRouteOrder(
-    List<int> initial, {
-    required double Function(int, int) distance,
-    required bool Function(int) isRestaurantPoint,
-    required List<int> slotMinutes,
-    int? startPoint,
-  }) {
-    if (initial.length < 2) return List<int>.from(initial);
-    final restaurantCount = initial.where(isRestaurantPoint).length;
-    final allRestaurants = restaurantCount == initial.length;
-
-    int minutesOutsideMealWindows(int minute) {
-      const windows = <(int, int)>[
-        (11 * 60, 14 * 60),
-        (17 * 60 + 30, 20 * 60 + 30),
-      ];
-      var nearest = 24 * 60;
-      for (final window in windows) {
-        if (minute >= window.$1 && minute <= window.$2) return 0;
-        final delta = minute < window.$1
-            ? window.$1 - minute
-            : minute - window.$2;
-        if (delta < nearest) nearest = delta;
-      }
-      return nearest;
-    }
-
-    double objective(List<int> route) {
-      var cost = 0.0;
-      if (startPoint != null) cost += distance(startPoint, route.first);
-      for (int i = 1; i < route.length; i++) {
-        cost += distance(route[i - 1], route[i]);
-      }
-
-      if (!allRestaurants) {
-        for (int i = 0; i < route.length && i < slotMinutes.length; i++) {
-          if (isRestaurantPoint(route[i])) {
-            // Soft time-window cost: distance can override it when necessary,
-            // but lunch/dinner placement is normally preferred.
-            cost += minutesOutsideMealWindows(slotMinutes[i]) * 35.0;
-            if (i > 0 && isRestaurantPoint(route[i - 1])) cost += 4000.0;
-          }
-        }
-      }
-      return cost;
-    }
-
-    var best = List<int>.from(initial);
-    var bestCost = objective(best);
-
-    // Swap, relocate and 2-opt neighbourhoods. This evaluates the
-    // whole route cost rather than greedily selecting only the next stop.
-    for (int pass = 0; pass < 80; pass++) {
-      List<int>? bestCandidate;
-      var candidateCost = bestCost;
-
-      for (int i = 0; i < best.length - 1; i++) {
-        for (int j = i + 1; j < best.length; j++) {
-          final swapped = List<int>.from(best);
-          final temp = swapped[i];
-          swapped[i] = swapped[j];
-          swapped[j] = temp;
-          final swapCost = objective(swapped);
-          if (swapCost + 1.0 < candidateCost) {
-            candidateCost = swapCost;
-            bestCandidate = swapped;
-          }
-
-          final relocated = List<int>.from(best);
-          final moved = relocated.removeAt(i);
-          relocated.insert(j, moved);
-          final relocateCost = objective(relocated);
-          if (relocateCost + 1.0 < candidateCost) {
-            candidateCost = relocateCost;
-            bestCandidate = relocated;
-          }
-
-          final relocatedBack = List<int>.from(best);
-          final movedBack = relocatedBack.removeAt(j);
-          relocatedBack.insert(i, movedBack);
-          final relocateBackCost = objective(relocatedBack);
-          if (relocateBackCost + 1.0 < candidateCost) {
-            candidateCost = relocateBackCost;
-            bestCandidate = relocatedBack;
-          }
-
-          final reversed = <int>[
-            ...best.take(i),
-            ...best.sublist(i, j + 1).reversed,
-            ...best.skip(j + 1),
-          ];
-          final reverseCost = objective(reversed);
-          if (reverseCost + 1.0 < candidateCost) {
-            candidateCost = reverseCost;
-            bestCandidate = reversed;
-          }
-        }
-      }
-
-      if (bestCandidate == null) break;
-      best = bestCandidate;
-      bestCost = candidateCost;
-    }
-
-    return best;
-  }
-
-  List<bool> _buildMealSlotPattern(int totalStops, int restaurantCount) {
-    if (totalStops <= 0 || restaurantCount <= 0) {
-      return List<bool>.filled(totalStops, false);
-    }
-    if (restaurantCount >= totalStops) {
-      return List<bool>.filled(totalStops, true);
-    }
-
-    final preferredRestaurantSlots = switch (totalStops) {
-      1 => <int>[],
-      2 => <int>[1],
-      3 => <int>[1],
-      4 => <int>[1, 3],
-      5 => <int>[1, 3],
-      _ => <int>[2, 4],
-    };
-
-    final selectedSlots = <int>{};
-    for (final slot in preferredRestaurantSlots) {
-      if (selectedSlots.length >= restaurantCount) break;
-      if (slot < totalStops) selectedSlots.add(slot);
-    }
-
-    // Normally mixed itineraries need at most two restaurant slots. This
-    // fallback still preserves every restaurant if older saved data contains
-    // more, while spreading the extra Food stops as evenly as possible.
-    while (selectedSlots.length < restaurantCount) {
-      int? bestSlot;
-      double bestSeparation = -1;
-      for (int slot = 0; slot < totalStops; slot++) {
-        if (selectedSlots.contains(slot)) continue;
-        final separation = selectedSlots.isEmpty
-            ? totalStops.toDouble()
-            : selectedSlots
-                .map((used) => (slot - used).abs().toDouble())
-                .reduce((a, b) => a < b ? a : b);
-        if (separation > bestSeparation) {
-          bestSeparation = separation;
-          bestSlot = slot;
-        }
-      }
-      if (bestSlot == null) break;
-      selectedSlots.add(bestSlot);
-    }
-
-    return List<bool>.generate(
-      totalStops,
-      selectedSlots.contains,
-    );
   }
 
   // 晚上 22:00 之后才结束/开始，视为需要提醒用户"太晚了"
@@ -1354,7 +1765,8 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
           (i > 0 || !skipFirstLegTravel);
       final travel = applyTravel ? legsMinutes[i] : 0;
       final start = cursor + travel;
-      result.add(places[i].copyWith(suggestedTime: _minutesToTimeString(start)));
+      result
+          .add(places[i].copyWith(suggestedTime: _minutesToTimeString(start)));
       cursor = start + places[i].durationMinutes;
     }
     return result;
@@ -1382,8 +1794,9 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     }
 
     final tail = places.sublist(tailStart);
-    final tailLegsMinutes =
-        tailStart < legs.minutes.length ? legs.minutes.sublist(tailStart) : null;
+    final tailLegsMinutes = tailStart < legs.minutes.length
+        ? legs.minutes.sublist(tailStart)
+        : null;
 
     final retimedTail = _assignSequentialTimes(
       tail,
@@ -1441,7 +1854,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
     required bool checkArrivalFeasibility,
   }) async {
     if (_isPlaceLocked(dayIndex, placeIndex)) return;
-    final days   = List<ItineraryDay>.from(_itinerary.days);
+    final days = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
 
     if (checkArrivalFeasibility) {
@@ -1506,15 +1919,16 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF7C4DFF),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
-            child: const Text('Continue', style: TextStyle(color: Colors.white)),
+            child:
+                const Text('Continue', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
     );
   }
-
 
   int _parseTimeToMinutes(String t) {
     try {
@@ -1551,11 +1965,9 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       return;
     }
 
-    final sourceDayIndex =
-        payload.dayIndex!;
+    final sourceDayIndex = payload.dayIndex!;
 
-    final sourcePlaceIndex =
-        payload.placeIndex!;
+    final sourcePlaceIndex = payload.placeIndex!;
 
     // Cannot remove/reorder anything from a
     // completed historical day either.
@@ -1565,42 +1977,105 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
 
     if (_isPlaceLocked(sourceDayIndex, sourcePlaceIndex)) return;
 
-    if (sourceDayIndex ==
-            targetDayIndex &&
-        (sourcePlaceIndex ==
-                targetIndex ||
-            sourcePlaceIndex ==
-                targetIndex - 1)) {
+    if (sourceDayIndex == targetDayIndex &&
+        (sourcePlaceIndex == targetIndex ||
+            sourcePlaceIndex == targetIndex - 1)) {
       return;
     }
 
-  final days = List<ItineraryDay>.from(_itinerary.days);
+    final days = List<ItineraryDay>.from(_itinerary.days);
 
-  final sourcePlaces = List<ItineraryPlace>.from(days[sourceDayIndex].places);
-  if (sourcePlaceIndex >= sourcePlaces.length) return;
-  final moved = sourcePlaces.removeAt(sourcePlaceIndex);
-  days[sourceDayIndex] = days[sourceDayIndex].copyWith(places: sourcePlaces);
+    final sourcePlaces = List<ItineraryPlace>.from(days[sourceDayIndex].places);
+    if (sourcePlaceIndex >= sourcePlaces.length) return;
+    final moved = sourcePlaces.removeAt(sourcePlaceIndex);
+    days[sourceDayIndex] = days[sourceDayIndex].copyWith(places: sourcePlaces);
 
-  var insertAt = targetIndex;
-  if (sourceDayIndex == targetDayIndex && sourcePlaceIndex < targetIndex) {
-    insertAt -= 1;
+    var insertAt = targetIndex;
+    if (sourceDayIndex == targetDayIndex && sourcePlaceIndex < targetIndex) {
+      insertAt -= 1;
+    }
+
+    final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
+    insertAt = insertAt.clamp(0, targetPlaces.length);
+    targetPlaces.insert(insertAt, moved);
+    days[targetDayIndex] = days[targetDayIndex].copyWith(places: targetPlaces);
+
+    setState(() => _itinerary = _itinerary.copyWith(days: days));
+    _invalidateLegs(sourceDayIndex);
+    _invalidateLegs(targetDayIndex);
+    _updateMapOverlays();
+
+    if (sourceDayIndex != targetDayIndex) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${moved.name} moved to Day ${targetDayIndex + 1}',
+              style: const TextStyle(fontSize: 13)),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          backgroundColor: const Color(0xFF1A1A2E),
+        ),
+      );
+    }
   }
 
-  final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
-  insertAt = insertAt.clamp(0, targetPlaces.length);
-  targetPlaces.insert(insertAt, moved);
-  days[targetDayIndex] = days[targetDayIndex].copyWith(places: targetPlaces);
+// Adds a place dragged in from the leftover pool as a brand-new stop at
+// [targetIndex] within [targetDayIndex]. This INCREASES that day's stop
+// count — it never overwrites an existing stop (that's what the swap
+// sheet on each place card is for). Removed from the pool once added so
+// it can't be dropped in twice.
+  void _addPoolPlaceToPosition(
+      PlaceModel poolPlace, int targetDayIndex, int targetIndex) {
+    if (_isDayLocked(targetDayIndex)) {
+      return;
+    }
+    if (targetIndex <= _lastVisitedIndex(targetDayIndex)) return;
 
-  setState(() => _itinerary = _itinerary.copyWith(days: days));
-  _invalidateLegs(sourceDayIndex);
-  _invalidateLegs(targetDayIndex);
-  _updateMapOverlays();
+    final days = List<ItineraryDay>.from(_itinerary.days);
+    final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
+    final insertAt = targetIndex.clamp(0, targetPlaces.length);
 
-  if (sourceDayIndex != targetDayIndex) {
+    // Anchor the new stop's suggested time near whatever's already
+    // scheduled at this position, instead of a hardcoded default.
+    int anchorMinutes;
+    if (targetPlaces.isEmpty) {
+      anchorMinutes = 9 * 60;
+    } else if (insertAt > 0) {
+      final prev = targetPlaces[insertAt - 1];
+      anchorMinutes =
+          _parseTimeToMinutes(prev.suggestedTime) + prev.durationMinutes;
+    } else {
+      anchorMinutes = _parseTimeToMinutes(targetPlaces.first.suggestedTime);
+    }
+    final hh = (anchorMinutes ~/ 60) % 24;
+    final mm = anchorMinutes % 60;
+
+    final newPlace = _placeModelToItineraryPlace(
+      poolPlace,
+      suggestedTime:
+          '${hh.toString().padLeft(2, '0')}:${mm.toString().padLeft(2, '0')}',
+      durationMinutes: 60,
+    );
+
+    targetPlaces.insert(insertAt, newPlace);
+    days[targetDayIndex] = days[targetDayIndex].copyWith(places: targetPlaces);
+
+    setState(() {
+      _itinerary = _itinerary.copyWith(days: days);
+      _leftovers.removeWhere((p) => p.id == poolPlace.id);
+      _pendingLeftoverIds.remove(poolPlace.id); // 🔧 用掉了，不该再当候补写回去
+    });
+
+    _invalidateLegs(targetDayIndex);
+    _updateMapOverlays();
+
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('${moved.name} moved to Day ${targetDayIndex + 1}',
+        content: Text('${poolPlace.name} added to Day ${targetDayIndex + 1}',
             style: const TextStyle(fontSize: 13)),
         duration: const Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
@@ -1610,72 +2085,7 @@ class _RouteOptimizerPageState extends State<RouteOptimizerPage> {
       ),
     );
   }
-}
 
-// Adds a place dragged in from the leftover pool as a brand-new stop at
-// [targetIndex] within [targetDayIndex]. This INCREASES that day's stop
-// count — it never overwrites an existing stop (that's what the swap
-// sheet on each place card is for). Removed from the pool once added so
-// it can't be dropped in twice.
-void _addPoolPlaceToPosition(
-    PlaceModel poolPlace, int targetDayIndex, int targetIndex) {
-
-      if (_isDayLocked(targetDayIndex)) {
-        return;
-      }
-      if (targetIndex <= _lastVisitedIndex(targetDayIndex)) return;
-
-  final days = List<ItineraryDay>.from(_itinerary.days);
-  final targetPlaces = List<ItineraryPlace>.from(days[targetDayIndex].places);
-  final insertAt = targetIndex.clamp(0, targetPlaces.length);
-
-  // Anchor the new stop's suggested time near whatever's already
-  // scheduled at this position, instead of a hardcoded default.
-  int anchorMinutes;
-  if (targetPlaces.isEmpty) {
-    anchorMinutes = 9 * 60;
-  } else if (insertAt > 0) {
-    final prev = targetPlaces[insertAt - 1];
-    anchorMinutes = _parseTimeToMinutes(prev.suggestedTime) + prev.durationMinutes;
-  } else {
-    anchorMinutes = _parseTimeToMinutes(targetPlaces.first.suggestedTime);
-  }
-  final hh = (anchorMinutes ~/ 60) % 24;
-  final mm = anchorMinutes % 60;
-
-  final newPlace = _placeModelToItineraryPlace(
-    poolPlace,
-    suggestedTime: '${hh.toString().padLeft(2, '0')}:${mm.toString().padLeft(2, '0')}',
-    durationMinutes: 60,
-  );
-
-  targetPlaces.insert(insertAt, newPlace);
-  days[targetDayIndex] = days[targetDayIndex].copyWith(places: targetPlaces);
-
-    setState(() {
-      _itinerary = _itinerary.copyWith(days: days);
-      _leftovers.removeWhere((p) => p.id == poolPlace.id);
-      _pendingLeftoverIds.remove(poolPlace.id); // 🔧 用掉了，不该再当候补写回去
-    });
-
-  _invalidateLegs(targetDayIndex);
-  _updateMapOverlays();
-
-  ScaffoldMessenger.of(context).clearSnackBars();
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text('${poolPlace.name} added to Day ${targetDayIndex + 1}',
-          style: const TextStyle(fontSize: 13)),
-      duration: const Duration(seconds: 2),
-      behavior: SnackBarBehavior.floating,
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      backgroundColor: const Color(0xFF1A1A2E),
-    ),
-  );
-}
-
-  
   TimeOfDay _parseTime(String t) {
     try {
       final parts = t.split(':');
@@ -1687,36 +2097,36 @@ void _addPoolPlaceToPosition(
 
   Future<void> _pickTime(
       int dayIndex, int placeIndex, ItineraryPlace place) async {
-      if (_isPlaceLocked(dayIndex, placeIndex)) return;
-      final picked = await showTimePicker(
-        context: context,
-        initialTime: _parseTime(place.suggestedTime),
-        builder: (context, child) => Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.light(
-              primary: Color(0xFF7C4DFF),
-              onPrimary: Colors.white,
-            ),
+    if (_isPlaceLocked(dayIndex, placeIndex)) return;
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _parseTime(place.suggestedTime),
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: const ColorScheme.light(
+            primary: Color(0xFF7C4DFF),
+            onPrimary: Colors.white,
           ),
-          child: child!,
         ),
+        child: child!,
+      ),
+    );
+    if (picked != null && mounted) {
+      final hh = picked.hour.toString().padLeft(2, '0');
+      final mm = picked.minute.toString().padLeft(2, '0');
+      await _applyTimeChange(
+        dayIndex, placeIndex,
+        place.copyWith(suggestedTime: '$hh:$mm'),
+        checkArrivalFeasibility: true, // 改了开始时间 → 要查交通时间够不够
       );
-      if (picked != null && mounted) {
-        final hh = picked.hour.toString().padLeft(2, '0');
-        final mm = picked.minute.toString().padLeft(2, '0');
-        await _applyTimeChange(
-          dayIndex, placeIndex,
-          place.copyWith(suggestedTime: '$hh:$mm'),
-          checkArrivalFeasibility: true, // 改了开始时间 → 要查交通时间够不够
-        );
-      }
+    }
   }
 
   Future<void> _pickDuration(
       int dayIndex, int placeIndex, ItineraryPlace place) async {
     if (_isPlaceLocked(dayIndex, placeIndex)) return;
     const presets = [15, 30, 45, 60, 90, 120, 150, 180, 240];
-    int selected  = place.durationMinutes;
+    int selected = place.durationMinutes;
 
     await showModalBottomSheet(
       context: context,
@@ -1731,7 +2141,8 @@ void _addPoolPlaceToPosition(
             children: [
               Center(
                 child: Container(
-                  width: 40, height: 4,
+                  width: 40,
+                  height: 4,
                   decoration: BoxDecoration(
                     color: Colors.grey[300],
                     borderRadius: BorderRadius.circular(2),
@@ -1740,14 +2151,14 @@ void _addPoolPlaceToPosition(
               ),
               const SizedBox(height: 16),
               const Text('Visit Duration',
-                  style: TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold)),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(height: 4),
               Text('Select how long you plan to stay',
                   style: TextStyle(fontSize: 12, color: Colors.grey[500])),
               const SizedBox(height: 16),
               Wrap(
-                spacing: 8, runSpacing: 8,
+                spacing: 8,
+                runSpacing: 8,
                 children: presets.map((mins) {
                   final isSelected = selected == mins;
                   final label = mins < 60
@@ -1762,9 +2173,8 @@ void _addPoolPlaceToPosition(
                     selectedColor: const Color(0xFF7C4DFF),
                     labelStyle: TextStyle(
                       color: isSelected ? Colors.white : Colors.black87,
-                      fontWeight: isSelected
-                          ? FontWeight.bold
-                          : FontWeight.normal,
+                      fontWeight:
+                          isSelected ? FontWeight.bold : FontWeight.normal,
                     ),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10)),
@@ -1805,157 +2215,142 @@ void _addPoolPlaceToPosition(
   // Save
   // ─────────────────────────────────────────────
 
-Future<void> _saveAndContinue() async {
-  final hasAnyPlace =
-      _itinerary.days.any((d) => d.places.isNotEmpty);
+  Future<void> _saveAndContinue() async {
+    final hasAnyPlace = _itinerary.days.any((d) => d.places.isNotEmpty);
 
-  // No place to save / already saving.
-  if (!hasAnyPlace || _isSaving) {
-    return;
-  }
-
-  setState(() => _isSaving = true);
-
-  try {
-    // ─────────────────────────────────────────────
-    // Step 1: Check connectivity
-    // ─────────────────────────────────────────────
-    final online =
-        await ConnectivityService.instance.ensureConnected(
-      context,
-      onRetry: _saveAndContinue,
-    );
-
-    if (!online) {
+    // No place to save / already saving.
+    if (!hasAnyPlace || _isSaving) {
       return;
     }
 
-    if (!mounted) return;
+    setState(() => _isSaving = true);
 
-    // ─────────────────────────────────────────────
-    // Step 2: Preserve the COMPLETE leftover pool
-    // ─────────────────────────────────────────────
-    //
-    // _leftovers:
-    //   leftover candidates already resolved as PlaceModel
-    //
-    // _pendingLeftoverIds:
-    //   leftover IDs that have not yet been resolved/loaded
-    //
-    // Combine both and remove duplicates.
-    final leftoverIds = <String>{
-      ..._leftovers.map((p) => p.id),
-      ..._pendingLeftoverIds,
-    }.toList();
+    try {
+      // ─────────────────────────────────────────────
+      // Step 1: Preserve the COMPLETE leftover pool
+      // ─────────────────────────────────────────────
+      //
+      // _leftovers:
+      //   leftover candidates already resolved as PlaceModel
+      //
+      // _pendingLeftoverIds:
+      //   leftover IDs that have not yet been resolved/loaded
+      //
+      // Combine both and remove duplicates.
+      final leftoverIds = <String>{
+        ..._leftovers.map((p) => p.id),
+        ..._pendingLeftoverIds,
+      }.toList();
 
-    _itinerary = _itinerary.copyWith(
-      leftoverPlaceIds: leftoverIds,
-    );
-
-    // ─────────────────────────────────────────────
-    // Step 3: Save / update itinerary
-    // ─────────────────────────────────────────────
-    String? savedId;
-
-    if (_itinerary.id.isEmpty) {
-      savedId =
-          await ItineraryService.instance.save(
-        _itinerary,
-      );
-    } else {
-      await ItineraryService.instance.update(
-        _itinerary,
+      _itinerary = _itinerary.copyWith(
+        leftoverPlaces: _leftovers,
+        leftoverPlaceIds: leftoverIds,
       );
 
-      savedId = _itinerary.id;
-    }
+      // ─────────────────────────────────────────────
+      // Step 3: Save / update itinerary
+      // ─────────────────────────────────────────────
+      String? savedId;
 
-    if (!mounted) return;
+      if (_itinerary.id.isEmpty) {
+        savedId = await ItineraryService.instance.save(
+          _itinerary,
+        );
+      } else {
+        await ItineraryService.instance.update(
+          _itinerary,
+        );
 
-    // save() may return null, e.g. user not logged in
-    // or Firestore save could not be completed.
-    if (savedId == null) {
-      final isLoggedIn =
-          FirebaseAuth.instance.currentUser != null;
+        savedId = _itinerary.id;
+      }
+
+      if (!mounted) return;
+
+      // save() may return null, e.g. user not logged in
+      // or Firestore save could not be completed.
+      if (savedId == null) {
+        final isLoggedIn = FirebaseAuth.instance.currentUser != null;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              isLoggedIn
+                  ? 'Failed to save itinerary. Please try again.'
+                  : 'Please log in to save itinerary.',
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+
+        return;
+      }
+
+      // Rebuild the model using the actual saved document ID.
+      final saved = ItineraryModel.fromMap(
+        savedId,
+        _itinerary.toMap(),
+      );
+
+      // ─────────────────────────────────────────────
+      // Step 4: Return / navigate
+      // ─────────────────────────────────────────────
+
+      if (widget.isEditingExisting) {
+        // Existing ItineraryDetailPage is already below
+        // RouteOptimizerPage in the navigation stack.
+        //
+        // Return the updated model instead of opening
+        // another duplicate detail page.
+        Navigator.pop(
+          context,
+          saved,
+        );
+        return;
+      }
+
+      // New itinerary:
+      // replace RouteOptimizer with its detail page.
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ItineraryDetailPage(
+            itinerary: saved,
+          ),
+        ),
+        result: true,
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      debugPrint(
+        '❌ RouteOptimizer save failed: $e',
+      );
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            isLoggedIn
-                ? 'Failed to save itinerary. Please try again.'
-                : 'Please log in to save itinerary.',
+            ErrorHandler.userFriendlyMessage(
+              e,
+              defaultMessage:
+                  'Unable to save this itinerary. Please try again.',
+            ),
           ),
           backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
         ),
       );
-
-      return;
-    }
-
-    // Rebuild the model using the actual saved document ID.
-    final saved = ItineraryModel.fromMap(
-      savedId,
-      _itinerary.toMap(),
-    );
-
-    // ─────────────────────────────────────────────
-    // Step 4: Return / navigate
-    // ─────────────────────────────────────────────
-
-    if (widget.isEditingExisting) {
-      // Existing ItineraryDetailPage is already below
-      // RouteOptimizerPage in the navigation stack.
-      //
-      // Return the updated model instead of opening
-      // another duplicate detail page.
-      Navigator.pop(
-        context,
-        saved,
-      );
-      return;
-    }
-
-    // New itinerary:
-    // replace RouteOptimizer with its detail page.
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ItineraryDetailPage(
-          itinerary: saved,
-        ),
-      ),
-      result: true,
-    );
-  } catch (e) {
-    if (!mounted) return;
-
-    debugPrint(
-      '❌ RouteOptimizer save failed: $e',
-    );
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Unable to save this itinerary. '
-          'Please check your connection and try again.',
-        ),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  } finally {
-    // Always restore the Save button state,
-    // whether save succeeds, fails, goes offline,
-    // or returns early.
-    if (mounted) {
-      setState(() {
-        _isSaving = false;
-      });
+    } finally {
+      // Always restore the Save button state,
+      // whether save succeeds, fails, goes offline,
+      // or returns early.
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
     }
   }
-}
-  
-  
+
   // ─────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────
@@ -1968,7 +2363,6 @@ Future<void> _saveAndContinue() async {
       backgroundColor: const Color(0xFFF8F6FF),
       body: Stack(
         children: [
-
           // ── Map behind everything ──
           Column(children: [
             _buildHeader(),
@@ -1986,7 +2380,7 @@ Future<void> _saveAndContinue() async {
                           target: LatLng(widget.startLat, widget.startLng),
                           zoom: 13,
                         ),
-                        markers:   overlay.markers,
+                        markers: overlay.markers,
                         polylines: overlay.polylines,
                         myLocationEnabled: false,
                         myLocationButtonEnabled: false,
@@ -2015,28 +2409,57 @@ Future<void> _saveAndContinue() async {
               return false;
             },
             child: DraggableScrollableSheet(
-              controller:       _sheetController,
+              controller: _sheetController,
               initialChildSize: 0.5,
-              minChildSize:     _minSheetSize,
-              maxChildSize:     0.88,
-              snap:             false,
+              minChildSize: _minSheetSize,
+              maxChildSize: 0.88,
+              snap: false,
               builder: (context, scrollController) {
                 return Container(
                   decoration: BoxDecoration(
                     color: Colors.white,
-                    borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(24)),
-                    boxShadow: [BoxShadow(
-                      color: Colors.black.withOpacity(0.12),
-                      blurRadius: 16,
-                      offset: const Offset(0, -4),
-                    )],
+                    borderRadius:
+                        const BorderRadius.vertical(top: Radius.circular(24)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.12),
+                        blurRadius: 16,
+                        offset: const Offset(0, -4),
+                      )
+                    ],
                   ),
                   child: _buildSheetContent(scrollController),
                 );
               },
             ),
           ),
+
+          if (_isInitialOptimizing)
+            Positioned.fill(
+              child: Container(
+                color: const Color(0xFFF8F6FF),
+                child: const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(Color(0xFF7C4DFF)),
+                      ),
+                      SizedBox(height: 16),
+                      Text(
+                        'Optimizing route order and opening hours...',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF2D3436),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -2087,14 +2510,14 @@ Future<void> _saveAndContinue() async {
                   const SizedBox(width: 5),
                   Flexible(
                     child: Text(
-                     // _buildHeader 提示文字：
+                      // _buildHeader 提示文字：
                       _selectedIndex == 0
                           ? 'Drag a place onto another day to move it'
                           : _selectedIndex == _poolTabIndex
                               ? 'Drag a place onto a day tab to add it as a new stop'
                               : 'Drag stops to reorder • Tap × to remove',
-                      style: const TextStyle(
-                          color: Colors.white60, fontSize: 12),
+                      style:
+                          const TextStyle(color: Colors.white60, fontSize: 12),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -2120,7 +2543,7 @@ Future<void> _saveAndContinue() async {
         _buildDayTabs(),
         const SizedBox(height: 8),
         const Divider(height: 1, thickness: 0.5),
-       Expanded(
+        Expanded(
           child: _selectedIndex == 0
               ? _buildOverviewContent(scrollController)
               : _selectedIndex == _poolTabIndex
@@ -2150,7 +2573,8 @@ Future<void> _saveAndContinue() async {
       onVerticalDragUpdate: (details) {
         final screenHeight = MediaQuery.of(context).size.height;
         final delta = -details.delta.dy / screenHeight;
-        final newSize = (_sheetController.size + delta).clamp(_minSheetSize, 0.88);
+        final newSize =
+            (_sheetController.size + delta).clamp(_minSheetSize, 0.88);
         _sheetController.jumpTo(newSize);
       },
       behavior: HitTestBehavior.translucent,
@@ -2159,7 +2583,8 @@ Future<void> _saveAndContinue() async {
         padding: const EdgeInsets.only(top: 12, bottom: 8),
         child: Center(
           child: Container(
-            width: 44, height: 4,
+            width: 44,
+            height: 4,
             decoration: BoxDecoration(
               color: Colors.grey[300],
               borderRadius: BorderRadius.circular(2),
@@ -2177,119 +2602,184 @@ Future<void> _saveAndContinue() async {
       onVerticalDragUpdate: (details) {
         final screenHeight = MediaQuery.of(context).size.height;
         final delta = -details.delta.dy / screenHeight;
-        final newSize = (_sheetController.size + delta).clamp(_minSheetSize, 0.88);
+        final newSize =
+            (_sheetController.size + delta).clamp(_minSheetSize, 0.88);
         _sheetController.jumpTo(newSize);
       },
       child: Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(_itinerary.title,
-                    style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF1A1A2E)),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-                const SizedBox(height: 3),
-                Text(
-                  '${_itinerary.totalDays} '
-                  '${_itinerary.totalDays == 1 ? "day" : "days"} · '
-                  '$totalPlaces stops · Starting ${_itinerary.startDate}',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-                ),
-              ],
-            ),
-          ),
-          if (_selectedIndex != _poolTabIndex &&
-              !_itinerary.isCompleted &&
-              (_selectedIndex == 0 || !_isDayStarted(_selectedIndex - 1)))
-            Builder(builder: (context) {
-              final dayIndex = _selectedIndex - 1;
-              final isOverview = _selectedIndex == 0;
-              final isBusy = isOverview
-                  ? _isReOptimizingAll
-                  : _reOptimizingDays.contains(dayIndex);
-              return GestureDetector(
-                onTap: isBusy
-                    ? null
-                    : isOverview
-                        ? _reOptimizeAllDays
-                        : () => _reOptimizeDay(dayIndex),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20),
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_itinerary.title,
+                      style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1A1A2E)),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${_itinerary.totalDays} '
+                    '${_itinerary.totalDays == 1 ? "day" : "days"} · '
+                    '$totalPlaces stops · Starting ${_itinerary.startDate}',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
                   ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    if (isBusy)
-                      const SizedBox(
-                        width: 13, height: 13,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 1.5, color: Color(0xFF7C4DFF)),
-                      )
-                    else
-                      const Icon(Icons.auto_fix_high_rounded,
-                          size: 13, color: Color(0xFF7C4DFF)),
-                    const SizedBox(width: 4),
-                    Text(
-                        isBusy
-                            ? 'Optimizing...'
-                            : isOverview
-                                ? 'Optimize All'
-                                : 'Re-optimize',
-                        style: const TextStyle(
-                            fontSize: 11,
-                            color: Color(0xFF7C4DFF),
-                            fontWeight: FontWeight.w600)),
-                  ]),
-                ),
-              );
-            }),
-        ],
-      ),
+                ],
+              ),
+            ),
+            if (_selectedIndex != _poolTabIndex &&
+                !_itinerary.isCompleted &&
+                (_selectedIndex == 0 || !_isDayStarted(_selectedIndex - 1)))
+              Builder(builder: (context) {
+                final dayIndex = _selectedIndex - 1;
+                final isOverview = _selectedIndex == 0;
+                final isBusy = isOverview
+                    ? _isReOptimizingAll
+                    : _reOptimizingDays.contains(dayIndex);
+                final canAddStop = !isOverview &&
+                    dayIndex >= 0 &&
+                    dayIndex < _itinerary.days.length &&
+                    !_isDayLocked(dayIndex);
+
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (canAddStop) ...[
+                      GestureDetector(
+                        onTap: _itinerary.days[dayIndex].places.length >= 6
+                            ? () {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Maximum 6 stops per day'),
+                                    duration: Duration(seconds: 2),
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                              }
+                            : () => _showAddStopSheet(dayIndex),
+                        child: Container(
+                          margin: const EdgeInsets.only(right: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF00BFA5).withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.add_location_alt_rounded,
+                                size: 13,
+                                color:
+                                    _itinerary.days[dayIndex].places.length >= 6
+                                        ? Colors.grey
+                                        : const Color(0xFF00BFA5),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                '+ Add Stop',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color:
+                                      _itinerary.days[dayIndex].places.length >=
+                                              6
+                                          ? Colors.grey
+                                          : const Color(0xFF00BFA5),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    GestureDetector(
+                      onTap: isBusy
+                          ? null
+                          : isOverview
+                              ? _reOptimizeAllDays
+                              : () => _reOptimizeDay(dayIndex),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          if (isBusy)
+                            const SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 1.5, color: Color(0xFF7C4DFF)),
+                            )
+                          else
+                            const Icon(Icons.auto_fix_high_rounded,
+                                size: 13, color: Color(0xFF7C4DFF)),
+                          const SizedBox(width: 4),
+                          Text(
+                              isBusy
+                                  ? 'Optimizing...'
+                                  : isOverview
+                                      ? 'Optimize All'
+                                      : 'Re-optimize',
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF7C4DFF),
+                                  fontWeight: FontWeight.w600)),
+                        ]),
+                      ),
+                    ),
+                  ],
+                );
+              }),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildDayTabs() {
-  return SizedBox(
-    height: 54,
-    child: ListView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      children: [
-        _dayTabChip(index: 0, label: 'Overview',
-            color: const Color(0xFF1A1A2E), icon: Icons.map_rounded),
-        for (int d = 0; d < _itinerary.days.length; d++)
+    return SizedBox(
+      height: 54,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: [
           _dayTabChip(
-            index: d + 1,
-            label: 'Day ${d + 1}',
-            subLabel: _formatDayDate(_itinerary.days[d].date),
-            color: _dayColors[d % _dayColors.length],
-            isComplete: _itinerary.days[d].isCompleted &&
-                _itinerary.days[d].totalCount > 0,
-            dropDayIndex: d,
+              index: 0,
+              label: 'Overview',
+              color: const Color(0xFF1A1A2E),
+              icon: Icons.map_rounded),
+          for (int d = 0; d < _itinerary.days.length; d++)
+            _dayTabChip(
+              index: d + 1,
+              label: 'Day ${d + 1}',
+              subLabel: _formatDayDate(_itinerary.days[d].date),
+              color: _dayColors[d % _dayColors.length],
+              isComplete: _itinerary.days[d].isCompleted &&
+                  _itinerary.days[d].totalCount > 0,
+              dropDayIndex: d,
+            ),
+          _dayTabChip(
+            index: _poolTabIndex,
+            label: 'More Places',
+            subLabel: _leftovers.isEmpty ? null : '${_leftovers.length} found',
+            color: const Color(0xFF00BFA5),
+            icon: Icons.add_location_alt_rounded,
           ),
-        _dayTabChip(
-          index: _poolTabIndex,
-          label: 'More Places',
-          subLabel: _leftovers.isEmpty ? null : '${_leftovers.length} found',
-          color: const Color(0xFF00BFA5),
-          icon: Icons.add_location_alt_rounded,
-        ),
-      ],
-    ),
-  );
-}
-  
+        ],
+      ),
+    );
+  }
+
   String _formatDayDate(String date) {
     try {
       return DateFormat('MMM dd').format(DateTime.parse(date));
@@ -2299,82 +2789,87 @@ Future<void> _saveAndContinue() async {
   }
 
   Widget _dayTabChip({
-  required int index,
-  required String label,
-  String? subLabel,
-  required Color color,
-  IconData? icon,
-  bool isComplete = false,
-  int? dropDayIndex, // set only for real "Day N" chips — lets a place be
-                      // dropped straight onto the tab to append it there
-                      // without switching tabs first (used by the pool).
-}) {
-  final isSelected = _selectedIndex == index;
+    required int index,
+    required String label,
+    String? subLabel,
+    required Color color,
+    IconData? icon,
+    bool isComplete = false,
+    int? dropDayIndex, // set only for real "Day N" chips — lets a place be
+    // dropped straight onto the tab to append it there
+    // without switching tabs first (used by the pool).
+  }) {
+    final isSelected = _selectedIndex == index;
 
-  Widget chipBody({bool isHovering = false}) => Container(
-    margin: const EdgeInsets.only(right: 8),
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-    decoration: BoxDecoration(
-      color: isSelected ? color : color.withOpacity(isHovering ? 0.18 : 0.08),
-      borderRadius: BorderRadius.circular(14),
-      border: isHovering ? Border.all(color: color, width: 1.5) : null,
-    ),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        if (icon != null) ...[
-          Icon(icon, size: 13, color: isSelected ? Colors.white : color),
-          const SizedBox(width: 5),
-        ] else
-          Container(
-            width: 8, height: 8,
-            decoration: BoxDecoration(
-              color: isSelected ? Colors.white : color,
-              shape: BoxShape.circle,
-            ),
+    Widget chipBody({bool isHovering = false}) => Container(
+          margin: const EdgeInsets.only(right: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? color
+                : color.withOpacity(isHovering ? 0.18 : 0.08),
+            borderRadius: BorderRadius.circular(14),
+            border: isHovering ? Border.all(color: color, width: 1.5) : null,
           ),
-        const SizedBox(width: 5),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(label,
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: isSelected ? Colors.white : color)),
-            if (subLabel != null && subLabel.isNotEmpty)
-              Text(subLabel,
-                  style: TextStyle(
-                      fontSize: 9,
-                      color: isSelected ? Colors.white70 : color.withOpacity(0.7))),
-          ],
-        ),
-        if (isComplete) ...[
-          const SizedBox(width: 4),
-          Icon(Icons.check_circle_rounded,
-              size: 12, color: isSelected ? Colors.white : color),
-        ],
-      ],
-    ),
-  );
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              if (icon != null) ...[
+                Icon(icon, size: 13, color: isSelected ? Colors.white : color),
+                const SizedBox(width: 5),
+              ] else
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: isSelected ? Colors.white : color,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              const SizedBox(width: 5),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label,
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: isSelected ? Colors.white : color)),
+                  if (subLabel != null && subLabel.isNotEmpty)
+                    Text(subLabel,
+                        style: TextStyle(
+                            fontSize: 9,
+                            color: isSelected
+                                ? Colors.white70
+                                : color.withOpacity(0.7))),
+                ],
+              ),
+              if (isComplete) ...[
+                const SizedBox(width: 4),
+                Icon(Icons.check_circle_rounded,
+                    size: 12, color: isSelected ? Colors.white : color),
+              ],
+            ],
+          ),
+        );
 
-  if (dropDayIndex == null) {
-    return GestureDetector(onTap: () => _switchTab(index), child: chipBody());
+    if (dropDayIndex == null) {
+      return GestureDetector(onTap: () => _switchTab(index), child: chipBody());
+    }
+
+    return DragTarget<_DragPayload>(
+      onWillAccept: (payload) => payload != null,
+      onAccept: (payload) => _movePlaceToPosition(
+          payload, dropDayIndex, _itinerary.days[dropDayIndex].places.length),
+      builder: (context, candidateData, rejectedData) => GestureDetector(
+        onTap: () => _switchTab(index),
+        child: chipBody(isHovering: candidateData.isNotEmpty),
+      ),
+    );
   }
 
-  return DragTarget<_DragPayload>(
-    onWillAccept: (payload) => payload != null,
-    onAccept: (payload) => _movePlaceToPosition(
-        payload, dropDayIndex, _itinerary.days[dropDayIndex].places.length),
-    builder: (context, candidateData, rejectedData) => GestureDetector(
-      onTap: () => _switchTab(index),
-      child: chipBody(isHovering: candidateData.isNotEmpty),
-    ),
-  );
-}
-  
   // ─────────────────────────────────────────────
   // Overview content (all days, cross-day drag)
   // ─────────────────────────────────────────────
@@ -2391,7 +2886,7 @@ Future<void> _saveAndContinue() async {
   }
 
   Widget _buildOverviewDaySection(int dayIndex) {
-    final day   = _itinerary.days[dayIndex];
+    final day = _itinerary.days[dayIndex];
     final color = _dayColors[dayIndex % _dayColors.length];
 
     _legsFor(dayIndex); // 触发一次(需要时)带 debounce 的真实路线请求
@@ -2412,7 +2907,8 @@ Future<void> _saveAndContinue() async {
                 border: Border.all(
                     color: isHovering ? color : Colors.transparent, width: 2),
                 borderRadius: BorderRadius.circular(20),
-                color: isHovering ? color.withOpacity(0.05) : Colors.transparent,
+                color:
+                    isHovering ? color.withOpacity(0.05) : Colors.transparent,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2420,31 +2916,43 @@ Future<void> _saveAndContinue() async {
                   GestureDetector(
                     onTap: () => _switchTab(dayIndex + 1),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 6),
                       child: Row(children: [
                         Container(
-                            width: 10, height: 10,
-                            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(
+                                color: color, shape: BoxShape.circle)),
                         const SizedBox(width: 8),
-                        Text('Day ${dayIndex + 1} · ${_formatDayDate(day.date)}',
+                        Text(
+                            'Day ${dayIndex + 1} · ${_formatDayDate(day.date)}',
                             style: TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.bold, color: color)),
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: color)),
                         const SizedBox(width: 6),
                         if (day.isCompleted && day.totalCount > 0)
-                          const Icon(Icons.check_circle_rounded, size: 14, color: Colors.green),
+                          const Icon(Icons.check_circle_rounded,
+                              size: 14, color: Colors.green),
                         const Spacer(),
                         if (_reOptimizingDays.contains(dayIndex))
                           const Padding(
                             padding: EdgeInsets.only(right: 6),
                             child: SizedBox(
-                              width: 10, height: 10,
-                              child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.grey),
+                              width: 10,
+                              height: 10,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 1.5, color: Colors.grey),
                             ),
                           ),
-                        Text('${day.places.length} stops · ${legs.totalKm.toStringAsFixed(1)} km',
-                            style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+                        Text(
+                            '${day.places.length} stops · ${legs.totalKm.toStringAsFixed(1)} km',
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.grey[500])),
                         const SizedBox(width: 4),
-                        Icon(Icons.chevron_right_rounded, size: 16, color: Colors.grey[400]),
+                        Icon(Icons.chevron_right_rounded,
+                            size: 16, color: Colors.grey[400]),
                       ]),
                     ),
                   ),
@@ -2460,12 +2968,14 @@ Future<void> _saveAndContinue() async {
                       ),
                       child: Center(
                         child: Text('No places · drag one here',
-                            style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[400])),
                       ),
                     )
                   else
                     ...day.places.asMap().entries.map((entry) =>
-                        _buildDropZoneChip(dayIndex, entry.key, entry.value, color)),
+                        _buildDropZoneChip(
+                            dayIndex, entry.key, entry.value, color)),
                 ],
               ),
             );
@@ -2474,8 +2984,7 @@ Future<void> _saveAndContinue() async {
       },
     );
   }
-  
-  
+
   // A drop target wrapping a single chip: dropping any place here — from
   // this same day or any other day — inserts it right at this position.
   Widget _buildDropZoneChip(
@@ -2506,80 +3015,86 @@ Future<void> _saveAndContinue() async {
   Widget _buildDraggableChip(
       int dayIndex, int placeIndex, ItineraryPlace place, Color color) {
     final locked = _isPlaceLocked(dayIndex, placeIndex);
-    final chip = GestureDetector(   // 🆕 包一层，点击看详情
-    onTap: () => _openPlaceDetailFromItinerary(place),
-    child: Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[100]!),
-        boxShadow: [BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 6,
-            offset: const Offset(0, 2))],
-      ),
-      child: Row(children: [
-        Icon(
-          locked ? Icons.lock_outline_rounded : Icons.drag_indicator_rounded,
-          size: 16,
-          color: Colors.grey[350],
-        ),
-        const SizedBox(width: 6),
-        Container(
-          width: 22, height: 22,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          child: Center(
-            child: Text('${placeIndex + 1}',
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold)),
-          ),
-        ),
-        const SizedBox(width: 8),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: place.photoUrl != null
-                        ? CachedNetworkImage(
-            imageUrl: place.photoUrl!,
-            width: 36, height: 36, fit: BoxFit.cover,
-            errorWidget: (_, __, ___) => _photoPlaceholder(size: 36),
-          )
-          : _photoPlaceholder(size: 36),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(place.name,
-                  style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF1A1A2E)),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis),
-              Text(place.suggestedTime,
-                  style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+    final chip = GestureDetector(
+        // 🆕 包一层，点击看详情
+        onTap: () => _openPlaceDetailFromItinerary(place),
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey[100]!),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2))
             ],
           ),
-        ),
-      ]),
-    )
-    );
+          child: Row(children: [
+            Icon(
+              locked
+                  ? Icons.lock_outline_rounded
+                  : Icons.drag_indicator_rounded,
+              size: 16,
+              color: Colors.grey[350],
+            ),
+            const SizedBox(width: 6),
+            Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              child: Center(
+                child: Text('${placeIndex + 1}',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: place.photoUrl != null
+                  ? CachedNetworkImage(
+                      imageUrl: place.photoUrl!,
+                      width: 36,
+                      height: 36,
+                      fit: BoxFit.cover,
+                      errorWidget: (_, __, ___) => _photoPlaceholder(size: 36),
+                    )
+                  : _photoPlaceholder(size: 36),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(place.name,
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1A1A2E)),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                  Text(place.suggestedTime,
+                      style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+                ],
+              ),
+            ),
+          ]),
+        ));
 
     if (locked) return chip;
 
     return LongPressDraggable<_DragPayload>(
       data: _DragPayload.fromDay(
-      dayIndex: dayIndex, placeIndex: placeIndex, place: place),
+          dayIndex: dayIndex, placeIndex: placeIndex, place: place),
       feedback: Material(
         color: Colors.transparent,
-        child: SizedBox(
-            width: 260, child: Opacity(opacity: 0.9, child: chip)),
+        child: SizedBox(width: 260, child: Opacity(opacity: 0.9, child: chip)),
       ),
       childWhenDragging: Opacity(opacity: 0.3, child: chip),
       child: chip,
@@ -2606,79 +3121,116 @@ Future<void> _saveAndContinue() async {
           physics: const ClampingScrollPhysics(),
           slivers: [
             SliverToBoxAdapter(child: _buildDaySummaryBar(dayIndex, legs)),
+            SliverToBoxAdapter(child: _buildDayWarningBanner(dayIndex)),
             const SliverToBoxAdapter(child: Divider(height: 1, thickness: 0.5)),
             if (day.places.isEmpty)
-            SliverToBoxAdapter(
-              child: _emptyDayPlaceholder(
-                dayIndex,
-              ),
-            )
-          else if (_isDayLocked(dayIndex))
-            SliverPadding(
-              padding:
-                  const EdgeInsets.fromLTRB(
-                20,
-                12,
-                20,
-                8,
-              ),
-              sliver: SliverList(
-                delegate:
-                    SliverChildBuilderDelegate(
-                  (context, i) =>
-                      _buildPlaceCard(
+              SliverToBoxAdapter(
+                child: _emptyDayPlaceholder(
+                  dayIndex,
+                ),
+              )
+            else if (_isDayLocked(dayIndex))
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(
+                  20,
+                  12,
+                  20,
+                  8,
+                ),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, i) => _buildPlaceCard(
+                      dayIndex,
+                      i,
+                      day.places[i],
+                      legs,
+                      isLast: i == day.places.length - 1,
+                      key: ValueKey(
+                        '${dayIndex}_${day.places[i].placeId}',
+                      ),
+                    ),
+                    childCount: day.places.length,
+                  ),
+                ),
+              )
+            else
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(
+                  20,
+                  12,
+                  20,
+                  8,
+                ),
+                sliver: SliverReorderableList(
+                  itemCount: day.places.length,
+                  onReorder: (o, n) => _reorderWithinDay(
+                    dayIndex,
+                    o,
+                    n,
+                  ),
+                  itemBuilder: (context, i) => _buildPlaceCard(
                     dayIndex,
                     i,
                     day.places[i],
                     legs,
-                    isLast:
-                        i ==
-                            day.places.length -
-                                1,
+                    isLast: i == day.places.length - 1,
                     key: ValueKey(
                       '${dayIndex}_${day.places[i].placeId}',
                     ),
                   ),
-                  childCount:
-                      day.places.length,
                 ),
               ),
-            )
-          else
-            SliverPadding(
-              padding:
-                  const EdgeInsets.fromLTRB(
-                20,
-                12,
-                20,
-                8,
-              ),
-              sliver: SliverReorderableList(
-                itemCount:
-                    day.places.length,
-                onReorder: (o, n) =>
-                    _reorderWithinDay(
-                  dayIndex,
-                  o,
-                  n,
-                ),
-                itemBuilder:
-                    (context, i) =>
-                        _buildPlaceCard(
-                  dayIndex,
-                  i,
-                  day.places[i],
-                  legs,
-                  isLast:
-                      i ==
-                          day.places.length -
-                              1,
-                  key: ValueKey(
-                    '${dayIndex}_${day.places[i].placeId}',
+            if (!_isDayLocked(dayIndex))
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: OutlinedButton.icon(
+                    onPressed: day.places.length >= 6
+                        ? () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Maximum 6 stops per day'),
+                                duration: Duration(seconds: 2),
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        : () => _showAddStopSheet(dayIndex),
+                    icon: Icon(
+                      Icons.add_location_alt_rounded,
+                      size: 16,
+                      color: day.places.length >= 6
+                          ? Colors.grey
+                          : const Color(0xFF7C4DFF),
+                    ),
+                    label: Text(
+                      day.places.length >= 6
+                          ? 'Maximum 6 stops per day'
+                          : '+ Add Stop to Day ${dayIndex + 1}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: day.places.length >= 6
+                            ? Colors.grey
+                            : const Color(0xFF7C4DFF),
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      side: BorderSide(
+                        color: day.places.length >= 6
+                            ? Colors.grey[300]!
+                            : const Color(0xFF7C4DFF).withOpacity(0.5),
+                        width: 1.2,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
             const SliverToBoxAdapter(child: SizedBox(height: 24)),
           ],
         );
@@ -2687,7 +3239,6 @@ Future<void> _saveAndContinue() async {
   }
 
   Widget _buildPoolContent(ScrollController scrollController) {
-
     if (_isHydratingPool) {
       return const Center(
         child: Column(
@@ -2699,153 +3250,322 @@ Future<void> _saveAndContinue() async {
         ),
       );
     }
-    
-  if (_leftovers.isEmpty) {
-    return ListView(controller: scrollController, physics: const ClampingScrollPhysics(),
-      children: [
-        SizedBox(
-          height: 260,
-          child: Center(
-            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Icon(Icons.explore_off_rounded, size: 56, color: Colors.grey[300]),
-              const SizedBox(height: 12),
-              Text('No extra places found nearby',
-                  style: TextStyle(fontSize: 15, color: Colors.grey[400])),
-              const SizedBox(height: 6),
-              Text('Every candidate we found made it into your trip',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[400]),
-                  textAlign: TextAlign.center),
-            ]),
+
+    if (_leftovers.isEmpty &&
+        _pendingLeftoverIds.isNotEmpty &&
+        !_isHydratingPool) {
+      return ListView(
+        controller: scrollController,
+        physics: const ClampingScrollPhysics(),
+        children: [
+          SizedBox(
+            height: 280,
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.cloud_off_rounded,
+                        size: 56, color: Colors.grey[400]),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Unable to load alternative places',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1A1A2E),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Check your connection and try again.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: _isHydratingPool ? null : _hydrateLeftoverPool,
+                      icon: const Icon(Icons.refresh_rounded, size: 16),
+                      label: Text('Retry ${_pendingLeftoverIds.length} places'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF7C4DFF),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
+        ],
+      );
+    }
+
+    if (_leftovers.isEmpty) {
+      return ListView(
+        controller: scrollController,
+        physics: const ClampingScrollPhysics(),
+        children: [
+          SizedBox(
+            height: 260,
+            child: Center(
+              child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.explore_off_rounded,
+                        size: 56, color: Colors.grey[300]),
+                    const SizedBox(height: 12),
+                    Text('No extra places found nearby',
+                        style:
+                            TextStyle(fontSize: 15, color: Colors.grey[400])),
+                    const SizedBox(height: 6),
+                    Text('Every candidate we found made it into your trip',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                        textAlign: TextAlign.center),
+                  ]),
+            ),
+          ),
+        ],
+      );
+    }
+
+    final byType = <String, List<PlaceModel>>{};
+    for (final p in _leftovers) {
+      final label = _typeLabel(p.primaryType ?? 'other'); // 🔧 先转成显示文字
+      byType.putIfAbsent(label, () => []).add(p); // 🔧 再用这个文字当 key 分组
+    }
+
+    return ListView(
+      key: const ValueKey('pool_scroll'),
+      controller: scrollController,
+      physics: const ClampingScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+      children: [
+        if (_pendingLeftoverIds.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.amber[50],
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.amber[200]!),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline_rounded,
+                    size: 14, color: Colors.amber[800]),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${_pendingLeftoverIds.length} alternative places could not be loaded',
+                    style: TextStyle(fontSize: 11, color: Colors.amber[900]),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: _isHydratingPool ? null : _hydrateLeftoverPool,
+                  child: Text(
+                    'Retry',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.amber[900],
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        Row(children: [
+          Icon(Icons.info_outline_rounded, size: 13, color: Colors.grey[400]),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              "Places we found but didn't schedule. Long-press and drag one onto a Day tab to add it.",
+              style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 14),
+        for (final entry in byType.entries) ...[
+          Text(entry.key, // 🔧 直接用 entry.key,不要再套 _typeLabel
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1A1A2E))),
+          const SizedBox(height: 8),
+          ...entry.value.map(_buildPoolChip),
+          const SizedBox(height: 12),
+        ],
       ],
     );
   }
 
-  final byType = <String, List<PlaceModel>>{};
-  for (final p in _leftovers) {
-    final label = _typeLabel(p.primaryType ?? 'other');   // 🔧 先转成显示文字
-    byType.putIfAbsent(label, () => []).add(p);           // 🔧 再用这个文字当 key 分组
+  String _typeLabel(String type) {
+    const labels = {
+      'restaurant': '🍜 Food',
+      'meal_takeaway': '🍜 Food',
+      'cafe': '☕ Cafe',
+      'bakery': '🥐 Bakery',
+      'tourist_attraction': '🏛️ Historical',
+      'shopping_mall': '🛍️ Shopping',
+      'entertainment': '🎭 Entertainment',
+      'amusement_park': '🎭 Entertainment',
+      'park': '🌿 Nature',
+      'hospital': '🏥 Medical',
+      'university': '🎓 Education',
+      'florist': '💐 Florist',
+    };
+    return labels[type] ?? '📍 Other';
   }
 
-  return ListView(
-    key: const ValueKey('pool_scroll'),
-    controller: scrollController,
-    physics: const ClampingScrollPhysics(),
-    padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-    children: [
-      Row(children: [
-        Icon(Icons.info_outline_rounded, size: 13, color: Colors.grey[400]),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            "Places we found but didn't schedule. Long-press and drag one onto a Day tab to add it.",
-            style: TextStyle(fontSize: 11, color: Colors.grey[400]),
-          ),
+  Widget _buildPoolChip(PlaceModel place) {
+    final chip = GestureDetector(
+      onTap: () => _openPlaceDetail(place),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey[100]!),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 6,
+                offset: const Offset(0, 2))
+          ],
         ),
-      ]),
-      const SizedBox(height: 14),
-      for (final entry in byType.entries) ...[
-        Text(entry.key,    // 🔧 直接用 entry.key,不要再套 _typeLabel
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold,
-                color: Color(0xFF1A1A2E))),
-        const SizedBox(height: 8),
-        ...entry.value.map(_buildPoolChip),
-        const SizedBox(height: 12),
-      ],
-    ],
-  );
-}
-
-String _typeLabel(String type) {
-  const labels = {
-    'restaurant':         '🍜 Food',
-    'meal_takeaway':      '🍜 Food',
-    'cafe':               '☕ Cafe',
-    'bakery':             '🥐 Bakery',
-    'tourist_attraction': '🏛️ Historical',
-    'shopping_mall':      '🛍️ Shopping',
-    'entertainment':      '🎭 Entertainment',
-    'amusement_park':     '🎭 Entertainment',
-    'park':               '🌿 Nature',
-    'hospital':           '🏥 Medical',
-    'university':         '🎓 Education',
-    'florist':            '💐 Florist',
-  };
-  return labels[type] ?? '📍 Other';
-}
-
-Widget _buildPoolChip(PlaceModel place) {
-  final chip = GestureDetector(
-    onTap: () => _openPlaceDetail(place),
-    child: Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[100]!),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
-            blurRadius: 6, offset: const Offset(0, 2))],
+        child: Row(children: [
+          Icon(Icons.drag_indicator_rounded, size: 16, color: Colors.grey[350]),
+          const SizedBox(width: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: place.photoUrl != null
+                ? CachedNetworkImage(
+                    imageUrl: place.photoUrl!,
+                    width: 40,
+                    height: 40,
+                    fit: BoxFit.cover,
+                    errorWidget: (_, __, ___) => _photoPlaceholder(size: 40),
+                  )
+                : _photoPlaceholder(size: 40),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(place.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF1A1A2E))),
+                Row(children: [
+                  if (place.rating != null) ...[
+                    const Icon(Icons.star_rounded,
+                        size: 11, color: Colors.orange),
+                    const SizedBox(width: 2),
+                    Text('${place.rating}',
+                        style: const TextStyle(
+                            fontSize: 10, color: Colors.orange)),
+                    const SizedBox(width: 6),
+                  ],
+                  Expanded(
+                    child: Text(place.address ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            TextStyle(fontSize: 10, color: Colors.grey[500])),
+                  ),
+                ]),
+              ],
+            ),
+          ),
+          Icon(Icons.info_outline_rounded, size: 15, color: Colors.grey[350]),
+        ]),
       ),
-      child: Row(children: [
-        Icon(Icons.drag_indicator_rounded, size: 16, color: Colors.grey[350]),
-        const SizedBox(width: 6),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: place.photoUrl != null
-              ? CachedNetworkImage(
-              imageUrl: place.photoUrl!,
-              width: 40, height: 40, fit: BoxFit.cover,
-              errorWidget: (_, __, ___) => _photoPlaceholder(size: 40),
-            )
-              : _photoPlaceholder(size: 40),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(place.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
-                      color: Color(0xFF1A1A2E))),
-              Row(children: [
-                if (place.rating != null) ...[
-                  const Icon(Icons.star_rounded, size: 11, color: Colors.orange),
-                  const SizedBox(width: 2),
-                  Text('${place.rating}', style: const TextStyle(fontSize: 10, color: Colors.orange)),
-                  const SizedBox(width: 6),
-                ],
-                Expanded(
-                  child: Text(place.address ?? '', maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 10, color: Colors.grey[500])),
-                ),
-              ]),
-            ],
+    );
+
+    return LongPressDraggable<_DragPayload>(
+      data: _DragPayload.fromPool(place),
+      feedback: Material(
+          color: Colors.transparent,
+          child:
+              SizedBox(width: 260, child: Opacity(opacity: 0.9, child: chip))),
+      childWhenDragging: Opacity(opacity: 0.3, child: chip),
+      child: chip,
+    );
+  }
+
+  Widget _buildDayWarningBanner(int dayIndex) {
+    final status = _dayRouteStatus[dayIndex];
+    final warnings = _dayWarnings[dayIndex] ?? [];
+    if (status == null ||
+        status == 'verified_feasible' ||
+        (warnings.isEmpty && status != 'unverified')) {
+      return const SizedBox.shrink();
+    }
+
+    String text = '';
+    if (status == 'unverified') {
+      text = 'Route unverified — tap Re-optimize to recalculate road route';
+    } else {
+      final msgs = <String>[];
+      if (warnings.contains('opening_hours')) {
+        msgs.add('A place may be closed at suggested time');
+      }
+      if (warnings.contains('meal_window')) {
+        msgs.add('Meal timing may not be ideal');
+      }
+      if (warnings.contains('day_end')) {
+        msgs.add('Day extends beyond 9:30 PM');
+      }
+      if (warnings.contains('opening_hours_unavailable')) {
+        msgs.add('Opening hours unavailable — please verify');
+      }
+      text = msgs.isEmpty ? 'Timing or route warning' : msgs.join(' • ');
+    }
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3E0),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFFB74D), width: 1),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              size: 16, color: Color(0xFFE65100)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFFE65100),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ),
-        ),
-        Icon(Icons.info_outline_rounded, size: 15, color: Colors.grey[350]),
-      ]),
-    ),
-  );
-
-  return LongPressDraggable<_DragPayload>(
-    data: _DragPayload.fromPool(place),
-    feedback: Material(color: Colors.transparent,
-        child: SizedBox(width: 260, child: Opacity(opacity: 0.9, child: chip))),
-    childWhenDragging: Opacity(opacity: 0.3, child: chip),
-    child: chip,
-  );
-}
-
-
-
+        ],
+      ),
+    );
+  }
 
   Widget _buildDaySummaryBar(int dayIndex, _DayLegs legs) {
     final day = _itinerary.days[dayIndex];
-    final visitMin =
-        day.places.fold<int>(0, (s, p) => s + p.durationMinutes);
+    final visitMin = day.places.fold<int>(0, (s, p) => s + p.durationMinutes);
     final color = _dayColors[dayIndex % _dayColors.length];
 
     return Padding(
@@ -2868,7 +3588,8 @@ Widget _buildPoolChip(PlaceModel place) {
           if (!legs.isReal && day.places.isNotEmpty) ...[
             const SizedBox(width: 10),
             const SizedBox(
-              width: 10, height: 10,
+              width: 10,
+              height: 10,
               child: CircularProgressIndicator(
                   strokeWidth: 1.5, color: Colors.grey),
             ),
@@ -2892,449 +3613,385 @@ Widget _buildPoolChip(PlaceModel place) {
   }
 
   Widget _emptyDayPlaceholder(int dayIndex) {
-  return DragTarget<_DragPayload>(
-    onWillAccept: (payload) => payload != null,
-    onAccept: (payload) => _movePlaceToPosition(payload, dayIndex, 0),
-    builder: (context, candidateData, rejectedData) {
-      final isHovering = candidateData.isNotEmpty;
-      final color = _dayColors[dayIndex % _dayColors.length];
-      return SizedBox(
-        height: 260,
-        child: Center(
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(Icons.playlist_remove_rounded, size: 56,
-                color: isHovering ? color : Colors.grey[300]),
-            const SizedBox(height: 12),
-            Text('No stops on Day ${dayIndex + 1} yet',
-                style: TextStyle(fontSize: 15, color: Colors.grey[400])),
-            const SizedBox(height: 6),
-            Text('Drag a place here from Overview or More Places to add it',
-                style: TextStyle(fontSize: 12, color: Colors.grey[400]),
-                textAlign: TextAlign.center),
-          ]),
-        ),
-      );
-    },
-  );
-}
+    return DragTarget<_DragPayload>(
+      onWillAccept: (payload) => payload != null,
+      onAccept: (payload) => _movePlaceToPosition(payload, dayIndex, 0),
+      builder: (context, candidateData, rejectedData) {
+        final isHovering = candidateData.isNotEmpty;
+        final color = _dayColors[dayIndex % _dayColors.length];
+        return SizedBox(
+          height: 260,
+          child: Center(
+            child:
+                Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.playlist_remove_rounded,
+                  size: 56, color: isHovering ? color : Colors.grey[300]),
+              const SizedBox(height: 12),
+              Text('No stops on Day ${dayIndex + 1} yet',
+                  style: TextStyle(fontSize: 15, color: Colors.grey[400])),
+              const SizedBox(height: 6),
+              Text('Drag a place here from Overview or More Places to add it',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                  textAlign: TextAlign.center),
+            ]),
+          ),
+        );
+      },
+    );
+  }
 
   // ── Place card ─────────────────────────────
 
   Widget _buildPlaceCard(
-  int dayIndex,
-  int index,
-  ItineraryPlace place,
-  _DayLegs legs, {
-  required bool isLast,
-  required Key key,
-}) {
-  final dayColor =
-      _dayColors[dayIndex % _dayColors.length];
+    int dayIndex,
+    int index,
+    ItineraryPlace place,
+    _DayLegs legs, {
+    required bool isLast,
+    required Key key,
+  }) {
+    debugPrint(
+        '[ROUTE_TRACE][CARD_ORDER] day=$dayIndex cardNumber=${index + 1} sourceListIndex=$index placeId=${place.placeId} name="${place.name}" suggestedTime=${place.suggestedTime}');
+    final dayColor = _dayColors[dayIndex % _dayColors.length];
 
-  final numColor = _stopColor(
-    index,
-    _itinerary.days[dayIndex].places.length,
-    dayColor,
-  );
+    final numColor = _stopColor(
+      index,
+      _itinerary.days[dayIndex].places.length,
+      dayColor,
+    );
 
-  final locked = _isPlaceLocked(dayIndex, index);
+    final locked = _isPlaceLocked(dayIndex, index);
 
-  final card = Container(
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(
-        color: Colors.grey[100]!,
+    final card = Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: Colors.grey[100]!,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
       ),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withOpacity(0.05),
-          blurRadius: 8,
-          offset: const Offset(0, 3),
-        ),
-      ],
-    ),
-    child: Row(
-      crossAxisAlignment:
-          CrossAxisAlignment.center,
-      children: [
-        // ─────────────────────────────────────────
-        // Drag / Lock indicator
-        // ─────────────────────────────────────────
-        Container(
-          width: 40,
-          height: 76,
-          color: Colors.transparent,
-          child: Column(
-            mainAxisAlignment:
-                MainAxisAlignment.center,
-            children: [
-              Icon(
-                locked
-                    ? Icons.lock_outline_rounded
-                    : Icons.drag_indicator_rounded,
-                color: Colors.grey[400],
-                size: 20,
-              ),
-            ],
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // ─────────────────────────────────────────
+          // Drag / Lock indicator
+          // ─────────────────────────────────────────
+          Container(
+            width: 40,
+            height: 76,
+            color: Colors.transparent,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  locked
+                      ? Icons.lock_outline_rounded
+                      : Icons.drag_indicator_rounded,
+                  color: Colors.grey[400],
+                  size: 20,
+                ),
+              ],
+            ),
           ),
-        ),
 
-        // ─────────────────────────────────────────
-        // Stop number
-        // ─────────────────────────────────────────
-        Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            color: numColor,
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: Text(
-              '${index + 1}',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
+          // ─────────────────────────────────────────
+          // Stop number
+          // ─────────────────────────────────────────
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: numColor,
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Text(
+                '${index + 1}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ),
-        ),
 
-        const SizedBox(width: 10),
+          const SizedBox(width: 10),
 
-        // ─────────────────────────────────────────
-        // Image
-        // ─────────────────────────────────────────
-        ClipRRect(
-          borderRadius:
-              BorderRadius.circular(10),
-          child: place.photoUrl != null
-              ? CachedNetworkImage(
-                  imageUrl: place.photoUrl!,
-                  width: 52,
-                  height: 52,
-                  fit: BoxFit.cover,
-                  errorWidget:
-                      (_, __, ___) =>
-                          _photoPlaceholder(),
-                )
-              : _photoPlaceholder(),
-        ),
+          // ─────────────────────────────────────────
+          // Image
+          // ─────────────────────────────────────────
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: place.photoUrl != null
+                ? CachedNetworkImage(
+                    imageUrl: place.photoUrl!,
+                    width: 52,
+                    height: 52,
+                    fit: BoxFit.cover,
+                    errorWidget: (_, __, ___) => _photoPlaceholder(),
+                  )
+                : _photoPlaceholder(),
+          ),
 
-        const SizedBox(width: 10),
+          const SizedBox(width: 10),
 
-        // ─────────────────────────────────────────
-        // Place info
-        // ─────────────────────────────────────────
-        Expanded(
-          child: GestureDetector(
-            // Even locked days can still open
-            // the place detail page.
-            onTap: () =>
-                _openPlaceDetailFromItinerary(
-              place,
-            ),
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                vertical: 12,
+          // ─────────────────────────────────────────
+          // Place info
+          // ─────────────────────────────────────────
+          Expanded(
+            child: GestureDetector(
+              // Even locked days can still open
+              // the place detail page.
+              onTap: () => _openPlaceDetailFromItinerary(
+                place,
               ),
-              child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    place.name,
-                    style:
-                        const TextStyle(
-                      fontSize: 14,
-                      fontWeight:
-                          FontWeight.bold,
-                      color:
-                          Color(0xFF1A1A2E),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 12,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      place.name,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1A1A2E),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: 1,
-                    overflow:
-                        TextOverflow.ellipsis,
-                  ),
-
-                  const SizedBox(height: 3),
-
-                  Text(
-                    place.address,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey[500],
+                    const SizedBox(height: 3),
+                    Text(
+                      place.address,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey[500],
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: 1,
-                    overflow:
-                        TextOverflow.ellipsis,
-                  ),
-
-                  const SizedBox(height: 4),
-
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 4,
-                    children: [
-                      // ─────────────────────────────
-                      // Suggested time
-                      // ─────────────────────────────
-                      GestureDetector(
-                        onTap: locked
-                            ? null
-                            : () =>
-                                _pickTime(
-                                  dayIndex,
-                                  index,
-                                  place,
-                                ),
-                        child: Container(
-                          padding:
-                              const EdgeInsets
-                                  .symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration:
-                              BoxDecoration(
-                            color: locked
-                                ? Colors
-                                    .grey[100]
-                                : const Color(
-                                        0xFF7C4DFF)
-                                    .withOpacity(
-                                        0.08),
-                            borderRadius:
-                                BorderRadius
-                                    .circular(8),
-                          ),
-                          child: Row(
-                            mainAxisSize:
-                                MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons
-                                    .access_time_rounded,
-                                size: 11,
-                                color: locked
-                                    ? Colors
-                                        .grey[500]
-                                    : const Color(
-                                        0xFF7C4DFF),
-                              ),
-                              const SizedBox(
-                                  width: 3),
-                              Text(
-                                place
-                                    .suggestedTime,
-                                style:
-                                    TextStyle(
-                                  fontSize: 10,
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        // ─────────────────────────────
+                        // Suggested time
+                        // ─────────────────────────────
+                        GestureDetector(
+                          onTap: locked
+                              ? null
+                              : () => _pickTime(
+                                    dayIndex,
+                                    index,
+                                    place,
+                                  ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: locked
+                                  ? Colors.grey[100]
+                                  : const Color(0xFF7C4DFF).withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.access_time_rounded,
+                                  size: 11,
                                   color: locked
-                                      ? Colors
-                                          .grey[600]
-                                      : const Color(
-                                          0xFF7C4DFF),
-                                  fontWeight:
-                                      FontWeight
-                                          .w600,
+                                      ? Colors.grey[500]
+                                      : const Color(0xFF7C4DFF),
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 3),
+                                Text(
+                                  place.suggestedTime,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: locked
+                                        ? Colors.grey[600]
+                                        : const Color(0xFF7C4DFF),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
 
-                      // ─────────────────────────────
-                      // Duration
-                      // ─────────────────────────────
-                      GestureDetector(
-                        onTap: locked
-                            ? null
-                            : () =>
-                                _pickDuration(
-                                  dayIndex,
-                                  index,
-                                  place,
-                                ),
-                        child: Container(
-                          padding:
-                              const EdgeInsets
-                                  .symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration:
-                              BoxDecoration(
-                            color: locked
-                                ? Colors
-                                    .grey[100]
-                                : Colors.orange
-                                    .withOpacity(
-                                        0.08),
-                            borderRadius:
-                                BorderRadius
-                                    .circular(8),
-                          ),
-                          child: Row(
-                            mainAxisSize:
-                                MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons
-                                    .schedule_rounded,
-                                size: 11,
-                                color: locked
-                                    ? Colors
-                                        .grey[500]
-                                    : Colors
-                                        .orange[600],
-                              ),
-                              const SizedBox(
-                                  width: 3),
-                              Text(
-                                _formatDuration(
-                                  place
-                                      .durationMinutes,
-                                ),
-                                style:
-                                    TextStyle(
-                                  fontSize: 10,
+                        // ─────────────────────────────
+                        // Duration
+                        // ─────────────────────────────
+                        GestureDetector(
+                          onTap: locked
+                              ? null
+                              : () => _pickDuration(
+                                    dayIndex,
+                                    index,
+                                    place,
+                                  ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: locked
+                                  ? Colors.grey[100]
+                                  : Colors.orange.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.schedule_rounded,
+                                  size: 11,
                                   color: locked
-                                      ? Colors
-                                          .grey[600]
-                                      : Colors
-                                          .orange[700],
-                                  fontWeight:
-                                      FontWeight
-                                          .w600,
+                                      ? Colors.grey[500]
+                                      : Colors.orange[600],
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 3),
+                                Text(
+                                  _formatDuration(
+                                    place.durationMinutes,
+                                  ),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: locked
+                                        ? Colors.grey[600]
+                                        : Colors.orange[700],
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // ─────────────────────────────────────────
+          // Swap button
+          // Only editable days can swap.
+          // ─────────────────────────────────────────
+          if (!locked)
+            GestureDetector(
+              onTap: () => _showSwapSheet(
+                dayIndex,
+                index,
+                place,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 6,
+                ),
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    shape: BoxShape.circle,
                   ),
-                ],
-              ),
-            ),
-          ),
-        ),
-
-        // ─────────────────────────────────────────
-        // Swap button
-        // Only editable days can swap.
-        // ─────────────────────────────────────────
-        if (!locked)
-          GestureDetector(
-            onTap: () =>
-                _showSwapSheet(
-              dayIndex,
-              index,
-              place,
-            ),
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 6,
-              ),
-              child: Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: Colors.blue[50],
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.swap_horiz_rounded,
-                  size: 16,
-                  color: Colors.blue[400],
+                  child: Icon(
+                    Icons.swap_horiz_rounded,
+                    size: 16,
+                    color: Colors.blue[400],
+                  ),
                 ),
               ),
             ),
-          ),
 
-        // ─────────────────────────────────────────
-        // Remove button
-        // Only editable days can remove.
-        // ─────────────────────────────────────────
-        if (!locked)
-          GestureDetector(
-            onTap: () =>
-                _removePlace(
-              dayIndex,
-              index,
-            ),
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 12,
+          // ─────────────────────────────────────────
+          // Remove button
+          // Only editable days can remove.
+          // ─────────────────────────────────────────
+          if (!locked)
+            GestureDetector(
+              onTap: () => _removePlace(
+                dayIndex,
+                index,
               ),
-              child: Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: Colors.red[50],
-                  shape: BoxShape.circle,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
                 ),
-                child: Icon(
-                  Icons.close_rounded,
-                  size: 16,
-                  color: Colors.red[400],
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: Colors.red[50],
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.close_rounded,
+                    size: 16,
+                    color: Colors.red[400],
+                  ),
                 ),
               ),
             ),
-          ),
 
-        // Keep some right spacing on locked cards,
-        // because swap/delete are hidden.
-        if (locked)
-          const SizedBox(width: 12),
-      ],
-    ),
-  );
+          // Keep some right spacing on locked cards,
+          // because swap/delete are hidden.
+          if (locked) const SizedBox(width: 12),
+        ],
+      ),
+    );
 
-  // ─────────────────────────────────────────────
-  // Editable day:
-  // wrap card with reorder listener.
-  //
-  // Completed day:
-  // plain card only, no drag behavior.
-  // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    // Editable day:
+    // wrap card with reorder listener.
+    //
+    // Completed day:
+    // plain card only, no drag behavior.
+    // ─────────────────────────────────────────────
 
-  final cardContent = locked
-      ? card
-      : ReorderableDelayedDragStartListener(
-          index: index,
-          child: card,
-        );
+    final cardContent = locked
+        ? card
+        : ReorderableDelayedDragStartListener(
+            index: index,
+            child: card,
+          );
 
-  return Container(
-    key: key,
-    margin:
-        const EdgeInsets.only(
-      bottom: 14,
-    ),
-    child: Column(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
-      children: [
-        cardContent,
+    return Container(
+      key: key,
+      margin: const EdgeInsets.only(
+        bottom: 14,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          cardContent,
+          if (!isLast)
+            _buildLegConnector(
+              legs,
+              index + 1,
+            ),
+        ],
+      ),
+    );
+  }
 
-        if (!isLast)
-          _buildLegConnector(
-            legs,
-            index + 1,
-          ),
-      ],
-    ),
-  );
-}
-  
   String _formatDuration(int mins) {
     if (mins < 60) return '$mins min';
     final h = mins ~/ 60;
@@ -3344,20 +4001,24 @@ Widget _buildPoolChip(PlaceModel place) {
 
   Widget _buildLegConnector(_DayLegs legs, int toIndex) {
     if (toIndex >= legs.distances.length) return const SizedBox.shrink();
-    final km  = (legs.distances[toIndex] / 1000).toStringAsFixed(1);
+    final km = (legs.distances[toIndex] / 1000).toStringAsFixed(1);
     final min = legs.minutes[toIndex];
 
     return Padding(
       padding: const EdgeInsets.only(left: 28, top: 6),
       child: Row(children: [
-        Column(children: List.generate(4, (_) => Container(
-          width: 2, height: 5,
-          margin: const EdgeInsets.symmetric(vertical: 2),
-          decoration: BoxDecoration(
-            color: Colors.blue[200],
-            borderRadius: BorderRadius.circular(1),
-          ),
-        ))),
+        Column(
+            children: List.generate(
+                4,
+                (_) => Container(
+                      width: 2,
+                      height: 5,
+                      margin: const EdgeInsets.symmetric(vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.blue[200],
+                        borderRadius: BorderRadius.circular(1),
+                      ),
+                    ))),
         const SizedBox(width: 10),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -3391,10 +4052,12 @@ Widget _buildPoolChip(PlaceModel place) {
           16, 10, 16, 10 + MediaQuery.of(context).padding.bottom),
       decoration: BoxDecoration(
         color: Colors.white,
-        boxShadow: [BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 8,
-            offset: const Offset(0, -3))],
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 8,
+              offset: const Offset(0, -3))
+        ],
       ),
       child: Row(children: [
         Container(
@@ -3402,8 +4065,7 @@ Widget _buildPoolChip(PlaceModel place) {
           decoration: BoxDecoration(
             color: const Color(0xFF7C4DFF).withOpacity(0.1),
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-                color: const Color(0xFF7C4DFF).withOpacity(0.2)),
+            border: Border.all(color: const Color(0xFF7C4DFF).withOpacity(0.2)),
           ),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Text('$totalPlaces',
@@ -3420,9 +4082,8 @@ Widget _buildPoolChip(PlaceModel place) {
           child: SizedBox(
             height: 50,
             child: ElevatedButton(
-              onPressed: (totalPlaces == 0 || _isSaving)
-                  ? null
-                  : _saveAndContinue,
+              onPressed:
+                  (totalPlaces == 0 || _isSaving) ? null : _saveAndContinue,
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF7C4DFF),
                 disabledBackgroundColor: Colors.grey[300],
@@ -3432,7 +4093,8 @@ Widget _buildPoolChip(PlaceModel place) {
               ),
               child: _isSaving
                   ? const SizedBox(
-                      width: 20, height: 20,
+                      width: 20,
+                      height: 20,
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.white))
                   : Row(
@@ -3477,32 +4139,36 @@ Widget _buildPoolChip(PlaceModel place) {
 
   // 🆕 用 ItineraryPlace 打开详情页（行程里已经排好的地点）
   void _openPlaceDetailFromItinerary(ItineraryPlace place) {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => PlaceDetailPage(
-        placeId:   place.placeId,
-        placeName: place.name,
-        lat:       place.lat,
-        lng:       place.lng,
-        userLat:   widget.startLat,
-        userLng:   widget.startLng,
-        source:    'google',
-      ),
-    ));
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PlaceDetailPage(
+            placeId: place.placeId,
+            placeName: place.name,
+            lat: place.lat,
+            lng: place.lng,
+            userLat: widget.startLat,
+            userLng: widget.startLng,
+            source: 'google',
+          ),
+        ));
   }
 
   // 🆕 用候补池的 PlaceModel 打开详情页
   void _openPlaceDetail(PlaceModel place) {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => PlaceDetailPage(
-        placeId:   place.id,
-        placeName: place.name,
-        lat:       place.lat,
-        lng:       place.lng,
-        userLat:   widget.startLat,
-        userLng:   widget.startLng,
-        source:    'google',
-      ),
-    ));
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PlaceDetailPage(
+            placeId: place.id,
+            placeName: place.name,
+            lat: place.lat,
+            lng: place.lng,
+            userLat: widget.startLat,
+            userLng: widget.startLng,
+            source: 'google',
+          ),
+        ));
   }
 
   // 🆕 把候补池里的 PlaceModel，换装成能放进行程的 ItineraryPlace，
@@ -3513,14 +4179,14 @@ Widget _buildPoolChip(PlaceModel place) {
     required int durationMinutes,
   }) {
     return ItineraryPlace(
-      placeId:         p.id,
-      name:            p.name,
-      address:         p.address ?? '',
-      photoUrl:        p.photoUrl,
-      lat:             p.lat,
-      lng:             p.lng,
-      primaryType:     p.primaryType,
-      suggestedTime:   suggestedTime,
+      placeId: p.id,
+      name: p.name,
+      address: p.address ?? '',
+      photoUrl: p.photoUrl,
+      lat: p.lat,
+      lng: p.lng,
+      primaryType: p.primaryType,
+      suggestedTime: suggestedTime,
       durationMinutes: durationMinutes,
     );
   }
@@ -3528,27 +4194,26 @@ Widget _buildPoolChip(PlaceModel place) {
   // 🆕 用候补池里的某个地点，替换某天某个位置原本的地点。
   // 被替换下来的原地点会重新放回候补池，避免用户换来换去丢失选项。
   void _swapPlace(int dayIndex, int placeIndex, PlaceModel replacement) {
-
     if (_isPlaceLocked(dayIndex, placeIndex)) {
       return;
     }
 
-    final days   = List<ItineraryDay>.from(_itinerary.days);
+    final days = List<ItineraryDay>.from(_itinerary.days);
     final places = List<ItineraryPlace>.from(days[dayIndex].places);
-    final old    = places[placeIndex];
+    final old = places[placeIndex];
 
     places[placeIndex] = _placeModelToItineraryPlace(
       replacement,
-      suggestedTime:   old.suggestedTime,
+      suggestedTime: old.suggestedTime,
       durationMinutes: old.durationMinutes,
     );
     days[dayIndex] = days[dayIndex].copyWith(places: places);
 
     setState(() {
-      _itinerary = _itinerary.copyWith(days: days);
       _leftovers.removeWhere((p) => p.id == replacement.id);
-      _pendingLeftoverIds.remove(replacement.id); 
-      if (old.lat != null && old.lng != null &&
+      _pendingLeftoverIds.remove(replacement.id);
+      if (old.lat != null &&
+          old.lng != null &&
           !_leftovers.any((p) => p.id == old.placeId)) {
         _leftovers.add(PlaceModel(
           id: old.placeId,
@@ -3559,9 +4224,16 @@ Widget _buildPoolChip(PlaceModel place) {
           photoUrl: old.photoUrl,
           source: 'google',
           primaryType: old.primaryType,
-          allTypes: old.primaryType != null ? [old.primaryType!] : const [],
+          allTypes: old.allTypes.isNotEmpty
+              ? old.allTypes
+              : (old.primaryType != null ? [old.primaryType!] : const []),
+          regularOpeningPeriods: old.regularOpeningPeriods,
         ));
       }
+      _itinerary = _itinerary.copyWith(
+        days: days,
+        leftoverPlaces: _leftovers,
+      );
     });
 
     _invalidateLegs(dayIndex);
@@ -3579,12 +4251,13 @@ Widget _buildPoolChip(PlaceModel place) {
         backgroundColor: const Color(0xFF1A1A2E),
       ),
     );
+
+    if (places.length >= 2) {
+      _reOptimizeDay(dayIndex);
+    }
   }
 
   // The leftover pool was built from the categories selected during Generate.
-  // Swap may use any of those selected categories, rather than being locked to
-  // the current place's category. No additional nearby-search API call is made.
-    // The leftover pool was built from the categories selected during Generate.
   // Swap may use any of those selected categories, rather than being locked to
   // the current place's category. No additional nearby-search API call is made.
   void _showSwapSheet(
@@ -3599,16 +4272,14 @@ Widget _buildPoolChip(PlaceModel place) {
         .map((place) => place.placeId)
         .toSet();
 
-    final candidates = _leftovers
-        .where((place) {
-          final category = CategoryMapper.resolvePrimaryType(
-            place.primaryType,
-            place.allTypes,
-          );
-          return !scheduledIds.contains(place.id) &&
-              CategoryMapper.isLearnableCategory(category);
-        })
-        .toList()
+    final candidates = _leftovers.where((place) {
+      final category = CategoryMapper.resolvePrimaryType(
+        place.primaryType,
+        place.allTypes,
+      );
+      return !scheduledIds.contains(place.id) &&
+          CategoryMapper.isLearnableCategory(category);
+    }).toList()
       ..sort((a, b) {
         if (current.lat == null || current.lng == null) {
           return (b.rating ?? 0).compareTo(a.rating ?? 0);
@@ -3638,7 +4309,8 @@ Widget _buildPoolChip(PlaceModel place) {
           children: [
             const SizedBox(height: 12),
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               decoration: BoxDecoration(
                 color: Colors.grey[300],
                 borderRadius: BorderRadius.circular(2),
@@ -3651,7 +4323,8 @@ Widget _buildPoolChip(PlaceModel place) {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text('Swap this place',
-                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                      style:
+                          TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
                   Text('${candidates.length} options',
                       style: TextStyle(fontSize: 12, color: Colors.grey[500])),
                 ],
@@ -3665,12 +4338,6 @@ Widget _buildPoolChip(PlaceModel place) {
                           style: TextStyle(color: Colors.grey[400])),
                     )
                   : Builder(builder: (_) {
-                      // Group while preserving the existing distance/rating
-                      // order — candidates is already sorted, and Map
-                      // insertion order keeps that ordering within each
-                      // category bucket. Grouped by the canonical category
-                      // (not the display string) so it lines up with
-                      // _typeLabel's key set.
                       final grouped = <String, List<PlaceModel>>{};
                       for (final c in candidates) {
                         final category = CategoryMapper.resolvePrimaryType(
@@ -3685,12 +4352,14 @@ Widget _buildPoolChip(PlaceModel place) {
                         children: [
                           for (final entry in grouped.entries) ...[
                             Padding(
-                              padding: const EdgeInsets.only(bottom: 10, top: 8),
+                              padding:
+                                  const EdgeInsets.only(bottom: 10, top: 8),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 10, vertical: 5),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFF7C4DFF).withOpacity(0.08),
+                                  color:
+                                      const Color(0xFF7C4DFF).withOpacity(0.08),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Text(
@@ -3709,15 +4378,20 @@ Widget _buildPoolChip(PlaceModel place) {
                                     child: c.photoUrl != null
                                         ? CachedNetworkImage(
                                             imageUrl: c.photoUrl!,
-                                            width: 52, height: 52, fit: BoxFit.cover,
-                                            errorWidget: (_, __, ___) => _photoPlaceholder(),
+                                            width: 52,
+                                            height: 52,
+                                            fit: BoxFit.cover,
+                                            errorWidget: (_, __, ___) =>
+                                                _photoPlaceholder(),
                                           )
                                         : _photoPlaceholder(),
                                   ),
                                   title: Text(c.name,
-                                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                       style: const TextStyle(
-                                          fontWeight: FontWeight.w600, fontSize: 14)),
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 14)),
                                   subtitle: c.rating != null
                                       ? Row(children: [
                                           const Icon(Icons.star_rounded,
@@ -3725,11 +4399,13 @@ Widget _buildPoolChip(PlaceModel place) {
                                           const SizedBox(width: 2),
                                           Text('${c.rating}',
                                               style: const TextStyle(
-                                                  fontSize: 12, color: Colors.orange)),
+                                                  fontSize: 12,
+                                                  color: Colors.orange)),
                                         ])
                                       : null,
                                   trailing: IconButton(
-                                    icon: const Icon(Icons.info_outline_rounded, size: 20),
+                                    icon: const Icon(Icons.info_outline_rounded,
+                                        size: 20),
                                     onPressed: () => _openPlaceDetail(c),
                                   ),
                                   onTap: () {
@@ -3749,6 +4425,616 @@ Widget _buildPoolChip(PlaceModel place) {
     );
   }
 
+  Future<void> _addStop(int dayIndex, PlaceModel candidate) async {
+    if (_isAddingStop) return;
+
+    final currentPlaces = _itinerary.days[dayIndex].places;
+    debugPrint(
+      '[ITIN_ADD_STOP][REQUEST] day=$dayIndex placeId=${candidate.id} name="${candidate.name}" currentStopCount=${currentPlaces.length}',
+    );
+
+    // Hard-block 1: Day locked or started
+    if (_isDayLocked(dayIndex) || _isDayStarted(dayIndex)) {
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=rejected reason=day_locked newStopCount=${currentPlaces.length}',
+      );
+      return;
+    }
+
+    // Hard-block 2: Max 6 stops per day
+    if (currentPlaces.length >= 6) {
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=rejected reason=max_stops_reached newStopCount=${currentPlaces.length}',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Maximum 6 stops per day'),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Hard-block 3: Missing or invalid coordinates
+    if (candidate.lat == null ||
+        candidate.lng == null ||
+        !candidate.lat!.isFinite ||
+        !candidate.lng!.isFinite) {
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=rejected reason=invalid_coordinates newStopCount=${currentPlaces.length}',
+      );
+      return;
+    }
+
+    // Hard-block 4: Duplicate place anywhere in itinerary
+    final scheduledIds =
+        _itinerary.days.expand((d) => d.places).map((p) => p.placeId).toSet();
+    if (scheduledIds.contains(candidate.id)) {
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=rejected reason=duplicate_place newStopCount=${currentPlaces.length}',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('This place is already in your itinerary'),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    _isAddingStop = true;
+    _addingCandidateId = candidate.id;
+    if (mounted) setState(() {});
+
+    try {
+      final candidateRole = PlaceRoleClassifier.classify(
+        primaryType: candidate.primaryType,
+        allTypes: candidate.allTypes,
+      );
+
+      final candidatePlace = ItineraryPlace(
+        placeId: candidate.id,
+        name: candidate.name,
+        address: candidate.address ?? '',
+        photoUrl: candidate.photoUrl,
+        lat: candidate.lat,
+        lng: candidate.lng,
+        primaryType: candidate.primaryType,
+        allTypes: candidate.allTypes,
+        regularOpeningPeriods: candidate.regularOpeningPeriods,
+        suggestedTime: '09:00',
+        durationMinutes: candidateRole == PlaceRole.fullMeal ? 75 : 90,
+      );
+
+      final trialPlaces = List<ItineraryPlace>.from(currentPlaces)
+        ..add(candidatePlace);
+
+      final hasStart = widget.startLat != 0 &&
+          widget.startLng != 0 &&
+          widget.startLat.isFinite &&
+          widget.startLng.isFinite;
+
+      final geoPlaces =
+          trialPlaces.where((p) => p.lat != null && p.lng != null).toList();
+      final nonGeoPlaces =
+          trialPlaces.where((p) => p.lat == null || p.lng == null).toList();
+
+      final points = <LatLng>[
+        if (hasStart) LatLng(widget.startLat, widget.startLng),
+        ...geoPlaces.map((p) => LatLng(p.lat!, p.lng!)),
+      ];
+
+      final matrixDist = List.generate(
+          points.length, (_) => List.filled(points.length, double.infinity));
+      final matrixDur =
+          List.generate(points.length, (_) => List.filled(points.length, -1));
+
+      try {
+        final elements = await RouteService.instance.fetchRouteMatrix(
+          origins: points,
+          destinations: points,
+          mode: widget.travelMode,
+        );
+        if (elements.isNotEmpty) {
+          for (final e in elements) {
+            if (e.isValid &&
+                e.originIndex < points.length &&
+                e.destinationIndex < points.length &&
+                e.distanceMeters.isFinite &&
+                !e.distanceMeters.isNaN &&
+                e.distanceMeters >= 0 &&
+                e.durationSeconds >= 0) {
+              matrixDist[e.originIndex][e.destinationIndex] = e.distanceMeters;
+              matrixDur[e.originIndex][e.destinationIndex] = e.durationSeconds;
+            }
+          }
+        }
+      } catch (_) {
+        // Handled below if matrix is empty/disconnected
+      }
+
+      final periodsByPlaceId = <String, List<OpeningHoursPeriod>>{};
+      for (final place in geoPlaces) {
+        if (place.regularOpeningPeriods != null &&
+            place.regularOpeningPeriods!.isNotEmpty) {
+          periodsByPlaceId[place.placeId] = place.regularOpeningPeriods!;
+        }
+      }
+
+      // Check strict feasibility first
+      final optResult = FlexibleRouteOptimizer.optimizeDay(
+        dayIndex: dayIndex,
+        dayDate: dayIndex < _itinerary.days.length
+            ? _itinerary.days[dayIndex].date
+            : null,
+        places: geoPlaces,
+        originLat: hasStart ? widget.startLat : null,
+        originLng: hasStart ? widget.startLng : null,
+        originName: hasStart ? (widget.startLocationName ?? 'Origin') : null,
+        travelMode: widget.travelMode,
+        getDistanceMeters: (i, j) => i == j ? 0.0 : matrixDist[i][j],
+        getDurationSeconds: (i, j) => i == j ? 0 : matrixDur[i][j],
+        periodsByPlaceId: periodsByPlaceId,
+        roadMatrixSource: 'google_routes_api',
+      );
+
+      String routeStatus;
+      final List<String> warningReasons = [];
+      String snackBarMessage;
+      List<ItineraryPlace> finalPlaces;
+
+      if (optResult.isFeasible) {
+        // CASE A: Fully Feasible
+        routeStatus = 'verified_feasible';
+        snackBarMessage = 'Added and route optimized.';
+        finalPlaces = [...optResult.places, ...nonGeoPlaces];
+      } else {
+        // CASE B & C: Find the shortest connected road permutation using only valid edges
+        final offset = hasStart ? 1 : 0;
+        final placeIndices = List.generate(geoPlaces.length, (i) => i);
+        final allPermutations =
+            FlexibleRouteOptimizer.generatePermutations(placeIndices);
+
+        List<int>? bestConnectedPerm;
+        double bestDist = double.infinity;
+
+        for (final perm in allPermutations) {
+          bool connected = true;
+          double dSum = 0;
+
+          if (hasStart) {
+            final d0 = matrixDist[0][perm[0] + offset];
+            final dur0 = matrixDur[0][perm[0] + offset];
+            if (!d0.isFinite || d0.isNaN || d0 < 0 || dur0 < 0) {
+              connected = false;
+            } else {
+              dSum += d0;
+            }
+          }
+
+          if (connected) {
+            for (int s = 0; s < perm.length - 1; s++) {
+              final d = matrixDist[perm[s] + offset][perm[s + 1] + offset];
+              final dur = matrixDur[perm[s] + offset][perm[s + 1] + offset];
+              if (!d.isFinite || d.isNaN || d < 0 || dur < 0) {
+                connected = false;
+                break;
+              }
+              dSum += d;
+            }
+          }
+
+          if (connected) {
+            if (dSum < bestDist) {
+              bestDist = dSum;
+              bestConnectedPerm = perm;
+            }
+          }
+        }
+
+        if (bestConnectedPerm != null) {
+          // Connected route found via road matrix!
+          routeStatus = 'verified_with_warning';
+
+          final dayDate = dayIndex < _itinerary.days.length
+              ? _itinerary.days[dayIndex].date
+              : null;
+          final int weekday = dayDate != null && dayDate.isNotEmpty
+              ? ((DateTime.tryParse(dayDate)?.weekday ?? 1) % 7)
+              : 1;
+
+          int cursorMinutes = 9 * 60; // 09:00
+          final orderedGeoPlaces = <ItineraryPlace>[];
+
+          bool hasOpeningHoursWarning = false;
+          bool hasMealWindowWarning = false;
+          bool hasDayEndWarning = false;
+          bool hasHoursUnavailable = false;
+
+          for (int s = 0; s < bestConnectedPerm.length; s++) {
+            final pIdx = bestConnectedPerm[s];
+            final originalPlace = geoPlaces[pIdx];
+            final role = PlaceRoleClassifier.classify(
+              primaryType: originalPlace.primaryType,
+              allTypes: originalPlace.allTypes,
+            );
+
+            int legDur = 0;
+            if (s == 0) {
+              legDur = hasStart ? matrixDur[0][pIdx + offset] : 0;
+            } else {
+              final prevIdx = bestConnectedPerm[s - 1];
+              legDur = matrixDur[prevIdx + offset][pIdx + offset];
+            }
+            if (legDur < 0) legDur = 0;
+
+            final travelMin = (legDur / 60.0).ceil();
+            final arrivalMin = cursorMinutes + travelMin;
+            final durMin = originalPlace.durationMinutes > 0
+                ? originalPlace.durationMinutes
+                : FlexibleRouteOptimizer.getDefaultDurationMinutes(
+                    originalPlace.primaryType);
+
+            int visitStart = arrivalMin;
+            if (role == PlaceRole.fullMeal) {
+              if (arrivalMin < FlexibleRouteOptimizer.lunchStartMinutes) {
+                visitStart = FlexibleRouteOptimizer.lunchStartMinutes;
+              } else if (arrivalMin > FlexibleRouteOptimizer.lunchEndMinutes &&
+                  arrivalMin < FlexibleRouteOptimizer.dinnerStartMinutes) {
+                visitStart = FlexibleRouteOptimizer.dinnerStartMinutes;
+              }
+
+              if (visitStart > FlexibleRouteOptimizer.dinnerEndMinutes ||
+                  (visitStart > FlexibleRouteOptimizer.lunchEndMinutes &&
+                      visitStart < FlexibleRouteOptimizer.dinnerStartMinutes)) {
+                hasMealWindowWarning = true;
+              }
+            }
+
+            final periods = periodsByPlaceId[originalPlace.placeId] ??
+                originalPlace.regularOpeningPeriods;
+            if (periods == null || periods.isEmpty) {
+              hasHoursUnavailable = true;
+            } else {
+              final opStatus = OpeningHoursEvaluator.evaluateVisit(
+                visitWeekday: weekday,
+                arrivalMinutes: visitStart,
+                durationMinutes: durMin,
+                periods: periods,
+              );
+              if (opStatus == OpeningStatus.closed) {
+                hasOpeningHoursWarning = true;
+              }
+            }
+
+            final visitEnd = visitStart + durMin;
+            if (visitEnd > FlexibleRouteOptimizer.maxDayEndMinutes) {
+              hasDayEndWarning = true;
+            }
+
+            cursorMinutes = visitEnd;
+
+            orderedGeoPlaces.add(originalPlace.copyWith(
+              suggestedTime:
+                  FlexibleRouteOptimizer.minutesToTimeString(visitStart),
+              durationMinutes: durMin,
+            ));
+          }
+
+          final warningMsgs = <String>[];
+          if (hasOpeningHoursWarning) {
+            warningReasons.add('opening_hours');
+            warningMsgs.add('this place may be closed at the suggested time');
+          }
+          if (hasMealWindowWarning) {
+            warningReasons.add('meal_window');
+            warningMsgs.add('the meal timing may not be ideal');
+          }
+          if (hasDayEndWarning) {
+            warningReasons.add('day_end');
+            warningMsgs.add('this may extend your day beyond 9:30 PM');
+          }
+          if (warningReasons.isEmpty && hasHoursUnavailable) {
+            warningReasons.add('opening_hours_unavailable');
+            warningMsgs.add(
+                'opening hours unavailable — please verify before visiting');
+          }
+
+          if (warningMsgs.isEmpty) {
+            snackBarMessage = 'Added and route optimized.';
+          } else {
+            snackBarMessage = 'Added, but ${warningMsgs.join(' and ')}.';
+          }
+
+          finalPlaces = [...orderedGeoPlaces, ...nonGeoPlaces];
+        } else {
+          // CASE D: Road Matrix Completely Unavailable / No Connected Permutation
+          routeStatus = 'unverified';
+          warningReasons.add('route_unavailable');
+          snackBarMessage =
+              'Place added, but the route could not be verified. Try Re-optimize later.';
+
+          int prevEnd = 9 * 60;
+          if (currentPlaces.isNotEmpty) {
+            final lastP = currentPlaces.last;
+            final lastStart = FlexibleRouteOptimizer.parseTimeToMinutes(
+                lastP.suggestedTime,
+                fallback: 9 * 60);
+            final lastDur = lastP.durationMinutes > 0
+                ? lastP.durationMinutes
+                : FlexibleRouteOptimizer.getDefaultDurationMinutes(
+                    lastP.primaryType);
+            prevEnd = lastStart + lastDur + 30;
+          }
+
+          final appendedCandidate = candidatePlace.copyWith(
+            suggestedTime: FlexibleRouteOptimizer.minutesToTimeString(prevEnd),
+          );
+          finalPlaces = [...currentPlaces, appendedCandidate];
+        }
+      }
+
+      // Commit update
+      _leftovers.removeWhere((p) => p.id == candidate.id);
+      _pendingLeftoverIds.remove(candidate.id);
+
+      final days = List<ItineraryDay>.from(_itinerary.days);
+      days[dayIndex] = days[dayIndex].copyWith(places: finalPlaces);
+
+      setState(() {
+        _dayRouteStatus[dayIndex] = routeStatus;
+        _dayWarnings[dayIndex] = warningReasons;
+        _itinerary = _itinerary.copyWith(
+          days: days,
+          leftoverPlaces: _leftovers,
+        );
+      });
+
+      _invalidateLegs(dayIndex);
+      _updateMapOverlays();
+
+      debugPrint(
+        '[ITIN_ADD_STOP][RESULT] day=$dayIndex placeId=${candidate.id} status=accepted routeStatus=$routeStatus warningReasons=${warningReasons.isEmpty ? "none" : warningReasons.join(",")} newStopCount=${finalPlaces.length}',
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              snackBarMessage,
+              style: const TextStyle(fontSize: 13),
+            ),
+            duration: const Duration(seconds: 4),
+            behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            backgroundColor: const Color(0xFF1A1A2E),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAddingStop = false;
+          _addingCandidateId = null;
+        });
+      } else {
+        _isAddingStop = false;
+        _addingCandidateId = null;
+      }
+    }
+  }
+
+  void _showAddStopSheet(int dayIndex) {
+    if (_isDayLocked(dayIndex) || _isDayStarted(dayIndex)) return;
+
+    final currentPlaces = _itinerary.days[dayIndex].places;
+    if (currentPlaces.length >= 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Maximum 6 stops per day'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final scheduledIds = _itinerary.days
+        .expand((day) => day.places)
+        .map((place) => place.placeId)
+        .toSet();
+
+    double centerLat = widget.startLat;
+    double centerLng = widget.startLng;
+    if (currentPlaces.isNotEmpty) {
+      final valid =
+          currentPlaces.where((p) => p.lat != null && p.lng != null).toList();
+      if (valid.isNotEmpty) {
+        centerLat =
+            valid.map((p) => p.lat!).reduce((a, b) => a + b) / valid.length;
+        centerLng =
+            valid.map((p) => p.lng!).reduce((a, b) => a + b) / valid.length;
+      }
+    }
+
+    final candidates = _leftovers.where((place) {
+      final category = CategoryMapper.resolvePrimaryType(
+        place.primaryType,
+        place.allTypes,
+      );
+      return !scheduledIds.contains(place.id) &&
+          CategoryMapper.isLearnableCategory(category);
+    }).toList()
+      ..sort((a, b) {
+        final da = (a.lat != null && a.lng != null)
+            ? _distSqStatic(a.lat!, a.lng!, centerLat, centerLng)
+            : double.infinity;
+        final db = (b.lat != null && b.lng != null)
+            ? _distSqStatic(b.lat!, b.lng!, centerLat, centerLng)
+            : double.infinity;
+        final distanceOrder = da.compareTo(db);
+        if (distanceOrder != 0) return distanceOrder;
+        return (b.rating ?? 0).compareTo(a.rating ?? 0);
+      });
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => Container(
+          height: MediaQuery.of(context).size.height * 0.6,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Add to Day ${dayIndex + 1}',
+                        style: const TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.bold)),
+                    Text('${candidates.length} options',
+                        style:
+                            TextStyle(fontSize: 12, color: Colors.grey[500])),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: candidates.isEmpty
+                    ? Center(
+                        child: Text('No extra places available',
+                            style: TextStyle(color: Colors.grey[400])),
+                      )
+                    : Builder(builder: (_) {
+                        final grouped = <String, List<PlaceModel>>{};
+                        for (final c in candidates) {
+                          final category = CategoryMapper.resolvePrimaryType(
+                            c.primaryType,
+                            c.allTypes,
+                          );
+                          grouped.putIfAbsent(category, () => []).add(c);
+                        }
+
+                        return ListView(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          children: [
+                            for (final entry in grouped.entries) ...[
+                              Padding(
+                                padding:
+                                    const EdgeInsets.only(bottom: 10, top: 8),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 5),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF00BFA5)
+                                        .withOpacity(0.08),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    _typeLabel(entry.key),
+                                    style: const TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF1A1A2E)),
+                                  ),
+                                ),
+                              ),
+                              ...entry.value.map((c) {
+                                final isThisCandidateLoading =
+                                    _isAddingStop && _addingCandidateId == c.id;
+                                return ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: ClipRRect(
+                                    borderRadius: BorderRadius.circular(10),
+                                    child: c.photoUrl != null
+                                        ? CachedNetworkImage(
+                                            imageUrl: c.photoUrl!,
+                                            width: 52,
+                                            height: 52,
+                                            fit: BoxFit.cover,
+                                            errorWidget: (_, __, ___) =>
+                                                _photoPlaceholder(),
+                                          )
+                                        : _photoPlaceholder(),
+                                  ),
+                                  title: Text(c.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 14)),
+                                  subtitle: c.rating != null
+                                      ? Row(children: [
+                                          const Icon(Icons.star_rounded,
+                                              size: 13, color: Colors.orange),
+                                          const SizedBox(width: 2),
+                                          Text('${c.rating}',
+                                              style: const TextStyle(
+                                                  fontSize: 12,
+                                                  color: Colors.orange)),
+                                        ])
+                                      : null,
+                                  trailing: isThisCandidateLoading
+                                      ? const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Color(0xFF00BFA5),
+                                          ),
+                                        )
+                                      : IconButton(
+                                          icon: const Icon(
+                                              Icons.info_outline_rounded,
+                                              size: 20),
+                                          onPressed: () => _openPlaceDetail(c),
+                                        ),
+                                  onTap: _isAddingStop
+                                      ? null
+                                      : () {
+                                          setModalState(() {});
+                                          Navigator.pop(ctx);
+                                          _addStop(dayIndex, c);
+                                        },
+                                );
+                              }),
+                              const SizedBox(height: 6),
+                            ],
+                          ],
+                        );
+                      }),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Color _stopColor(int index, int total, Color base) {
     if (total <= 1) return base;
     final light = Color.lerp(base, Colors.white, 0.55)!;
@@ -3757,11 +5043,12 @@ Widget _buildPoolChip(PlaceModel place) {
   }
 
   Widget _photoPlaceholder({double size = 52}) => Container(
-    width: size, height: size,
-    color: Colors.grey[100],
-    child: Icon(Icons.location_on_rounded,
-        color: Colors.grey[300], size: size * 0.46),
-  );
+        width: size,
+        height: size,
+        color: Colors.grey[100],
+        child: Icon(Icons.location_on_rounded,
+            color: Colors.grey[300], size: size * 0.46),
+      );
 }
 
 // ─────────────────────────────────────────────
@@ -3786,26 +5073,32 @@ class _DayLegs {
   });
 
   static const empty = _DayLegs(
-    distances: [], minutes: [], segments: [],
-    totalKm: 0, totalMin: 0, isReal: false,
+    distances: [],
+    minutes: [],
+    segments: [],
+    totalKm: 0,
+    totalMin: 0,
+    isReal: false,
   );
 
   // 🆕 转成能存进 Firestore 的纯 JSON 结构
   List<Map<String, dynamic>> toStoredData() {
-    return List.generate(distances.length, (i) => {
-      'distance': distances[i],
-      'minutes':  minutes[i],
-      'points': (i < segments.length ? segments[i] : <LatLng>[])
-          .map((p) => {'lat': p.latitude, 'lng': p.longitude})
-          .toList(),
-    });
+    return List.generate(
+        distances.length,
+        (i) => {
+              'distance': distances[i],
+              'minutes': minutes[i],
+              'points': (i < segments.length ? segments[i] : <LatLng>[])
+                  .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+                  .toList(),
+            });
   }
 
   // 🆕 从存储结构还原
   static _DayLegs fromStoredData(List<Map<String, dynamic>> data) {
     final distances = <double>[];
-    final minutes   = <int>[];
-    final segments  = <List<LatLng>>[];
+    final minutes = <int>[];
+    final segments = <List<LatLng>>[];
     double totalM = 0;
 
     for (final leg in data) {
@@ -3823,11 +5116,11 @@ class _DayLegs {
 
     return _DayLegs(
       distances: distances,
-      minutes:   minutes,
-      segments:  segments,
-      totalKm:   totalM / 1000,
-      totalMin:  minutes.fold(0, (a, b) => a + b),
-      isReal:    true, // 存下来的必然是当初已经算好的真实数据
+      minutes: minutes,
+      segments: segments,
+      totalKm: totalM / 1000,
+      totalMin: minutes.fold(0, (a, b) => a + b),
+      isReal: true, // 存下来的必然是当初已经算好的真实数据
     );
   }
 }
@@ -3885,10 +5178,41 @@ class _LegResult {
   final double distance;
   final int minutes;
   final List<LatLng> points;
+  final bool isVerified;
 
   const _LegResult({
     required this.distance,
     required this.minutes,
     required this.points,
+    this.isVerified = true,
+  });
+}
+
+enum OptimizationIssueType {
+  knownOpeningHoursConflict,
+  multipleOpeningHoursConflicts,
+  routeUnavailable,
+  dayEndTooLate,
+  mealTiming,
+  multipleIssues,
+}
+
+class OptimizationFailureInfo {
+  final int dayIndex;
+  final int dayNumber;
+  final OptimizationIssueType issueType;
+  final String? conflictingPlaceName;
+  final String? conflictingPlaceId;
+  final String title;
+  final String message;
+
+  const OptimizationFailureInfo({
+    required this.dayIndex,
+    required this.dayNumber,
+    required this.issueType,
+    this.conflictingPlaceName,
+    this.conflictingPlaceId,
+    required this.title,
+    required this.message,
   });
 }

@@ -1,0 +1,111 @@
+diff --git a/lib/services/navigate_service.dart b/lib/services/navigate_service.dart
+index 8dc593a..0325548 100644
+--- a/lib/services/navigate_service.dart
++++ b/lib/services/navigate_service.dart
+@@ -9,6 +9,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
+ import 'package:flutter_tts/flutter_tts.dart';
+ import 'route_service.dart';
+ import 'api_Keys.dart';
++import 'arrival_policy.dart';
+ 
+ typedef RouteFetcher = Future<RouteResult> Function({
+   required double fromLat,
+@@ -50,7 +51,7 @@ class NavigationController extends ChangeNotifier {
+   static const String _apiKey = ApiKeys.googleMaps;
+ 
+   static const double _offRouteThresh = 50.0;
+-  static const double _arrivedThresh = 30.0;
++  static double get arrivedThresh => ArrivalPolicy.arrivalRadiusMetres;
+   static const int _offRouteConfirm = 4;
+   static const int _stepConfirm = 2;
+ 
+@@ -230,6 +231,10 @@ class NavigationController extends ChangeNotifier {
+   String? networkNotice;
+   bool hasArrived = false;
+   int _offRouteCount = 0;
++  int _consecutiveArrivalFixes = 0;
++
++  @visibleForTesting
++  int get consecutiveArrivalFixes => _consecutiveArrivalFixes;
+ 
+   // Route-joining state:
+   // A user may intentionally use a familiar road at the beginning and only
+@@ -376,6 +381,7 @@ class NavigationController extends ChangeNotifier {
+     _routeSessionStartedAt = DateTime.now();
+     _lastSpeedSampleAt = null;
+     _lastNavigationFixAt = null;
++    _consecutiveArrivalFixes = 0;
+     _ticker = vsync.createTicker(_onTick)..start();
+ 
+     // GPS/navigation startup is the critical path.
+@@ -404,6 +410,7 @@ class NavigationController extends ChangeNotifier {
+     _activeRouteGeneration++;
+     _pendingReroutePosition = null;
+     _lastSpeedSampleAt = null;
++    _consecutiveArrivalFixes = 0;
+     stopTrafficRefreshTimer();
+     _cancelRouteUpdateFeedback();
+     _ticker?.dispose();
+@@ -908,6 +915,7 @@ class NavigationController extends ChangeNotifier {
+ 
+     if (!isReroute) {
+       _offRouteCount = 0;
++      _consecutiveArrivalFixes = 0;
+       loading = true;
+       isRerouting = false;
+       walkedPoints = [];
+@@ -939,6 +947,7 @@ class NavigationController extends ChangeNotifier {
+     isRerouting = false;
+     _offRouteCount = 0;
+     _offRouteSince = null;
++    _consecutiveArrivalFixes = 0;
+ 
+     // A reroute may return fewer steps than the previous route.
+     // Reset old step indexes before rebuilding the new route arrays.
+@@ -1597,21 +1606,32 @@ class NavigationController extends ChangeNotifier {
+ 
+     // ── 5. Arrival ──────────────────────────────────────────────────
+     final isLastStep = steps.isEmpty || currentStepIndex >= steps.length - 1;
++    final distToEnd = _dist(rawLatLng, LatLng(endLat, endLng));
++    final isQualifyingArrivalFix = isLastStep &&
++        !hasArrived &&
++        ArrivalPolicy.isQualifyingFix(
++          distanceMetres: distToEnd,
++          accuracyMetres: raw.accuracy,
++        );
+ 
+-    if (_dist(rawLatLng, LatLng(endLat, endLng)) <= _arrivedThresh &&
+-        isLastStep &&
+-        !hasArrived) {
+-      hasArrived = true;
+-      _activeRouteGeneration++;
+-      _pendingReroutePosition = null;
+-      _positionSub?.cancel();
+-      stopTrafficRefreshTimer();
+-      _cancelRouteUpdateFeedback();
+-
+-      await _speak('You have arrived at your destination');
+-      onArrived?.call();
+-      notifyListeners();
+-      return;
++    if (isQualifyingArrivalFix) {
++      _consecutiveArrivalFixes++;
++      if (_consecutiveArrivalFixes >= ArrivalPolicy.requiredConsecutiveFixes) {
++        hasArrived = true;
++        _consecutiveArrivalFixes = 0;
++        _activeRouteGeneration++;
++        _pendingReroutePosition = null;
++        _positionSub?.cancel();
++        stopTrafficRefreshTimer();
++        _cancelRouteUpdateFeedback();
++
++        await _speak('You have arrived at your destination');
++        onArrived?.call();
++        notifyListeners();
++        return;
++      }
++    } else {
++      _consecutiveArrivalFixes = 0;
+     }
+ 
+     // ── 6. Feed the visual renderer ─────────────────────────────────

@@ -4,6 +4,7 @@ import '../../services/userPreference_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../main/homepage.dart';
 import '../../services/apps_Loading.dart';
+import '../../services/error_handler.dart';
 import 'package:firebase_auth/firebase_auth.dart';  
 
 class OnboardingPage extends StatefulWidget {
@@ -180,17 +181,16 @@ class _OnboardingPageState extends State<OnboardingPage>
         widget.onDone?.call();
         Navigator.pop(context);
       } else {
-        Navigator.pushReplacement(
+        Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(builder: (_) => const HomePage()),
+          (route) => false,
         );
       }
     } catch (e) {
       if (mounted) {
         setState(() => _isSaving = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save preferences: $e')),
-        );
+        ErrorHandler.showError(context, error: e, message: 'Failed to save preferences. Please try again.');
       }
     }
   }

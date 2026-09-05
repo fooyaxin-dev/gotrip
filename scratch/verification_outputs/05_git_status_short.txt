@@ -1,0 +1,24 @@
+ M lib/modules/main/mainpage.dart
+ M lib/modules/place/placeDetailPage.dart
+ M lib/services/location_service.dart
+ M lib/services/navigate_service.dart
+ M test/itinerary_arrival_tracking_test.dart
+?? SHA256SUMS_gps_navigation_startup_diagnosis.txt
+?? SHA256SUMS_shared_arrival_policy_v1.txt
+?? evidence_gps_navigation_startup_diagnosis/
+?? gotrip_gps_navigation_startup_diagnosis_bundle.zip
+?? gotrip_gps_navigation_startup_diagnosis_report.md
+?? gotrip_shared_arrival_policy_v1_output.zip
+?? gotrip_shared_arrival_policy_v1_report.md
+?? lib/services/arrival_policy.dart
+?? scratch/command_outputs/
+?? scratch/generate_startup_diagnosis.py
+?? scratch/package_arrival_policy.py
+?? scratch/package_responsive_batch1.py
+?? scratch/package_responsive_diagnosis.py
+?? scratch/package_startup_bundle.py
+?? scratch/run_verification.py
+?? scratch/verification_outputs/
+?? test/mainpage_bottom_spacing_test.dart
+?? test/place_detail_responsive_test.dart
+?? test/shared_arrival_policy_test.dart

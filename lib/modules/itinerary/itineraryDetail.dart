@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../models/itineraryModel.dart';
 import '../../services/itinerary_service.dart';
+import '../../services/itinerary_pdf_service.dart';
 import '../../services/location_service.dart';
 import '../place/placeDetailPage.dart';
 import '../place/routePreviewPage.dart';
@@ -16,7 +17,13 @@ import 'package:cached_network_image/cached_network_image.dart';
 
 class ItineraryDetailPage extends StatefulWidget {
   final ItineraryModel itinerary;
-  const ItineraryDetailPage({super.key, required this.itinerary});
+  final ItineraryPdfService pdfService;
+
+  ItineraryDetailPage({
+    super.key,
+    required this.itinerary,
+    ItineraryPdfService? pdfService,
+  }) : pdfService = pdfService ?? ItineraryPdfService.instance;
 
   @override
   State<ItineraryDetailPage> createState() => _ItineraryDetailPageState();
@@ -24,11 +31,11 @@ class ItineraryDetailPage extends StatefulWidget {
 
 class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     with SingleTickerProviderStateMixin {
-
   late ItineraryModel _itinerary;
-  late TabController  _tabController;
+  late TabController _tabController;
 
-  bool _hasChanges = false; 
+  bool _hasChanges = false;
+  bool _isExportingPdf = false;
 
   final Map<String, GlobalKey> _cardKeys = {};
   StreamSubscription<PlaceArrivalEvent>? _arrivalSub;
@@ -39,7 +46,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   @override
   void initState() {
     super.initState();
-    _itinerary     = widget.itinerary;
+    _itinerary = widget.itinerary;
     _tabController = TabController(
       length: _itinerary.days.length,
       vsync: this,
@@ -50,23 +57,30 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   @override
   void dispose() {
     _arrivalSub?.cancel();
+    _arrivalSub = null;
     if (_didStartLocationTracking) {
       LocationService.instance.stopTracking();
       _didStartLocationTracking = false;
     }
+    LocationService.instance.pauseItineraryProximity();
     _tabController.dispose();
     super.dispose();
   }
 
   void _refreshItineraryTracking() {
-    final shouldTrack =
-        LocationService.instance.watchItinerary(_itinerary);
+    final shouldTrack = LocationService.instance.watchItinerary(_itinerary);
 
-    if (shouldTrack && !_didStartLocationTracking) {
-      LocationService.instance.startTracking();
-      _didStartLocationTracking = true;
-      _arrivalSub ??=
-          LocationService.instance.arrivalStream.listen(_onArrival);
+    if (shouldTrack) {
+      _arrivalSub ??= LocationService.instance.arrivalStream.listen(_onArrival);
+      final wasTracking = _didStartLocationTracking;
+      if (!_didStartLocationTracking) {
+        LocationService.instance.startTracking();
+        _didStartLocationTracking = true;
+      }
+
+      if (!wasTracking) {
+        _evaluateInitialPosition();
+      }
       return;
     }
 
@@ -78,336 +92,351 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     }
   }
 
+  void _evaluateInitialPosition() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_didStartLocationTracking) return;
+
+      final cached = LocationService.instance.currentPosition;
+      if (LocationService.isPositionFresh(cached)) {
+        LocationService.instance.evaluateCurrentPositionProximity();
+      } else {
+        _acquireInitialFreshPosition();
+      }
+    });
+  }
+
+  Future<void> _acquireInitialFreshPosition() async {
+    try {
+      await LocationService.instance.refreshCurrentLocation();
+      if (!mounted || !_didStartLocationTracking) return;
+    } catch (_) {
+      // Fail gracefully without crashing.
+    }
+  }
+
   // ─────────────────────────────────────────────
   // Arrival handler
   // ─────────────────────────────────────────────
 
   void _onArrival(PlaceArrivalEvent event) {
-  if (!mounted) return;
+    if (!mounted) return;
 
-  // Prevent multiple arrival dialogs from stacking.
-  //
-  // LocationService already marks a place as arrived
-  // before emitting the event, so if another dialog is
-  // currently open, re-arm this place so it can trigger
-  // again later instead of being lost permanently.
-  if (_isArrivalDialogOpen) {
-    LocationService.instance.rearmArrival(
-      event.placeId,
-    );
-    return;
-  }
-
-  // Resolve the place again by placeId instead of trusting
-  // the old dayIndex/placeIndex carried by the event.
-  //
-  // The itinerary may have been edited or reordered after
-  // the event was created.
-  int? resolvedDayIndex;
-  int? resolvedPlaceIndex;
-
-  for (int d = 0;
-      d < _itinerary.days.length;
-      d++) {
-    final placeIndex =
-        _itinerary.days[d].places.indexWhere(
-      (place) =>
-          place.placeId == event.placeId,
-    );
-
-    if (placeIndex != -1) {
-      resolvedDayIndex = d;
-      resolvedPlaceIndex = placeIndex;
-      break;
+    // Prevent multiple arrival dialogs from stacking.
+    //
+    // LocationService already marks a place as arrived
+    // before emitting the event, so if another dialog is
+    // currently open, re-arm this place so it can trigger
+    // again later instead of being lost permanently.
+    if (_isArrivalDialogOpen) {
+      LocationService.instance.rearmArrival(
+        event.placeId,
+      );
+      return;
     }
+
+    // Resolve the place again by placeId instead of trusting
+    // the old dayIndex/placeIndex carried by the event.
+    //
+    // The itinerary may have been edited or reordered after
+    // the event was created.
+    int? resolvedDayIndex;
+    int? resolvedPlaceIndex;
+
+    for (int d = 0; d < _itinerary.days.length; d++) {
+      final placeIndex = _itinerary.days[d].places.indexWhere(
+        (place) => place.placeId == event.placeId,
+      );
+
+      if (placeIndex != -1) {
+        resolvedDayIndex = d;
+        resolvedPlaceIndex = placeIndex;
+        break;
+      }
+    }
+
+    // Place no longer exists in this itinerary.
+    if (resolvedDayIndex == null || resolvedPlaceIndex == null) {
+      return;
+    }
+
+    final resolvedPlace =
+        _itinerary.days[resolvedDayIndex].places[resolvedPlaceIndex];
+
+    // Ignore stale arrival events for places that have
+    // already been checked in.
+    if (resolvedPlace.isVisited) {
+      return;
+    }
+
+    _isArrivalDialogOpen = true;
+
+    // Move user to the correct itinerary day.
+    if (_tabController.index != resolvedDayIndex) {
+      _tabController.animateTo(
+        resolvedDayIndex,
+      );
+    }
+
+    bool isConfirmed = false;
+    bool isRearmed = false;
+
+    void handleDismiss() {
+      if (isConfirmed || isRearmed) return;
+      isRearmed = true;
+      LocationService.instance.rearmArrival(event.placeId);
+    }
+
+    showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => ArrivedDialog(
+        placeName: resolvedPlace.name,
+        onConfirm: () {
+          isConfirmed = true;
+          Navigator.of(dialogContext).pop(true);
+          _markVisited(
+            resolvedDayIndex!,
+            resolvedPlaceIndex!,
+          );
+        },
+        onDismiss: () {
+          handleDismiss();
+          Navigator.of(dialogContext).pop(false);
+        },
+        onPopInvoked: handleDismiss,
+      ),
+    ).whenComplete(() {
+      _isArrivalDialogOpen = false;
+      if (!isConfirmed) {
+        handleDismiss();
+      }
+    });
   }
 
-  // Place no longer exists in this itinerary.
-  if (resolvedDayIndex == null ||
-      resolvedPlaceIndex == null) {
-    return;
-  }
-
-  final resolvedPlace =
-      _itinerary
-          .days[resolvedDayIndex]
-          .places[resolvedPlaceIndex];
-
-  // Ignore stale arrival events for places that have
-  // already been checked in.
-  if (resolvedPlace.isVisited) {
-    return;
-  }
-
-  _isArrivalDialogOpen = true;
-
-  // Move user to the correct itinerary day.
-  if (_tabController.index !=
-      resolvedDayIndex) {
-    _tabController.animateTo(
-      resolvedDayIndex,
-    );
-  }
-
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => _ArrivedDialog(
-      placeName: resolvedPlace.name,
-
-      onConfirm: () {
-        Navigator.pop(context);
-
-        _markVisited(
-          resolvedDayIndex!,
-          resolvedPlaceIndex!,
-        );
-      },
-
-      onDismiss: () {
-        Navigator.pop(context);
-
-        // User says they are not ready to check in.
-        // Allow proximity detection for this place again.
-        LocationService.instance.rearmArrival(
-          event.placeId,
-        );
-      },
-    ),
-  ).whenComplete(() {
-    _isArrivalDialogOpen = false;
-  });
-}
-  
   // ─────────────────────────────────────────────
   // Mark visited — with achievement unlock detection
   // ─────────────────────────────────────────────
 
- Future<void> _markVisited(
-  int dayIndex,
-  int placeIndex,
-) async {
-  // Safety: ignore invalid day index.
-  if (dayIndex < 0 ||
-      dayIndex >= _itinerary.days.length) {
-    return;
-  }
-
-  final currentDay =
-      _itinerary.days[dayIndex];
-
-  // Safety: ignore invalid place index.
-  if (placeIndex < 0 ||
-      placeIndex >= currentDay.places.length) {
-    return;
-  }
-
-  final currentPlace =
-      currentDay.places[placeIndex];
-
-  // Already visited → do nothing.
-  if (currentPlace.isVisited) {
-    return;
-  }
-
-  // Prevent duplicate check-in from multiple arrival sources.
-  //
-  // Possible sources:
-  // 1. LocationService arrivalStream
-  // 2. GuidePage / RoutePreviewPage returning arrived = true
-  //
-  // Both could theoretically trigger before the first async
-  // check-in has finished.
-  if (_checkInProgress.contains(
-    currentPlace.placeId,
-  )) {
-    return;
-  }
-
-  _checkInProgress.add(
-    currentPlace.placeId,
-  );
-
-  try {
-    // ─────────────────────────────────────────────
-    // Step 1: Snapshot achievements BEFORE check-in
-    // ─────────────────────────────────────────────
-
-    final statsBefore =
-        await AchievementService.instance.fetchStats();
-
-    final groupsBefore =
-        AchievementService.instance.buildGroups(
-      statsBefore,
-    );
-
-    if (!mounted) return;
-
-    // Re-check because the itinerary may have changed
-    // while waiting for the achievement fetch.
-    if (dayIndex < 0 ||
-        dayIndex >= _itinerary.days.length) {
+  Future<void> _markVisited(
+    int dayIndex,
+    int placeIndex,
+  ) async {
+    // Safety: ignore invalid day index.
+    if (dayIndex < 0 || dayIndex >= _itinerary.days.length) {
       return;
     }
 
-    if (placeIndex < 0 ||
-        placeIndex >=
-            _itinerary.days[dayIndex].places.length) {
+    final currentDay = _itinerary.days[dayIndex];
+
+    // Safety: ignore invalid place index.
+    if (placeIndex < 0 || placeIndex >= currentDay.places.length) {
       return;
     }
 
-    final latestPlace =
-        _itinerary.days[dayIndex].places[placeIndex];
+    final currentPlace = currentDay.places[placeIndex];
 
-    if (latestPlace.isVisited) {
+    // Already visited → do nothing.
+    if (currentPlace.isVisited) {
       return;
     }
 
-    // ─────────────────────────────────────────────
-    // Step 2: Prepare updated itinerary locally
-    // ─────────────────────────────────────────────
-
-    final days =
-        List<ItineraryDay>.from(
-      _itinerary.days,
-    );
-
-    final places =
-        List<ItineraryPlace>.from(
-      days[dayIndex].places,
-    );
-
-    final visited =
-        places[placeIndex].copyWith(
-      isVisited: true,
-      visitedAt: DateTime.now(),
-    );
-
-    places[placeIndex] = visited;
-
-    days[dayIndex] =
-        days[dayIndex].copyWith(
-      places: places,
-    );
-
-    final updatedItinerary =
-        _itinerary.copyWith(
-      days: days,
-    );
-
-    // ─────────────────────────────────────────────
-    // Step 3: Persist itinerary + history ATOMICALLY
+    // Prevent duplicate check-in from multiple arrival sources.
     //
-    // Firestore commits both writes together. The place can never become
-    // visited without its corresponding history entry, and a failed batch
-    // leaves both documents unchanged.
-    // ─────────────────────────────────────────────
-
-    try {
-      await ItineraryService.instance.commitCheckIn(
-        itinerary: updatedItinerary,
-        visitedPlace: visited,
-      );
-    } catch (e) {
-      if (!mounted) return;
-
-      ErrorHandler.showError(
-        context,
-        message:
-            'Check-in could not be saved. '
-            'Please check your connection and try again.',
-      );
-
+    // Possible sources:
+    // 1. LocationService arrivalStream
+    // 2. GuidePage / RoutePreviewPage returning arrived = true
+    //
+    // Both could theoretically trigger before the first async
+    // check-in has finished.
+    if (_checkInProgress.contains(
+      currentPlace.placeId,
+    )) {
       return;
     }
 
-    if (!mounted) return;
-
-    // ─────────────────────────────────────────────
-    // Step 4: Commit local/UI state
-    // ─────────────────────────────────────────────
-
-    setState(() {
-      _itinerary = updatedItinerary;
-    });
-
-    _hasChanges = true;
-
-    LocationService.instance.markArrived(
-      visited.placeId,
-    );
-
-    _refreshItineraryTracking();
-
-    if (!mounted) return;
-
-    // Scroll to the next unfinished place.
-    _scrollToNextPlace(dayIndex);
-
-    // Remove keys for places no longer in the itinerary.
-    _cardKeys.removeWhere(
-      (key, _) =>
-          !_itinerary.days.any(
-        (d) => d.places.any(
-          (p) => p.placeId == key,
-        ),
-      ),
-    );
-
-    // ─────────────────────────────────────────────
-    // Step 5: Refresh achievements
-    // ─────────────────────────────────────────────
-
-    await Future.delayed(
-      const Duration(milliseconds: 800),
-    );
-
-    if (!mounted) return;
-
-    AchievementService.instance
-        .invalidateStatsCache();
-
-    final statsAfter =
-        await AchievementService.instance.fetchStats();
-
-    if (!mounted) return;
-
-    final groupsAfter =
-        AchievementService.instance.buildGroups(
-      statsAfter,
-    );
-
-    final newUnlocks =
-        AchievementService.instance
-            .checkForNewUnlocks(
-      oldGroups: groupsBefore,
-      newGroups: groupsAfter,
-    );
-
-    await AchievementService.instance
-        .saveTopBadgeToFirestore();
-
-    if (!mounted) return;
-
-    if (newUnlocks.isNotEmpty) {
-      _showUnlockDialog(
-        newUnlocks,
-      );
-    }
-  } finally {
-    // Always release the lock.
-    //
-    // This must happen even when:
-    // - Firestore fails
-    // - History fails
-    // - page is disposed
-    // - an early return occurs
-    _checkInProgress.remove(
+    _checkInProgress.add(
       currentPlace.placeId,
     );
+
+    try {
+      // ─────────────────────────────────────────────
+      // Step 1: Snapshot achievements BEFORE check-in
+      // ─────────────────────────────────────────────
+
+      final statsBefore = await AchievementService.instance.fetchStats();
+
+      final groupsBefore = AchievementService.instance.buildGroups(
+        statsBefore,
+      );
+
+      if (!mounted) {
+        LocationService.instance.rearmArrival(currentPlace.placeId);
+        return;
+      }
+
+      // Re-check because the itinerary may have changed
+      // while waiting for the achievement fetch.
+      if (dayIndex < 0 || dayIndex >= _itinerary.days.length) {
+        LocationService.instance.rearmArrival(currentPlace.placeId);
+        return;
+      }
+
+      if (placeIndex < 0 ||
+          placeIndex >= _itinerary.days[dayIndex].places.length) {
+        LocationService.instance.rearmArrival(currentPlace.placeId);
+        return;
+      }
+
+      final latestPlace = _itinerary.days[dayIndex].places[placeIndex];
+
+      if (latestPlace.isVisited) {
+        return;
+      }
+
+      // ─────────────────────────────────────────────
+      // Step 2: Prepare updated itinerary locally
+      // ─────────────────────────────────────────────
+
+      final days = List<ItineraryDay>.from(
+        _itinerary.days,
+      );
+
+      final places = List<ItineraryPlace>.from(
+        days[dayIndex].places,
+      );
+
+      final visited = places[placeIndex].copyWith(
+        isVisited: true,
+        visitedAt: DateTime.now(),
+      );
+
+      places[placeIndex] = visited;
+
+      days[dayIndex] = days[dayIndex].copyWith(
+        places: places,
+      );
+
+      final updatedItinerary = _itinerary.copyWith(
+        days: days,
+      );
+
+      // ─────────────────────────────────────────────
+      // Step 3: Persist itinerary + history ATOMICALLY
+      //
+      // Firestore commits both writes together. The place can never become
+      // visited without its corresponding history entry, and a failed batch
+      // leaves both documents unchanged.
+      // ─────────────────────────────────────────────
+
+      try {
+        await ItineraryService.instance.commitCheckIn(
+          itinerary: updatedItinerary,
+          visitedPlace: visited,
+        );
+      } catch (e) {
+        LocationService.instance.rearmArrival(currentPlace.placeId);
+
+        if (!mounted) return;
+
+        ErrorHandler.showError(
+          context,
+          message: 'Check-in could not be saved. '
+              'Please check your connection and try again.',
+        );
+
+        return;
+      }
+
+      if (!mounted) return;
+
+      // ─────────────────────────────────────────────
+      // Step 4: Commit local/UI state
+      // ─────────────────────────────────────────────
+
+      setState(() {
+        _itinerary = updatedItinerary;
+      });
+
+      _hasChanges = true;
+
+      LocationService.instance.markArrived(
+        visited.placeId,
+      );
+
+      _refreshItineraryTracking();
+
+      if (!mounted) return;
+
+      // Scroll to the next unfinished place.
+      _scrollToNextPlace(dayIndex);
+
+      // Remove keys for places no longer in the itinerary.
+      _cardKeys.removeWhere(
+        (key, _) => !_itinerary.days.any(
+          (d) => d.places.any(
+            (p) => p.placeId == key,
+          ),
+        ),
+      );
+
+      // ─────────────────────────────────────────────
+      // Step 5: Refresh achievements
+      // ─────────────────────────────────────────────
+
+      await Future.delayed(
+        const Duration(milliseconds: 800),
+      );
+
+      if (!mounted) return;
+
+      AchievementService.instance.invalidateStatsCache();
+
+      final statsAfter = await AchievementService.instance.fetchStats();
+
+      if (!mounted) return;
+
+      final groupsAfter = AchievementService.instance.buildGroups(
+        statsAfter,
+      );
+
+      final newUnlocks = AchievementService.instance.checkForNewUnlocks(
+        oldGroups: groupsBefore,
+        newGroups: groupsAfter,
+      );
+
+      await AchievementService.instance.saveTopBadgeToFirestore();
+
+      if (!mounted) return;
+
+      if (newUnlocks.isNotEmpty) {
+        _showUnlockDialog(
+          newUnlocks,
+        );
+      }
+    } catch (e) {
+      LocationService.instance.rearmArrival(currentPlace.placeId);
+
+      if (mounted) {
+        ErrorHandler.showError(
+          context,
+          message: 'Check-in could not be saved. '
+              'Please check your connection and try again.',
+        );
+      }
+    } finally {
+      // Always release the lock.
+      //
+      // This must happen even when:
+      // - Firestore fails
+      // - History fails
+      // - page is disposed
+      // - an early return occurs
+      _checkInProgress.remove(
+        currentPlace.placeId,
+      );
+    }
   }
-}
-  
+
   // ─────────────────────────────────────────────
   // Achievement unlock celebration dialog
   // ─────────────────────────────────────────────
@@ -421,49 +450,48 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   void _scrollToNextPlace(int dayIndex) {
-  if (!mounted) return;
+    if (!mounted) return;
 
-  if (dayIndex < 0 ||
-      dayIndex >= _itinerary.days.length) {
-    return;
+    if (dayIndex < 0 || dayIndex >= _itinerary.days.length) {
+      return;
+    }
+
+    final day = _itinerary.days[dayIndex];
+    final nextPlace = day.nextPlace;
+
+    if (nextPlace == null) {
+      return;
+    }
+
+    final key = _cardKeys[nextPlace.placeId];
+
+    if (key == null) {
+      return;
+    }
+
+    Future.delayed(
+      const Duration(milliseconds: 300),
+      () {
+        if (!mounted) {
+          return;
+        }
+
+        // The list may have rebuilt while waiting.
+        final targetContext = key.currentContext;
+
+        if (targetContext == null) {
+          return;
+        }
+
+        Scrollable.ensureVisible(
+          targetContext,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeInOut,
+          alignment: 0.15,
+        );
+      },
+    );
   }
-
-  final day = _itinerary.days[dayIndex];
-  final nextPlace = day.nextPlace;
-
-  if (nextPlace == null) {
-    return;
-  }
-
-  final key = _cardKeys[nextPlace.placeId];
-
-  if (key == null) {
-    return;
-  }
-
-  Future.delayed(
-    const Duration(milliseconds: 300),
-    () {
-      if (!mounted) {
-        return;
-      }
-
-      // The list may have rebuilt while waiting.
-      final targetContext = key.currentContext;
-
-      if (targetContext == null) {
-        return;
-      }
-
-      Scrollable.ensureVisible(
-        targetContext,
-        duration: const Duration(milliseconds: 500),
-        curve: Curves.easeInOut,
-        alignment: 0.15,
-      );
-    },
-  );
-}
   // ─────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────
@@ -504,8 +532,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   // ─────────────────────────────────────────────
 
   Widget _buildSliverHeader() {
-    final total    = _itinerary.totalPlaces;
-    final visited  = _itinerary.totalVisited;
+    final total = _itinerary.totalPlaces;
+    final visited = _itinerary.totalVisited;
     final progress = total == 0 ? 0.0 : visited / total;
 
     return SliverAppBar(
@@ -513,11 +541,38 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       pinned: true,
       backgroundColor: const Color(0xFF5E35B1),
       leading: IconButton(
-        icon: const Icon(Icons.arrow_back_ios_new,
-            color: Colors.white, size: 20),
-        onPressed: () => Navigator.pop(context,_hasChanges),
+        icon:
+            const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
+        onPressed: () => Navigator.pop(context, _hasChanges),
       ),
       actions: [
+        if (_isExportingPdf)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 12),
+            child: Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+              ),
+            ),
+          )
+        else
+          IconButton(
+            key: const ValueKey('export_pdf_button'),
+            icon: Icon(
+              Icons.picture_as_pdf_outlined,
+              color: _hasExportableContent ? Colors.white : Colors.white38,
+            ),
+            tooltip: _hasExportableContent
+                ? 'Export PDF'
+                : 'No exportable places in this itinerary',
+            onPressed:
+                (_hasExportableContent && !_isExportingPdf) ? _exportPdf : null,
+          ),
         IconButton(
           icon: Icon(
             Icons.edit_road_rounded,
@@ -551,12 +606,10 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   const Row(children: [
-                    Icon(Icons.map_rounded,
-                        color: Colors.white70, size: 14),
+                    Icon(Icons.map_rounded, color: Colors.white70, size: 14),
                     SizedBox(width: 6),
                     Text('Your Trip',
-                        style: TextStyle(
-                            color: Colors.white70, fontSize: 12)),
+                        style: TextStyle(color: Colors.white70, fontSize: 12)),
                   ]),
                   const SizedBox(height: 8),
                   Text(_itinerary.title,
@@ -569,8 +622,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                     '${_itinerary.totalDays} '
                     '${_itinerary.totalDays == 1 ? "day" : "days"} · '
                     'Starting ${_itinerary.startDate}',
-                    style: const TextStyle(
-                        color: Colors.white70, fontSize: 13),
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
                   ),
                   const SizedBox(height: 12),
                   Row(children: [
@@ -613,18 +665,14 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         labelColor: const Color(0xFF7C4DFF),
         unselectedLabelColor: Colors.grey,
         indicatorColor: const Color(0xFF7C4DFF),
-        labelStyle:
-            const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+        labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
         tabs: List.generate(_itinerary.totalDays, (i) {
-          final day  = _itinerary.days.length > i
-              ? _itinerary.days[i]
-              : null;
+          final day = _itinerary.days.length > i ? _itinerary.days[i] : null;
           final date = day != null
               ? DateFormat('MMM dd').format(DateTime.parse(day.date))
               : 'Day ${i + 1}';
           final isComplete = day?.isCompleted ?? false;
-          return Tab(
-              text: '${isComplete ? "✅ " : ""}Day ${i + 1}\n$date');
+          return Tab(text: '${isComplete ? "✅ " : ""}Day ${i + 1}\n$date');
         }),
       ),
     );
@@ -662,19 +710,20 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
       itemCount: day.places.length,
       itemBuilder: (_, i) {
-        final place     = day.places[i];
+        final place = day.places[i];
         final isVisited = place.isVisited;
-        final isNext    = !isVisited &&
-            nextPlace?.placeId == place.placeId;
+        final isNext = !isVisited && nextPlace?.placeId == place.placeId;
 
         _cardKeys.putIfAbsent(place.placeId, () => GlobalKey());
 
         return _buildPlaceCard(
-          place, dayIndex, i,
-          isNext:    isNext,
+          place,
+          dayIndex,
+          i,
+          isNext: isNext,
           isVisited: isVisited,
-          key:       ValueKey('${dayIndex}_${place.placeId}'),
-          cardKey:   _cardKeys[place.placeId]!,
+          key: ValueKey('${dayIndex}_${place.placeId}'),
+          cardKey: _cardKeys[place.placeId]!,
         );
       },
     );
@@ -722,21 +771,18 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         opacity: isVisited ? 0.5 : 1.0,
         child: Column(
           children: [
-
             // Next Stop banner
             if (isNext)
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                    vertical: 6, horizontal: 16),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
                 decoration: const BoxDecoration(
                   color: Color(0xFF7C4DFF),
-                  borderRadius:
-                      BorderRadius.vertical(top: Radius.circular(18)),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
                 ),
                 child: const Row(children: [
-                  Icon(Icons.navigation_rounded,
-                      size: 13, color: Colors.white),
+                  Icon(Icons.navigation_rounded, size: 13, color: Colors.white),
                   SizedBox(width: 6),
                   Text('Next Stop',
                       style: TextStyle(
@@ -750,12 +796,12 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
             if (isVisited)
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                    vertical: 6, horizontal: 16),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
                 decoration: BoxDecoration(
                   color: Colors.green[50],
-                  borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(18)),
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(18)),
                 ),
                 child: Row(children: [
                   Icon(Icons.check_circle_rounded,
@@ -777,14 +823,13 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
               child: Row(children: [
                 // Time chip
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: const Color(0xFF7C4DFF).withOpacity(0.1),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                        color:
-                            const Color(0xFF7C4DFF).withOpacity(0.3)),
+                        color: const Color(0xFF7C4DFF).withOpacity(0.3)),
                   ),
                   child: Row(children: [
                     const Icon(Icons.access_time_rounded,
@@ -801,8 +846,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
                 // Duration chip
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: Colors.grey[100],
                     borderRadius: BorderRadius.circular(8),
@@ -813,8 +858,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                         size: 11, color: Colors.grey[600]),
                     const SizedBox(width: 3),
                     Text(_formatDuration(place.durationMinutes),
-                        style: TextStyle(
-                            fontSize: 11, color: Colors.grey[700])),
+                        style:
+                            TextStyle(fontSize: 11, color: Colors.grey[700])),
                   ]),
                 ),
               ]),
@@ -828,12 +873,14 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: place.photoUrl != null
-                  ? CachedNetworkImage(
-                      imageUrl: place.photoUrl!,
-                      width: 70, height: 70, fit: BoxFit.cover,
-                      errorWidget: (_, __, ___) => _placeholderImg(),
-                    )
-                  : _placeholderImg(),
+                      ? CachedNetworkImage(
+                          imageUrl: place.photoUrl!,
+                          width: 70,
+                          height: 70,
+                          fit: BoxFit.cover,
+                          errorWidget: (_, __, ___) => _placeholderImg(),
+                        )
+                      : _placeholderImg(),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -848,17 +895,16 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                           color: isVisited
                               ? Colors.grey[500]
                               : const Color(0xFF1A1A2E),
-                          decoration: isVisited
-                              ? TextDecoration.lineThrough
-                              : null,
+                          decoration:
+                              isVisited ? TextDecoration.lineThrough : null,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                       const SizedBox(height: 4),
                       Text(place.address,
-                          style: TextStyle(
-                              fontSize: 11, color: Colors.grey[500]),
+                          style:
+                              TextStyle(fontSize: 11, color: Colors.grey[500]),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis),
                       if (place.notes != null) ...[
@@ -908,36 +954,30 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
                       const SizedBox(height: 8),
                       GestureDetector(
                         onTap: () => _onArrival(PlaceArrivalEvent(
-                          placeId:    place.placeId,
-                          placeName:  place.name,
-                          dayIndex:   dayIndex,
+                          placeId: place.placeId,
+                          placeName: place.name,
+                          dayIndex: dayIndex,
                           placeIndex: placeIndex,
                         )),
                         child: Container(
                           width: double.infinity,
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 7),
+                          padding: const EdgeInsets.symmetric(vertical: 7),
                           decoration: BoxDecoration(
                             color: Colors.orange[50],
-                            borderRadius:
-                                BorderRadius.circular(10),
-                            border: Border.all(
-                                color: Colors.orange[300]!),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.orange[300]!),
                           ),
                           child: Row(
-                            mainAxisAlignment:
-                                MainAxisAlignment.center,
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Icon(Icons.bug_report_rounded,
-                                  size: 13,
-                                  color: Colors.orange[700]),
+                                  size: 13, color: Colors.orange[700]),
                               const SizedBox(width: 5),
                               Text('Simulate Arrival',
                                   style: TextStyle(
                                       fontSize: 11,
                                       color: Colors.orange[700],
-                                      fontWeight:
-                                          FontWeight.w600)),
+                                      fontWeight: FontWeight.w600)),
                             ],
                           ),
                         ),
@@ -960,13 +1000,14 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   }
 
   Widget _placeholderImg() => Container(
-        width: 70, height: 70,
+        width: 70,
+        height: 70,
         decoration: BoxDecoration(
           color: Colors.grey[100],
           borderRadius: BorderRadius.circular(12),
         ),
-        child: Icon(Icons.location_on_rounded,
-            color: Colors.grey[300], size: 30),
+        child:
+            Icon(Icons.location_on_rounded, color: Colors.grey[300], size: 30),
       );
 
   Widget _actionBtn({
@@ -991,13 +1032,75 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
             const SizedBox(width: 5),
             Text(label,
                 style: TextStyle(
-                    fontSize: 12,
-                    color: color,
-                    fontWeight: FontWeight.w600)),
+                    fontSize: 12, color: color, fontWeight: FontWeight.w600)),
           ],
         ),
       ),
     );
+  }
+
+  bool get _hasExportableContent =>
+      _itinerary.days.isNotEmpty &&
+      _itinerary.days.any((d) => d.places.isNotEmpty);
+
+  // ─────────────────────────────────────────────
+  // Export PDF — Exports saved itinerary as offline PDF
+  // ─────────────────────────────────────────────
+
+  Future<void> _exportPdf() async {
+    if (_isExportingPdf) return;
+    if (!_hasExportableContent) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No exportable places in this itinerary.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isExportingPdf = true);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Generating itinerary PDF...'),
+        duration: Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+
+    try {
+      await widget.pdfService.exportAndShareItinerary(
+        _itinerary,
+        context: context,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Itinerary PDF exported successfully!'),
+            backgroundColor: Color(0xFF2ECC71),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to export PDF: ${e.toString()}'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isExportingPdf = false);
+      }
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -1017,23 +1120,23 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
     if (hasStoredOrigin && _itinerary.isOriginCurrentLocation) {
       final pos = LocationService.instance.currentPosition;
       if (pos != null) {
-        startLat  = pos.latitude;
-        startLng  = pos.longitude;
+        startLat = pos.latitude;
+        startLng = pos.longitude;
         startName = 'Your Location';
       } else {
-        startLat  = _itinerary.originLat!;
-        startLng  = _itinerary.originLng!;
+        startLat = _itinerary.originLat!;
+        startLng = _itinerary.originLng!;
         startName = _itinerary.originName;
       }
     } else if (hasStoredOrigin) {
-      startLat  = _itinerary.originLat!;
-      startLng  = _itinerary.originLng!;
+      startLat = _itinerary.originLat!;
+      startLng = _itinerary.originLng!;
       startName = _itinerary.originName;
     } else {
       final pos = LocationService.instance.currentPosition;
       if (pos != null) {
-        startLat  = pos.latitude;
-        startLng  = pos.longitude;
+        startLat = pos.latitude;
+        startLng = pos.longitude;
         startName = 'Your Location';
       } else {
         final fallback = _itinerary.days
@@ -1041,8 +1144,8 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
             .where((p) => p.lat != null && p.lng != null)
             .toList();
         if (fallback.isEmpty) return;
-        startLat  = fallback.first.lat!;
-        startLng  = fallback.first.lng!;
+        startLat = fallback.first.lat!;
+        startLng = fallback.first.lng!;
         startName = null;
       }
     }
@@ -1059,9 +1162,9 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
           startLat: startLat,
           startLng: startLng,
           startLocationName: startName,
-          travelMode: resolvedTravelMode,   // 🔧 CHANGED
+          travelMode: resolvedTravelMode, // 🔧 CHANGED
           isEditingExisting: true,
-          leftoverPlaceIds: _itinerary.leftoverPlaceIds, 
+          leftoverPlaceIds: _itinerary.leftoverPlaceIds,
         ),
       ),
     );
@@ -1070,11 +1173,12 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
     final daysChanged = updated.days.length != _itinerary.days.length;
     setState(() => _itinerary = updated);
-    _hasChanges = true; 
+    _hasChanges = true;
 
     if (daysChanged) {
       _tabController.dispose();
-      _tabController = TabController(length: _itinerary.days.length, vsync: this);
+      _tabController =
+          TabController(length: _itinerary.days.length, vsync: this);
     }
 
     _refreshItineraryTracking();
@@ -1087,8 +1191,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
   // ─────────────────────────────────────────────
 
   void _editTitle() {
-    final ctrl =
-        TextEditingController(text: _itinerary.title);
+    final ctrl = TextEditingController(text: _itinerary.title);
 
     showDialog(
       context: context,
@@ -1113,8 +1216,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
         ),
         actions: [
           TextButton(
-            onPressed: () =>
-                Navigator.pop(context),
+            onPressed: () => Navigator.pop(context),
             child: Text(
               'Cancel',
               style: TextStyle(
@@ -1139,8 +1241,7 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
               final previousItinerary = _itinerary;
 
-              final updated =
-                  _itinerary.copyWith(
+              final updated = _itinerary.copyWith(
                 title: newTitle,
               );
 
@@ -1174,17 +1275,14 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
 
                 ErrorHandler.showError(
                   context,
-                  message:
-                      'Failed to save title. Please try again.',
+                  message: 'Failed to save title. Please try again.',
                 );
               }
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor:
-                  const Color(0xFF7C4DFF),
+              backgroundColor: const Color(0xFF7C4DFF),
               shape: RoundedRectangleBorder(
-                borderRadius:
-                    BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(12),
               ),
             ),
             child: const Text('Save'),
@@ -1193,102 +1291,94 @@ class _ItineraryDetailPageState extends State<ItineraryDetailPage>
       ),
     );
   }
-  
+
   Future<void> _openDetail(ItineraryPlace place) async {
-    final pos    = LocationService.instance.currentPosition;
+    final pos = LocationService.instance.currentPosition;
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => PlaceDetailPage(
           placeId: place.placeId,
-          lat:     place.lat,
-          lng:     place.lng,
+          lat: place.lat,
+          lng: place.lng,
           userLat: pos?.latitude,
           userLng: pos?.longitude,
         ),
       ),
     );
-    if (result != null &&
-        result['action'] == 'start_navigation' &&
-        mounted) {
+    if (result != null && result['action'] == 'start_navigation' && mounted) {
       _navigate(place);
     }
   }
 
-Future<void> _navigate(
-  ItineraryPlace place,
-) async {
-  if (place.lat == null || place.lng == null) {
-    return;
-  }
+  Future<void> _navigate(
+    ItineraryPlace place,
+  ) async {
+    if (place.lat == null || place.lng == null) {
+      return;
+    }
 
-  final pos =
-      LocationService.instance.currentPosition;
+    final pos = LocationService.instance.currentPosition;
 
-  if (pos == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Unable to get your current location',
+    if (pos == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Unable to get your current location',
+          ),
         ),
-      ),
-    );
-    return;
-  }
-
-  // GuidePage will handle arrival detection during
-  // active turn-by-turn navigation.
-  //
-  // Keep the shared GPS stream alive for other modules,
-  // but temporarily disable itinerary proximity events.
-  LocationService.instance
-      .pauseItineraryProximity();
-
-  final arrived = await Navigator.push<bool>(
-    context,
-    MaterialPageRoute(
-      builder: (_) => RoutePreviewPage(
-        startLat: pos.latitude,
-        startLng: pos.longitude,
-        endLat: place.lat!,
-        endLng: place.lng!,
-        destinationName: place.name,
-      ),
-    ),
-  );
-
-  if (!mounted) {
-    return;
-  }
-
-  // Restore itinerary proximity detection after
-  // navigation ends or the user backs out.
-  _refreshItineraryTracking();
-
-  if (arrived != true) {
-    return;
-  }
-
-  // Find the real day/place instead of depending on
-  // whichever tab happens to be selected.
-  for (int dayIndex = 0;
-      dayIndex < _itinerary.days.length;
-      dayIndex++) {
-    final placeIndex =
-        _itinerary.days[dayIndex].places.indexWhere(
-      (p) => p.placeId == place.placeId,
-    );
-
-    if (placeIndex != -1) {
-      await _markVisited(
-        dayIndex,
-        placeIndex,
       );
       return;
     }
-  }
-}
 
+    // GuidePage will handle arrival detection during
+    // active turn-by-turn navigation.
+    //
+    // Keep the shared GPS stream alive for other modules,
+    // but temporarily disable itinerary proximity events.
+    LocationService.instance.pauseItineraryProximity();
+
+    final arrived = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RoutePreviewPage(
+          startLat: pos.latitude,
+          startLng: pos.longitude,
+          endLat: place.lat!,
+          endLng: place.lng!,
+          destinationName: place.name,
+        ),
+      ),
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    // Restore itinerary proximity detection after
+    // navigation ends or the user backs out.
+    _refreshItineraryTracking();
+
+    if (arrived != true) {
+      return;
+    }
+
+    // Find the real day/place instead of depending on
+    // whichever tab happens to be selected.
+    for (int dayIndex = 0; dayIndex < _itinerary.days.length; dayIndex++) {
+      final placeIndex = _itinerary.days[dayIndex].places.indexWhere(
+        (p) => p.placeId == place.placeId,
+      );
+
+      if (placeIndex != -1) {
+        await _markVisited(
+          dayIndex,
+          placeIndex,
+        );
+        return;
+      }
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1303,7 +1393,7 @@ class _AchievementUnlockedDialog extends StatelessWidget {
   static const _tierColors = {
     'bronze': Color(0xFFCD7F32),
     'silver': Color(0xFFA8A9AD),
-    'gold':   Color(0xFFFFD700),
+    'gold': Color(0xFFFFD700),
   };
 
   @override
@@ -1317,7 +1407,8 @@ class _AchievementUnlockedDialog extends StatelessWidget {
           children: [
             // ── Trophy icon ──
             Container(
-              width: 80, height: 80,
+              width: 80,
+              height: 80,
               decoration: BoxDecoration(
                 color: const Color(0xFF7C4DFF).withOpacity(0.1),
                 shape: BoxShape.circle,
@@ -1345,7 +1436,8 @@ class _AchievementUnlockedDialog extends StatelessWidget {
 
             // ── Unlocked badges list ──
             ...unlocks.map((u) {
-              final color = _tierColors[u.tier.level] ?? const Color(0xFF7C4DFF);
+              final color =
+                  _tierColors[u.tier.level] ?? const Color(0xFF7C4DFF);
               return Container(
                 margin: const EdgeInsets.only(bottom: 10),
                 padding: const EdgeInsets.all(14),
@@ -1357,7 +1449,8 @@ class _AchievementUnlockedDialog extends StatelessWidget {
                 child: Row(children: [
                   // Badge circle
                   Container(
-                    width: 48, height: 48,
+                    width: 48,
+                    height: 48,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: color.withOpacity(0.15),
@@ -1436,100 +1529,104 @@ class _AchievementUnlockedDialog extends StatelessWidget {
       ),
     );
   }
-
-
-
-
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Waze-style arrived dialog
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _ArrivedDialog extends StatelessWidget {
+@visibleForTesting
+class ArrivedDialog extends StatelessWidget {
   final String placeName;
   final VoidCallback onConfirm;
   final VoidCallback onDismiss;
+  final VoidCallback? onPopInvoked;
 
-  const _ArrivedDialog({
+  const ArrivedDialog({
+    super.key,
     required this.placeName,
     required this.onConfirm,
     required this.onDismiss,
+    this.onPopInvoked,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 72, height: 72,
-              decoration: BoxDecoration(
-                color: const Color(0xFF7C4DFF).withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.location_on_rounded,
-                  size: 36, color: Color(0xFF7C4DFF)),
-            ),
-            const SizedBox(height: 16),
-            const Text("You've arrived! 🎉",
-                style: TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Text(
-              placeName,
-              style: const TextStyle(
-                  fontSize: 15,
-                  color: Color(0xFF7C4DFF),
-                  fontWeight: FontWeight.w600),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Are you visiting this place?',
-              style: TextStyle(fontSize: 13, color: Colors.grey[500]),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            Row(children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: onDismiss,
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: Colors.grey[300]!),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    padding:
-                        const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                  child: Text('Not yet',
-                      style: TextStyle(color: Colors.grey[600])),
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop && result != true) {
+          onPopInvoked?.call();
+        }
+      },
+      child: Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF7C4DFF).withOpacity(0.1),
+                  shape: BoxShape.circle,
                 ),
+                child: const Icon(Icons.location_on_rounded,
+                    size: 36, color: Color(0xFF7C4DFF)),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: onConfirm,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF7C4DFF),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    padding:
-                        const EdgeInsets.symmetric(vertical: 12),
+              const SizedBox(height: 16),
+              const Text("You've arrived! 🎉",
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(
+                placeName,
+                style: const TextStyle(
+                    fontSize: 15,
+                    color: Color(0xFF7C4DFF),
+                    fontWeight: FontWeight.w600),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Are you visiting this place?',
+                style: TextStyle(fontSize: 13, color: Colors.grey[500]),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: onDismiss,
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: Colors.grey[300]!),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: Text('Not yet',
+                        style: TextStyle(color: Colors.grey[600])),
                   ),
-                  child: const Text("Yes, I'm here!",
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold)),
                 ),
-              ),
-            ]),
-          ],
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: onConfirm,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF7C4DFF),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text("Yes, I'm here!",
+                        style: TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ]),
+            ],
+          ),
         ),
       ),
     );

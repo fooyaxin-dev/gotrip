@@ -178,11 +178,14 @@ class LikeService {
       return {};
     }
 
-    Map<String, bool> likeStatus = {};
+    final Map<String, bool> likeStatus = {};
 
-    for (String postId in postIds) {
-      bool liked = await hasLiked(postId, userId);
-      likeStatus[postId] = liked;
+    // Parallel reads — avoids N serial Firestore round-trips.
+    final results = await Future.wait(
+      postIds.map((id) => hasLiked(id, userId)),
+    );
+    for (int i = 0; i < postIds.length; i++) {
+      likeStatus[postIds[i]] = results[i];
     }
 
     return likeStatus;

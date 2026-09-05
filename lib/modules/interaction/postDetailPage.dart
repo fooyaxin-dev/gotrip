@@ -13,7 +13,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'dart:io';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:async';
@@ -22,6 +21,7 @@ import '../../services/like_service.dart';
 import '../../services/post_service.dart';
 import '../../services/userPreference_service.dart';
 import '../../services/sentiment_service.dart';
+import '../../services/error_handler.dart';
 import '../profile/profile.dart';
 import 'editPost.dart';
 import '../../modules/place/detectPlacePage.dart';
@@ -42,6 +42,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  bool? _optimisticLiked;
+  int? _optimisticLikeCount;
+  bool _likeRequestInFlight = false;
+
   static const double _mediaHeight = 300;
   static const Color _cardBg = Colors.white;
   static const Color _pageBg = Color(0xFFF3F4F6);
@@ -58,15 +62,52 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return '${dateTime.year}-${dateTime.month.toString().padLeft(2, '0')}-${dateTime.day.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _handleLike(Post post) async {
+  Future<void> _handleLike(Post post, bool currentlyLiked, int currentCount) async {
+    if (_likeRequestInFlight) return;
+
+    _likeRequestInFlight = true;
+
+    final newLiked = !currentlyLiked;
+    final newCount = (currentlyLiked ? currentCount - 1 : currentCount + 1).clamp(0, 999999);
+
+    setState(() {
+      _optimisticLiked = newLiked;
+      _optimisticLikeCount = newCount;
+    });
+
     try {
-      final liked = await _likeService.toggleLike(post.id!);
-      unawaited(_learnFromLike(post, liked));
+      final bool serverLiked = await _likeService.toggleLike(post.id!);
+
+      unawaited(_learnFromLike(post, serverLiked));
+
+      if (!mounted) return;
+
+      if (serverLiked != newLiked) {
+        setState(() {
+          _optimisticLiked = serverLiked;
+        });
+      }
+
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted) {
+          setState(() {
+            _optimisticLiked = null;
+            _optimisticLikeCount = null;
+          });
+        }
+      });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Operation failed: $e')),
-      );
+      setState(() {
+        _optimisticLiked = currentlyLiked;
+        _optimisticLikeCount = currentCount;
+      });
+      ErrorHandler.showError(context, error: e, message: 'Could not update like. Please try again.');
+    } finally {
+      _likeRequestInFlight = false;
+      if (mounted) {
+        setState(() {});
+      }
     }
   }
 
@@ -211,14 +252,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
               // exactly once.
             } catch (e) {
               if (!mounted) return;
-
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Failed to delete: $e',
-                  ),
-                ),
-              );
+              ErrorHandler.showError(context, error: e, message: 'Failed to delete post. Please try again.');
             }
           },
           child: const Text(
@@ -245,7 +279,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
           post = Post.fromFirestore(snapshot.data!);
         } else if (snapshot.hasData && !snapshot.data!.exists) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) Navigator.pop(context);
+            if (mounted) Navigator.pop(context, true);
           });
         }
         return _buildScaffold(context, post);
@@ -435,15 +469,19 @@ class _PostDetailPageState extends State<PostDetailPage> {
                     stream: _likeService.likeStatusStream(post.id!),
                     initialData: false,
                     builder: (context, snapshot) {
-                      final isLiked = snapshot.data ?? false;
+                      final isLikedFromStream = snapshot.data ?? false;
+                      final isLiked = _optimisticLiked ?? isLikedFromStream;
                       return StreamBuilder<int>(
                         stream: _likeService.likeCountStream(post.id!),
                         initialData: post.likes,
                         builder: (context, countSnapshot) {
-                          final likeCount = countSnapshot.data ?? post.likes;
+                          final countFromStream = countSnapshot.data ?? post.likes;
+                          final likeCount = _optimisticLikeCount ?? countFromStream;
                           return InkWell(
                             borderRadius: BorderRadius.circular(12),
-                            onTap: () => _handleLike(post),
+                            onTap: _likeRequestInFlight
+                                ? null
+                                : () => _handleLike(post, isLiked, likeCount),
                             child: Padding(
                               padding: const EdgeInsets.symmetric(vertical: 10),
                               child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
